@@ -3,5 +3,6 @@ declare module "bun:test" {
   export function expect(actual: unknown): {
     toEqual(expected: unknown): void;
     toBe(expected: unknown): void;
+    toThrow(expected?: unknown): void;
   };
 }
