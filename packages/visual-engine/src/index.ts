@@ -134,3 +134,42 @@ export { createLyricParticles, LYRIC_PARTICLE_COUNT } from "./particles/lyric-pa
 export type { LyricParticles, LyricParticlesOptions } from "./particles/lyric-particles";
 export { createConnectorParticles, CONNECTOR_PARTICLE_COUNT } from "./particles/connector-particles";
 export type { ConnectorParticles, ConnectorParticlesOptions } from "./particles/connector-particles";
+
+export {
+	DEFAULT_LYRIC_PALETTE,
+	resolveLyricPalette,
+} from "./stage-lyrics/palette";
+export type { LyricPalette } from "./stage-lyrics/palette";
+export {
+	cssColorToThreeColor,
+	lyricThreeColor,
+} from "./stage-lyrics/color-utils";
+export type { RGB } from "./stage-lyrics/color-utils";
+export {
+	STAGE_LYRIC_MAX_LINES,
+	LYRIC_MASK_W,
+	LYRIC_MASK_H,
+	makeLyricMask,
+} from "./stage-lyrics/lyric-mask";
+export type { LyricMaskResult, MakeLyricMaskOptions } from "./stage-lyrics/lyric-mask";
+export {
+	getLyricSunBloomTexture,
+	resetLyricSunBloomCache,
+} from "./stage-lyrics/lyric-sun-bloom";
+export { makeLyricGlowTexture } from "./stage-lyrics/lyric-glow";
+export type { LyricGlowTextureOptions } from "./stage-lyrics/lyric-glow";
+export { makeLyricReadabilityTexture } from "./stage-lyrics/lyric-readability";
+export type { LyricReadabilityTextureOptions } from "./stage-lyrics/lyric-readability";
+export {
+	makeLyricShaderMaterial,
+	LYRIC_FRAGMENT_SHADER,
+	LYRIC_VERTEX_SHADER,
+} from "./stage-lyrics/lyric-shader-material";
+export type { LyricShaderMaterialOptions, LyricShaderMaterialResult } from "./stage-lyrics/lyric-shader-material";
+export { makeDotTexture as makeLyricDotTexture } from "./stage-lyrics/lyric-dot-texture";
+export {
+	buildLyricGroup,
+	updateLyricGroupProgress,
+	disposeLyricGroup,
+} from "./stage-lyrics/lyric-builder";
+export type { LyricGroup, LyricGroupOptions } from "./stage-lyrics/lyric-builder";
