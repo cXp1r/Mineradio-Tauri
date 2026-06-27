@@ -129,3 +129,8 @@ export {
 } from "./home-visual/home-visual-shaders";
 export { createHomeVisual } from "./home-visual/home-visual";
 export type { HomeVisual, HomeVisualOptions } from "./home-visual/home-visual";
+
+export { createLyricParticles, LYRIC_PARTICLE_COUNT } from "./particles/lyric-particles";
+export type { LyricParticles, LyricParticlesOptions } from "./particles/lyric-particles";
+export { createConnectorParticles, CONNECTOR_PARTICLE_COUNT } from "./particles/connector-particles";
+export type { ConnectorParticles, ConnectorParticlesOptions } from "./particles/connector-particles";
