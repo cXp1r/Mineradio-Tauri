@@ -65,8 +65,49 @@
         "path": "verification\\baseline\\2026-06-27-ced5ec61\\visual-console-panel-1280x720.png",
         "captureMethod": "CDP clicks for DIY and visual console panel, then Windows screenshot helper by window handle",
         "verifiedNonBlank": true
+      },
+      {
+        "kind": "playback-console-visible",
+        "windowSize": "1280x720",
+        "path": "verification\\baseline\\2026-06-27-ced5ec61\\playback-console-visible-1280x720.png",
+        "captureMethod": "CDP revealBottomControls, then Page.captureScreenshot",
+        "verifiedNonBlank": true
+      },
+      {
+        "kind": "playback-console-hidden",
+        "windowSize": "1280x720",
+        "path": "verification\\baseline\\2026-06-27-ced5ec61\\playback-console-hidden-1280x720.png",
+        "captureMethod": "CDP setControlsHidden(true), then Page.captureScreenshot",
+        "verifiedNonBlank": true
+      },
+      {
+        "kind": "search-results",
+        "windowSize": "1280x720",
+        "path": "verification\\baseline\\2026-06-27-ced5ec61\\search-results-yujian-1280x720.png",
+        "captureMethod": "CDP search input and doSearch('遇见'), then Page.captureScreenshot",
+        "verifiedNonBlank": true
+      },
+      {
+        "kind": "desktop-lyrics-open",
+        "windowSize": "desktop overlay",
+        "path": "verification\\baseline\\2026-06-27-ced5ec61\\desktop-lyrics-open.png",
+        "captureMethod": "toggleFx('desktopLyrics'), then Windows screenshot helper by window handle",
+        "verifiedNonBlank": true,
+        "notes": "Transparent overlay screenshot proves the desktop lyrics window can open; white/black background readability, lock/unlock, and drag recordings are still pending."
       }
     ],
-    "recordings": []
+    "recordings": [],
+    "data": [
+      {
+        "kind": "visual-localstorage",
+        "path": "verification\\baseline\\2026-06-27-ced5ec61\\visual-localstorage-snapshot.json",
+        "keys": [
+          "mineradio-lyric-layout-v1",
+          "mineradio-user-fx-archives-v1",
+          "mineradio-diy-player-mode-v1",
+          "skull-preset-v2"
+        ]
+      }
+    ]
   }
 }

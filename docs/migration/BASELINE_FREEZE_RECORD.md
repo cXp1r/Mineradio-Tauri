@@ -47,15 +47,15 @@ node --check server.js
 
 | Evidence | 建议文件名 | 状态 |
 | --- | --- | --- |
-| 默认视觉存档 | `default-visual-preset.json` | 未采集 |
+| 默认视觉存档 | `visual-localstorage-snapshot.json` | 已采集，包含 `mineradio-lyric-layout-v1` 和 `默认测试` 用户视觉存档 |
 | 主界面静态截图 | `home-idle-window.png`, `home-idle-1280x720.png` | 已采集，1920x1080 和 1280x720，Windows window-handle screenshot |
 | 启动动画录屏 | `startup-animation.mp4` | 未采集 |
-| 播放中控制台截图 | `playing-console.png` | 未采集 |
+| 播放中控制台截图 | `playback-console-visible-1280x720.png`, `playback-console-hidden-1280x720.png` | 已采集控制台显示/隐藏静态截图，真实播放中截图和录屏待补齐 |
 | 播放中控制台录屏 | `playing-console.mp4` | 未采集 |
 | 视觉控制台打开状态截图 | `visual-console-panel-1280x720.png` | 已采集，1280x720，DIY 视觉控制台面板打开 |
 | 3D 歌单架打开/滚动/详情/点击播放录屏 | `playlist-shelf-flow.mp4` | 未采集 |
-| 桌面歌词开启/锁定/解锁/拖动录屏 | `desktop-lyrics-flow.mp4` | 未采集 |
-| 测试歌曲、封面、歌词和窗口尺寸 | `test-fixture-notes.md` | 未采集 |
+| 桌面歌词开启/锁定/解锁/拖动录屏 | `desktop-lyrics-open.png`, `desktop-lyrics-flow.mp4` | 已采集开启窗口静态证据；锁定、解锁、拖动和白/黑底录屏待补齐 |
+| 测试歌曲、封面、歌词和窗口尺寸 | `TEST_FIXTURES.2026-06-27.md` | 已记录窗口尺寸和搜索候选；固定测试歌曲、封面、歌词源待确认 |
 
 ## 下一步
 
