@@ -293,6 +293,115 @@ test("attachShelfPointerInteractionWiring gates hidden side shelf hits", () => {
 	expect(played).toEqual([5]);
 });
 
+test("attachShelfPointerInteractionWiring passes baseline always-visible side-mode 18px screen pad to hover and click hit lookup", () => {
+	const target = new FakePointerTarget();
+	const pads: Array<number | undefined> = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: {
+			getMode: () => "side",
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				mode: "side" as const,
+				shelfVisibility: 0.9,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 1,
+			scrollBy: () => {},
+			openDetail: () => {},
+		},
+		cinema: { setFocusZone: () => {} },
+		getHit: (pointer) => {
+			pads.push(pointer.screenPad);
+			return makeHit(1, { kind: "playQueue", index: 5 });
+		},
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getShelfPresence: () => "always",
+	});
+
+	target.emit("pointermove", { clientX: 10, clientY: 20, target: null });
+	target.emit("click", { clientX: 10, clientY: 20, target: null });
+	cleanup();
+
+	expect(pads).toEqual([18, 18]);
+});
+
+test("attachShelfPointerInteractionWiring leaves auto side-mode screen pad undefined for default fallback", () => {
+	const target = new FakePointerTarget();
+	const pads: Array<number | undefined> = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: {
+			getMode: () => "side",
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				mode: "side" as const,
+				shelfVisibility: 0.9,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 1,
+			scrollBy: () => {},
+			openDetail: () => {},
+		},
+		cinema: { setFocusZone: () => {} },
+		getHit: (pointer) => {
+			pads.push(pointer.screenPad);
+			return makeHit(1, { kind: "playQueue", index: 5 });
+		},
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getShelfPresence: () => "auto",
+	});
+
+	target.emit("pointermove", { clientX: 10, clientY: 20, target: null });
+	target.emit("click", { clientX: 10, clientY: 20, target: null });
+	cleanup();
+
+	expect(pads).toEqual([undefined, undefined]);
+});
+
+test("attachShelfPointerInteractionWiring leaves default stage screen pad undefined", () => {
+	const target = new FakePointerTarget();
+	const pads: Array<number | undefined> = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: {
+			getMode: () => "stage",
+			getSnapshot: closedSnapshot,
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 1,
+			scrollBy: () => {},
+			openDetail: () => {},
+		},
+		cinema: { setFocusZone: () => {} },
+		getHit: (pointer) => {
+			pads.push(pointer.screenPad);
+			return makeHit(1, { kind: "playQueue", index: 5 });
+		},
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+	});
+
+	target.emit("pointermove", { clientX: 10, clientY: 20, target: null });
+	target.emit("click", { clientX: 10, clientY: 20, target: null });
+	cleanup();
+
+	expect(pads).toEqual([undefined, undefined]);
+});
+
 test("attachShelfPointerInteractionWiring scrolls non-centered clicks and opens centered playlist detail focus", () => {
 	const target = new FakePointerTarget();
 	const scrolled: number[] = [];

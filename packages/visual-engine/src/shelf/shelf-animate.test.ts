@@ -4,7 +4,11 @@ import type { FrameContext } from "../runtime/frame-context";
 import type { RuntimeUniforms } from "../runtime/uniforms";
 import { createRuntimeUniforms } from "../runtime/uniforms";
 import { SHELF_MAX_RENDER } from "./card-position";
-import { createShelfManager, type ShelfItem, type ShelfManager } from "./shelf-animate";
+import {
+	createShelfManager,
+	type ShelfItem,
+	type ShelfManager,
+} from "./shelf-animate";
 
 function makeCtx(uniforms: RuntimeUniforms, now = 0): FrameContext {
 	return {
@@ -102,6 +106,39 @@ function makeRaycastShelfDeps(): {
 		DoubleSide: "DoubleSide",
 	} as unknown as typeof import("three");
 	return { children, documentLike, three };
+}
+
+function makeCanvasDocument(): Document {
+	return {
+		createElement() {
+			return {
+				width: 0,
+				height: 0,
+				getContext() {
+					return {
+						clearRect() {},
+						fillRect() {},
+						roundRect() {},
+						beginPath() {},
+						fill() {},
+						stroke() {},
+						moveTo() {},
+						lineTo() {},
+						save() {},
+						restore() {},
+						clip() {},
+						createLinearGradient() {
+							return { addColorStop() {} };
+						},
+						measureText(text: string) {
+							return { width: text.length * 8 };
+						},
+						fillText() {},
+					};
+				},
+			};
+		},
+	} as unknown as Document;
 }
 
 test("ShelfManager.setData stores items length in state.lastSig", () => {
@@ -611,4 +648,103 @@ test("ShelfManager.raycastCards returns null when no visible cards hit", () => {
 	} as unknown as import("three").Raycaster;
 
 	expect(m.raycastCards(raycaster)).toBeNull();
+});
+
+test("ShelfManager.pickCardAtScreen uses baseline default 72px screen padding and returns clamped uv", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData([{ type: "playlist", title: "Screen Pick", playlistId: "screen" }]);
+	m.update(makeCtx(createRuntimeUniforms(), 16));
+	const mesh = group.children[0] as import("three").Mesh;
+	mesh.position.set(0, 0, 0);
+	mesh.rotation.set(0, 0, 0);
+	mesh.scale.setScalar(1);
+	mesh.visible = true;
+	mesh.renderOrder = 10;
+	group.visible = true;
+
+	const viewportWidth = 800;
+	const viewportHeight = 600;
+	const params = (mesh.geometry as import("three").PlaneGeometry).parameters as { width: number; height: number };
+	const maxX = ((params.width / 2 / 4) + 1) * viewportWidth / 2;
+	const hit = m.pickCardAtScreen(maxX + 60, viewportHeight / 2, viewportWidth, viewportHeight, camera);
+
+	expect(hit?.index).toBe(0);
+	expect(hit?.screenPick).toBe(true);
+	expect(hit?.uv?.x).toBe(1);
+	expect(hit?.uv?.y).toBeCloseTo(0.5, 5);
+});
+
+test("ShelfManager.pickCardAtScreen respects explicit 18px side-mode padding", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData([{ type: "playlist", title: "Side Pad", playlistId: "side" }]);
+	m.update(makeCtx(createRuntimeUniforms(), 16));
+	const mesh = group.children[0] as import("three").Mesh;
+	mesh.position.set(0, 0, 0);
+	mesh.rotation.set(0, 0, 0);
+	mesh.scale.setScalar(1);
+	mesh.visible = true;
+	group.visible = true;
+
+	const viewportWidth = 800;
+	const viewportHeight = 600;
+	const params = (mesh.geometry as import("three").PlaneGeometry).parameters as { width: number; height: number };
+	const maxX = ((params.width / 2 / 4) + 1) * viewportWidth / 2;
+
+	expect(m.pickCardAtScreen(maxX + 18, viewportHeight / 2, viewportWidth, viewportHeight, camera, 18)?.index).toBe(0);
+	expect(m.pickCardAtScreen(maxX + 19, viewportHeight / 2, viewportWidth, viewportHeight, camera, 18)).toBeNull();
+});
+
+test("ShelfManager.pickCardAtScreen returns highest renderOrder card when padded screen rects overlap", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData([
+		{ type: "playlist", title: "Low", playlistId: "low" },
+		{ type: "playlist", title: "High", playlistId: "high" },
+	]);
+	m.update(makeCtx(createRuntimeUniforms(), 16));
+	const [low, high] = group.children as import("three").Mesh[];
+	for (const mesh of [low, high]) {
+		mesh.position.set(0, 0, 0);
+		mesh.rotation.set(0, 0, 0);
+		mesh.scale.setScalar(1);
+		mesh.visible = true;
+	}
+	low.renderOrder = 5;
+	high.renderOrder = 55;
+	group.visible = true;
+
+	const hit = m.pickCardAtScreen(400, 300, 800, 600, camera, 0);
+
+	expect(hit?.index).toBe(1);
+	expect(hit?.item.playlistId).toBe("high");
+	expect(hit?.screenPick).toBe(true);
 });

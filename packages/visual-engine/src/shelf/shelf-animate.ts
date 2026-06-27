@@ -56,6 +56,7 @@ export interface ShelfRaycastCardHit {
 	mesh: THREE.Mesh;
 	point?: THREE.Vector3;
 	uv?: THREE.Vector2;
+	screenPick?: boolean;
 }
 
 export interface ShelfManager {
@@ -80,6 +81,14 @@ export interface ShelfManager {
 	getSnapshot(): ShelfSnapshot;
 	getRenderedCardCount(): number;
 	raycastCards(raycaster: THREE.Raycaster): ShelfRaycastCardHit | null;
+	pickCardAtScreen(
+		clientX: number,
+		clientY: number,
+		viewportWidth: number,
+		viewportHeight: number,
+		camera: THREE.Camera,
+		pad?: number,
+	): ShelfRaycastCardHit | null;
 	dispose(): void;
 }
 
@@ -263,6 +272,30 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			}
 			return null;
 		},
+		pickCardAtScreen(clientX, clientY, viewportWidth, viewportHeight, camera, pad) {
+			if (!group || !group.visible || !three || renderedCards.size === 0) return null;
+			if (viewportWidth <= 0 || viewportHeight <= 0) return null;
+			const ordered = [...renderedCards.entries()].sort((a, b) => {
+				const ar = a[1].mesh.renderOrder || 0;
+				const br = b[1].mesh.renderOrder || 0;
+				return br - ar;
+			});
+			const screenPad = pad == null ? 72 : pad;
+			for (const [index, card] of ordered) {
+				const uv = screenHitCard(card.mesh, clientX, clientY, viewportWidth, viewportHeight, camera, screenPad);
+				if (!uv) continue;
+				const item = data[index];
+				if (!item) continue;
+				return {
+					index,
+					item,
+					mesh: card.mesh,
+					uv,
+					screenPick: true,
+				};
+			}
+			return null;
+		},
 		dispose() {
 			disposeRenderedCards();
 			if (group && scene && ownsGroup) {
@@ -419,6 +452,47 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		renderedCards.clear();
 	}
 
+	function screenHitCard(
+		mesh: THREE.Mesh,
+		clientX: number,
+		clientY: number,
+		viewportWidth: number,
+		viewportHeight: number,
+		camera: THREE.Camera,
+		pad: number,
+	): THREE.Vector2 | null {
+		if (!mesh.visible || !group || !group.visible || !three) return null;
+		const params = (mesh.geometry as { parameters?: { width?: number; height?: number } } | undefined)?.parameters ?? {};
+		const hw = (params.width || 1.7) / 2;
+		const hh = (params.height || 0.85) / 2;
+		const pts = [
+			new three.Vector3(-hw, -hh, 0),
+			new three.Vector3(hw, -hh, 0),
+			new three.Vector3(hw, hh, 0),
+			new three.Vector3(-hw, hh, 0),
+		];
+		let minX = Infinity;
+		let minY = Infinity;
+		let maxX = -Infinity;
+		let maxY = -Infinity;
+		mesh.updateMatrixWorld(true);
+		for (const pt of pts) {
+			pt.applyMatrix4(mesh.matrixWorld).project(camera);
+			const x = (pt.x + 1) * viewportWidth / 2;
+			const y = (1 - pt.y) * viewportHeight / 2;
+			minX = Math.min(minX, x);
+			maxX = Math.max(maxX, x);
+			minY = Math.min(minY, y);
+			maxY = Math.max(maxY, y);
+		}
+		if (clientX < minX - pad || clientX > maxX + pad || clientY < minY - pad || clientY > maxY + pad) {
+			return null;
+		}
+		const u = clampRange((clientX - minX) / Math.max(1, maxX - minX), 0, 1);
+		const v = 1 - clampRange((clientY - minY) / Math.max(1, maxY - minY), 0, 1);
+		return new three.Vector2(u, v);
+	}
+
 	function clampStateToDataLength(length: number): void {
 		if (length <= 0) {
 			state.centerIdx = 0;
@@ -438,6 +512,11 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 }
 
 function clampInt(value: number, min: number, max: number): number {
+	if (!Number.isFinite(value)) return min;
+	return Math.max(min, Math.min(max, value));
+}
+
+function clampRange(value: number, min: number, max: number): number {
 	if (!Number.isFinite(value)) return min;
 	return Math.max(min, Math.min(max, value));
 }

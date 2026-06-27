@@ -44,6 +44,7 @@ export interface VisualEngineRefs {
 	shelfItemsVersionRef: RefObject<number>;
 	splashActiveRef: RefObject<boolean>;
 	shelfCameraModeRef?: RefObject<string>;
+	shelfPresenceRef?: RefObject<string>;
 	wallpaperSafeRef?: RefObject<boolean>;
 	onShelfPlayQueueIndexRef?: RefObject<((index: number) => void) | undefined>;
 	lifecycleRef: RefObject<StageLyricsLifecycle | null>;
@@ -401,6 +402,10 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 			const getSideShelfFocusHit = await createShelfPointerRaycastFocus({
 				camera: renderer.camera,
 				shelfManager,
+				getScreenPad: () => {
+					const presence = refs.shelfPresenceRef?.current ?? refs.fxDefaults?.shelfPresence ?? "always";
+					return presence === "always" ? 18 : 24;
+				},
 			});
 			const getShelfPointerHit = await createShelfPointerRaycastHitGetter({
 				camera: renderer.camera,
@@ -449,6 +454,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				getWallpaperSafe: () => refs.wallpaperSafeRef?.current ?? isWallpaperSafeShelfPreset(refs.fxDefaults?.preset),
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
+				getShelfPresence: () => refs.shelfPresenceRef?.current ?? refs.fxDefaults?.shelfPresence ?? "always",
 				onShelfPlayQueueIndex: (index) => refs.onShelfPlayQueueIndexRef?.current?.(index),
 			});
 			handles = {
@@ -480,5 +486,5 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 			handles = null;
 			refs.lifecycleRef.current = null;
 		};
-	}, [refs.hostRef, refs.audioElementRef, refs.positionRef, refs.isPlayingRef, refs.lyricLinesRef, refs.shelfItemsRef, refs.shelfItemsVersionRef, refs.splashActiveRef, refs.shelfCameraModeRef, refs.wallpaperSafeRef, refs.onShelfPlayQueueIndexRef, refs.lifecycleRef, refs.coverResolution]);
+	}, [refs.hostRef, refs.audioElementRef, refs.positionRef, refs.isPlayingRef, refs.lyricLinesRef, refs.shelfItemsRef, refs.shelfItemsVersionRef, refs.splashActiveRef, refs.shelfCameraModeRef, refs.shelfPresenceRef, refs.wallpaperSafeRef, refs.onShelfPlayQueueIndexRef, refs.lifecycleRef, refs.coverResolution]);
 }

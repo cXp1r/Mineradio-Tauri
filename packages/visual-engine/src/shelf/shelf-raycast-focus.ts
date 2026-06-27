@@ -6,6 +6,7 @@ export interface ShelfPointerRaycastInfo {
 	clientY: number;
 	viewportWidth: number;
 	viewportHeight: number;
+	screenPad?: number;
 }
 
 export type ShelfPointerRaycastFocusGetter = (pointer: ShelfPointerRaycastInfo) => boolean;
@@ -13,13 +14,14 @@ export type ShelfPointerRaycastHitGetter = (pointer: ShelfPointerRaycastInfo) =>
 
 export interface ShelfPointerRaycastFocusOptions {
 	camera: THREE.Camera;
-	shelfManager: Pick<ShelfManager, "getMode" | "raycastCards">;
+	shelfManager: Pick<ShelfManager, "getMode" | "raycastCards" | "pickCardAtScreen">;
 	three?: Pick<typeof import("three"), "Raycaster" | "Vector2">;
+	getScreenPad?: (pointer: ShelfPointerRaycastInfo) => number | undefined;
 }
 
 export interface ShelfPointerRaycastHitOptions {
 	camera: THREE.Camera;
-	shelfManager: Pick<ShelfManager, "raycastCards">;
+	shelfManager: Pick<ShelfManager, "raycastCards" | "pickCardAtScreen">;
 	three?: Pick<typeof import("three"), "Raycaster" | "Vector2">;
 }
 
@@ -36,7 +38,15 @@ export async function createShelfPointerRaycastHitGetter(
 			-(pointer.clientY / pointer.viewportHeight) * 2 + 1,
 		);
 		raycaster.setFromCamera(pointerNdc, opts.camera);
-		return opts.shelfManager.raycastCards(raycaster);
+		return opts.shelfManager.raycastCards(raycaster) ||
+			opts.shelfManager.pickCardAtScreen(
+				pointer.clientX,
+				pointer.clientY,
+				pointer.viewportWidth,
+				pointer.viewportHeight,
+				opts.camera,
+				pointer.screenPad,
+			);
 	};
 }
 
@@ -46,6 +56,9 @@ export async function createShelfPointerRaycastFocus(
 	const getHit = await createShelfPointerRaycastHitGetter(opts);
 	return (pointer) => {
 		if (opts.shelfManager.getMode() !== "side") return false;
-		return getHit(pointer) !== null;
+		return getHit({
+			...pointer,
+			screenPad: opts.getScreenPad?.(pointer),
+		}) !== null;
 	};
 }

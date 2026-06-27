@@ -129,21 +129,24 @@ test("createShelfCardMesh uses baseline canvas, geometry, texture and material s
 		three,
 		createCanvas: () => made.canvas as unknown as HTMLCanvasElement,
 	});
+	const geometry = card.geometry as unknown as FakePlaneGeometry;
+	const texture = card.texture as unknown as FakeCanvasTexture;
+	const material = card.material as unknown as FakeMaterial;
 
 	expect(made.canvas.width).toBe(SHELF_CARD_CANVAS_WIDTH);
 	expect(made.canvas.height).toBe(SHELF_CARD_CANVAS_HEIGHT);
-	expect(card.geometry.width).toBe(SHELF_CARD_GEOMETRY_WIDTH);
-	expect(card.geometry.height).toBe(SHELF_CARD_GEOMETRY_HEIGHT);
-	expect(card.geometry.widthSegments).toBe(1);
-	expect(card.geometry.heightSegments).toBe(1);
-	expect(card.texture.minFilter).toBe("LinearFilter");
-	expect(card.texture.magFilter).toBe("LinearFilter");
-	expect(card.texture.generateMipmaps).toBe(false);
-	expect(card.material.transparent).toBe(true);
-	expect(card.material.opacity).toBe(0.96);
-	expect(card.material.depthWrite).toBe(false);
-	expect(card.material.depthTest).toBe(false);
-	expect(card.material.side).toBe("DoubleSide");
+	expect(geometry.width).toBe(SHELF_CARD_GEOMETRY_WIDTH);
+	expect(geometry.height).toBe(SHELF_CARD_GEOMETRY_HEIGHT);
+	expect(geometry.widthSegments).toBe(1);
+	expect(geometry.heightSegments).toBe(1);
+	expect(texture.minFilter).toBe("LinearFilter");
+	expect(texture.magFilter).toBe("LinearFilter");
+	expect(texture.generateMipmaps).toBe(false);
+	expect(material.transparent).toBe(true);
+	expect(material.opacity).toBe(0.96);
+	expect(material.depthWrite).toBe(false);
+	expect(material.depthTest).toBe(false);
+	expect(material.side).toBe("DoubleSide");
 	expect(card.mesh.userData.action).toEqual({
 		kind: "loadPlaylist",
 		playlistId: "p1",
@@ -153,9 +156,9 @@ test("createShelfCardMesh uses baseline canvas, geometry, texture and material s
 	expect(made.calls).toContain("roundRect");
 
 	card.dispose();
-	expect(card.geometry.disposed).toBe(true);
-	expect(card.texture.disposed).toBe(true);
-	expect(card.material.disposed).toBe(true);
+	expect(geometry.disposed).toBe(true);
+	expect(texture.disposed).toBe(true);
+	expect(material.disposed).toBe(true);
 });
 
 test("makeShelfCardAction maps baseline podcast collection and queue card actions", () => {

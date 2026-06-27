@@ -42,6 +42,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	const shelfItemsVersionRef = useRef<number>(0);
 	const splashActiveRef = useRef<boolean>(props.splashActive ?? false);
 	const shelfCameraModeRef = useRef<string>(props.fxDefaults?.shelfCameraMode ?? "static");
+	const shelfPresenceRef = useRef<string>(props.fxDefaults?.shelfPresence ?? "always");
 	const wallpaperSafeRef = useRef<boolean>(isWallpaperSafeShelfPreset(props.fxDefaults?.preset));
 	const onShelfPlayQueueIndexRef = useRef<((index: number) => void) | undefined>(props.onShelfPlayQueueIndex);
 	const lifecycleRef = useRef<StageLyricsLifecycle | null>(null);
@@ -50,6 +51,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	isPlayingRef.current = props.isPlaying;
 	splashActiveRef.current = props.splashActive ?? false;
 	shelfCameraModeRef.current = props.fxDefaults?.shelfCameraMode ?? "static";
+	shelfPresenceRef.current = props.fxDefaults?.shelfPresence ?? "always";
 	wallpaperSafeRef.current = isWallpaperSafeShelfPreset(props.fxDefaults?.preset);
 	onShelfPlayQueueIndexRef.current = props.onShelfPlayQueueIndex;
 
@@ -84,6 +86,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		shelfItemsVersionRef,
 		splashActiveRef,
 		shelfCameraModeRef,
+		shelfPresenceRef,
 		wallpaperSafeRef,
 		onShelfPlayQueueIndexRef,
 		lifecycleRef,

@@ -31,6 +31,7 @@ export interface ShelfPointerInteractionOptions {
 	getWallpaperSafe: () => boolean;
 	getViewportWidth: () => number;
 	getViewportHeight: () => number;
+	getShelfPresence?: () => string | null | undefined;
 	onShelfPlayQueueIndex?: (index: number) => void;
 	onOpenQueuePanel?: () => void;
 }
@@ -121,12 +122,18 @@ export function attachShelfPointerInteractionWiring(
 		return snapshot.shelfVisibility > 0.34;
 	};
 
-	const pointerInfoFromEvent = (event: PointerEvent | MouseEvent): ShelfPointerRaycastInfo => ({
-		clientX: event.clientX,
-		clientY: event.clientY,
-		viewportWidth: opts.getViewportWidth(),
-		viewportHeight: opts.getViewportHeight(),
-	});
+	const pointerInfoFromEvent = (event: PointerEvent | MouseEvent): ShelfPointerRaycastInfo => {
+		const mode = opts.shelfManager.getMode();
+		const snapshot = opts.shelfManager.getSnapshot();
+		const shelfAlwaysVisible = opts.getShelfPresence?.() === "always";
+		return {
+			clientX: event.clientX,
+			clientY: event.clientY,
+			viewportWidth: opts.getViewportWidth(),
+			viewportHeight: opts.getViewportHeight(),
+			screenPad: mode === "side" && shelfAlwaysVisible && snapshot.shelfVisibility > 0.34 ? 18 : undefined,
+		};
+	};
 
 	const onPointerMove: EventListener = (event) => {
 		const pointerEvent = event as PointerEvent;
