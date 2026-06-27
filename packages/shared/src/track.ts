@@ -27,3 +27,5 @@ export const TrackSchema = z.object({
 
 export type PlayableState = z.infer<typeof PlayableStateSchema>;
 export type Track = z.infer<typeof TrackSchema>;
+
+export const TrackArraySchema = z.array(TrackSchema);

@@ -24,3 +24,4 @@ export type ApiError = z.infer<typeof ApiErrorSchema>;
 export type ApiFailure = z.infer<typeof ApiFailureSchema>;
 export type ApiSuccess<T> = { ok: true; data: T };
 export type ApiResponse<T> = ApiSuccess<T> | ApiFailure;
+export type ZodTypeLike = z.ZodTypeAny;
