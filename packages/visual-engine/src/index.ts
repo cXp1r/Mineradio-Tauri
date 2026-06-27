@@ -108,3 +108,24 @@ export type { RenderStepSlot as RenderStepSlotName } from "./runtime/render-step
 export { createPerfState } from "./runtime/perf-state";
 export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/perf-state";
 export type { FrameContext } from "./runtime/frame-context";
+
+export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
+export type { FxState } from "./home-visual/fx-defaults";
+export { applyPreset, clampPreset, PRESET_COUNT, SKULL_PRESET_INDEX } from "./home-visual/preset-state";
+export type { PresetOpts } from "./home-visual/preset-state";
+export { syncFxUniforms, lerp } from "./home-visual/sync-uniforms";
+export type { SyncUniformsOpts, UniformContainer, UniformSlot } from "./home-visual/sync-uniforms";
+export {
+	createHomeParticleField,
+	coverParticleGridForResolution,
+	normalizeCoverResolution,
+} from "./home-visual/home-particle-field";
+export type { HomeParticleField, HomeParticleFieldOptions } from "./home-visual/home-particle-field";
+export {
+	HOME_VISUAL_VERTEX_SHADER,
+	HOME_VISUAL_FRAGMENT_SHADER,
+	HOME_VISUAL_BLOOM_FRAGMENT_SHADER,
+	buildHomeVisualBloomVertexShader,
+} from "./home-visual/home-visual-shaders";
+export { createHomeVisual } from "./home-visual/home-visual";
+export type { HomeVisual, HomeVisualOptions } from "./home-visual/home-visual";
