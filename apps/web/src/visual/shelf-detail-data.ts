@@ -1,10 +1,12 @@
-import { ProviderIdSchema, type PlaylistDetail, type ProviderId } from "@mineradio/shared";
+import { ProviderIdSchema, TrackSchema, type PlaylistDetail, type ProviderId, type Track } from "@mineradio/shared";
 import type {
 	ShelfContentKind,
 	ShelfContentList,
 	ShelfContentRow,
 	ShelfOpenDetailContentPayload,
 } from "@mineradio/visual-engine";
+import { isPlayable, playSearchResult } from "../components/search/play-search-result";
+import type { ShelfDetailRowClickPayload } from "./shelf-pointer-interactions";
 
 export interface PlaylistDetailClient {
 	playlistDetail(provider: ProviderId, id: string): Promise<PlaylistDetail>;
@@ -33,7 +35,50 @@ export function mapPlaylistDetailToShelfRows(
 		cover: track.coverUrl,
 		provider: track.provider,
 		type: track.playableState,
+		sourceId: track.sourceId,
+		title: track.title,
+		artists: [...track.artists],
+		album: track.album,
+		coverUrl: track.coverUrl,
+		...(track.durationMs === undefined ? {} : { durationMs: track.durationMs }),
+		playableState: track.playableState,
+		qualityHints: [...track.qualityHints],
 	}));
+}
+
+export function mapShelfDetailRowToTrack(row: ShelfContentRow): Track | null {
+	const parsedProvider = ProviderIdSchema.safeParse(row.provider);
+	if (!parsedProvider.success) return null;
+	if (!row.id || !row.name) return null;
+
+	const artists = Array.isArray(row.artists)
+		? row.artists
+		: String(row.artist || "")
+			.split("/")
+			.map((artist) => artist.trim())
+			.filter(Boolean);
+
+	const parsed = TrackSchema.safeParse({
+		provider: parsedProvider.data,
+		id: row.id,
+		sourceId: row.sourceId || row.id,
+		title: row.title || row.name,
+		artists,
+		album: row.album || "",
+		coverUrl: row.coverUrl ?? row.cover ?? "",
+		durationMs: row.durationMs,
+		qualityHints: row.qualityHints ?? [],
+		playableState: row.playableState ?? row.type ?? "unknown",
+	});
+	if (!parsed.success) return null;
+	return parsed.data;
+}
+
+export function playShelfDetailRow(payload: ShelfDetailRowClickPayload): boolean {
+	const track = mapShelfDetailRowToTrack(payload.row);
+	if (!track || !isPlayable(track.playableState)) return false;
+	playSearchResult(track);
+	return true;
 }
 
 export function createShelfDetailContentLoader(

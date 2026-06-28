@@ -1,6 +1,12 @@
 import { expect, test } from "bun:test";
 import type { PlaylistDetail, ProviderId } from "@mineradio/shared";
-import { createShelfDetailContentLoader, mapPlaylistDetailToShelfRows } from "./shelf-detail-data";
+import { usePlaybackStore } from "../stores/playback-store";
+import {
+	createShelfDetailContentLoader,
+	mapPlaylistDetailToShelfRows,
+	mapShelfDetailRowToTrack,
+	playShelfDetailRow,
+} from "./shelf-detail-data";
 
 function makeDetail(): PlaylistDetail {
 	return {
@@ -18,7 +24,8 @@ function makeDetail(): PlaylistDetail {
 				artists: ["Alice", "Bob"],
 				album: "First Album",
 				coverUrl: "first.jpg",
-				qualityHints: [],
+				durationMs: 201_000,
+				qualityHints: ["lossless"],
 				playableState: "playable",
 			},
 			{
@@ -36,7 +43,18 @@ function makeDetail(): PlaylistDetail {
 	};
 }
 
-test("mapPlaylistDetailToShelfRows maps shared tracks into visual shelf detail rows", () => {
+function resetPlaybackStore(): void {
+	usePlaybackStore.setState({
+		currentTrack: null,
+		isPlaying: false,
+		positionMs: 0,
+		durationMs: null,
+		mode: "queue",
+		queue: [],
+	});
+}
+
+test("mapPlaylistDetailToShelfRows maps shared tracks into visual shelf detail rows and preserves playback metadata", () => {
 	expect(mapPlaylistDetailToShelfRows(makeDetail(), "netease")).toEqual([
 		{
 			id: "song-1",
@@ -45,6 +63,14 @@ test("mapPlaylistDetailToShelfRows maps shared tracks into visual shelf detail r
 			cover: "first.jpg",
 			provider: "netease",
 			type: "playable",
+			sourceId: "song-1",
+			title: "First Song",
+			artists: ["Alice", "Bob"],
+			album: "First Album",
+			coverUrl: "first.jpg",
+			durationMs: 201_000,
+			playableState: "playable",
+			qualityHints: ["lossless"],
 		},
 		{
 			id: "song-2",
@@ -53,8 +79,49 @@ test("mapPlaylistDetailToShelfRows maps shared tracks into visual shelf detail r
 			cover: "",
 			provider: "netease",
 			type: "vip_required",
+			sourceId: "song-2",
+			title: "Second Song",
+			artists: [],
+			album: "Second Album",
+			coverUrl: "",
+			playableState: "vip_required",
+			qualityHints: [],
 		},
 	]);
+});
+
+test("mapShelfDetailRowToTrack returns a valid shared track for a loaded playable row", () => {
+	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!;
+	expect(mapShelfDetailRowToTrack(row)).toEqual({
+		provider: "netease",
+		id: "song-1",
+		sourceId: "song-1",
+		title: "First Song",
+		artists: ["Alice", "Bob"],
+		album: "First Album",
+		coverUrl: "first.jpg",
+		durationMs: 201_000,
+		qualityHints: ["lossless"],
+		playableState: "playable",
+	});
+});
+
+test("mapShelfDetailRowToTrack returns null for invalid provider, id, and title metadata", () => {
+	expect(mapShelfDetailRowToTrack({ id: "song-1", name: "Song", provider: "unknown" })).toBeNull();
+	expect(mapShelfDetailRowToTrack({ id: "", name: "Song", provider: "netease" })).toBeNull();
+	expect(mapShelfDetailRowToTrack({ id: "song-1", name: "", provider: "netease" })).toBeNull();
+});
+
+test("playShelfDetailRow enqueues and plays valid rows while ignoring hard non-playable rows", () => {
+	resetPlaybackStore();
+	const rows = mapPlaylistDetailToShelfRows(makeDetail(), "netease");
+	expect(playShelfDetailRow({ row: rows[0]!, index: 0 })).toBe(true);
+	expect(usePlaybackStore.getState().queue.length).toBe(1);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+
+	expect(playShelfDetailRow({ row: rows[1]!, index: 1 })).toBe(false);
+	expect(usePlaybackStore.getState().queue.length).toBe(1);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
 });
 
 test("createShelfDetailContentLoader fetches playlist detail and writes rows through the request token", async () => {

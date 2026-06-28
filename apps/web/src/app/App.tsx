@@ -11,7 +11,7 @@ import { useProviderStore } from "../stores/provider-store";
 import { getRuntimeConfig, type RuntimeConfig } from "../tauri/runtime";
 import { SplashHost } from "../visual/SplashHost";
 import { VisualEngineHost } from "../visual/VisualEngineHost";
-import { createShelfDetailContentLoader } from "../visual/shelf-detail-data";
+import { createShelfDetailContentLoader, playShelfDetailRow } from "../visual/shelf-detail-data";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 
@@ -262,7 +262,7 @@ export function App(): ReactElement {
 				coverResolution={1.55}
 				splashActive={splashActive}
 				onShelfPlayQueueIndex={(index) => usePlaybackStore.getState().playAt(index)}
-				onShelfDetailRowClick={() => {}}
+				onShelfDetailRowClick={playShelfDetailRow}
 				onShelfOpenDetailContent={(payload, contentList) => {
 					const loader = createShelfDetailContentLoader({
 						client: sidecarClient,

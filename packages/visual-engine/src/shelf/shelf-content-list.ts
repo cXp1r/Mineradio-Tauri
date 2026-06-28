@@ -23,6 +23,14 @@ export interface ShelfContentRow {
 	cover?: string;
 	provider?: string;
 	kind?: ShelfContentPlaceholderKind;
+	sourceId?: string;
+	title?: string;
+	artists?: string[];
+	album?: string;
+	coverUrl?: string;
+	durationMs?: number;
+	playableState?: string;
+	qualityHints?: string[];
 }
 
 export interface ShelfContentSourceCard {
