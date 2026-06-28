@@ -1,6 +1,8 @@
 import {
+	parseCustomLyricText,
 	resolvePreferredLyricPayload,
 	type LyricPayload,
+	type LyricLine,
 	type LyricSourcePreference,
 	type Track,
 } from "@mineradio/shared";
@@ -85,6 +87,51 @@ export function readCustomLyricPrefs(): CustomLyricPrefs {
 	} catch {
 		return {};
 	}
+}
+
+function writeJsonStorage(key: string, value: unknown): boolean {
+	const s = storage();
+	if (!s) return false;
+	try {
+		s.setItem(key, JSON.stringify(value));
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+export function saveCustomLyricForTrack(track: Track, text: string, now = Date.now()): { saved: boolean; lines: LyricLine[] } {
+	const key = trackCustomLyricKey(track);
+	const lines = parseCustomLyricText(text, { durationMs: track.durationMs });
+	if (!key || lines.length === 0) return { saved: false, lines };
+	const store = readCustomLyricStore();
+	const prefs = readCustomLyricPrefs();
+	store[key] = { text, updatedAt: now };
+	prefs[key] = "custom";
+	const savedStore = writeJsonStorage(CUSTOM_LYRIC_STORE_KEY, store);
+	const savedPrefs = writeJsonStorage(CUSTOM_LYRIC_PREF_STORE_KEY, prefs);
+	return { saved: savedStore && savedPrefs, lines };
+}
+
+export function deleteCustomLyricForTrack(track: Track): boolean {
+	const key = trackCustomLyricKey(track);
+	if (!key) return false;
+	const store = readCustomLyricStore();
+	const prefs = readCustomLyricPrefs();
+	const existed = Object.prototype.hasOwnProperty.call(store, key);
+	delete store[key];
+	delete prefs[key];
+	writeJsonStorage(CUSTOM_LYRIC_STORE_KEY, store);
+	writeJsonStorage(CUSTOM_LYRIC_PREF_STORE_KEY, prefs);
+	return existed;
+}
+
+export function setCustomLyricPreferenceForTrack(track: Track, preference: LyricSourcePreference): boolean {
+	const key = trackCustomLyricKey(track);
+	if (!key) return false;
+	const prefs = readCustomLyricPrefs();
+	prefs[key] = preference;
+	return writeJsonStorage(CUSTOM_LYRIC_PREF_STORE_KEY, prefs);
 }
 
 export function getCustomLyricTextForTrack(track: Track | null | undefined): string | null {

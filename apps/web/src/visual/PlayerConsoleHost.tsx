@@ -35,6 +35,8 @@ export interface PlayerConsoleHostProps {
 	onModeChange?: (mode: PlaybackMode) => void;
 	onQueue?: () => void;
 	onLyrics?: () => void;
+	onLyricSourceChange?: (mode: "original" | "custom") => void;
+	onOpenCustomLyrics?: () => void;
 	onNotice?: (message: string) => void;
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
@@ -60,6 +62,8 @@ export interface PlayerConsoleHostProps {
 	volume?: number;
 	muted?: boolean;
 	playbackQuality?: PlaybackQuality;
+	lyricSourceMode?: "original" | "custom";
+	hasCustomLyric?: boolean;
 	deps?: {
 		controlsHovering?: () => boolean;
 		miniQueueOpen?: () => boolean;
@@ -99,6 +103,10 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	onQueueRef.current = props.onQueue;
 	const onLyricsRef = useRef(props.onLyrics);
 	onLyricsRef.current = props.onLyrics;
+	const onLyricSourceChangeRef = useRef(props.onLyricSourceChange);
+	onLyricSourceChangeRef.current = props.onLyricSourceChange;
+	const onOpenCustomLyricsRef = useRef(props.onOpenCustomLyrics);
+	onOpenCustomLyricsRef.current = props.onOpenCustomLyrics;
 	const onNoticeRef = useRef(props.onNotice);
 	onNoticeRef.current = props.onNotice;
 	const onSeekRef = useRef(props.onSeek);
@@ -251,6 +259,13 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const lyricsStub = useCallback(() => {
 		onLyricsRef.current?.();
 	}, []);
+	const lyricSourceMode = props.lyricSourceMode === "custom" ? "custom" : "original";
+	const chooseOriginalLyrics = useCallback(() => {
+		onLyricSourceChangeRef.current?.("original");
+	}, []);
+	const chooseCustomLyrics = useCallback(() => {
+		onLyricSourceChangeRef.current?.("custom");
+	}, []);
 	const noticeStub = useCallback((message: string) => {
 		onNoticeRef.current?.(message);
 	}, []);
@@ -392,6 +407,12 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 					<button className="ctrl-btn lyrics-toggle-btn" ref={registerNormal("lyrics-toggle-btn")} type="button" title="歌词" aria-label="歌词" onClick={lyricsStub}>
 						<span className="lyrics-word-icon">词</span>
 					</button>
+					<div className="lyric-source-row console-lyric-source-row">
+						<div className="fx-seg lyric-source-seg" id="lyric-source-seg">
+							<button id="lyric-source-original" type="button" className={lyricSourceMode === "original" ? "active" : ""} onClick={chooseOriginalLyrics}>原词</button>
+							<button id="lyric-source-custom" type="button" className={`${lyricSourceMode === "custom" ? "active" : ""}${props.hasCustomLyric ? " has-custom" : ""}`.trim()} onClick={chooseCustomLyrics}>自定义</button>
+						</div>
+					</div>
 					<button
 						className="ctrl-btn fullscreen-toggle-btn"
 						ref={registerNormal("fullscreen-toggle-btn")}

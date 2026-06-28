@@ -12,6 +12,8 @@ export interface BottomControlsHostProps {
 	onModeChange?: (mode: PlaybackMode) => void;
 	onQueue?: () => void;
 	onLyrics?: () => void;
+	onLyricSourceChange?: (mode: "original" | "custom") => void;
+	onOpenCustomLyrics?: () => void;
 	onClose?: () => void;
 	onNotice?: (message: string) => void;
 	onSeek?: (positionMs: number) => void;
@@ -34,6 +36,8 @@ export interface BottomControlsHostProps {
 	volume?: number;
 	muted?: boolean;
 	playbackQuality?: PlaybackQuality;
+	lyricSourceMode?: "original" | "custom";
+	hasCustomLyric?: boolean;
 }
 
 export function BottomControlsHost(props: BottomControlsHostProps): ReactElement {
@@ -59,6 +63,8 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				onModeChange={props.onModeChange}
 				onQueue={props.onQueue}
 				onLyrics={props.onLyrics}
+				onLyricSourceChange={props.onLyricSourceChange}
+				onOpenCustomLyrics={props.onOpenCustomLyrics}
 				onClose={props.onClose}
 				onNotice={props.onNotice}
 				onSeek={props.onSeek}
@@ -81,6 +87,8 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				volume={props.volume}
 				muted={props.muted}
 				playbackQuality={props.playbackQuality}
+				lyricSourceMode={props.lyricSourceMode}
+				hasCustomLyric={props.hasCustomLyric}
 			/>
 		</>
 	);

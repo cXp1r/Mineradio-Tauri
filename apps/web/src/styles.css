@@ -1507,6 +1507,54 @@ html.control-glass-svg-ok #bottom-bar.visible {
   letter-spacing: 0;
 }
 
+.console-lyric-source-row {
+  margin: 0;
+  width: 118px;
+  flex: 0 0 auto;
+}
+
+.fx-seg.lyric-source-seg {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(255, 255, 255, .035);
+}
+
+.fx-seg.lyric-source-seg button {
+  min-width: 0;
+  height: 26px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, .52);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.fx-seg.lyric-source-seg button.active {
+  color: var(--champagne);
+  background: rgba(244, 210, 138, .12);
+  box-shadow: inset 0 0 0 1px rgba(244, 210, 138, .18);
+}
+
+.fx-seg.lyric-source-seg button.has-custom::after {
+  content: "";
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  margin-left: 5px;
+  border-radius: 999px;
+  background: rgba(126, 226, 168, .86);
+  vertical-align: middle;
+  box-shadow: 0 0 10px rgba(126, 226, 168, .50);
+}
+
 #time-display {
   min-width: 78px;
   color: rgba(255, 255, 255, .52);
@@ -1757,6 +1805,81 @@ html.control-glass-svg-ok #bottom-bar.visible {
 
 .modal-btn.primary:hover {
   background: rgba(244, 210, 138, .24);
+}
+
+.custom-lyric-modal {
+  width: min(560px, 92vw);
+  max-width: min(560px, 92vw);
+  padding: 28px;
+  text-align: left;
+}
+
+.custom-lyric-modal h2 {
+  text-align: center;
+  margin-bottom: 14px;
+}
+
+.custom-lyric-track {
+  padding: 11px 12px;
+  margin-bottom: 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, .07);
+  background: rgba(255, 255, 255, .035);
+}
+
+.custom-lyric-title {
+  font-size: 13px;
+  color: rgba(255, 255, 255, .92);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.custom-lyric-sub {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .42);
+}
+
+.custom-lyric-input {
+  width: 100%;
+  height: min(310px, 42vh);
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(255, 255, 255, .045);
+  color: rgba(255, 255, 255, .92);
+  padding: 13px 14px;
+  font-family: inherit;
+  font-size: 12.5px;
+  line-height: 1.65;
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+
+.custom-lyric-input:focus {
+  border-color: rgba(244, 210, 138, .42);
+  background: rgba(244, 210, 138, .055);
+}
+
+.custom-lyric-input::placeholder {
+  color: rgba(255, 255, 255, .28);
+}
+
+.custom-lyric-status {
+  min-height: 18px;
+  margin-top: 9px;
+  font-size: 11.5px;
+  color: rgba(255, 255, 255, .45);
+  letter-spacing: .2px;
+}
+
+.custom-lyric-status.good {
+  color: rgba(126, 226, 168, .86);
+}
+
+.custom-lyric-status.fail {
+  color: #ff8f9d;
 }
 
 @media (max-width: 1120px) {

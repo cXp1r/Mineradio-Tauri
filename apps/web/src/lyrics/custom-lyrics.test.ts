@@ -7,6 +7,9 @@ import {
 	readCustomLyricPrefs,
 	readCustomLyricStore,
 	resolveLyricsForTrack,
+	deleteCustomLyricForTrack,
+	saveCustomLyricForTrack,
+	setCustomLyricPreferenceForTrack,
 	trackCustomLyricKey,
 } from "./custom-lyrics";
 
@@ -96,4 +99,17 @@ test("readCustomLyricPrefs ignores invalid preference values", () => {
 		"id:42": "custom",
 		"qq:abc": "original",
 	});
+});
+
+test("save and delete custom lyrics persist baseline store and preference entries", () => {
+	const saved = saveCustomLyricForTrack(track({ durationMs: 10000 }), "第一句\n第二句", 123);
+	expect(saved.lines.length).toBe(2);
+	expect(readCustomLyricStore()["id:42"]).toEqual({ text: "第一句\n第二句", updatedAt: 123 });
+	expect(readCustomLyricPrefs()["id:42"]).toBe("custom");
+
+	expect(setCustomLyricPreferenceForTrack(track(), "original")).toBe(true);
+	expect(readCustomLyricPrefs()["id:42"]).toBe("original");
+	expect(deleteCustomLyricForTrack(track())).toBe(true);
+	expect(readCustomLyricStore()["id:42"]).toBe(undefined);
+	expect(readCustomLyricPrefs()["id:42"]).toBe(undefined);
 });

@@ -1,7 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import { SidecarClient, SidecarClientError } from "../api/sidecar-client";
 import { PlayerController } from "../audio/player-controller";
-import { resolveLyricsForTrack } from "../lyrics/custom-lyrics";
+import {
+	deleteCustomLyricForTrack,
+	getCustomLyricPreferenceForTrack,
+	getCustomLyricTextForTrack,
+	resolveLyricsForTrack,
+	saveCustomLyricForTrack,
+	setCustomLyricPreferenceForTrack,
+} from "../lyrics/custom-lyrics";
 import { selectCurrentIndex } from "../lyrics/select-current-index";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
@@ -118,9 +125,10 @@ export function deriveSidecarRecoveryNoticeState(
 
 export type AppProps = {
 	SplashComponent?: (props: SplashHostProps) => ReactElement | null;
+	VisualComponent?: typeof VisualEngineHost;
 };
 
-export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactElement {
+export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngineHost }: AppProps = {}): ReactElement {
 	const [sidecarClient, setSidecarClient] = useState<SidecarClient | null>(null);
 	const [sidecarBaseUrl, setSidecarBaseUrl] = useState("");
 	const [splashActive, setSplashActive] = useState<boolean>(SHOW_SPLASH);
@@ -133,6 +141,10 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 	const [sidecarRecoveryState, setSidecarRecoveryState] = useState<SidecarRecoveryNoticeState | null>(null);
 	const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQuality>(readPlaybackQualityPreference);
 	const [playbackQualityReloadSeq, setPlaybackQualityReloadSeq] = useState(0);
+	const [customLyricModalOpen, setCustomLyricModalOpen] = useState(false);
+	const [customLyricText, setCustomLyricText] = useState("");
+	const [customLyricStatus, setCustomLyricStatus] = useState<{ text: string; tone?: "good" | "fail" }>({ text: "" });
+	const [customLyricVersion, setCustomLyricVersion] = useState(0);
 
 	const currentTrack = usePlaybackStore((s) => s.currentTrack);
 	const queue = usePlaybackStore((s) => s.queue);
@@ -181,11 +193,13 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 	const playbackRequestSeqRef = useRef(0);
 	const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
 	const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
+	const customLyricInputRef = useRef<HTMLTextAreaElement | null>(null);
 
 	const positionRef = useRef(positionMs);
 	positionRef.current = positionMs;
 	const lyricsPayloadRef = useRef(lyricsPayload);
 	lyricsPayloadRef.current = lyricsPayload;
+	const originalLyricsPayloadRef = useRef(lyricsPayload);
 
 	const initSidecar = useCallback((cfg: RuntimeConfig) => {
 		const client = new SidecarClient(cfg.sidecarBaseUrl);
@@ -211,6 +225,9 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 		isPlaying,
 	});
 	const homeControlsLocked = emptyHomeActive && homeForcedOpen && !consoleVisible && emptyHomeCoreAllowed;
+	const currentLyricPreference = getCustomLyricPreferenceForTrack(currentTrack);
+	const currentCustomLyricText = getCustomLyricTextForTrack(currentTrack);
+	void customLyricVersion;
 
 	const revealConsole = useCallback(() => {
 		setHomeForcedOpen(false);
@@ -238,6 +255,103 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 
 	const showNotice = useCallback((message: string) => {
 		showToast(message);
+	}, [showToast]);
+
+	const applyOriginalLyrics = useCallback(() => {
+		const track = usePlaybackStore.getState().currentTrack;
+		if (track) setCustomLyricPreferenceForTrack(track, "original");
+		const original = originalLyricsPayloadRef.current;
+		if (original) setLyricsPayload(original);
+		setCustomLyricVersion((version) => version + 1);
+		showToast("已切换到原歌词");
+	}, [setLyricsPayload, showToast]);
+
+	const applyCustomLyrics = useCallback((track = usePlaybackStore.getState().currentTrack) => {
+		const currentPayload = useLyricsStore.getState().payload;
+		const text = getCustomLyricTextForTrack(track);
+		if (!track || !currentPayload || !text?.trim()) return false;
+		const resolved = resolveLyricsForTrack({
+			track,
+			original: currentPayload,
+			durationMs: usePlaybackStore.getState().durationMs ?? track.durationMs,
+		});
+		if (resolved.source !== "custom") return false;
+		setLyricsPayload(resolved.payload);
+		setCustomLyricVersion((version) => version + 1);
+		return true;
+	}, [setLyricsPayload]);
+
+	const openCustomLyricModal = useCallback(() => {
+		const track = usePlaybackStore.getState().currentTrack;
+		if (!track) {
+			showToast("先播放或选择一首歌");
+			return;
+		}
+		const text = getCustomLyricTextForTrack(track) ?? "";
+		setCustomLyricText(text);
+		setCustomLyricStatus({
+			text: text ? "已读取本地自定义歌词" : "提示：带 [00:12.00] 时间轴会更精准；纯文本会自动铺开",
+			tone: text ? "good" : undefined,
+		});
+		setCustomLyricModalOpen(true);
+	}, [showToast]);
+
+	const chooseCustomLyrics = useCallback(() => {
+		const track = usePlaybackStore.getState().currentTrack;
+		if (!track) {
+			showToast("先播放或选择一首歌");
+			return;
+		}
+		setCustomLyricPreferenceForTrack(track, "custom");
+		setCustomLyricVersion((version) => version + 1);
+		if (!applyCustomLyrics(track)) openCustomLyricModal();
+		else {
+			showToast("已切换到自定义歌词");
+			openCustomLyricModal();
+		}
+	}, [applyCustomLyrics, openCustomLyricModal, showToast]);
+
+	const saveCustomLyric = useCallback(() => {
+		const track = usePlaybackStore.getState().currentTrack;
+		const text = (customLyricInputRef.current?.value ?? customLyricText).trim();
+		if (!track) {
+			setCustomLyricStatus({ text: "请先播放或选择一首歌", tone: "fail" });
+			showToast("先播放或选择一首歌");
+			return;
+		}
+		if (!text) {
+			setCustomLyricStatus({ text: "请输入歌词内容", tone: "fail" });
+			return;
+		}
+		const result = saveCustomLyricForTrack(track, text);
+		if (result.lines.length === 0) {
+			setCustomLyricStatus({ text: "没有识别到可显示的歌词行", tone: "fail" });
+			return;
+		}
+		applyCustomLyrics(track);
+		setCustomLyricText(text);
+		setCustomLyricStatus({
+			text: result.saved ? `已保存 ${result.lines.length} 行，并切换为自定义歌词` : "已应用，但本地存储空间不足",
+			tone: result.saved ? "good" : "fail",
+		});
+		showToast(result.saved ? "自定义歌词已保存" : "自定义歌词已应用");
+		setCustomLyricModalOpen(false);
+	}, [applyCustomLyrics, customLyricText, showToast]);
+
+	const deleteCustomLyric = useCallback(() => {
+		const track = usePlaybackStore.getState().currentTrack;
+		if (!track) {
+			setCustomLyricStatus({ text: "请先播放或选择一首歌", tone: "fail" });
+			return;
+		}
+		if (!deleteCustomLyricForTrack(track)) {
+			setCustomLyricStatus({ text: "当前歌曲没有自定义歌词", tone: "fail" });
+			return;
+		}
+		setCustomLyricText("");
+		setCustomLyricStatus({ text: "已删除，恢复原歌词", tone: "good" });
+		setCustomLyricVersion((version) => version + 1);
+		showToast("已恢复原歌词");
 	}, [showToast]);
 
 	const enterPlaybackSurface = useCallback(() => {
@@ -669,6 +783,7 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				setLyricsLoading(true);
 				const lyric = await client.lyric(currentTrack);
 				if (playbackRequestSeqRef.current !== seq) return;
+				originalLyricsPayloadRef.current = lyric;
 				const resolvedLyric = resolveLyricsForTrack({
 					track: currentTrack,
 					original: lyric,
@@ -690,7 +805,7 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 					onDismissed={() => setSplashActive(false)}
 				/>
 			)}
-			<VisualEngineHost
+			<VisualComponent
 				audioElementRef={audioRef}
 				controllerRef={controllerRef}
 				lyricsPayload={lyricsPayload}
@@ -742,6 +857,11 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				onModeChange={setPlaybackMode}
 				onQueue={toggleMiniQueue}
 				onLyrics={() => showNotice(lyricsPayload ? "歌词已载入舞台层" : "播放歌曲后会自动加载歌词")}
+				onLyricSourceChange={(mode) => {
+					if (mode === "custom") chooseCustomLyrics();
+					else applyOriginalLyrics();
+				}}
+				onOpenCustomLyrics={openCustomLyricModal}
 				onClose={() => {
 					setConsole(false);
 					setMiniQueue(false);
@@ -767,8 +887,40 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				volume={volume}
 				muted={muted}
 				playbackQuality={playbackQuality}
+				lyricSourceMode={currentLyricPreference === "custom" ? "custom" : "original"}
+				hasCustomLyric={!!currentCustomLyricText}
 			/>
 			{sidecarRecoveryState ? <SidecarRecoveryNotice state={sidecarRecoveryState} /> : null}
+			{customLyricModalOpen ? (
+				<div id="custom-lyric-modal" className="modal-mask show" role="presentation" onClick={(event) => {
+					if (event.target === event.currentTarget) setCustomLyricModalOpen(false);
+				}}>
+					<div className="modal custom-lyric-modal" role="dialog" aria-modal="true" aria-labelledby="custom-lyric-heading">
+						<h2 id="custom-lyric-heading">自定义歌词</h2>
+						<div className="custom-lyric-track">
+							<div id="custom-lyric-title" className="custom-lyric-title">{currentTrack?.title ?? "当前歌曲"}</div>
+							<div id="custom-lyric-sub" className="custom-lyric-sub">
+								{(currentTrack?.artists.join(" / ") || "") + (currentCustomLyricText ? " · 已保存自定义歌词" : " · 可粘贴 LRC 或逐行输入")}
+							</div>
+						</div>
+						<textarea
+							ref={customLyricInputRef}
+							id="custom-lyric-input"
+							className="custom-lyric-input"
+							spellCheck={false}
+							defaultValue={customLyricText}
+							placeholder={"[00:12.00] 第一行歌词\n[00:16.50] 第二行歌词\n\n没有时间轴也可以，每一行会按歌曲时长自动铺开"}
+							onChange={(event) => setCustomLyricText(event.currentTarget.value)}
+						/>
+						<div id="custom-lyric-status" className={`custom-lyric-status ${customLyricStatus.tone ?? ""}`.trim()}>{customLyricStatus.text}</div>
+						<div className="btn-row">
+							<button className="modal-btn" type="button" onClick={deleteCustomLyric}>删除</button>
+							<button className="modal-btn" type="button" onClick={() => setCustomLyricModalOpen(false)}>关闭</button>
+							<button id="custom-lyric-save" className="modal-btn primary" type="button" onClick={saveCustomLyric}>保存使用</button>
+						</div>
+					</div>
+				</div>
+			) : null}
 			{loginModalOpen ? (
 				<div id="login-modal" className="modal-mask show" role="presentation" onClick={(event) => {
 					if (event.target === event.currentTarget) closeLoginModal();

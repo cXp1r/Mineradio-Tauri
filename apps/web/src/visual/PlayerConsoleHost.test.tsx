@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
+import { createRoot } from "react-dom/client";
 import React from "react";
 import { PlayerConsoleHost } from "./PlayerConsoleHost";
 
@@ -46,4 +47,30 @@ test("PlayerConsoleHost renders baseline playback quality options and active sho
 	expect(html).toContain('data-quality="lossless"');
 	expect(html).toContain('data-quality="exhigh"');
 	expect(html).toContain('data-quality="standard"');
+});
+
+test("PlayerConsoleHost renders baseline lyric source segment and opens custom lyric editor", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	let opened = 0;
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	root.render(
+		React.createElement(PlayerConsoleHost, {
+			lyricSourceMode: "original",
+			hasCustomLyric: true,
+			onLyricSourceChange: (mode) => {
+				if (mode === "custom") opened += 1;
+			},
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(container.querySelector("#lyric-source-seg")).not.toBeNull();
+	expect(container.querySelector("#lyric-source-original")?.className).toContain("active");
+	expect(container.querySelector("#lyric-source-custom")?.className).toContain("has-custom");
+	(container.querySelector("#lyric-source-custom") as HTMLButtonElement).click();
+	expect(opened).toBe(1);
+	root.unmount();
+	container.remove();
 });

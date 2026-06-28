@@ -6,6 +6,9 @@ import { flushSync } from "react-dom";
 import { App, deriveSidecarRecoveryNoticeState, isHomeBlankDismissElement, shouldShowEmptyHome } from "./App";
 import type { SplashHostProps } from "../visual/SplashHost";
 import type { SidecarStatus } from "../tauri/runtime";
+import { useLyricsStore } from "../stores/lyrics-store";
+import { usePlaybackStore } from "../stores/playback-store";
+import { CUSTOM_LYRIC_PREF_STORE_KEY, CUSTOM_LYRIC_STORE_KEY } from "../lyrics/custom-lyrics";
 
 test("App keeps the empty-home music page mounted behind the splash gate", () => {
 	const html = renderToStaticMarkup(React.createElement(App));
@@ -107,4 +110,69 @@ test("deriveSidecarRecoveryNoticeState only marks ready as recovered after an un
 
 	const restartedWhileReady = deriveSidecarRecoveryNoticeState(sidecarStatus({ phase: "ready", restarts: 2 }), firstReady);
 	expect(restartedWhileReady.recovered).toBe(true);
+});
+
+test("App custom lyric modal saves text and applies custom lyrics to current track", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	usePlaybackStore.getState().setCurrentTrack({
+		provider: "netease",
+		id: "42",
+		sourceId: "42",
+		title: "Song",
+		artists: ["Artist"],
+		album: "",
+		coverUrl: "",
+		durationMs: 10000,
+		qualityHints: [],
+		playableState: "unknown",
+	});
+	usePlaybackStore.getState().setPlaying(false);
+	useLyricsStore.getState().setPayload({
+		provider: "netease",
+		trackId: "42",
+		lines: [{ timeMs: 0, text: "Song - Artist", source: "fallback" }],
+		hasTranslation: false,
+		isWordByWord: false,
+	});
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	let dismissSplash: (() => void) | null = null;
+	function MockSplash(props: SplashHostProps) {
+		dismissSplash = () => props.onDismissed?.();
+		return null;
+	}
+	function MockVisual() {
+		return <div id="visual-host" />;
+	}
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={MockSplash} VisualComponent={MockVisual} />));
+	flushSync(() => dismissSplash?.());
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const customSourceButton = host.querySelector("#lyric-source-custom") as HTMLButtonElement;
+	expect(customSourceButton).not.toBeNull();
+	customSourceButton.click();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(host.querySelector("#custom-lyric-modal.show")).not.toBeNull();
+	const input = host.querySelector("#custom-lyric-input") as HTMLTextAreaElement;
+	Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")?.set?.call(input, "自定义第一句\n自定义第二句");
+	input.dispatchEvent(new window.Event("input", { bubbles: true }));
+	input.dispatchEvent(new window.Event("change", { bubbles: true }));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	(host.querySelector("#custom-lyric-save") as HTMLButtonElement).click();
+
+	const saved = JSON.parse(localStorage.getItem(CUSTOM_LYRIC_STORE_KEY) || "{}");
+	expect(saved["id:42"].text).toBe("自定义第一句\n自定义第二句");
+	expect(JSON.parse(localStorage.getItem(CUSTOM_LYRIC_PREF_STORE_KEY) || "{}")["id:42"]).toBe("custom");
+	expect(useLyricsStore.getState().payload?.lines[0]?.text).toBe("自定义第一句");
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
 });
