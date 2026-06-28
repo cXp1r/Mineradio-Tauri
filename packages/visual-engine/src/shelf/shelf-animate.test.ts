@@ -458,6 +458,23 @@ test("ShelfManager.openDetail does not restart existing shelf card reveal timing
 	expect(m.getState().shelfOpenAnimAt).toBe(12.5);
 });
 
+test("ShelfManager.openDetail pins side shelf for baseline detail lifecycle without restarting reveal timing", () => {
+	const m = createShelfManager({ now: () => 42000 });
+	m.setMode("side");
+	m.setShelfPresence("auto");
+	m.getState().shelfOpenAnimAt = 12.5;
+
+	m.openDetail(0, { playlistId: "p1", title: "Detail" });
+
+	expect(m.getShelfPinnedOpen()).toBe(true);
+	expect(m.getSnapshot().pinnedOpen).toBe(true);
+	expect(m.getState().shelfOpenAnimAt).toBe(12.5);
+	expect(m.hasOpenContent()).toBe(true);
+	m.closeDetail();
+	expect(m.hasOpenContent()).toBe(false);
+	expect(m.getShelfPinnedOpen()).toBe(true);
+});
+
 test("ShelfManager exposes a content-list skeleton for open detail state", () => {
 	const m = createShelfManager({ now: () => 42000 });
 	expect(m.hasOpenContent()).toBe(false);

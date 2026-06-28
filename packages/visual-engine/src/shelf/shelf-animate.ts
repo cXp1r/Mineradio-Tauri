@@ -312,6 +312,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		},
 		openDetail(idx, detailOpts) {
 			state.openCardIdx = idx;
+			state.pinnedOpen = true;
 			const item = data[idx];
 			openDetailCardKey = shelfItemIdentityKey(item);
 			const playlistId = detailOpts?.playlistId ?? item?.playlistId ?? podcastPlaylistId(item?.podcastKey) ?? "";
