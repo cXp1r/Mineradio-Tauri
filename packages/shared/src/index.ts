@@ -7,3 +7,4 @@ export * from "./lyric";
 export * from "./health";
 export * from "./persistence";
 export * from "./capabilities";
+export * from "./desktop";

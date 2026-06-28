@@ -1,0 +1,50 @@
+.desktop-lyrics-root {
+	margin: 0;
+	min-height: 100vh;
+	background: transparent;
+	overflow: hidden;
+}
+
+.desktop-lyrics-overlay {
+	position: fixed;
+	display: inline-flex;
+	align-items: center;
+	max-width: min(82vw, 980px);
+	min-width: 220px;
+	min-height: 52px;
+	padding: 10px 22px;
+	border-radius: 999px;
+	color: var(--desktop-lyrics-primary);
+	background:
+		linear-gradient(
+			90deg,
+			color-mix(in srgb, var(--desktop-lyrics-secondary) 32%, transparent) 0 var(--desktop-lyrics-progress),
+			transparent var(--desktop-lyrics-progress)
+		),
+		var(--desktop-lyrics-background);
+	box-shadow: 0 0 22px var(--desktop-lyrics-glow), inset 0 0 0 1px rgb(255 255 255 / 0.2);
+	opacity: var(--desktop-lyrics-opacity);
+	font-family: var(--desktop-lyrics-font-family);
+	font-size: clamp(var(--desktop-lyrics-min-font), 4.8vw, var(--desktop-lyrics-max-font));
+	font-weight: var(--desktop-lyrics-font-weight);
+	line-height: 1.18;
+	text-shadow: 0 0 10px var(--desktop-lyrics-glow), 0 1px 2px rgb(0 0 0 / 0.42);
+	user-select: none;
+	touch-action: none;
+}
+
+.desktop-lyrics-text {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: var(--desktop-lyrics-lines);
+}
+
+.desktop-lyrics-locked {
+	pointer-events: auto;
+}
+
+.desktop-lyrics-unlocked {
+	cursor: move;
+	pointer-events: auto;
+}

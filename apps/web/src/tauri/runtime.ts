@@ -5,6 +5,8 @@ export interface RuntimeConfig {
 	schemaVersion: string;
 }
 
+export type Unlisten = () => void;
+
 interface RawRuntimeConfig {
 	sidecar_base_url: string;
 	app_data_dir: string;
@@ -15,6 +17,30 @@ interface RawRuntimeConfig {
 export function isTauriRuntime(): boolean {
 	if (typeof window === "undefined") return false;
 	return (window as unknown as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ !== undefined;
+}
+
+export async function invokeTauriCommand<T = unknown>(cmd: string, args?: Record<string, unknown>): Promise<T | null> {
+	if (!isTauriRuntime()) {
+		return null;
+	}
+	const mod = await import("@tauri-apps/api/core");
+	const invoke = mod.invoke as (cmd: string, args?: Record<string, unknown>) => Promise<T>;
+	return invoke(cmd, args);
+}
+
+export async function listenTauriEvent<T = unknown>(
+	eventName: string,
+	handler: (payload: T) => void
+): Promise<Unlisten> {
+	if (!isTauriRuntime()) {
+		return () => {};
+	}
+	const mod = await import("@tauri-apps/api/event");
+	const listen = mod.listen as (
+		eventName: string,
+		handler: (event: { payload: T }) => void
+	) => Promise<Unlisten>;
+	return listen(eventName, (event) => handler(event.payload));
 }
 
 function placeholderRuntimeConfig(): RuntimeConfig {
@@ -31,9 +57,10 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
 		return placeholderRuntimeConfig();
 	}
 	try {
-		const mod = await import("@tauri-apps/api/core");
-		const invoke = mod.invoke as (cmd: string, args?: Record<string, unknown>) => Promise<RawRuntimeConfig>;
-		const raw = await invoke("get_runtime_config");
+		const raw = await invokeTauriCommand<RawRuntimeConfig>("get_runtime_config");
+		if (!raw) {
+			return placeholderRuntimeConfig();
+		}
 		return {
 			sidecarBaseUrl: raw.sidecar_base_url,
 			appDataDir: raw.app_data_dir,

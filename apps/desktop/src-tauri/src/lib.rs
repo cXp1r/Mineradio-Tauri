@@ -3,6 +3,8 @@ mod paths;
 mod sidecar;
 mod updater;
 
+use std::sync::Mutex;
+
 #[derive(serde::Serialize, Clone)]
 pub struct RuntimeConfig {
     pub sidecar_base_url: String,
@@ -11,8 +13,15 @@ pub struct RuntimeConfig {
     pub schema_version: String,
 }
 
+#[derive(Default)]
+pub struct DesktopLyricsRuntimeState {
+    pub latest_payload: Option<serde_json::Value>,
+    pub click_through: bool,
+}
+
 pub struct AppState {
     pub config: RuntimeConfig,
+    pub desktop_lyrics: Mutex<DesktopLyricsRuntimeState>,
 }
 
 impl AppState {
@@ -29,6 +38,10 @@ impl AppState {
                 app_version,
                 schema_version,
             },
+            desktop_lyrics: Mutex::new(DesktopLyricsRuntimeState {
+                latest_payload: None,
+                click_through: true,
+            }),
         }
     }
 }
@@ -63,7 +76,13 @@ pub fn run() {
             commands::window_close,
             commands::open_external,
             commands::export_json_file,
-            commands::import_json_file
+            commands::import_json_file,
+            commands::desktop_lyrics_show_window,
+            commands::desktop_lyrics_close_window,
+            commands::desktop_lyrics_set_click_through,
+            commands::desktop_lyrics_move_by,
+            commands::desktop_lyrics_update_payload,
+            commands::desktop_lyrics_overlay_ready
         ])
         .setup(move |_app| {
             let cmd = sidecar::build_sidecar_command(
@@ -109,5 +128,8 @@ mod tests {
         assert_eq!(s.config.app_data_dir, "/data");
         assert_eq!(s.config.app_version, "0.1.0");
         assert_eq!(s.config.schema_version, "0.1.0");
+        let lyrics = s.desktop_lyrics.lock().expect("desktop lyrics state");
+        assert!(lyrics.latest_payload.is_none());
+        assert!(lyrics.click_through);
     }
 }
