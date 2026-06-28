@@ -40,6 +40,9 @@ function makeFakeThree(): ThreeFactory {
 	const Vector2 = function (x: number, y: number) {
 		return { x, y, set(this: { x: number; y: number }, nx: number, ny: number) { this.x = nx; this.y = ny; } };
 	} as never;
+	const DataTexture = function (data: Float32Array, width: number, height: number) {
+		return { image: { data, width, height }, magFilter: 0, minFilter: 0, disposed: false, dispose() { this.disposed = true; } };
+	} as never;
 	const module = {
 		Points,
 		ShaderMaterial,
@@ -47,6 +50,7 @@ function makeFakeThree(): ThreeFactory {
 		BufferGeometry,
 		Texture,
 		CanvasTexture,
+		DataTexture,
 		Color,
 		Vector2,
 		NormalBlending: 1,
@@ -133,6 +137,22 @@ test("material setup matches baseline: main transparent/depthWrite=false/NormalB
 		expect(Object.prototype.hasOwnProperty.call(uniforms, name)).toBe(true);
 	}
 	expect(Object.keys(uniforms).length).toBe(baselineUniformNames.length);
+});
+
+test("ripple uniform is the baseline 1x12 RGBA Float DataTexture with nearest filtering", async () => {
+	const scene = makeFakeScene();
+	const field = await createHomeParticleField(scene as never, { threeFactory: makeFakeThree() });
+	const ripple = field.materialUniforms.uRippleTex.value as {
+		image: { data: Float32Array; width: number; height: number };
+		magFilter: number;
+		minFilter: number;
+	};
+	expect(ripple.image.data).toBeInstanceOf(Float32Array);
+	expect(ripple.image.data.length).toBe(12 * 4);
+	expect(ripple.image.width).toBe(1);
+	expect(ripple.image.height).toBe(12);
+	expect(ripple.magFilter).toBe(1003);
+	expect(ripple.minFilter).toBe(1003);
 });
 
 test("bloomMaterial vertexShader is the main vs with uBloomSize uniform decl + gl_PointSize multiplied by uBloomSize", async () => {

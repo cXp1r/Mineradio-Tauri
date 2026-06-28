@@ -17,6 +17,7 @@ import {
 	type HomeCoverLoader,
 	type HomeCoverTextureController,
 } from "./cover-texture";
+import { createHomeRipples, type HomeRipples } from "./ripples";
 
 export interface HomeVisualOptions {
 	scene: THREE.Scene;
@@ -37,6 +38,7 @@ export interface HomeVisual {
 	getField(): HomeParticleField;
 	setCoverUrl(url: string | null | undefined): void;
 	getCoverController(): HomeCoverTextureController;
+	getRipples(): HomeRipples;
 }
 
 export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVisual> {
@@ -53,6 +55,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		createCanvas: opts.createCoverCanvas,
 		buildEdgeDepth: opts.buildCoverEdgeDepth,
 	});
+	const ripples = createHomeRipples(field.materialUniforms as never);
 	field.applyFxState(fx);
 	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && fx.preset !== SKULL_PRESET_INDEX;
 	field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
@@ -68,6 +71,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 
 		const tU = field.materialUniforms.uTime as { value: unknown } | undefined;
 		if (tU && typeof ctx.uniforms.uTime.value === "number") tU.value = ctx.uniforms.uTime.value;
+		ripples.update(ctx.dt);
 		const alphaUniform = field.materialUniforms.uAlpha as { value: unknown } | undefined;
 		if (alphaUniform && typeof alphaUniform.value === "number") {
 			const target = 0.96;
@@ -105,6 +109,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		},
 		getCoverController() {
 			return coverController;
+		},
+		getRipples() {
+			return ripples;
 		},
 	};
 }

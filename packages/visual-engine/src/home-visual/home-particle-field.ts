@@ -9,6 +9,7 @@ import {
 	HOME_VISUAL_BLOOM_FRAGMENT_SHADER,
 	buildHomeVisualBloomVertexShader,
 } from "./home-visual-shaders";
+import { RIPPLE_MAX } from "./ripples";
 
 export interface HomeParticleFieldOptions {
 	threeFactory?: ThreeFactory;
@@ -132,7 +133,7 @@ function makeUniformsRecord(THREE: ThreeModule, coverRes: number): Record<string
 	const coverTex = makePlaceholderTexture(THREE, "#1c1c28");
 	const prevCoverTex = makePlaceholderTexture(THREE, "#1c1c28");
 	const edgeTex = makePlaceholderTexture(THREE, "rgba(128,0,0,255)");
-	const rippleTex = makePlaceholderTexture(THREE, "rgba(0,0,0,0)");
+	const rippleTex = makeRippleTexture(THREE);
 	return {
 		uTime: { value: 0 },
 		uBass: { value: 0 },
@@ -178,6 +179,30 @@ function makeUniformsRecord(THREE: ThreeModule, coverRes: number): Record<string
 		uFloatAlpha: { value: 0 },
 		uLoading: { value: 0 },
 	};
+}
+
+function makeRippleTexture(THREE: ThreeModule): THREE.Texture {
+	const data = new Float32Array(RIPPLE_MAX * 4);
+	let tex: THREE.Texture;
+	if (typeof THREE.DataTexture === "function") {
+		tex = new THREE.DataTexture(data, 1, RIPPLE_MAX, THREE.RGBAFormat, THREE.FloatType);
+	} else {
+		tex = new THREE.Texture();
+		(tex as unknown as { image: { data: Float32Array; width: number; height: number } }).image = {
+			data,
+			width: 1,
+			height: RIPPLE_MAX,
+		};
+	}
+	(tex as unknown as { image?: { data?: Float32Array; width?: number; height?: number } }).image = {
+		...((tex as unknown as { image?: object }).image ?? {}),
+		data,
+		width: 1,
+		height: RIPPLE_MAX,
+	};
+	tex.magFilter = THREE.NearestFilter;
+	tex.minFilter = THREE.NearestFilter;
+	return tex;
 }
 
 function disposeTexture(tex: THREE.Texture | undefined): void {

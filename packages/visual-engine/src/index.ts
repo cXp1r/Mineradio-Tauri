@@ -162,6 +162,16 @@ export type {
 	CoverDepthUniforms,
 } from "./home-visual/cover-depth";
 export {
+	createHomeRipples,
+	RIPPLE_MAX,
+	RIPPLE_PLANE_SIZE,
+} from "./home-visual/ripples";
+export type {
+	HomeRippleUniforms,
+	HomeRipples,
+	HomeRipplesOptions,
+} from "./home-visual/ripples";
+export {
 	HOME_VISUAL_VERTEX_SHADER,
 	HOME_VISUAL_FRAGMENT_SHADER,
 	HOME_VISUAL_BLOOM_FRAGMENT_SHADER,

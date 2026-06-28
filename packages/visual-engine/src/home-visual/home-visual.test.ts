@@ -198,6 +198,20 @@ test("HomeVisual.update advances cover depth uniforms after edge texture generat
 	expect(hv.getField().materialUniforms.uAiBoost.value as number).toBeGreaterThan(0);
 });
 
+test("HomeVisual.update drives baseline ripple texture from bass rising edges", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
+	const uniforms = hv.getField().materialUniforms;
+	const data = (uniforms.uRippleTex.value as { image: { data: Float32Array } }).image.data;
+	const ctx = makeFrameCtx({ bass: 0.4 }, { uTime: { value: 0.4 } });
+	hv.update(ctx as unknown as FrameContext);
+	expect(uniforms.uRippleCount.value as number).toBeGreaterThanOrEqual(2);
+	expect(uniforms.uRippleCount.value as number).toBeLessThanOrEqual(3);
+	expect((uniforms.uRippleTex.value as { needsUpdate: boolean }).needsUpdate).toBe(true);
+	expect(data[2]).toBeCloseTo(1 / 60, 5);
+	expect(data[3]).toBeGreaterThan(1);
+});
+
 test("preset 6 (skull) suppresses points visibility; non-skull leaves points visible", async () => {
 	const scene = makeFakeScene();
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
