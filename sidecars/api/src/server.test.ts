@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import { routeHandler, createRouteHandler } from "./server";
 import type { Track } from "@mineradio/shared";
+import { providers } from "./providers/registry";
+import { ProviderError, type ProviderAdapter } from "./providers/provider-adapter";
 
 async function call(path: string, init?: RequestInit): Promise<Response> {
   const req = new Request(`http://127.0.0.1${path}`, init);
@@ -111,6 +113,170 @@ test("GET /providers/qq/login-status returns 200 logged-out when no cookie (no n
   expect(b.ok).toBe(true);
   expect(b.data.provider).toBe("qq");
   expect(b.data.loggedIn).toBe(false);
+});
+
+test("POST /providers/qq/session-cookie stores runtime cookie without echoing secrets", async () => {
+  const secret = "uin=123; qqmusic_key=runtime-secret";
+  const r = await call("/providers/qq/session-cookie", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cookie: secret })
+  });
+
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b).toEqual({ ok: true, data: { provider: "qq", stored: true } });
+  const serialized = JSON.stringify(b);
+  expect(serialized).not.toContain(secret);
+  expect(serialized).not.toContain("qqmusic_key");
+
+  const status = await body(await call("/providers/qq/login-status"));
+  expect(status.data.loggedIn).toBe(true);
+
+  const cleared = await body(await call("/providers/qq/session-cookie", { method: "DELETE" }));
+  expect(cleared).toEqual({ ok: true, data: { provider: "qq", stored: false } });
+});
+
+test("POST /providers/qq/logout clears runtime cookie before best-effort provider logout", async () => {
+  const secret = "uin=123; qqmusic_key=runtime-secret";
+  try {
+    await call("/providers/qq/session-cookie", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookie: secret })
+    });
+
+    const before = await body(await call("/providers/qq/login-status"));
+    expect(before.data.loggedIn).toBe(true);
+
+    const logout = await call("/providers/qq/logout", { method: "POST" });
+    expect(logout.status).toBe(200);
+    const logoutBody = await body(logout);
+    expect(logoutBody).toEqual({ ok: true, data: { provider: "qq", loggedOut: true } });
+    expect(JSON.stringify(logoutBody)).not.toContain(secret);
+
+    const after = await body(await call("/providers/qq/login-status"));
+    expect(after.data.provider).toBe("qq");
+    expect(after.data.loggedIn).toBe(false);
+
+    const secondLogout = await call("/providers/qq/logout", { method: "POST" });
+    expect(secondLogout.status).toBe(501);
+    const secondBody = await body(secondLogout);
+    expect(secondBody.error.action).toBe("no-session");
+    expect(JSON.stringify(secondBody)).not.toContain(secret);
+  } finally {
+    await call("/providers/qq/session-cookie", { method: "DELETE" });
+  }
+});
+
+test("POST /providers/qq/logout clears runtime cookie even when provider logout fails", async () => {
+  const secret = "uin=123; qqmusic_key=runtime-secret";
+  try {
+    await call("/providers/qq/session-cookie", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookie: secret })
+    });
+    const fakeQq: ProviderAdapter = {
+      ...providers.qq,
+      async loginStatus() {
+        return { provider: "qq", loggedIn: false };
+      },
+      async logout() {
+        throw new ProviderError("qq", "UPSTREAM_LOGOUT_FAILED", "fake logout failed");
+      }
+    };
+    const handler = createRouteHandler({
+      providerAdapters: { ...providers, qq: fakeQq }
+    });
+
+    const logout = await handler(new Request("http://127.0.0.1/providers/qq/logout", { method: "POST" }));
+    expect(logout.status).toBe(500);
+    const logoutBody = await body(logout);
+    expect(JSON.stringify(logoutBody)).not.toContain(secret);
+
+    const after = await body(await call("/providers/qq/login-status"));
+    expect(after.data.loggedIn).toBe(false);
+  } finally {
+    await call("/providers/qq/session-cookie", { method: "DELETE" });
+  }
+});
+
+test("provider route redacts sensitive raw error messages at response boundary", async () => {
+  const sensitiveMessage = ["MUSIC_U", "=", "secret"].join("");
+  const fakeNetease: ProviderAdapter = {
+    ...providers.netease,
+    async search() {
+      throw new Error(sensitiveMessage);
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, netease: fakeNetease }
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/providers/netease/search?keyword=x"));
+  expect(r.status).toBe(500);
+  const b = await body(r);
+  expect(b.ok).toBe(false);
+  expect(b.error.code).toBe("INTERNAL");
+  expect(b.error.provider).toBe("netease");
+  expect(b.error.retryable).toBe(true);
+  expect(b.error.message).toBe("provider error redacted");
+  const serialized = JSON.stringify(b);
+  expect(serialized).not.toContain("MUSIC_U");
+  expect(serialized).not.toContain("secret");
+});
+
+test("provider route redacts sensitive ProviderError messages while preserving envelope fields", async () => {
+  const sensitiveMessage = ["qqmusic_key", "=", "secret"].join("");
+  const fakeQq: ProviderAdapter = {
+    ...providers.qq,
+    async songUrl() {
+      throw new ProviderError("qq", "LOGIN_REQUIRED", sensitiveMessage, {
+        retryable: true,
+        action: "login"
+      });
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, qq: fakeQq }
+  });
+
+  const r = await handler(
+    new Request("http://127.0.0.1/providers/qq/song-url", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ provider: "qq", id: "1", sourceId: "1", title: "t", artists: [] })
+    })
+  );
+  expect(r.status).toBe(500);
+  const b = await body(r);
+  expect(b.ok).toBe(false);
+  expect(b.error.code).toBe("LOGIN_REQUIRED");
+  expect(b.error.provider).toBe("qq");
+  expect(b.error.retryable).toBe(true);
+  expect(b.error.action).toBe("login");
+  expect(b.error.message).toBe("provider error redacted");
+  const serialized = JSON.stringify(b);
+  expect(serialized).not.toContain("qqmusic_key");
+  expect(serialized).not.toContain("secret");
+});
+
+test("POST /providers/netease/session-cookie/clear clears runtime cookie without exposing it", async () => {
+  const secret = "MUSIC_U=runtime-secret";
+  const stored = await call("/providers/netease/session-cookie", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ cookie: secret })
+  });
+  expect(stored.status).toBe(200);
+
+  const r = await call("/providers/netease/session-cookie/clear", { method: "POST" });
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b).toEqual({ ok: true, data: { provider: "netease", stored: false } });
+  expect(JSON.stringify(b)).not.toContain(secret);
+  expect(JSON.stringify(await body(await call("/diagnostics")))).not.toContain(secret);
 });
 
 test("POST /providers/netease/song-url without body returns 400 BAD_REQUEST", async () => {
@@ -229,7 +395,17 @@ test("GET /providers/netease/playlists returns 501 NOT_IMPLEMENTED", async () =>
 });
 
 test("GET /providers/netease/playlists/123 calls adapter (not 501 NOT_IMPLEMENTED)", async () => {
-  const r = await call("/providers/netease/playlists/123");
+  const fakeNetease: ProviderAdapter = {
+    ...providers.netease,
+    async playlistDetail(id) {
+      expect(id).toBe("123");
+      throw new ProviderError("netease", "UNAVAILABLE", "fake playlist unavailable");
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, netease: fakeNetease }
+  });
+  const r = await handler(new Request("http://127.0.0.1/providers/netease/playlists/123"));
   expect(r.status).not.toBe(501);
 });
 

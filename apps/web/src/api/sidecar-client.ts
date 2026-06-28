@@ -8,6 +8,8 @@ import {
 	LyricPayloadSchema,
 	PlaylistDetailSchema,
 	ProviderId,
+	ProviderSessionCookieAck,
+	ProviderSessionCookieAckSchema,
 	SongUrlResultSchema,
 	TrackArraySchema,
 	Track,
@@ -112,7 +114,7 @@ export class SidecarClient {
 	}
 
 	private async request<T>(
-		method: "GET" | "POST",
+		method: "GET" | "POST" | "DELETE",
 		path: string,
 		schema: ZodTypeLike,
 		body?: unknown,
@@ -185,6 +187,26 @@ export class SidecarClient {
 			"GET",
 			`/providers/${provider}/playlists/${encodeURIComponent(id)}`,
 			PlaylistDetailSchema,
+		);
+	}
+
+	async setProviderSessionCookie(
+		provider: ProviderId,
+		cookie: string,
+	): Promise<ProviderSessionCookieAck> {
+		return this.request(
+			"POST",
+			`/providers/${provider}/session-cookie`,
+			ProviderSessionCookieAckSchema,
+			{ cookie },
+		);
+	}
+
+	async clearProviderSessionCookie(provider: ProviderId): Promise<ProviderSessionCookieAck> {
+		return this.request(
+			"DELETE",
+			`/providers/${provider}/session-cookie`,
+			ProviderSessionCookieAckSchema,
 		);
 	}
 }

@@ -1,14 +1,15 @@
 // qq-client: thin wrapper around jsososo/qq-music-api (npm `qq-music-api`, GPL-3.0).
 // Lazy dynamic import for CJS interop under Bun. Cookie is applied per-call
 // via setCookie on the singleton instance; never logged outside getConfig().
+import { getProviderCookie } from "../../services/auth-session";
 
 export interface QqConfig {
   cookie?: string;
 }
 
 export function getConfig(): QqConfig {
-  const cookie = process.env.MINERADIO_QQ_COOKIE;
-  if (typeof cookie === "string" && cookie.trim().length > 0) return { cookie };
+  const cookie = getProviderCookie("qq");
+  if (cookie) return { cookie };
   return {};
 }
 
@@ -32,6 +33,10 @@ function getQq(): QqApiModule {
   return cachedModule;
 }
 
+export function __setQqApiModuleForTest(module: QqApiModule | null): void {
+  cachedModule = module;
+}
+
 export interface QqCall {
   (
     query: Record<string, unknown>,
@@ -44,6 +49,8 @@ function wrap(path: string): QqCall {
     const qq = getQq();
     if (config && typeof config.cookie === "string" && config.cookie.length > 0) {
       qq.setCookie(config.cookie);
+    } else {
+      qq.setCookie("");
     }
     const data = await qq.api(path, query);
     return { body: data };

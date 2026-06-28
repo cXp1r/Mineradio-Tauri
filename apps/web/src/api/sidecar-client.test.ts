@@ -213,6 +213,47 @@ test("playlistDetail GETs the playlist by id", async () => {
 	});
 });
 
+test("setProviderSessionCookie POSTs cookie and accepts ack without retaining cookie", async () => {
+	let receivedBody: unknown = null;
+	const secret = "MUSIC_U=web-secret";
+	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === "string" ? input : input.toString();
+		expect(url).toContain("/providers/netease/session-cookie");
+		expect(init?.method).toBe("POST");
+		receivedBody = JSON.parse(String(init?.body ?? "{}"));
+		return jsonResponse({
+			ok: true,
+			data: { provider: "netease", stored: true },
+		});
+	}) as typeof fetch;
+
+	await withFetch(fake, async () => {
+		const client = new SidecarClient(BASE);
+		const ack = await client.setProviderSessionCookie("netease", secret);
+		expect(ack).toEqual({ provider: "netease", stored: true });
+		expect(receivedBody).toEqual({ cookie: secret });
+		expect(JSON.stringify(ack)).not.toContain(secret);
+	});
+});
+
+test("clearProviderSessionCookie DELETEs cookie and accepts clear ack", async () => {
+	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === "string" ? input : input.toString();
+		expect(url).toContain("/providers/qq/session-cookie");
+		expect(init?.method).toBe("DELETE");
+		return jsonResponse({
+			ok: true,
+			data: { provider: "qq", stored: false },
+		});
+	}) as typeof fetch;
+
+	await withFetch(fake, async () => {
+		const client = new SidecarClient(BASE);
+		const ack = await client.clearProviderSessionCookie("qq");
+		expect(ack).toEqual({ provider: "qq", stored: false });
+	});
+});
+
 test("songUrl 500 throws SidecarClientError", async () => {
 	const fake = (async () => new Response("", { status: 500 })) as typeof fetch;
 	await withFetch(fake, async () => {

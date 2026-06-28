@@ -6,6 +6,7 @@
 
 use crate::{AppState, DesktopLyricsPollerChild, DesktopLyricsRuntimeState};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -17,6 +18,21 @@ const DESKTOP_LYRICS_MAX_MOVE_DELTA: f64 = 4096.0;
 const DESKTOP_LYRICS_DEFAULT_WIDTH: i32 = 760;
 const DESKTOP_LYRICS_DEFAULT_HEIGHT: i32 = 120;
 const DESKTOP_LYRICS_MIDDLE_CLICK_DEBOUNCE_MS: u64 = 260;
+#[allow(dead_code)]
+const NETEASE_LOGIN_COOKIE_PRIORITY: &[&str] = &["MUSIC_U", "__csrf", "NMTID"];
+#[allow(dead_code)]
+const QQ_LOGIN_COOKIE_PRIORITY: &[&str] = &[
+    "uin",
+    "qqmusic_uin",
+    "wxuin",
+    "p_uin",
+    "qm_keyst",
+    "qqmusic_key",
+    "music_key",
+    "wxskey",
+    "p_skey",
+    "skey",
+];
 
 pub mod labels {
     pub const MAIN: &str = "main";
@@ -38,6 +54,238 @@ fn main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
 
 pub fn desktop_lyrics_window_url() -> &'static str {
     "index.html?view=desktop-lyrics"
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoginProvider {
+    Netease,
+    Qq,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LoginWindowConfig {
+    pub provider: LoginProvider,
+    pub label: &'static str,
+    pub url: &'static str,
+    pub title: &'static str,
+    pub width: f64,
+    pub height: f64,
+    pub min_width: f64,
+    pub min_height: f64,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoginCookie {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+}
+
+impl LoginCookie {
+    #[allow(dead_code)]
+    pub fn new(name: impl Into<String>, value: impl Into<String>, domain: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            value: value.into(),
+            domain: domain.into(),
+        }
+    }
+}
+
+pub fn login_window_config(provider: LoginProvider) -> LoginWindowConfig {
+    match provider {
+        LoginProvider::Netease => LoginWindowConfig {
+            provider,
+            label: labels::LOGIN_NETEASE,
+            url: "https://music.163.com/#/login",
+            title: "网易云音乐登录",
+            width: 940.0,
+            height: 760.0,
+            min_width: 780.0,
+            min_height: 580.0,
+        },
+        LoginProvider::Qq => LoginWindowConfig {
+            provider,
+            label: labels::LOGIN_QQ,
+            url: "https://y.qq.com/n/ryqq/profile",
+            title: "QQ 音乐登录",
+            width: 900.0,
+            height: 720.0,
+            min_width: 760.0,
+            min_height: 560.0,
+        },
+    }
+}
+
+#[allow(dead_code)]
+fn parse_cookie_header(cookie_text: &str) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for part in cookie_text.split(';') {
+        let raw = part.trim();
+        let Some((name, value)) = raw.split_once('=') else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        out.insert(name.to_string(), value.trim().to_string());
+    }
+    out
+}
+
+#[allow(dead_code)]
+pub fn netease_cookie_has_login(cookie_text: &str) -> bool {
+    parse_cookie_header(cookie_text).contains_key("MUSIC_U")
+}
+
+#[allow(dead_code)]
+pub fn qq_cookie_has_login(cookie_text: &str) -> bool {
+    let obj = parse_cookie_header(cookie_text);
+    let raw_uin = if obj.get("login_type").and_then(|v| v.parse::<u8>().ok()) == Some(2) {
+        obj.get("wxuin").or_else(|| obj.get("uin")).or_else(|| obj.get("p_uin"))
+    } else {
+        obj.get("uin")
+            .or_else(|| obj.get("qqmusic_uin"))
+            .or_else(|| obj.get("wxuin"))
+            .or_else(|| obj.get("p_uin"))
+    };
+    let has_uin = raw_uin
+        .map(|value| value.chars().any(|c| c.is_ascii_digit()))
+        .unwrap_or(false);
+    let has_key = [
+        "qm_keyst",
+        "qqmusic_key",
+        "music_key",
+        "p_skey",
+        "skey",
+        "psrf_qqaccess_token",
+        "psrf_qqrefresh_token",
+        "wxrefresh_token",
+        "wxskey",
+    ]
+    .iter()
+    .any(|name| obj.get(*name).map(|v| !v.is_empty()).unwrap_or(false));
+    has_uin && has_key
+}
+
+#[allow(dead_code)]
+pub fn qq_cookie_has_playback_login(cookie_text: &str) -> bool {
+    let obj = parse_cookie_header(cookie_text);
+    let raw_uin = if obj.get("login_type").and_then(|v| v.parse::<u8>().ok()) == Some(2) {
+        obj.get("wxuin").or_else(|| obj.get("uin")).or_else(|| obj.get("p_uin"))
+    } else {
+        obj.get("uin")
+            .or_else(|| obj.get("qqmusic_uin"))
+            .or_else(|| obj.get("wxuin"))
+            .or_else(|| obj.get("p_uin"))
+    };
+    let has_uin = raw_uin
+        .map(|value| value.chars().any(|c| c.is_ascii_digit()))
+        .unwrap_or(false);
+    let has_key = ["qm_keyst", "qqmusic_key", "music_key", "wxskey"]
+        .iter()
+        .any(|name| obj.get(*name).map(|v| !v.is_empty()).unwrap_or(false));
+    has_uin && has_key
+}
+
+#[allow(dead_code)]
+fn normalize_cookie_domain(domain: &str) -> String {
+    domain.trim().trim_start_matches('.').to_ascii_lowercase()
+}
+
+#[allow(dead_code)]
+pub fn is_qq_cookie_domain(domain: &str) -> bool {
+    let normalized = normalize_cookie_domain(domain);
+    normalized == "qq.com"
+        || normalized.ends_with(".qq.com")
+        || normalized.ends_with("qqmusic.qq.com")
+}
+
+#[allow(dead_code)]
+pub fn is_netease_cookie_domain(domain: &str) -> bool {
+    let normalized = normalize_cookie_domain(domain);
+    normalized == "163.com"
+        || normalized.ends_with(".163.com")
+        || normalized == "music.163.com"
+        || normalized.ends_with(".music.163.com")
+        || normalized == "netease.com"
+        || normalized.ends_with(".netease.com")
+}
+
+#[allow(dead_code)]
+pub fn build_login_cookie_header(
+    cookies: &[LoginCookie],
+    is_allowed_domain: fn(&str) -> bool,
+    priority: &[&str],
+) -> String {
+    let mut picked: HashMap<String, String> = HashMap::new();
+    for cookie in cookies {
+        if cookie.name.is_empty() || !is_allowed_domain(&cookie.domain) {
+            continue;
+        }
+        picked.insert(cookie.name.clone(), cookie.value.clone());
+    }
+
+    let mut ordered = Vec::new();
+    for name in priority {
+        if let Some(value) = picked.remove(*name) {
+            ordered.push(((*name).to_string(), value));
+        }
+    }
+    let mut rest: Vec<(String, String)> = picked.into_iter().collect();
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    ordered.extend(rest);
+
+    ordered
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .map(|(name, value)| format!("{}={}", name, value))
+        .collect::<Vec<_>>()
+        .join("; ")
+}
+
+#[allow(dead_code)]
+pub fn build_netease_login_cookie_header(cookies: &[LoginCookie]) -> String {
+    build_login_cookie_header(
+        cookies,
+        is_netease_cookie_domain,
+        NETEASE_LOGIN_COOKIE_PRIORITY,
+    )
+}
+
+#[allow(dead_code)]
+pub fn build_qq_login_cookie_header(cookies: &[LoginCookie]) -> String {
+    build_login_cookie_header(cookies, is_qq_cookie_domain, QQ_LOGIN_COOKIE_PRIORITY)
+}
+
+fn login_window(app: &tauri::AppHandle, provider: LoginProvider) -> Option<WebviewWindow> {
+    app.get_webview_window(login_window_config(provider).label)
+}
+
+fn ensure_login_window(
+    app: &tauri::AppHandle,
+    provider: LoginProvider,
+) -> Result<WebviewWindow, String> {
+    let config = login_window_config(provider);
+    if let Some(win) = login_window(app, provider) {
+        win.show().map_err(|e| e.to_string())?;
+        win.set_focus().map_err(|e| e.to_string())?;
+        return Ok(win);
+    }
+
+    let url = tauri::Url::parse(config.url).map_err(|e| e.to_string())?;
+    let win = WebviewWindowBuilder::new(app, config.label, WebviewUrl::External(url))
+        .title(config.title)
+        .inner_size(config.width, config.height)
+        .min_inner_size(config.min_width, config.min_height)
+        .resizable(true)
+        .decorations(true)
+        .build()
+        .map_err(|e| e.to_string())?;
+    win.show().map_err(|e| e.to_string())?;
+    Ok(win)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +704,32 @@ pub fn desktop_lyrics_close_window(
 }
 
 #[tauri::command]
+pub fn login_netease_show_window(app: tauri::AppHandle) -> Result<(), String> {
+    ensure_login_window(&app, LoginProvider::Netease).map(|_| ())
+}
+
+#[tauri::command]
+pub fn login_qq_show_window(app: tauri::AppHandle) -> Result<(), String> {
+    ensure_login_window(&app, LoginProvider::Qq).map(|_| ())
+}
+
+#[tauri::command]
+pub fn login_netease_close_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = login_window(&app, LoginProvider::Netease) {
+        win.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn login_qq_close_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(win) = login_window(&app, LoginProvider::Qq) {
+        win.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 pub fn desktop_lyrics_set_click_through(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -738,6 +1012,61 @@ mod tests {
             desktop_lyrics_window_url(),
             "index.html?view=desktop-lyrics"
         );
+    }
+
+    #[test]
+    fn login_window_configs_match_reserved_labels_and_baseline_urls() {
+        let netease = login_window_config(LoginProvider::Netease);
+        assert_eq!(netease.label, labels::LOGIN_NETEASE);
+        assert_eq!(netease.url, "https://music.163.com/#/login");
+        assert_eq!(netease.title, "网易云音乐登录");
+        assert_eq!((netease.width, netease.height), (940.0, 760.0));
+
+        let qq = login_window_config(LoginProvider::Qq);
+        assert_eq!(qq.label, labels::LOGIN_QQ);
+        assert_eq!(qq.url, "https://y.qq.com/n/ryqq/profile");
+        assert_eq!(qq.title, "QQ 音乐登录");
+        assert_eq!((qq.width, qq.height), (900.0, 720.0));
+    }
+
+    #[test]
+    fn login_cookie_detection_matches_provider_requirements() {
+        assert!(netease_cookie_has_login("foo=bar; MUSIC_U=secret"));
+        assert!(!netease_cookie_has_login("foo=bar"));
+        assert!(qq_cookie_has_login("uin=o12345; skey=abc"));
+        assert!(qq_cookie_has_playback_login("wxuin=12345; wxskey=abc; login_type=2"));
+        assert!(!qq_cookie_has_playback_login("uin=12345; skey=abc"));
+    }
+
+    #[test]
+    fn login_cookie_domain_filters_allow_provider_domains_only() {
+        assert!(is_netease_cookie_domain(".music.163.com"));
+        assert!(is_netease_cookie_domain("api.netease.com"));
+        assert!(!is_netease_cookie_domain("qq.com"));
+
+        assert!(is_qq_cookie_domain(".qq.com"));
+        assert!(is_qq_cookie_domain("y.qq.com"));
+        assert!(!is_qq_cookie_domain("music.163.com"));
+    }
+
+    #[test]
+    fn login_cookie_header_builder_filters_domains_and_orders_priority() {
+        let cookies = vec![
+            LoginCookie::new("foo", "bar", "evil.example"),
+            LoginCookie::new("MUSIC_U", "secret", ".music.163.com"),
+            LoginCookie::new("__csrf", "csrf", "music.163.com"),
+        ];
+
+        let header = build_netease_login_cookie_header(&cookies);
+
+        assert_eq!(header, "MUSIC_U=secret; __csrf=csrf");
+
+        let qq_header = build_qq_login_cookie_header(&[
+            LoginCookie::new("qm_keyst", "key", ".qq.com"),
+            LoginCookie::new("uin", "123", "qq.com"),
+            LoginCookie::new("MUSIC_U", "secret", ".music.163.com"),
+        ]);
+        assert_eq!(qq_header, "uin=123; qm_keyst=key");
     }
 
     #[test]

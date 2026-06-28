@@ -2,6 +2,7 @@ import {
   HealthResponseSchema,
   ProviderIdSchema,
   TrackSchema,
+  ProviderSessionCookieAckSchema,
   type CapabilityMatrix,
   type ProviderId,
   type Track
@@ -9,7 +10,10 @@ import {
 import { appVersion, apiVersion, schemaVersion, port } from "./env";
 import { ok, fail, json } from "./http/envelope";
 import { providers, buildCapabilityMatrix, PROVIDER_IDS } from "./providers/registry";
-import { ProviderNotImplementedError } from "./providers/provider-adapter";
+import {
+  ProviderNotImplementedError,
+  type ProviderAdapter
+} from "./providers/provider-adapter";
 import { normalizeError } from "./services/fallback";
 import { buildDiagnostics } from "./services/diagnostics";
 import { resolveAudioProxy, type AudioProxy } from "./services/audio-proxy";
@@ -17,15 +21,21 @@ import {
   crossSourceResolver,
   type CrossSourceResolver
 } from "./services/cross-source-resolver";
+import {
+  clearRuntimeProviderCookie,
+  setRuntimeProviderCookie
+} from "./services/auth-session";
 
 export type RouteHandlerDeps = {
   crossSourceResolver?: CrossSourceResolver;
   audioProxy?: AudioProxy;
+  providerAdapters?: Record<ProviderId, ProviderAdapter>;
 };
 
 export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const resolver = deps.crossSourceResolver ?? crossSourceResolver;
   const audioProxy = deps.audioProxy ?? resolveAudioProxy;
+  const providerAdapters = deps.providerAdapters ?? providers;
 
   return async function handleRoute(request: Request): Promise<Response> {
     const url = new URL(request.url);
@@ -126,14 +136,45 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
         );
       }
       const providerId: ProviderId = parsed.data;
-      const adapter = providers[providerId];
+      const adapter = providerAdapters[providerId];
 
       try {
+        if (sub === "session-cookie" && method === "POST") {
+          const body = await parseJsonBody(request);
+          const cookie =
+            body && typeof body === "object" && "cookie" in body
+              ? (body as { cookie?: unknown }).cookie
+              : undefined;
+          if (typeof cookie !== "string" || cookie.trim().length === 0) {
+            return json(
+              fail({
+                code: "BAD_REQUEST",
+                message: "cookie required",
+                provider: providerId,
+                retryable: false
+              }),
+              400
+            );
+          }
+          setRuntimeProviderCookie(providerId, cookie);
+          return json(ok(ProviderSessionCookieAckSchema.parse({ provider: providerId, stored: true })));
+        }
+        if (
+          (sub === "session-cookie" && method === "DELETE") ||
+          (sub === "session-cookie/clear" && method === "POST")
+        ) {
+          clearRuntimeProviderCookie(providerId);
+          return json(ok(ProviderSessionCookieAckSchema.parse({ provider: providerId, stored: false })));
+        }
         if (sub === "login-status" && method === "GET") {
           return json(ok(await adapter.loginStatus()));
         }
         if (sub === "logout" && method === "POST") {
-          await adapter.logout();
+          try {
+            await adapter.logout();
+          } finally {
+            clearRuntimeProviderCookie(providerId);
+          }
           return json(ok({ provider: providerId, loggedOut: true }));
         }
         if (sub === "search" && method === "GET") {

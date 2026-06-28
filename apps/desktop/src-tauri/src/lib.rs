@@ -134,7 +134,11 @@ pub fn run() {
             commands::desktop_lyrics_move_by,
             commands::desktop_lyrics_set_hot_bounds,
             commands::desktop_lyrics_update_payload,
-            commands::desktop_lyrics_overlay_ready
+            commands::desktop_lyrics_overlay_ready,
+            commands::login_netease_show_window,
+            commands::login_qq_show_window,
+            commands::login_netease_close_window,
+            commands::login_qq_close_window
         ])
         .setup(move |_app| {
             let cmd = sidecar::build_sidecar_command(

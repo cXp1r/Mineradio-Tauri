@@ -1,0 +1,12 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "login-windows",
+  "description": "Provider login webview windows receive only core window/webview/event/app permissions. Cookie values are not stored in Rust state.",
+  "windows": ["login-netease", "login-qq"],
+  "permissions": [
+    "core:window:default",
+    "core:event:default",
+    "core:webview:default",
+    "core:app:default"
+  ]
+}

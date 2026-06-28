@@ -9,14 +9,15 @@ import {
   loginStatus,
   logout
 } from "hana-music-api";
+import { getProviderCookie } from "../../services/auth-session";
 
 export interface NeteaseConfig {
   cookie?: string;
 }
 
 export function getConfig(): NeteaseConfig {
-  const cookie = process.env.MINERADIO_NETEASE_COOKIE;
-  if (typeof cookie === "string" && cookie.trim().length > 0) return { cookie };
+  const cookie = getProviderCookie("netease");
+  if (cookie) return { cookie };
   return {};
 }
 
