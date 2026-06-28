@@ -26,7 +26,9 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all",
+    "targets": [
+      "nsis"
+    ],
     "category": "Music",
     "externalBin": [
       "binaries/mineradio-sidecar-api"
@@ -35,7 +37,24 @@
       "icons/icon.ico"
     ],
     "shortDescription": "Mineradio Tauri rewrite shell",
-    "longDescription": "A GPL-3.0 Tauri rewrite shell for Mineradio."
+    "longDescription": "A GPL-3.0 Tauri rewrite shell for Mineradio.",
+    "windows": {
+      "allowDowngrades": false,
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "uninstallerIcon": "icons/icon.ico",
+        "languages": [
+          "SimpChinese",
+          "English"
+        ],
+        "displayLanguageSelector": false
+      }
+    }
   },
   "plugins": {
     "updater": {

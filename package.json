@@ -19,6 +19,7 @@
     "tauri:build": "bun run --filter ./apps/desktop tauri build",
     "web:build": "bun run --filter ./apps/web build",
     "sidecar:dev": "bun run --filter ./sidecars/api dev",
+    "installer-policy:check": "node scripts/check-installer-policy.mjs",
     "license:check": "node scripts/check-license-allowlist.mjs",
     "release-identity:check": "node scripts/check-release-identity.mjs"
   },
