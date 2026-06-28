@@ -1,6 +1,7 @@
 import { type ReactElement } from "react";
 import { PlayerConsoleHost } from "../../visual/PlayerConsoleHost";
 import type { PlaybackMode } from "../../stores/playback-store";
+import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../../stores/shelf-store";
 import type { PlaybackQuality, Track } from "@mineradio/shared";
 
 export interface BottomControlsHostProps {
@@ -20,6 +21,9 @@ export interface BottomControlsHostProps {
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
 	onQualityChange?: (quality: PlaybackQuality) => void;
+	onShelfModeChange?: (mode: ShelfMode) => void;
+	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
+	onShelfPresenceChange?: (presence: ShelfPresence) => void;
 	onPlayQueueIndex?: (index: number) => void;
 	onRemoveQueueIndex?: (index: number) => void;
 	onInsertQueueNext?: (index: number) => void;
@@ -36,6 +40,9 @@ export interface BottomControlsHostProps {
 	volume?: number;
 	muted?: boolean;
 	playbackQuality?: PlaybackQuality;
+	shelfMode?: ShelfMode;
+	shelfCameraMode?: ShelfCameraMode;
+	shelfPresence?: ShelfPresence;
 	lyricSourceMode?: "original" | "custom";
 	hasCustomLyric?: boolean;
 }
@@ -71,6 +78,9 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				onVolumeChange={props.onVolumeChange}
 				onToggleMute={props.onToggleMute}
 				onQualityChange={props.onQualityChange}
+				onShelfModeChange={props.onShelfModeChange}
+				onShelfCameraModeChange={props.onShelfCameraModeChange}
+				onShelfPresenceChange={props.onShelfPresenceChange}
 				onPlayQueueIndex={props.onPlayQueueIndex}
 				onRemoveQueueIndex={props.onRemoveQueueIndex}
 				onInsertQueueNext={props.onInsertQueueNext}
@@ -87,6 +97,9 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				volume={props.volume}
 				muted={props.muted}
 				playbackQuality={props.playbackQuality}
+				shelfMode={props.shelfMode}
+				shelfCameraMode={props.shelfCameraMode}
+				shelfPresence={props.shelfPresence}
 				lyricSourceMode={props.lyricSourceMode}
 				hasCustomLyric={props.hasCustomLyric}
 			/>

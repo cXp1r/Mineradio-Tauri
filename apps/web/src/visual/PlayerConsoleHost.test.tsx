@@ -74,3 +74,32 @@ test("PlayerConsoleHost renders baseline lyric source segment and opens custom l
 	root.unmount();
 	container.remove();
 });
+
+test("PlayerConsoleHost renders shelf mode controls and emits baseline setting callbacks", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: string[] = [];
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	root.render(
+		React.createElement(PlayerConsoleHost, {
+			shelfMode: "stage",
+			shelfCameraMode: "dynamic",
+			shelfPresence: "auto",
+			onShelfModeChange: (mode) => calls.push(`mode:${mode}`),
+			onShelfCameraModeChange: (mode) => calls.push(`camera:${mode}`),
+			onShelfPresenceChange: (presence) => calls.push(`presence:${presence}`),
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(container.querySelector('#shelf-seg [data-shelf="stage"]')?.className).toContain("active");
+	expect(container.querySelector('#shelf-camera-seg [data-shelf-camera="dynamic"]')?.className).toContain("active");
+	expect(container.querySelector('#shelf-presence-seg [data-shelf-presence="auto"]')?.className).toContain("active");
+	(container.querySelector('#shelf-seg [data-shelf="off"]') as HTMLButtonElement).click();
+	(container.querySelector('#shelf-camera-seg [data-shelf-camera="static"]') as HTMLButtonElement).click();
+	(container.querySelector('#shelf-presence-seg [data-shelf-presence="always"]') as HTMLButtonElement).click();
+	expect(calls).toEqual(["mode:off", "camera:static", "presence:always"]);
+	root.unmount();
+	container.remove();
+});

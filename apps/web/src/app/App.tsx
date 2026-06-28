@@ -14,6 +14,14 @@ import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useProviderStore } from "../stores/provider-store";
 import { useSearchStore } from "../stores/search-store";
+import {
+	loadShelfSettingsFromStorage,
+	saveShelfSettingsToStorage,
+	useShelfStore,
+	type ShelfCameraMode,
+	type ShelfMode,
+	type ShelfPresence,
+} from "../stores/shelf-store";
 import { useUiStore } from "../stores/ui-store";
 import { getRuntimeConfig, getSidecarStatus, importJsonFile, type RuntimeConfig, type SidecarStatus } from "../tauri/runtime";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
@@ -154,6 +162,13 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 	const volume = usePlaybackStore((s) => s.volume);
 	const muted = usePlaybackStore((s) => s.muted);
 	const setMatrix = useProviderStore((s) => s.setMatrix);
+	const shelfMode = useShelfStore((s) => s.mode);
+	const shelfCameraMode = useShelfStore((s) => s.cameraMode);
+	const shelfPresence = useShelfStore((s) => s.presence);
+	const setShelfMode = useShelfStore((s) => s.setMode);
+	const setShelfCameraMode = useShelfStore((s) => s.setCameraMode);
+	const setShelfPresence = useShelfStore((s) => s.setPresence);
+	const applyShelfSettings = useShelfStore((s) => s.applySettings);
 	const consoleVisible = useUiStore((s) => s.consoleVisible);
 	const setConsole = useUiStore((s) => s.setConsole);
 	const miniQueueOpen = useUiStore((s) => s.miniQueueOpen);
@@ -527,6 +542,23 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 		setPositionMs(position);
 	}, [setPositionMs]);
 
+	const updateShelfMode = useCallback((mode: ShelfMode) => {
+		setShelfMode(mode);
+		saveShelfSettingsToStorage();
+	}, [setShelfMode]);
+
+	const updateShelfCameraMode = useCallback((mode: ShelfCameraMode) => {
+		setShelfCameraMode(mode);
+		saveShelfSettingsToStorage();
+		showToast(mode === "static" ? "3D歌单架: 静态镜头" : "3D歌单架: 动态镜头");
+	}, [setShelfCameraMode, showToast]);
+
+	const updateShelfPresence = useCallback((presence: ShelfPresence) => {
+		setShelfPresence(presence);
+		saveShelfSettingsToStorage();
+		showToast(presence === "always" ? "3D歌单架: 常驻" : "3D歌单架: 自动隐藏");
+	}, [setShelfPresence, showToast]);
+
 	const setPlaybackQuality = useCallback((quality: PlaybackQuality) => {
 		setPlaybackQualityState(quality);
 		savePlaybackQualityPreference(quality);
@@ -554,6 +586,18 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 			document.body.classList.remove("splash-active", "empty-home-active", "controls-visible", "home-wallpaper-preview", "home-controls-locked");
 		};
 	}, [consoleVisible, emptyHomeActive, homeControlsLocked, splashActive]);
+
+	useEffect(() => {
+		const settings = loadShelfSettingsFromStorage();
+		if (settings) applyShelfSettings(settings);
+	}, [applyShelfSettings]);
+
+	useEffect(() => {
+		if (typeof document === "undefined") return;
+		const stageMode = shelfMode === "stage";
+		document.getElementById("search-area")?.classList.toggle("stage-mode", stageMode);
+		document.getElementById("bottom-bar")?.classList.toggle("stage-mode", stageMode);
+	}, [shelfMode]);
 
 	useEffect(() => {
 		if (!emptyHomeActive || typeof document === "undefined") return;
@@ -817,8 +861,14 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 				currentCoverUrl={currentTrack?.coverUrl}
 				sidecarBaseUrl={sidecarBaseUrl}
 				coverResolution={1.55}
+				shelfSettings={{
+					mode: shelfMode,
+					cameraMode: shelfCameraMode,
+					presence: shelfPresence,
+				}}
 				splashActive={splashActive}
 				homeActive={emptyHomeActive}
+				onShelfModeChange={updateShelfMode}
 				onShelfPlayQueueIndex={(index) => usePlaybackStore.getState().playAt(index)}
 				onShelfDetailRowClick={playShelfDetailRow}
 				onShelfOpenDetailContent={(payload, contentList) => {
@@ -871,6 +921,9 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 				onVolumeChange={setVolume}
 				onToggleMute={toggleMute}
 				onQualityChange={setPlaybackQuality}
+				onShelfModeChange={updateShelfMode}
+				onShelfCameraModeChange={updateShelfCameraMode}
+				onShelfPresenceChange={updateShelfPresence}
 				onPlayQueueIndex={playMiniQueueIndex}
 				onRemoveQueueIndex={removeQueueAt}
 				onInsertQueueNext={insertMiniQueueNext}
@@ -887,6 +940,9 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 				volume={volume}
 				muted={muted}
 				playbackQuality={playbackQuality}
+				shelfMode={shelfMode}
+				shelfCameraMode={shelfCameraMode}
+				shelfPresence={shelfPresence}
 				lyricSourceMode={currentLyricPreference === "custom" ? "custom" : "original"}
 				hasCustomLyric={!!currentCustomLyricText}
 			/>

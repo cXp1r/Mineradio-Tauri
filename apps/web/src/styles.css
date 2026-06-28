@@ -1555,6 +1555,52 @@ html.control-glass-svg-ok #bottom-bar.visible {
   box-shadow: 0 0 10px rgba(126, 226, 168, .50);
 }
 
+.console-shelf-controls {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.fx-seg.console-shelf-seg {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+  width: 78px;
+  padding: 3px;
+  margin: 0;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, .10);
+  background: rgba(255, 255, 255, .035);
+}
+
+.fx-seg.console-shelf-seg.compact {
+  grid-template-columns: repeat(2, 1fr);
+  width: 54px;
+}
+
+.fx-seg.console-shelf-seg button {
+  min-width: 0;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: rgba(255, 255, 255, .52);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 760;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+
+.fx-seg.console-shelf-seg button.active {
+  color: var(--champagne);
+  background: rgba(244, 210, 138, .12);
+  box-shadow: inset 0 0 0 1px rgba(244, 210, 138, .18);
+}
+
 #time-display {
   min-width: 78px;
   color: rgba(255, 255, 255, .52);

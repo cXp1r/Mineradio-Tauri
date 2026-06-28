@@ -6,6 +6,7 @@ import {
 	type ControlConsoleMotion,
 } from "@mineradio/visual-engine";
 import type { PlaybackMode } from "../stores/playback-store";
+import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../stores/shelf-store";
 import type { PlaybackQuality, Track } from "@mineradio/shared";
 
 const PLAYBACK_QUALITY_OPTIONS: Array<{
@@ -42,6 +43,9 @@ export interface PlayerConsoleHostProps {
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
 	onQualityChange?: (quality: PlaybackQuality) => void;
+	onShelfModeChange?: (mode: ShelfMode) => void;
+	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
+	onShelfPresenceChange?: (presence: ShelfPresence) => void;
 	onPlayQueueIndex?: (index: number) => void;
 	onRemoveQueueIndex?: (index: number) => void;
 	onInsertQueueNext?: (index: number) => void;
@@ -62,6 +66,9 @@ export interface PlayerConsoleHostProps {
 	volume?: number;
 	muted?: boolean;
 	playbackQuality?: PlaybackQuality;
+	shelfMode?: ShelfMode;
+	shelfCameraMode?: ShelfCameraMode;
+	shelfPresence?: ShelfPresence;
 	lyricSourceMode?: "original" | "custom";
 	hasCustomLyric?: boolean;
 	deps?: {
@@ -117,6 +124,12 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	onToggleMuteRef.current = props.onToggleMute;
 	const onQualityChangeRef = useRef(props.onQualityChange);
 	onQualityChangeRef.current = props.onQualityChange;
+	const onShelfModeChangeRef = useRef(props.onShelfModeChange);
+	onShelfModeChangeRef.current = props.onShelfModeChange;
+	const onShelfCameraModeChangeRef = useRef(props.onShelfCameraModeChange);
+	onShelfCameraModeChangeRef.current = props.onShelfCameraModeChange;
+	const onShelfPresenceChangeRef = useRef(props.onShelfPresenceChange);
+	onShelfPresenceChangeRef.current = props.onShelfPresenceChange;
 	const onPlayQueueIndexRef = useRef(props.onPlayQueueIndex);
 	onPlayQueueIndexRef.current = props.onPlayQueueIndex;
 	const onRemoveQueueIndexRef = useRef(props.onRemoveQueueIndex);
@@ -260,6 +273,9 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 		onLyricsRef.current?.();
 	}, []);
 	const lyricSourceMode = props.lyricSourceMode === "custom" ? "custom" : "original";
+	const shelfMode = props.shelfMode ?? "side";
+	const shelfCameraMode = props.shelfCameraMode ?? "static";
+	const shelfPresence = props.shelfPresence ?? "always";
 	const chooseOriginalLyrics = useCallback(() => {
 		onLyricSourceChangeRef.current?.("original");
 	}, []);
@@ -411,6 +427,21 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 						<div className="fx-seg lyric-source-seg" id="lyric-source-seg">
 							<button id="lyric-source-original" type="button" className={lyricSourceMode === "original" ? "active" : ""} onClick={chooseOriginalLyrics}>原词</button>
 							<button id="lyric-source-custom" type="button" className={`${lyricSourceMode === "custom" ? "active" : ""}${props.hasCustomLyric ? " has-custom" : ""}`.trim()} onClick={chooseCustomLyrics}>自定义</button>
+						</div>
+					</div>
+					<div className="console-shelf-controls" aria-label="3D 歌单架">
+						<div className="fx-seg console-shelf-seg" id="shelf-seg">
+							<button type="button" data-shelf="off" className={shelfMode === "off" ? "active" : ""} onClick={() => onShelfModeChangeRef.current?.("off")}>关</button>
+							<button type="button" data-shelf="side" className={shelfMode === "side" ? "active" : ""} onClick={() => onShelfModeChangeRef.current?.("side")}>侧</button>
+							<button type="button" data-shelf="stage" className={shelfMode === "stage" ? "active" : ""} onClick={() => onShelfModeChangeRef.current?.("stage")}>台</button>
+						</div>
+						<div className="fx-seg console-shelf-seg compact" id="shelf-camera-seg">
+							<button type="button" data-shelf-camera="static" className={shelfCameraMode === "static" ? "active" : ""} onClick={() => onShelfCameraModeChangeRef.current?.("static")}>静</button>
+							<button type="button" data-shelf-camera="dynamic" className={shelfCameraMode === "dynamic" ? "active" : ""} onClick={() => onShelfCameraModeChangeRef.current?.("dynamic")}>动</button>
+						</div>
+						<div className="fx-seg console-shelf-seg compact" id="shelf-presence-seg">
+							<button type="button" data-shelf-presence="always" className={shelfPresence === "always" ? "active" : ""} onClick={() => onShelfPresenceChangeRef.current?.("always")}>常</button>
+							<button type="button" data-shelf-presence="auto" className={shelfPresence === "auto" ? "active" : ""} onClick={() => onShelfPresenceChangeRef.current?.("auto")}>隐</button>
 						</div>
 					</div>
 					<button

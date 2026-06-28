@@ -5,6 +5,7 @@ import {
 	resolveVisualCoverUrl,
 	resolveVisualCoverUrlForSidecar,
 	resolveRuntimeShelfMode,
+	resolveVisualShelfSettings,
 	syncRuntimeShelfModeOverride,
 	mapLyricPayload,
 	VisualEngineHost,
@@ -38,6 +39,22 @@ test("syncRuntimeShelfModeOverride clears runtime override when default shelf pr
 	syncRuntimeShelfModeOverride(previousDefaultRef, overrideRef, "stage");
 	expect(overrideRef.current).toBeNull();
 	expect(previousDefaultRef.current).toBe("stage");
+});
+
+test("resolveVisualShelfSettings prefers explicit shelf store settings over fx defaults", () => {
+	expect(resolveVisualShelfSettings(
+		{ shelf: "off", shelfCameraMode: "dynamic", shelfPresence: "auto" },
+		{ mode: "stage", cameraMode: "static", presence: "always" },
+	)).toEqual({
+		mode: "stage",
+		cameraMode: "static",
+		presence: "always",
+	});
+	expect(resolveVisualShelfSettings({ shelf: "off" }, null)).toEqual({
+		mode: "off",
+		cameraMode: "static",
+		presence: "always",
+	});
 });
 
 test("resolveVisualCoverUrl prefers explicit currentCoverUrl and falls back to currentTrack.coverUrl", () => {
