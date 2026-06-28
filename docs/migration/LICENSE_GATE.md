@@ -56,6 +56,7 @@
 - Rust crates full audit：必须基于最终 `Cargo.lock` / Tauri plugin 集合完成全量直接与传递依赖 license 审核，并消除 Dependency Audit 表里的 Rust `待审核`。
 - npm transitive full audit：必须基于最终 `bun.lock` / workspace manifests 完成 npm 直接与传递依赖 full audit；当前只记录了关键直接依赖与部分 provider 传递依赖。
 - GSAP standard-only final check：必须确认最终打包内容只包含 GSAP 标准能力，不包含 Club/member/闭源插件、私有插件或未授权商业资产。
+- Direct dependency allowlist enforcement：`npm run license:check` 会检查 Tauri 迁移目标 workspace manifests 和 `apps/desktop/src-tauri/Cargo.toml` 的直接依赖，要求它们全部进入 Dependency Audit 表且 Decision 不为 `待审核`。该检查不替代 Rust/npm transitive full audit。
 - packaged notices inclusion：必须验证 Windows 安装包/安装后目录包含 GPL、原项目/fork notice、`NOTICE.md`、`THIRD_PARTY_NOTICES.md` 及必要第三方 license 文本。
 - release notes wording：真实 GitHub Release notes 必须明确本项目是 GPL-3.0 二开/fork/rewrite，不暗示网易云音乐、QQ 音乐或原 Mineradio 官方身份。
 - updater signature/release artifact relation：必须在 B2/B3 的最终发布路径下明确 Tauri updater manifest、签名字段、公钥配置、安装包资产和 release 上传资产之间的关系；若继续 detection-only，不得展示可安装更新为已通过 gate，且需在 release notes/UI 中说明。
@@ -71,14 +72,14 @@
 
 | Dependency | Ecosystem | License | Purpose | Distribution Risk | Decision |
 | --- | --- | --- | --- | --- | --- |
-| Tauri 2 | Rust (crate) | MIT/Apache-2.0 | 桌面壳 + updater + window/sidecar 能力 | 待审（Rust crate license 待逐个核对） | 待审核 |
+| tauri | Rust (crate) | MIT/Apache-2.0 | 桌面壳 + updater + window/sidecar 能力 | 直接依赖 license 已按本地 crate metadata 核对；Rust transitive full audit 仍需发布前完成 | 通过（direct） |
 | @tauri-apps/cli | npm devDependency | MIT/Apache-2.0 | Tauri dev/build CLI | 兼容；安装包包含 notices 仍需验证 | 通过 |
-| tauri-build | Rust build-dependency | MIT/Apache-2.0 | Tauri build script integration | 待随 Rust crates 全量 audit 复核 | 待审核 |
+| tauri-build | Rust build-dependency | MIT/Apache-2.0 | Tauri build script integration | 直接依赖 license 已按本地 crate metadata 核对；Rust transitive full audit 仍需发布前完成 | 通过（direct） |
 | Bun | Runtime | MIT | sidecar runtime/workspace | MIT 兼容 | 通过 |
 | Vite | npm | MIT | 前端构建 | MIT 兼容 | 通过 |
 | @vitejs/plugin-react | npm | MIT | Vite React transform / Fast Refresh integration | MIT 兼容 | 通过 |
 | React | npm | MIT | UI | MIT 兼容 | 通过 |
-| React DOM | npm | MIT | UI renderer | MIT 兼容 | 通过 |
+| react-dom | npm | MIT | UI renderer | MIT 兼容 | 通过 |
 | @types/react | npm devDependency | MIT | React TypeScript types | MIT 兼容 | 通过 |
 | @types/react-dom | npm devDependency | MIT | React DOM TypeScript types | MIT 兼容 | 通过 |
 | Zustand | npm | MIT | 状态管理 | MIT 兼容 | 通过 |
@@ -88,18 +89,21 @@
 | tauri-plugin-dialog | Rust (crate) | MIT/Apache-2.0 | Rust-owned JSON import/export open/save dialogs | 兼容 | 通过 |
 | tauri-plugin-global-shortcut 2.3.2 | Rust (crate) | MIT/Apache-2.0 | Tauri 全局热键注册、冲突检测和事件桥接 | 兼容；真实 Windows OS 注册/触发仍需 capability gate 验证 | 通过（code-side 接入） |
 | global-hotkey 0.8.0 | Rust (crate, transitive via tauri-plugin-global-shortcut) | MIT/Apache-2.0 | 系统级 hotkey 注册 backend | 兼容；随 Rust crates full audit 复核 | 通过（transitive） |
+| tauri-plugin-single-instance | Rust (crate) | MIT/Apache-2.0 | Tauri 单实例注册与二次启动唤醒主窗口 | 直接依赖 license 已按本地 crate metadata 核对；Windows packaged duplicate-launch evidence 另由 capability gate 跟踪 | 通过（direct） |
 | tauri-plugin-updater 2.10.0 | Rust (crate) | MIT/Apache-2.0 | Tauri updater 检测和签名校验通道；P10.a 只启用 check，download/install 仍受签名 gate 阻挡 | 兼容；公开安装更新仍需 pubkey/signature 或最终风险决策 | 通过（检测接入） |
 | tauri-plugin-fs | Rust (crate, transitive via tauri-plugin-dialog) | MIT/Apache-2.0 | dialog FilePath conversion / scoped filesystem support | 兼容 | 通过（transitive） |
 | rfd | Rust (crate, transitive via tauri-plugin-dialog) | MIT | native file dialog backend | 兼容 | 通过（transitive） |
-| serde | Rust (crate) | MIT/Apache-2.0 | Rust command/config serialization | 待随 Rust crates 全量 audit 复核 | 待审核 |
-| serde_json | Rust (crate) | MIT/Apache-2.0 | Rust JSON command payloads and config helpers | 待随 Rust crates 全量 audit 复核 | 待审核 |
+| serde | Rust (crate) | MIT/Apache-2.0 | Rust command/config serialization | 直接依赖 license 已按本地 crate metadata 核对；Rust transitive full audit 仍需发布前完成 | 通过（direct） |
+| serde_json | Rust (crate) | MIT/Apache-2.0 | Rust JSON command payloads and config helpers | 直接依赖 license 已按本地 crate metadata 核对；Rust transitive full audit 仍需发布前完成 | 通过（direct） |
 | dirs (crate) | Rust (crate) | MIT | app data/log 路径解析 | MIT 兼容 | 通过 |
 | time 0.3 | Rust (crate) | MIT/Apache-2.0 | 格式化 Tauri updater `OffsetDateTime` 为 RFC3339 状态字段 | 兼容 | 通过 |
 | hana-music-api | npm | MIT | Netease provider（主用） | MIT 兼容；极新 2 stars/v1.1.1，parity 风险见 DECISIONS.md A8 | 通过（带 parity 风险） |
 | NeteaseCloudMusicApi | npm | ISC | Netease provider（回退） | ISC 兼容；维护人历史有争议 | 通过（回退路径保留） |
-| Three.js | npm/vendor | MIT | 3D/WebGL | MIT 兼容 | 待审核（引入时再核） |
+| three | npm | MIT | 3D/WebGL runtime dependency used by visual-engine | MIT 兼容；visual parity and packaged notices still tracked separately | 通过（direct） |
+| Three.js | vendor/baseline reference | MIT | Electron baseline `public/vendor` reference for 3D/WebGL behavior | MIT 兼容；legacy baseline artifact notices still need packaged inclusion verification | 通过（baseline reference） |
 | @types/three | npm devDependency | MIT | Three.js TypeScript types | MIT 兼容 | 通过 |
-| GSAP | npm/vendor | 标准 no-fee license / 使用范围待核 | animation | Club/member/闭源插件禁用；需确认打包仅含可分发标准能力 | 待审核（仅用标准功能） |
+| gsap | npm | Standard no-charge license | animation timelines/easing; code imports `gsap` and `gsap/CustomEase` from the standard npm package only | Club/member/闭源插件禁用；direct usage scan found no Club plugin imports, but packaged notices/release wording remain tracked separately | 通过（direct standard package） |
+| GSAP | vendor/baseline reference | Standard no-charge license | Electron baseline `public/vendor/gsap.min.js` reference and legacy runtime | Club/member/闭源插件禁用；public release still needs packaged notices inclusion verification | 通过（baseline reference） |
 | happy-dom | npm devDependency | MIT | visual-engine DOM-like test environment | MIT 兼容 | 通过 |
 | jsososo/qq-music-api（npm `qq-music-api`） | npm | GPL-3.0 | QQ provider | 与本项目同 GPL-3.0，组合作品可分发 | 通过 |
 | axios ^0.21.2 | npm [transitive via qq-music-api] | MIT | HTTP 客户端 | MIT 兼容 | 通过（transitive） |
