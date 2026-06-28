@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
+import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import { App, isHomeBlankDismissElement, shouldShowEmptyHome } from "./App";
+import type { SplashHostProps } from "../visual/SplashHost";
 
 test("App keeps the empty-home music page mounted behind the splash gate", () => {
 	const html = renderToStaticMarkup(React.createElement(App));
@@ -16,6 +19,24 @@ test("App keeps the empty-home music page mounted behind the splash gate", () =>
 	expect(html).toContain("🚧此处施工，敬请期待🚧");
 	expect(html).toContain("展开播放器控制台");
 	expect(html).toContain("每日推荐");
+});
+
+test("App unmounts SplashHost after splash dismissed instead of leaving hidden splash listeners alive", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	let dismissed: (() => void) | null = null;
+	function MockSplash(props: SplashHostProps) {
+		dismissed = () => props.onDismissed?.();
+		return <div className="visual-splash-root" data-testid="splash" />;
+	}
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={MockSplash} />));
+	expect(host.querySelector(".visual-splash-root")).not.toBeNull();
+	flushSync(() => dismissed?.());
+	expect(host.querySelector(".visual-splash-root")).toBeNull();
+	root.unmount();
+	host.remove();
 });
 
 test("Home blank dismiss accepts only empty Home surfaces", async () => {

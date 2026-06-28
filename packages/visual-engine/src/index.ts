@@ -22,6 +22,13 @@ export type { SplashEngine, SplashEngineOptions } from "./splash/splash-engine";
 export { createSplashWebgl, SPLASH_VERTEX_SHADER, SPLASH_FRAGMENT_SHADER } from "./splash/splash-webgl";
 export { createSplashCanvas } from "./splash/splash-canvas";
 export { SPLASH_CSS, injectSplashStyle } from "./splash/splash-style";
+export { createIntroSoundPlayer } from "./splash/intro-sound";
+export type {
+	IntroSoundPlayer,
+	IntroSoundPlayerOptions,
+	WindowLike as IntroSoundWindowLike,
+	DocumentLike as IntroSoundDocumentLike,
+} from "./splash/intro-sound";
 
 export { CONTROL_GLASS_CSS, injectControlGlassStyle } from "./control/control-glass-style";
 export {

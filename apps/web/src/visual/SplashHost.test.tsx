@@ -419,3 +419,31 @@ test("createSplashEngine requires ready gate before click or keyboard dismisses 
 
 	engine.dispose();
 });
+
+test("createSplashEngine plays baseline intro sound on mount, arms fallback, and retries on enter", () => {
+	const calls: string[] = [];
+	const engine = createSplashEngine(asHtml(fakeRoot), {
+		introSound: {
+			play: () => {
+				calls.push("play");
+				return true;
+			},
+			armFallback: () => {
+				calls.push("arm");
+			},
+			dispose: () => {
+				calls.push("dispose");
+			},
+			hasPlayed: () => calls.includes("play"),
+		},
+	});
+	const splash = fakeRoot.children[0]!;
+
+	expect(calls).toEqual(["arm", "play"]);
+	flushTimers();
+	emitEl(splash, "click", {});
+	expect(calls).toEqual(["arm", "play", "play"]);
+
+	engine.dispose();
+	expect(calls.at(-1)).toBe("dispose");
+});

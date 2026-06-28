@@ -1,6 +1,7 @@
 import { injectSplashStyle } from "./splash-style";
 import { createSplashWebgl } from "./splash-webgl";
 import { createSplashCanvas } from "./splash-canvas";
+import { createIntroSoundPlayer, type IntroSoundPlayer } from "./intro-sound";
 
 export type SplashEngine = {
 	markReadyToEnter(): void;
@@ -12,6 +13,8 @@ export type SplashEngineOptions = {
 	reducedMotion?: boolean;
 	onReadyToEnter?: () => void;
 	onDismissed?: () => void;
+	audioContext?: AudioContext;
+	introSound?: IntroSoundPlayer;
 };
 
 const SPLASH_DOM = `
@@ -50,6 +53,11 @@ export function createSplashEngine(root: HTMLElement, opts: SplashEngineOptions 
 	let readyTimer: ReturnType<typeof setTimeout> | null = null;
 	let dismissTimer: ReturnType<typeof setTimeout> | null = null;
 	let disposed = false;
+
+	const introSound = opts.introSound ?? createIntroSoundPlayer({
+		audioContext: opts.audioContext,
+	});
+	introSound.armFallback();
 
 	const glHandler = reducedMotion ? null : createSplashWebgl(canvas);
 	const useWebgl = !!glHandler && glHandler.ok;
@@ -94,6 +102,7 @@ export function createSplashEngine(root: HTMLElement, opts: SplashEngineOptions 
 
 	function requestSplashEnter() {
 		if (!document.body.classList.contains("splash-active")) return;
+		introSound.play();
 		if (splashEl.classList.contains("ready")) dismiss();
 	}
 
@@ -110,6 +119,10 @@ export function createSplashEngine(root: HTMLElement, opts: SplashEngineOptions 
 
 	splashEl.addEventListener("click", onSplashClick);
 	document.addEventListener("keydown", onDocumentKeydown);
+
+	if (!reducedMotion) {
+		introSound.play();
+	}
 
 	function cleanupReveal() {
 		if (typeof window !== "undefined" && splashEl.parentNode) splashEl.style.display = "none";
@@ -173,9 +186,10 @@ export function createSplashEngine(root: HTMLElement, opts: SplashEngineOptions 
 			document.removeEventListener("keydown", onDocumentKeydown);
 			glHandler?.dispose();
 			canvasHandler?.dispose();
+			introSound.dispose();
 			document.body.classList.remove("splash-active");
 			document.body.classList.remove("splash-revealing");
 			if (splashEl.parentNode) splashEl.parentNode.removeChild(splashEl);
 		},
-	};
-}
+		};
+	}

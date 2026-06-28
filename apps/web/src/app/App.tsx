@@ -12,7 +12,7 @@ import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { SearchShell } from "../components/shell/SearchShell";
 import { TopRightControls } from "../components/shell/TopRightControls";
 import { EmptyHomeHost } from "../home/EmptyHomeHost";
-import { SplashHost } from "../visual/SplashHost";
+import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import { VisualEngineHost } from "../visual/VisualEngineHost";
 import { createShelfDetailContentLoader, playShelfDetailRow } from "../visual/shelf-detail-data";
 import type { ProviderId, ProviderLoginStatus } from "@mineradio/shared";
@@ -81,7 +81,11 @@ export function shouldShowEmptyHome(input: EmptyHomeStateInput): boolean {
 	return true;
 }
 
-export function App(): ReactElement {
+export type AppProps = {
+	SplashComponent?: (props: SplashHostProps) => ReactElement | null;
+};
+
+export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactElement {
 	const [sidecarClient, setSidecarClient] = useState<SidecarClient | null>(null);
 	const [splashActive, setSplashActive] = useState<boolean>(SHOW_SPLASH);
 	const [loginModalOpen, setLoginModalOpen] = useState(false);
@@ -565,8 +569,8 @@ export function App(): ReactElement {
 
 	return (
 		<>
-			{SHOW_SPLASH && (
-				<SplashHost
+			{SHOW_SPLASH && splashActive && (
+				<SplashComponent
 					onDismissed={() => setSplashActive(false)}
 				/>
 			)}
