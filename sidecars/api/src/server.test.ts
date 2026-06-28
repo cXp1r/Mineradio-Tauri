@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
-import { routeHandler } from "./server";
+import { routeHandler, createRouteHandler } from "./server";
+import type { Track } from "@mineradio/shared";
 
 async function call(path: string, init?: RequestInit): Promise<Response> {
   const req = new Request(`http://127.0.0.1${path}`, init);
@@ -9,6 +10,18 @@ async function call(path: string, init?: RequestInit): Promise<Response> {
 async function body(r: Response): Promise<any> {
   return await r.json();
 }
+
+const routeTrack: Track = {
+  provider: "netease",
+  id: "1",
+  sourceId: "1",
+  title: "t",
+  artists: [],
+  album: "",
+  coverUrl: "",
+  qualityHints: [],
+  playableState: "playable"
+};
 
 test("GET /health returns 200 with both providers", async () => {
   const r = await call("/health");
@@ -47,6 +60,41 @@ test("GET /providers/netease/search with blank keyword returns 400", async () =>
   expect(r.status).toBe(400);
 });
 
+test("GET /search without keyword returns 400 BAD_REQUEST", async () => {
+  const r = await call("/search");
+  expect(r.status).toBe(400);
+  const b = await body(r);
+  expect(b.error.code).toBe("BAD_REQUEST");
+});
+
+test("GET /search with unknown provider returns 404 NOT_FOUND", async () => {
+  const r = await call("/search?keyword=t&provider=bad");
+  expect(r.status).toBe(404);
+  const b = await body(r);
+  expect(b.error.code).toBe("NOT_FOUND");
+});
+
+test("GET /search uses injected cross-source resolver", async () => {
+  const handler = createRouteHandler({
+    crossSourceResolver: {
+      async resolveSearch(query) {
+        expect(query).toEqual({ keyword: "t", provider: "qq", limit: 2 });
+        return [{ ...routeTrack, provider: "qq", id: "q", sourceId: "q" }];
+      },
+      async resolveSongUrl() {
+        throw new Error("unused");
+      }
+    }
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/search?keyword=t&provider=qq&limit=2"));
+
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b.ok).toBe(true);
+  expect(b.data[0].provider).toBe("qq");
+});
+
 test("GET /providers/netease/login-status returns 200 logged-out when no cookie", async () => {
   const r = await call("/providers/netease/login-status");
   expect(r.status).toBe(200);
@@ -78,6 +126,51 @@ test("POST /providers/netease/song-url invalid JSON returns 400", async () => {
     body: "not-json"
   });
   expect(r.status).toBe(400);
+});
+
+test("POST /song-url without body returns 400 BAD_REQUEST", async () => {
+  const r = await call("/song-url", { method: "POST" });
+  expect(r.status).toBe(400);
+  const b = await body(r);
+  expect(b.error.code).toBe("BAD_REQUEST");
+});
+
+test("POST /song-url invalid Track body returns 400 BAD_REQUEST", async () => {
+  const r = await call("/song-url", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ title: "missing required fields" })
+  });
+  expect(r.status).toBe(400);
+  const b = await body(r);
+  expect(b.error.code).toBe("BAD_REQUEST");
+});
+
+test("POST /song-url uses injected cross-source resolver", async () => {
+  const handler = createRouteHandler({
+    crossSourceResolver: {
+      async resolveSearch() {
+        throw new Error("unused");
+      },
+      async resolveSongUrl(track) {
+        expect(track).toEqual(routeTrack);
+        return { url: "https://example.test/t.mp3", proxied: false };
+      }
+    }
+  });
+
+  const r = await handler(
+    new Request("http://127.0.0.1/song-url", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(routeTrack)
+    })
+  );
+
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b.ok).toBe(true);
+  expect(b.data.url).toBe("https://example.test/t.mp3");
 });
 
 test("POST /providers/netease/song-url valid body calls adapter (not 501 NOT_IMPLEMENTED)", async () => {

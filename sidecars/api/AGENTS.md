@@ -31,6 +31,7 @@ src/
 │       └── map.ts                    # QqSong→Track / parseLrc / mapQqLyricToPayload / playlist
 └── services/
     ├── fallback.ts                  # normalizeError: 3 分支 → envelope
+    ├── cross-source-resolver.ts     # provider-agnostic search/songUrl fallback + source switching
     ├── diagnostics.ts                # buildDiagnostics + pushRecentError ring buffer (cap 20)
     ├── diagnostics.test.ts           # cookie-leak 回归 assert
     └── audio-proxy.ts                # stub，返回 NOT_IMPLEMENTED
@@ -45,7 +46,7 @@ src/
 | 加新路由 | `server.ts` routeHandler 加 if 分支；test 在 `server.test.ts` 加断言 path + envelope；404 默认走 NOT_FOUND | routeHandler 是 module-level async fn，测试直接调 |
 | 改 capability matrix | `providers/registry.ts` buildCapabilityMatrix + registry.test.ts | 现 netease / qq 均 `available:true`（7c32b2b 后） |
 | 改 diagnostics | `services/diagnostics.ts` buildDiagnostics；test 强 assert cookie/auth keys 不出现 | 添加字段时**不要包含 cookie/MUSIC_U/qm_keyst/qqmusic_key/wxskey** |
-| 加跨源 fallback | 当前 pending slice；新文件 `services/cross-source-resolver.ts` + routeHandler 加 `/search` 和 `/song-url` provider-agnostic 路由 | 见 controller 后续 dispatch |
+| 加跨源 fallback | `services/cross-source-resolver.ts` + routeHandler `/search` 和 `/song-url` provider-agnostic 路由 | 代码侧已落地：preferred/registry-order fallback、空结果继续尝试、songUrl 通过 title/artists 搜索候选换源；WebView2 手动 provider evidence 待补 |
 | Bun CJS interop | `providers/qq/qq-client.ts:22-33` 用 `import.meta.require("qq-music-api")` | 不要用全局 `require()` —— 无 @types/node，typecheck 报 TS2580 |
 
 ## CONVENTIONS（仅记录偏离标准）
@@ -62,6 +63,7 @@ src/
 - **No-cookie diagnostic 回归**：`diagnostics.test.ts` + `server.test.ts` 都显式 assert `JSON.stringify(payload)` 不包含 `cookie`/`MUSIC_U`/`qm_keyst`/`qqmusic_key`/`wxskey` keys。改 diagnostics payload 前务必加 assert 通过这个 gate。
 - **Byte-equal port 启发**：DI 工厂模板受 `sidecars/api/src/providers/netease/netease-adapter.ts` 3c30dd6 commit 锚定，QQ 7c32b2b 同 shape，**不要改两套去凑创新**——若改一处为 baseline 对齐 / 类型收紧时，**另一处也必须对齐**。
 - **Adapter lazy CJS 适配**：QQ `qq-client.ts` 通过 `import.meta.require` 单次加载 jsososo 的 CJS package，缓存在 `cachedModule: QqApiModule | null`；`qq.setCookie()` 在 singleton 进程级 mutate 状态（**single cookie owner assumption**，见 qq-adapter.ts `// NOTE:`）。
+- **Cross-source resolver DI seam**：`createCrossSourceResolver({ providers, providerOrder })` 用 fake adapter 做服务测试；`createRouteHandler({ crossSourceResolver })` 只给 provider-agnostic `/search`、`/song-url` 注入，旧 `/providers/:provider/*` 分支继续直连 registry adapter。
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
