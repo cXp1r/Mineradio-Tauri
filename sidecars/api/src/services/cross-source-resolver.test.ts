@@ -212,6 +212,44 @@ test("resolveSongUrl tries direct provider first and returns its URL", async () 
   expect(calls).toEqual(["netease:songUrl:n-1"]);
 });
 
+test("resolveSongUrl passes requested quality to direct and fallback providers", async () => {
+  const calls: Calls = [];
+  const qqCandidate: Track = { ...baseTrack, provider: "qq", id: "q-1", sourceId: "q-1" };
+  const resolver = createCrossSourceResolver({
+    providers: {
+      netease: adapter(
+        "netease",
+        {
+          async songUrl(_track, opts) {
+            calls.push(`netease:${opts?.quality ?? "none"}`);
+            throw new ProviderError("netease", "NO_URL", "netease no url");
+          }
+        },
+        calls
+      ),
+      qq: adapter(
+        "qq",
+        {
+          async search() {
+            return [qqCandidate];
+          },
+          async songUrl(_track, opts) {
+            calls.push(`qq:${opts?.quality ?? "none"}`);
+            return { url: "https://q.example/song.mp3", proxied: false, requestedQuality: opts?.quality ?? null };
+          }
+        },
+        calls
+      )
+    },
+    providerOrder: ["netease", "qq"]
+  });
+
+  const result = await resolver.resolveSongUrl(baseTrack, { quality: "lossless" });
+
+  expect(result.requestedQuality).toBe("lossless");
+  expect(calls).toEqual(["netease:lossless", "qq:lossless"]);
+});
+
 test("resolveSongUrl searches fallback provider by title and artists before calling fallback songUrl", async () => {
   const calls: Calls = [];
   const qqCandidate: Track = {

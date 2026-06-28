@@ -6,7 +6,25 @@ import {
 	type ControlConsoleMotion,
 } from "@mineradio/visual-engine";
 import type { PlaybackMode } from "../stores/playback-store";
-import type { Track } from "@mineradio/shared";
+import type { PlaybackQuality, Track } from "@mineradio/shared";
+
+const PLAYBACK_QUALITY_OPTIONS: Array<{
+	value: PlaybackQuality;
+	label: string;
+	short: string;
+	detail: string;
+	svip?: boolean;
+}> = [
+	{ value: "jymaster", label: "超清母带", short: "母带", detail: "SVIP / 最高规格", svip: true },
+	{ value: "hires", label: "高清臻音", short: "臻音", detail: "默认 / 细节优先" },
+	{ value: "lossless", label: "无损 SQ", short: "SQ", detail: "FLAC 优先" },
+	{ value: "exhigh", label: "极高 HQ", short: "HQ", detail: "320kbps" },
+	{ value: "standard", label: "标准", short: "STD", detail: "128kbps" },
+];
+
+function playbackQualityOption(value: PlaybackQuality | undefined) {
+	return PLAYBACK_QUALITY_OPTIONS.find((option) => option.value === value) ?? PLAYBACK_QUALITY_OPTIONS[1];
+}
 
 export interface PlayerConsoleHostProps {
 	visible?: boolean;
@@ -21,6 +39,7 @@ export interface PlayerConsoleHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
+	onQualityChange?: (quality: PlaybackQuality) => void;
 	onPlayQueueIndex?: (index: number) => void;
 	onRemoveQueueIndex?: (index: number) => void;
 	onInsertQueueNext?: (index: number) => void;
@@ -40,6 +59,7 @@ export interface PlayerConsoleHostProps {
 	durationMs?: number | null;
 	volume?: number;
 	muted?: boolean;
+	playbackQuality?: PlaybackQuality;
 	deps?: {
 		controlsHovering?: () => boolean;
 		miniQueueOpen?: () => boolean;
@@ -87,6 +107,8 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	onVolumeChangeRef.current = props.onVolumeChange;
 	const onToggleMuteRef = useRef(props.onToggleMute);
 	onToggleMuteRef.current = props.onToggleMute;
+	const onQualityChangeRef = useRef(props.onQualityChange);
+	onQualityChangeRef.current = props.onQualityChange;
 	const onPlayQueueIndexRef = useRef(props.onPlayQueueIndex);
 	onPlayQueueIndexRef.current = props.onPlayQueueIndex;
 	const onRemoveQueueIndexRef = useRef(props.onRemoveQueueIndex);
@@ -97,6 +119,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	depsRef.current = props.deps;
 	const [progressDragging, setProgressDragging] = useState(false);
 	const [volumeOpen, setVolumeOpen] = useState(false);
+	const [qualityOpen, setQualityOpen] = useState(false);
 
 	const registerNormal = useCallback((id: string) => (el: HTMLButtonElement | null) => {
 		normalBtnRefs.current[id] = el;
@@ -255,6 +278,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const volume = Math.max(0, Math.min(1, props.volume ?? 0.84));
 	const muted = !!props.muted;
 	const volumePct = Math.round((muted ? 0 : volume) * 100);
+	const quality = playbackQualityOption(props.playbackQuality);
 
 	const progressPct = durationMs > 0 ? Math.max(0, Math.min(100, (positionMs / durationMs) * 100)) : 0;
 	const formatTime = (ms: number): string => {
@@ -333,9 +357,28 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 				</div>
 				<div className="control-cluster modes">
 					<div id="quality-control" className="quality-control">
-						<button id="quality-btn" className="ctrl-btn quality-btn" ref={registerNormal("quality-btn")} type="button" title="音质" aria-label="音质" onClick={() => noticeStub("音质切换等待 sidecar song-url quality 参数接入")}>
-							<span id="quality-btn-label">标准</span>
+						<button id="quality-btn" className={qualityOpen ? "ctrl-btn quality-btn active" : "ctrl-btn quality-btn"} ref={registerNormal("quality-btn")} type="button" title={`音质: ${quality.label}`} aria-label="音质" onClick={() => setQualityOpen((open) => !open)}>
+							<span id="quality-btn-label">{quality.short}</span>
 						</button>
+						<div className={qualityOpen ? "quality-popover show" : "quality-popover"} onClick={(event) => event.stopPropagation()}>
+							{PLAYBACK_QUALITY_OPTIONS.map((option) => (
+								<button
+									key={option.value}
+									className={option.value === quality.value ? "quality-option active" : "quality-option"}
+									type="button"
+									data-quality={option.value}
+									data-svip={option.svip ? "1" : undefined}
+									title={option.label}
+									onClick={() => {
+										setQualityOpen(false);
+										onQualityChangeRef.current?.(option.value);
+									}}
+								>
+									<span>{option.label}</span>
+									<small>{option.detail}</small>
+								</button>
+							))}
+						</div>
 					</div>
 					<div id="volume-control" className="volume-control">
 						<button id="volume-btn" className={volumeOpen ? "ctrl-btn active" : "ctrl-btn"} ref={registerNormal("volume-btn")} type="button" title="音量" aria-label="音量" onClick={() => setVolumeOpen((open) => !open)} onDoubleClick={() => onToggleMuteRef.current?.()}>

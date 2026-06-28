@@ -9,6 +9,7 @@ import {
   ProviderNotImplementedError,
   type ProviderAdapter,
   type ProviderLoginStatus,
+  type SongUrlOptions,
   type SongUrlResult
 } from "../provider-adapter";
 import { hanaClient, getConfig } from "./hana-client";
@@ -80,6 +81,18 @@ const STATE_TO_CODE: Record<string, string> = {
   unknown: "UNAVAILABLE"
 };
 
+const NETEASE_QUALITY_LABELS = {
+  jymaster: "超清母带",
+  hires: "高清臻音",
+  lossless: "无损",
+  exhigh: "极高",
+  standard: "标准"
+} as const;
+
+function requestedQuality(opts?: SongUrlOptions) {
+  return opts?.quality ?? "hires";
+}
+
 export function createNeteaseAdapter(
   deps: NeteaseHanaDeps = defaultDeps
 ): ProviderAdapter {
@@ -93,10 +106,11 @@ export function createNeteaseAdapter(
       const songsRaw = result && Array.isArray(result.songs) ? result.songs : [];
       return (songsRaw as unknown[]).map(s => mapHanaSongToTrack(s as HanaSong));
     },
-    async songUrl(track): Promise<SongUrlResult> {
+    async songUrl(track, opts): Promise<SongUrlResult> {
       const cfg = cfgOf(deps);
+      const quality = requestedQuality(opts);
       const resp = await deps.songUrlV1(
-        { id: track.sourceId, level: "standard" },
+        { id: track.sourceId, level: quality },
         cfg
       );
       const body = asObj(resp.body);
@@ -141,7 +155,15 @@ export function createNeteaseAdapter(
           `netease song-url missing url for ${track.sourceId}`
         );
       }
-      return { url, proxied: false };
+      const br = typeof datum.br === "number" && Number.isFinite(datum.br) ? Math.max(0, Math.floor(datum.br)) : undefined;
+      return {
+        url,
+        proxied: false,
+        level: quality,
+        quality: NETEASE_QUALITY_LABELS[quality],
+        br,
+        requestedQuality: quality
+      };
     },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);

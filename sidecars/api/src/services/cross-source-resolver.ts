@@ -1,5 +1,5 @@
-import type { ProviderId, Track } from "@mineradio/shared";
-import type { ProviderAdapter, SongUrlResult } from "../providers/provider-adapter";
+import type { PlaybackQuality, ProviderId, Track } from "@mineradio/shared";
+import type { ProviderAdapter, SongUrlOptions, SongUrlResult } from "../providers/provider-adapter";
 import { ProviderError } from "../providers/provider-adapter";
 import { providers as defaultProviders, PROVIDER_IDS } from "../providers/registry";
 
@@ -16,7 +16,7 @@ export type ResolveSearchQuery = {
 
 export type CrossSourceResolver = {
   resolveSearch(query: ResolveSearchQuery): Promise<Track[]>;
-  resolveSongUrl(track: Track): Promise<SongUrlResult>;
+  resolveSongUrl(track: Track, opts?: SongUrlOptions): Promise<SongUrlResult>;
 };
 
 export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): CrossSourceResolver {
@@ -54,7 +54,7 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
     });
   }
 
-  async function resolveSongUrl(track: Track): Promise<SongUrlResult> {
+  async function resolveSongUrl(track: Track, opts: { quality?: PlaybackQuality } = {}): Promise<SongUrlResult> {
     const attempts = orderedProviders(track.provider);
     let firstError: unknown;
 
@@ -64,14 +64,14 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
 
       try {
         if (providerId === track.provider) {
-          return await adapter.songUrl(track);
+          return await adapter.songUrl(track, opts);
         }
 
         const keyword = buildSwitchKeyword(track);
         const candidates = await adapter.search({ keyword, limit: 5 });
         for (const candidate of candidates) {
           try {
-            return await adapter.songUrl(candidate);
+            return await adapter.songUrl(candidate, opts);
           } catch (err) {
             firstError ??= err;
           }

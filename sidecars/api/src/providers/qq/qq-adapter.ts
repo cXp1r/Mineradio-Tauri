@@ -17,6 +17,7 @@ import {
   ProviderNotImplementedError,
   type ProviderAdapter,
   type ProviderLoginStatus,
+  type SongUrlOptions,
   type SongUrlResult
 } from "../provider-adapter";
 import { qqClient, getConfig } from "./qq-client";
@@ -118,6 +119,18 @@ function cfgOf(deps: QqClientDeps): { cookie?: string } {
   return cfg.cookie ? { cookie: cfg.cookie } : {};
 }
 
+const QQ_QUALITY_META = {
+  jymaster: { type: "flac", level: "lossless", label: "无损 FLAC" },
+  hires: { type: "flac", level: "lossless", label: "无损 FLAC" },
+  lossless: { type: "flac", level: "lossless", label: "无损 FLAC" },
+  exhigh: { type: "320", level: "exhigh", label: "320k MP3" },
+  standard: { type: "128", level: "standard", label: "128k MP3" }
+} as const;
+
+function qqQualityMeta(opts?: SongUrlOptions) {
+  return QQ_QUALITY_META[opts?.quality ?? "hires"];
+}
+
 export function createQqAdapter(
   deps: QqClientDeps = defaultDeps
 ): ProviderAdapter {
@@ -139,12 +152,13 @@ export function createQqAdapter(
         mapQqSongToTrack(s as QqSong)
       );
     },
-    async songUrl(track): Promise<SongUrlResult> {
+    async songUrl(track, opts): Promise<SongUrlResult> {
       const cfg = cfgOf(deps);
       const hasCookie = !!deps.getConfig().cookie;
+      const quality = qqQualityMeta(opts);
       let body: unknown;
       try {
-        body = (await deps.songUrl({ id: track.sourceId, type: "128" }, cfg)).body;
+        body = (await deps.songUrl({ id: track.sourceId, type: quality.type }, cfg)).body;
       } catch (err) {
         if (!hasCookie) {
           throw new ProviderError(
@@ -178,7 +192,13 @@ export function createQqAdapter(
           `qq song-url ${track.sourceId} returned no url`
         );
       }
-      return { url, proxied: false };
+      return {
+        url,
+        proxied: false,
+        level: quality.level,
+        quality: quality.label,
+        requestedQuality: opts?.quality ?? "hires"
+      };
     },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);

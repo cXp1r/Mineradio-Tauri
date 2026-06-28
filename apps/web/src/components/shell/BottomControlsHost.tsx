@@ -1,7 +1,7 @@
 import { type ReactElement } from "react";
 import { PlayerConsoleHost } from "../../visual/PlayerConsoleHost";
 import type { PlaybackMode } from "../../stores/playback-store";
-import type { Track } from "@mineradio/shared";
+import type { PlaybackQuality, Track } from "@mineradio/shared";
 
 export interface BottomControlsHostProps {
 	visible: boolean;
@@ -17,6 +17,7 @@ export interface BottomControlsHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
+	onQualityChange?: (quality: PlaybackQuality) => void;
 	onPlayQueueIndex?: (index: number) => void;
 	onRemoveQueueIndex?: (index: number) => void;
 	onInsertQueueNext?: (index: number) => void;
@@ -32,6 +33,7 @@ export interface BottomControlsHostProps {
 	durationMs?: number | null;
 	volume?: number;
 	muted?: boolean;
+	playbackQuality?: PlaybackQuality;
 }
 
 export function BottomControlsHost(props: BottomControlsHostProps): ReactElement {
@@ -62,6 +64,7 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				onSeek={props.onSeek}
 				onVolumeChange={props.onVolumeChange}
 				onToggleMute={props.onToggleMute}
+				onQualityChange={props.onQualityChange}
 				onPlayQueueIndex={props.onPlayQueueIndex}
 				onRemoveQueueIndex={props.onRemoveQueueIndex}
 				onInsertQueueNext={props.onInsertQueueNext}
@@ -77,6 +80,7 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				durationMs={props.durationMs}
 				volume={props.volume}
 				muted={props.muted}
+				playbackQuality={props.playbackQuality}
 			/>
 		</>
 	);

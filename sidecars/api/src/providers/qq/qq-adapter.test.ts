@@ -182,6 +182,23 @@ test("songUrl with cookie returns {url, proxied:false} when qq resolves url stri
   expect(out.proxied).toBe(false);
 });
 
+test("songUrl maps requested playback quality to qq type and returns resolved quality metadata", async () => {
+  let lastQuery: Record<string, unknown> = {};
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
+    songUrl: async (query) => {
+      lastQuery = query;
+      return { body: "http://audio.example/x.flac" };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
+  expect(lastQuery["type"]).toBe("flac");
+  expect(out.level).toBe("lossless");
+  expect(out.quality).toBe("无损 FLAC");
+  expect(out.requestedQuality).toBe("lossless");
+});
+
 test("songUrl with cookie but empty url throws ProviderError UNAVAILABLE", async () => {
   const deps = noopDeps({
     getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),

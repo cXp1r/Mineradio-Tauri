@@ -178,20 +178,24 @@ test("songUrl POSTs the Track body and parses the SongUrlResult envelope", async
 });
 
 test("resolveSongUrl POSTs to the cross-source song-url endpoint", async () => {
+	let receivedBody: unknown = null;
 	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input.toString();
 		expect(url).toContain("/song-url");
 		expect(url).not.toContain("/providers/");
 		expect(init?.method).toBe("POST");
+		receivedBody = JSON.parse(String(init?.body ?? "{}"));
 		return jsonResponse({
 			ok: true,
-			data: { url: "https://media.example/a.mp3", proxied: false },
+			data: { url: "https://media.example/a.mp3", proxied: false, requestedQuality: "lossless" },
 		});
 	}) as typeof fetch;
 	await withFetch(fake, async () => {
 		const client = new SidecarClient(BASE);
-		const result = await client.resolveSongUrl(SAMPLE_TRACK);
+		const result = await client.resolveSongUrl(SAMPLE_TRACK, "lossless");
 		expect(result.proxied).toBe(false);
+		expect(result.requestedQuality).toBe("lossless");
+		expect(receivedBody).toEqual({ track: SAMPLE_TRACK, quality: "lossless" });
 		expect(client.audioProxyUrl(result.url)).toBe(`${BASE}/audio-proxy?url=https%3A%2F%2Fmedia.example%2Fa.mp3`);
 	});
 });

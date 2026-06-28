@@ -15,6 +15,7 @@ import {
 	ProviderLogoutAck,
 	ProviderLogoutAckSchema,
 	SongUrlResultSchema,
+	type PlaybackQuality,
 	TrackArraySchema,
 	Track,
 	LyricPayload,
@@ -177,21 +178,21 @@ export class SidecarClient {
 		);
 	}
 
-	async songUrl(track: Track): Promise<SongUrlResult> {
+	async songUrl(track: Track, quality?: PlaybackQuality): Promise<SongUrlResult> {
 		return this.request(
 			"POST",
 			`/providers/${track.provider}/song-url`,
 			SongUrlResultSchema,
-			track,
+			quality ? { track, quality } : track,
 		);
 	}
 
-	async resolveSongUrl(track: Track): Promise<SongUrlResult> {
+	async resolveSongUrl(track: Track, quality?: PlaybackQuality): Promise<SongUrlResult> {
 		return this.request(
 			"POST",
 			"/song-url",
 			SongUrlResultSchema,
-			track,
+			quality ? { track, quality } : track,
 		);
 	}
 

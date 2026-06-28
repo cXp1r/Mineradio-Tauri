@@ -350,9 +350,10 @@ test("POST /song-url uses injected cross-source resolver", async () => {
       async resolveSearch() {
         throw new Error("unused");
       },
-      async resolveSongUrl(track) {
+      async resolveSongUrl(track, opts) {
         expect(track).toEqual(routeTrack);
-        return { url: "https://example.test/t.mp3", proxied: false };
+        expect(opts?.quality).toBe("lossless");
+        return { url: "https://example.test/t.mp3", proxied: false, requestedQuality: opts?.quality ?? null };
       }
     }
   });
@@ -361,7 +362,7 @@ test("POST /song-url uses injected cross-source resolver", async () => {
     new Request("http://127.0.0.1/song-url", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify(routeTrack)
+      body: JSON.stringify({ track: routeTrack, quality: "lossless" })
     })
   );
 
@@ -369,6 +370,7 @@ test("POST /song-url uses injected cross-source resolver", async () => {
   const b = await body(r);
   expect(b.ok).toBe(true);
   expect(b.data.url).toBe("https://example.test/t.mp3");
+  expect(b.data.requestedQuality).toBe("lossless");
 });
 
 test("POST /providers/netease/song-url valid body calls adapter (not 501 NOT_IMPLEMENTED)", async () => {

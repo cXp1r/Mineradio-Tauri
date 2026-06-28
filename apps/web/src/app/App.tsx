@@ -16,11 +16,12 @@ import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import { VisualEngineHost } from "../visual/VisualEngineHost";
 import { createShelfDetailContentLoader, playShelfDetailRow } from "../visual/shelf-detail-data";
-import type { ProviderId, ProviderLoginStatus } from "@mineradio/shared";
+import type { PlaybackQuality, ProviderId, ProviderLoginStatus } from "@mineradio/shared";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const SIDECAR_STATUS_POLL_MS = 1500;
 const SIDECAR_RECOVERED_NOTICE_MS = 2600;
+const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
 
 function placeholderRuntimeConfig(): RuntimeConfig {
 	return {
@@ -37,6 +38,18 @@ function audioElementSupported(): boolean {
 		typeof window !== "undefined" &&
 		"HTMLAudioElement" in globalThis
 	);
+}
+
+function readPlaybackQualityPreference(): PlaybackQuality {
+	if (typeof localStorage === "undefined") return "hires";
+	const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
+	if (raw === "jymaster" || raw === "hires" || raw === "lossless" || raw === "exhigh" || raw === "standard") return raw;
+	return "hires";
+}
+
+function savePlaybackQualityPreference(quality: PlaybackQuality): void {
+	if (typeof localStorage === "undefined") return;
+	localStorage.setItem(PLAYBACK_QUALITY_STORE_KEY, quality);
 }
 
 export function isHomeBlankDismissElement(target: EventTarget | null): boolean {
@@ -116,6 +129,8 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 	const [homeForcedOpen, setHomeForcedOpen] = useState(false);
 	const [homeSuppressed, setHomeSuppressed] = useState(false);
 	const [sidecarRecoveryState, setSidecarRecoveryState] = useState<SidecarRecoveryNoticeState | null>(null);
+	const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQuality>(readPlaybackQualityPreference);
+	const [playbackQualityReloadSeq, setPlaybackQualityReloadSeq] = useState(0);
 
 	const currentTrack = usePlaybackStore((s) => s.currentTrack);
 	const queue = usePlaybackStore((s) => s.queue);
@@ -381,6 +396,22 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 		setPositionMs(position);
 	}, [setPositionMs]);
 
+	const setPlaybackQuality = useCallback((quality: PlaybackQuality) => {
+		setPlaybackQualityState(quality);
+		savePlaybackQualityPreference(quality);
+		if (!usePlaybackStore.getState().currentTrack) {
+			showToast("音质偏好已保存，下次播放生效");
+			return;
+		}
+		const resumeAt = controllerRef.current ? usePlaybackStore.getState().positionMs : 0;
+		if (resumeAt > 0) controllerRef.current?.pause();
+		lastLoadedKeyRef.current = "";
+		playbackRequestSeqRef.current += 1;
+		setPositionMs(resumeAt);
+		setPlaybackQualityReloadSeq((seq) => seq + 1);
+		showToast("正在切换音质");
+	}, [setPositionMs, showToast]);
+
 	useEffect(() => {
 		if (typeof document === "undefined") return;
 		document.body.classList.toggle("splash-active", splashActive);
@@ -598,10 +629,11 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 
 		void (async () => {
 			try {
-				const result = await client.resolveSongUrl(currentTrack);
+				const result = await client.resolveSongUrl(currentTrack, playbackQuality);
 				if (playbackRequestSeqRef.current !== seq) return;
 				const audioUrl = result.proxied ? result.url : client.audioProxyUrl(result.url);
 				controller.load(audioUrl);
+				if (positionRef.current > 0) controller.seek(positionRef.current);
 				await controller.play();
 				if (playbackRequestSeqRef.current !== seq) return;
 				setHomeForcedOpen(false);
@@ -626,7 +658,7 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				setLyricsError(message);
 			}
 		})();
-	}, [currentTrack, sidecarClient, setLyricsError, setLyricsLoading, setLyricsPayload, setPlaying, setSearchError, showToast, lyricsReset]);
+	}, [currentTrack, playbackQuality, playbackQualityReloadSeq, sidecarClient, setLyricsError, setLyricsLoading, setLyricsPayload, setPlaying, setSearchError, showToast, lyricsReset]);
 
 	return (
 		<>
@@ -694,6 +726,7 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				onSeek={seekPlayback}
 				onVolumeChange={setVolume}
 				onToggleMute={toggleMute}
+				onQualityChange={setPlaybackQuality}
 				onPlayQueueIndex={playMiniQueueIndex}
 				onRemoveQueueIndex={removeQueueAt}
 				onInsertQueueNext={insertMiniQueueNext}
@@ -709,6 +742,7 @@ export function App({ SplashComponent = SplashHost }: AppProps = {}): ReactEleme
 				durationMs={durationMs}
 				volume={volume}
 				muted={muted}
+				playbackQuality={playbackQuality}
 			/>
 			{sidecarRecoveryState ? <SidecarRecoveryNotice state={sidecarRecoveryState} /> : null}
 			{loginModalOpen ? (

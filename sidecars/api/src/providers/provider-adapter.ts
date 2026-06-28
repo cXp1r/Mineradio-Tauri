@@ -3,7 +3,8 @@ import type {
   PlaylistSummary,
   PlaylistDetail,
   LyricPayload,
-  ProviderId
+  ProviderId,
+  PlaybackQuality
 } from "@mineradio/shared";
 
 export type ProviderLoginStatus = {
@@ -14,12 +15,20 @@ export type ProviderLoginStatus = {
   userId?: string;
 };
 
-export type SongUrlResult = { url: string; proxied: boolean };
+export type SongUrlOptions = { quality?: PlaybackQuality };
+export type SongUrlResult = {
+  url: string;
+  proxied: boolean;
+  level?: PlaybackQuality;
+  quality?: string;
+  br?: number;
+  requestedQuality?: PlaybackQuality | null;
+};
 
 export interface ProviderAdapter {
   readonly id: ProviderId;
   search(query: { keyword: string; limit: number }): Promise<Track[]>;
-  songUrl(track: Track): Promise<SongUrlResult>;
+  songUrl(track: Track, opts?: SongUrlOptions): Promise<SongUrlResult>;
   lyric(track: Track): Promise<LyricPayload>;
   playlistList(): Promise<PlaylistSummary[]>;
   playlistDetail(id: string): Promise<PlaylistDetail>;

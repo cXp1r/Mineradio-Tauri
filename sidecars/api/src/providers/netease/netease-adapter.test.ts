@@ -104,6 +104,25 @@ test("songUrl maps playable fixture data element to {url, proxied:false}", async
   expect(out.proxied).toBe(false);
 });
 
+test("songUrl sends requested playback quality to hana and returns resolved quality metadata", async () => {
+  let lastQuery: Record<string, unknown> = {};
+  const deps = noopDeps({
+    songUrlV1: async (query) => {
+      lastQuery = query;
+      return {
+        body: { data: [{ id: 1, url: "http://audio", br: 999000, size: 100, type: "mp3", fee: 0, code: 200 }] }
+      };
+    }
+  });
+  const adapter = createNeteaseAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "exhigh" });
+  expect(lastQuery["level"]).toBe("exhigh");
+  expect(out.level).toBe("exhigh");
+  expect(out.quality).toBe("极高");
+  expect(out.br).toBe(999000);
+  expect(out.requestedQuality).toBe("exhigh");
+});
+
 test("songUrl for url:null + code:401 throws ProviderError LOGIN_REQUIRED", async () => {
   const deps = noopDeps({
     songUrlV1: async () => ({ body: { data: [{ id: 1, url: null, code: 401, fee: 0 }] } })

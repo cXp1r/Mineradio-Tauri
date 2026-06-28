@@ -1,6 +1,7 @@
 import {
   HealthResponseSchema,
   ProviderIdSchema,
+  SongUrlRequestSchema,
   TrackSchema,
   ProviderSessionCookieAckSchema,
   type CapabilityMatrix,
@@ -138,7 +139,8 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
 
     if (path === "/song-url" && method === "POST") {
       const body = await parseJsonBody(request);
-      const parsedTrack = TrackSchema.safeParse(body);
+      const parsedRequest = SongUrlRequestSchema.safeParse(body);
+      const parsedTrack = parsedRequest.success ? { success: true as const, data: parsedRequest.data.track } : TrackSchema.safeParse(body);
       if (!parsedTrack.success) {
         response = json(
           fail({
@@ -151,8 +153,9 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
         await logRequest(logger, { method, path, status: response.status, startedAt });
         return response;
       }
+      const quality = parsedRequest.success ? parsedRequest.data.quality : undefined;
       try {
-        response = json(ok(await resolver.resolveSongUrl(parsedTrack.data)));
+        response = json(ok(await resolver.resolveSongUrl(parsedTrack.data, { quality })));
         await logRequest(logger, { method, path, status: response.status, startedAt, provider: parsedTrack.data.provider });
         return response;
       } catch (err) {
@@ -253,11 +256,13 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
         }
         if (sub === "song-url" && method === "POST") {
           const body = await parseJsonBody(request);
-          if (body === null) {
+          const parsedRequest = SongUrlRequestSchema.safeParse(body);
+          const parsedTrack = parsedRequest.success ? { success: true as const, data: parsedRequest.data.track } : TrackSchema.safeParse(body);
+          if (!parsedTrack.success) {
             response = json(
               fail({
                 code: "BAD_REQUEST",
-                message: "invalid or missing JSON body",
+                message: "invalid or missing Track body",
                 provider: providerId,
                 retryable: false
               }),
@@ -266,7 +271,7 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
             await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
             return response;
           }
-          response = json(ok(await adapter.songUrl(body as Track)));
+          response = json(ok(await adapter.songUrl(parsedTrack.data, { quality: parsedRequest.success ? parsedRequest.data.quality : undefined })));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }
