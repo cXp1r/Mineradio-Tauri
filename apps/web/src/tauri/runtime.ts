@@ -6,6 +6,18 @@ export interface RuntimeConfig {
 }
 
 export type Unlisten = () => void;
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+
+export interface ExportJsonFileResult {
+	cancelled: boolean;
+	path: string | null;
+}
+
+export interface ImportJsonFileResult {
+	cancelled: boolean;
+	path: string | null;
+	data: JsonValue | null;
+}
 
 interface RawRuntimeConfig {
 	sidecar_base_url: string;
@@ -52,6 +64,21 @@ function placeholderRuntimeConfig(): RuntimeConfig {
 	};
 }
 
+function cancelledExportJsonResult(): ExportJsonFileResult {
+	return {
+		cancelled: true,
+		path: null,
+	};
+}
+
+function cancelledImportJsonResult(): ImportJsonFileResult {
+	return {
+		cancelled: true,
+		path: null,
+		data: null,
+	};
+}
+
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
 	if (!isTauriRuntime()) {
 		return placeholderRuntimeConfig();
@@ -70,4 +97,20 @@ export async function getRuntimeConfig(): Promise<RuntimeConfig> {
 	} catch {
 		return placeholderRuntimeConfig();
 	}
+}
+
+export async function exportJsonFile(fileName: string, data: JsonValue): Promise<ExportJsonFileResult> {
+	if (!isTauriRuntime()) {
+		return cancelledExportJsonResult();
+	}
+	const result = await invokeTauriCommand<ExportJsonFileResult>("export_json_file", { fileName, data });
+	return result ?? cancelledExportJsonResult();
+}
+
+export async function importJsonFile(): Promise<ImportJsonFileResult> {
+	if (!isTauriRuntime()) {
+		return cancelledImportJsonResult();
+	}
+	const result = await invokeTauriCommand<ImportJsonFileResult>("import_json_file");
+	return result ?? cancelledImportJsonResult();
 }

@@ -48,9 +48,10 @@ impl DesktopLyricsPollerChild {
         match (kill_result, wait_result) {
             (_, Ok(_)) => Ok(()),
             (Ok(_), Err(wait_err)) => Err(wait_err.to_string()),
-            (Err(kill_err), Err(wait_err)) => {
-                Err(format!("kill failed: {}; wait failed: {}", kill_err, wait_err))
-            }
+            (Err(kill_err), Err(wait_err)) => Err(format!(
+                "kill failed: {}; wait failed: {}",
+                kill_err, wait_err
+            )),
         }
     }
 }
@@ -118,6 +119,7 @@ pub fn run() {
     let setup_log_dir = log_dir.clone();
 
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_config,

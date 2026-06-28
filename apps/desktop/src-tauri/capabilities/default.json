@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Minimal Mineradio runtime shell capabilities for the phase-5 Tauri runtime. No filesystem, shell-execute, dialog, or updater permissions are granted in this phase.",
+  "description": "Mineradio runtime shell capabilities for main-window system commands. Renderer dialog plugin commands are not exposed; JSON import/export is owned by Rust commands.",
   "windows": ["main"],
   "permissions": [
     "core:window:default",
