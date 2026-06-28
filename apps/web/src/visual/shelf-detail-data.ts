@@ -5,6 +5,7 @@ import type {
 	ShelfContentRow,
 	ShelfOpenDetailContentPayload,
 } from "@mineradio/visual-engine";
+import { usePlaybackStore } from "../stores/playback-store";
 import { isPlayable, playSearchResult } from "../components/search/play-search-result";
 import type { ShelfDetailRowClickPayload } from "./shelf-pointer-interactions";
 
@@ -77,6 +78,22 @@ export function mapShelfDetailRowToTrack(row: ShelfContentRow): Track | null {
 export function playShelfDetailRow(payload: ShelfDetailRowClickPayload): boolean {
 	const track = mapShelfDetailRowToTrack(payload.row);
 	if (!track || !isPlayable(track.playableState)) return false;
+	playSearchResult(track);
+	return true;
+}
+
+export function handleShelfDetailRowAction(payload: ShelfDetailRowClickPayload): boolean {
+	const action = payload.action ?? "row";
+	if (action === "like" || action === "collect") return false;
+
+	const track = mapShelfDetailRowToTrack(payload.row);
+	if (!track || !isPlayable(track.playableState)) return false;
+
+	if (action === "next") {
+		usePlaybackStore.getState().insertNext(track);
+		return true;
+	}
+
 	playSearchResult(track);
 	return true;
 }

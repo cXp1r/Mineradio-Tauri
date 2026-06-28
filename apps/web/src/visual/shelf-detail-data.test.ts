@@ -3,6 +3,7 @@ import type { PlaylistDetail, ProviderId } from "@mineradio/shared";
 import { usePlaybackStore } from "../stores/playback-store";
 import {
 	createShelfDetailContentLoader,
+	handleShelfDetailRowAction,
 	mapPlaylistDetailToShelfRows,
 	mapShelfDetailRowToTrack,
 	playShelfDetailRow,
@@ -122,6 +123,45 @@ test("playShelfDetailRow enqueues and plays valid rows while ignoring hard non-p
 	expect(playShelfDetailRow({ row: rows[1]!, index: 1 })).toBe(false);
 	expect(usePlaybackStore.getState().queue.length).toBe(1);
 	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+});
+
+test("handleShelfDetailRowAction inserts next rows after the current track without interrupting playback", () => {
+	resetPlaybackStore();
+	const rows = mapPlaylistDetailToShelfRows(makeDetail(), "netease");
+	const current = mapShelfDetailRowToTrack(rows[0]!)!;
+	usePlaybackStore.getState().setQueue([current]);
+	usePlaybackStore.getState().playAt(0);
+
+	expect(handleShelfDetailRowAction({ row: rows[1]!, index: 1, action: "next" })).toBe(false);
+	expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["song-1"]);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+
+	expect(handleShelfDetailRowAction({ row: rows[0]!, index: 0, action: "next" })).toBe(true);
+	expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["song-1"]);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+});
+
+test("handleShelfDetailRowAction plays explicit play and default row actions through search-result playback", () => {
+	resetPlaybackStore();
+	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!;
+
+	expect(handleShelfDetailRowAction({ row, index: 0, action: "play" })).toBe(true);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+	expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["song-1"]);
+
+	resetPlaybackStore();
+	expect(handleShelfDetailRowAction({ row, index: 0, action: "row" })).toBe(true);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("song-1");
+});
+
+test("handleShelfDetailRowAction exposes like and collect as routed but non-mutating actions until provider mutations exist", () => {
+	resetPlaybackStore();
+	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!;
+
+	expect(handleShelfDetailRowAction({ row, index: 0, action: "like" })).toBe(false);
+	expect(handleShelfDetailRowAction({ row, index: 0, action: "collect" })).toBe(false);
+	expect(usePlaybackStore.getState().queue).toEqual([]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });
 
 test("createShelfDetailContentLoader fetches playlist detail and writes rows through the request token", async () => {

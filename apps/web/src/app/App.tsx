@@ -53,7 +53,7 @@ import { UpdateHost } from "../components/shell/UpdateHost";
 import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import { VisualEngineHost } from "../visual/VisualEngineHost";
-import { createShelfDetailContentLoader, playShelfDetailRow } from "../visual/shelf-detail-data";
+import { createShelfDetailContentLoader, handleShelfDetailRowAction } from "../visual/shelf-detail-data";
 import type { PlaybackQuality, PlaylistSummary, ProviderId, ProviderLoginStatus } from "@mineradio/shared";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
@@ -1073,7 +1073,7 @@ export function App({ SplashComponent = SplashHost, VisualComponent = VisualEngi
 				homeActive={emptyHomeActive}
 				onShelfModeChange={updateShelfMode}
 				onShelfPlayQueueIndex={(index) => usePlaybackStore.getState().playAt(index)}
-				onShelfDetailRowClick={playShelfDetailRow}
+				onShelfDetailRowClick={handleShelfDetailRowAction}
 				onShelfOpenDetailContent={(payload, contentList) => {
 					const loader = createShelfDetailContentLoader({
 						client: sidecarClient,

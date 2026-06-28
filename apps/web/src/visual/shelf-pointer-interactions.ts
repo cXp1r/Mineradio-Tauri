@@ -17,7 +17,10 @@ export interface ShelfPointerInteractionTarget {
 export interface ShelfDetailRowClickPayload {
 	row: ShelfContentRow;
 	index: number;
+	action?: ShelfDetailRowAction;
 }
+
+export type ShelfDetailRowAction = "row" | "like" | "collect" | "next" | "play";
 
 export interface ShelfPointerInteractionOptions {
 	target: ShelfPointerInteractionTarget;
@@ -161,6 +164,23 @@ function isShelfInteractionBackgroundTarget(target: EventTarget | null): boolean
 
 function isShelfDetailPlaceholderRow(row: ShelfContentRow): boolean {
 	return row.kind === "loading" || row.kind === "error" || row.kind === "empty";
+}
+
+function shelfDetailActionFromUv(
+	pick: { row: ShelfContentRow; index: number; uv?: { x: number; y: number } | null },
+	centerIdx: number,
+): ShelfDetailRowAction {
+	const selectedRow = Math.abs(pick.index - centerIdx) < 0.5;
+	const rowIsPodcastRadio = pick.row.type === "podcast-radio";
+	const uv = pick.uv;
+	const inButtonY = !!uv && uv.y > 0.20 && uv.y < 0.82;
+	if (selectedRow && !rowIsPodcastRadio && inButtonY) {
+		if (uv.x > 0.61 && uv.x < 0.68) return "like";
+		if (uv.x >= 0.68 && uv.x < 0.75) return "collect";
+		if (uv.x >= 0.75 && uv.x < 0.82) return "next";
+		if (uv.x >= 0.82) return "play";
+	}
+	return "play";
 }
 
 export function attachShelfPointerInteractionWiring(
@@ -356,7 +376,11 @@ export function attachShelfPointerInteractionWiring(
 			mouseEvent.preventDefault?.();
 			mouseEvent.stopImmediatePropagation?.();
 			opts.onShelfSelectFeedback?.(pick.index - opts.shelfManager.getCenterIdx(), "row");
-			opts.onShelfDetailRowClick?.({ row: pick.row, index: pick.index });
+			opts.onShelfDetailRowClick?.({
+				row: pick.row,
+				index: pick.index,
+				action: shelfDetailActionFromUv(pick, opts.shelfManager.getCenterIdx()),
+			});
 			return;
 		}
 		if (!canStartInteraction(event)) return;
