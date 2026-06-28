@@ -194,6 +194,13 @@ function getPlaylistPanelFocusInfo(doc: Document): QueueFocusPanelInfo | null {
 	};
 }
 
+export function isRuntimeShelfPreviewActive(
+	presence: string | null | undefined,
+	shelfVisibility: number,
+): boolean {
+	return presence === "auto" && shelfVisibility > 0.16;
+}
+
 function disposeHandles(handles: MountedHandles | null): void {
 	if (!handles) return;
 	try {
@@ -459,6 +466,10 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
 				getShelfPresence: () => refs.shelfPresenceRef?.current ?? refs.fxDefaults?.shelfPresence ?? "always",
+				getShelfPreviewActive: () => {
+					const presence = refs.shelfPresenceRef?.current ?? refs.fxDefaults?.shelfPresence ?? "always";
+					return isRuntimeShelfPreviewActive(presence, shelfManager.getShelfVisibility());
+				},
 				onShelfPlayQueueIndex: (index) => refs.onShelfPlayQueueIndexRef?.current?.(index),
 			});
 			handles = {

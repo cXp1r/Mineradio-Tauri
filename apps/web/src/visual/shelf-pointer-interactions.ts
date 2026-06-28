@@ -35,6 +35,7 @@ export interface ShelfPointerInteractionOptions {
 	getViewportWidth: () => number;
 	getViewportHeight: () => number;
 	getShelfPresence?: () => string | null | undefined;
+	getShelfPreviewActive?: () => boolean;
 	onShelfPlayQueueIndex?: (index: number) => void;
 	onOpenQueuePanel?: () => void;
 }
@@ -65,6 +66,19 @@ const BACKGROUND_TARGET_SELECTOR = [
 
 const WHEEL_LISTENER_OPTIONS: AddEventListenerOptions = { passive: false, capture: true };
 const WHEEL_REMOVE_OPTIONS: EventListenerOptions = { capture: true };
+
+function getShelfWheelZoneWidth(viewportWidth: number, viewportHeight: number): number {
+	const portrait = viewportHeight > viewportWidth * 1.08;
+	const hotZoneRatio = portrait ? 0.26 : 0.18;
+	const hotZoneWidth = Math.min(portrait ? 280 : 360, Math.max(148, viewportWidth * hotZoneRatio));
+	const ratioWidth = viewportWidth * (portrait ? 0.24 : 0.18);
+	return Math.min(portrait ? 280 : 360, Math.max(hotZoneWidth, ratioWidth));
+}
+
+function isShelfWheelZone(event: WheelEvent, viewportWidth: number, viewportHeight: number): boolean {
+	const edge = getShelfWheelZoneWidth(viewportWidth, viewportHeight);
+	return event.clientX > viewportWidth - edge && event.clientY > 116 && event.clientY < viewportHeight - 116;
+}
 
 export function isShelfInteractionUiTarget(target: EventTarget | null): boolean {
 	if (!target) return false;
@@ -114,6 +128,13 @@ export function attachShelfPointerInteractionWiring(
 		return opts.shelfManager.getShelfPinnedOpen();
 	};
 
+	const isSideAutoPreviewActive = (): boolean => {
+		if (opts.shelfManager.getMode() !== "side") return false;
+		if (isShelfPinnedOpen()) return false;
+		if (opts.getShelfPresence?.() !== "auto") return false;
+		return opts.getShelfPreviewActive?.() === true;
+	};
+
 	const canStartInteraction = (event: Event): boolean => {
 		if (opts.getSplashActive()) return false;
 		if (opts.shelfManager.getMode() === "off") return false;
@@ -134,10 +155,12 @@ export function attachShelfPointerInteractionWiring(
 	};
 
 	const canUseWheelHit = (hit: ReturnType<ShelfPointerRaycastHitGetter>): hit is ShelfRaycastCardHit => {
-		if (!canUseHit(hit)) return false;
+		if (!hit) return false;
 		const mode = opts.shelfManager.getMode();
 		if (mode === "stage") return true;
-		return mode === "side" && (isShelfPinnedOpen() || opts.getShelfPresence?.() === "always");
+		if (mode !== "side") return false;
+		if (isShelfPinnedOpen() || isSideAutoPreviewActive()) return true;
+		return opts.getShelfPresence?.() === "always" && canUseHit(hit);
 	};
 
 	const canForceWheelScroll = (event: WheelEvent): boolean => {
@@ -145,7 +168,12 @@ export function attachShelfPointerInteractionWiring(
 		const mode = opts.shelfManager.getMode();
 		if (mode === "stage") return true;
 		if (mode !== "side") return false;
-		return isShelfPinnedOpen() || opts.getShelfPresence?.() === "always";
+		return isShelfPinnedOpen() || isSideAutoPreviewActive() || opts.getShelfPresence?.() === "always";
+	};
+
+	const canUsePreviewWheelZone = (event: WheelEvent): boolean => {
+		if (!isSideAutoPreviewActive()) return false;
+		return isShelfWheelZone(event, opts.getViewportWidth(), opts.getViewportHeight());
 	};
 
 	const pointerInfoFromEvent = (event: PointerEvent | MouseEvent): ShelfPointerRaycastInfo => {
@@ -230,7 +258,7 @@ export function attachShelfPointerInteractionWiring(
 		const wheelEvent = event as WheelEvent;
 		if (!canStartInteraction(event)) return;
 		const hit = opts.getHit(pointerInfoFromEvent(wheelEvent));
-		if (!canUseWheelHit(hit) && !canForceWheelScroll(wheelEvent)) return;
+		if (!canUseWheelHit(hit) && !canForceWheelScroll(wheelEvent) && !canUsePreviewWheelZone(wheelEvent)) return;
 		wheelEvent.preventDefault();
 		wheelEvent.stopImmediatePropagation();
 		opts.shelfManager.scrollBy(wheelEvent.deltaY > 0 ? 1 : -1);
