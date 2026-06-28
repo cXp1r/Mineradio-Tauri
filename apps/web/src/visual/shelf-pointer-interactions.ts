@@ -24,6 +24,8 @@ export interface ShelfPointerInteractionOptions {
 		| "scrollBy"
 		| "openDetail"
 		| "closeDetail"
+		| "hasOpenContent"
+		| "getContentList"
 		| "getShelfPinnedOpen"
 		| "setShelfPinnedOpen"
 		| "updateShelfHoverCueFromPointer"
@@ -40,6 +42,7 @@ export interface ShelfPointerInteractionOptions {
 	getViewportHeight: () => number;
 	getShelfPresence?: () => string | null | undefined;
 	getShelfPreviewActive?: () => boolean;
+	isDetailWheelTarget?: (event: WheelEvent) => boolean;
 	setShelfMode?: (mode: "side") => void;
 	onShelfPlayQueueIndex?: (index: number) => void;
 	onOpenQueuePanel?: () => void;
@@ -239,6 +242,15 @@ export function attachShelfPointerInteractionWiring(
 		return isShelfWheelZone(event, opts.getViewportWidth(), opts.getViewportHeight());
 	};
 
+	const canUseDetailWheel = (event: WheelEvent): boolean => {
+		if (opts.getSplashActive()) return false;
+		if (opts.shelfManager.getMode() === "off") return false;
+		if (!opts.shelfManager.hasOpenContent()) return false;
+		if (isShelfInteractionUiTarget(event.target)) return false;
+		if (!isShelfInteractionBackgroundTarget(event.target)) return false;
+		return opts.isDetailWheelTarget?.(event) === true;
+	};
+
 	const pointerInfoFromEvent = (event: PointerEvent | MouseEvent): ShelfPointerRaycastInfo => {
 		const mode = opts.shelfManager.getMode();
 		const snapshot = opts.shelfManager.getSnapshot();
@@ -332,6 +344,15 @@ export function attachShelfPointerInteractionWiring(
 
 	const onWheel: EventListener = (event) => {
 		const wheelEvent = event as WheelEvent;
+		if (opts.shelfManager.hasOpenContent()) {
+			if (!canUseDetailWheel(wheelEvent)) return;
+			const contentList = opts.shelfManager.getContentList();
+			if (!contentList) return;
+			wheelEvent.preventDefault();
+			wheelEvent.stopImmediatePropagation();
+			contentList.scrollBy(wheelEvent.deltaY > 0 ? 1 : -1);
+			return;
+		}
 		if (!canStartInteraction(event)) return;
 		const hit = opts.getHit(pointerInfoFromEvent(wheelEvent));
 		if (

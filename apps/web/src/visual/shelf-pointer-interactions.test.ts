@@ -29,6 +29,8 @@ type ShelfPointerInteractionManager = Pick<
 	| "scrollBy"
 	| "openDetail"
 	| "closeDetail"
+	| "hasOpenContent"
+	| "getContentList"
 	| "getShelfPinnedOpen"
 	| "setShelfPinnedOpen"
 	| "updateShelfHoverCueFromPointer"
@@ -49,6 +51,8 @@ function makeShelfManagerMock(
 		scrollBy: () => {},
 		openDetail: () => {},
 		closeDetail: () => {},
+		hasOpenContent: () => false,
+		getContentList: () => null,
 		getShelfPinnedOpen: () => false,
 		setShelfPinnedOpen: () => {},
 		updateShelfHoverCueFromPointer: () => {},
@@ -1369,6 +1373,188 @@ test("attachShelfPointerInteractionWiring applies portrait side auto preview whe
 	expect(outsideY.calls).toEqual([]);
 });
 
+test("attachShelfPointerInteractionWiring scrolls open detail content-list wheel target without first-level shelf scroll", () => {
+	const target = new FakePointerTarget();
+	const shelfScrolled: number[] = [];
+	const contentScrolled: number[] = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getMode: () => "stage",
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				openCardIdx: 2,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 0,
+			scrollBy: (delta) => shelfScrolled.push(delta),
+			openDetail: () => {},
+			hasOpenContent: () => true,
+			getContentList: () => ({
+				scrollBy: (delta: number) => contentScrolled.push(delta),
+			}) as never,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(2),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		isDetailWheelTarget: () => true,
+	});
+
+	const down = makeWheelEvent({ deltaY: 120 });
+	const up = makeWheelEvent({ deltaY: -80 });
+	target.emit("wheel", down);
+	target.emit("wheel", up);
+	cleanup();
+
+	expect(contentScrolled).toEqual([1, -1]);
+	expect(shelfScrolled).toEqual([]);
+	expect(down.calls).toEqual(["preventDefault", "stopImmediatePropagation"]);
+	expect(up.calls).toEqual(["preventDefault", "stopImmediatePropagation"]);
+});
+
+test("attachShelfPointerInteractionWiring ignores open detail wheel target miss without first-level shelf scroll", () => {
+	const target = new FakePointerTarget();
+	const shelfScrolled: number[] = [];
+	const contentScrolled: number[] = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getMode: () => "stage",
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				openCardIdx: 2,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 0,
+			scrollBy: (delta) => shelfScrolled.push(delta),
+			openDetail: () => {},
+			hasOpenContent: () => true,
+			getContentList: () => ({
+				scrollBy: (delta: number) => contentScrolled.push(delta),
+			}) as never,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(2),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		isDetailWheelTarget: () => false,
+	});
+
+	const event = makeWheelEvent({ deltaY: 120 });
+	target.emit("wheel", event);
+	cleanup();
+
+	expect(contentScrolled).toEqual([]);
+	expect(shelfScrolled).toEqual([]);
+	expect(event.calls).toEqual([]);
+});
+
+test("attachShelfPointerInteractionWiring ignores open detail wheel when no detail target predicate is provided", () => {
+	const target = new FakePointerTarget();
+	const shelfScrolled: number[] = [];
+	const contentScrolled: number[] = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getMode: () => "stage",
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				openCardIdx: 2,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 0,
+			scrollBy: (delta) => shelfScrolled.push(delta),
+			openDetail: () => {},
+			hasOpenContent: () => true,
+			getContentList: () => ({
+				scrollBy: (delta: number) => contentScrolled.push(delta),
+			}) as never,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(2),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+	});
+
+	const event = makeWheelEvent({ deltaY: 120 });
+	target.emit("wheel", event);
+	cleanup();
+
+	expect(contentScrolled).toEqual([]);
+	expect(shelfScrolled).toEqual([]);
+	expect(event.calls).toEqual([]);
+});
+
+test("attachShelfPointerInteractionWiring keeps UI splash and off gates ahead of detail wheel targets", () => {
+	const target = new FakePointerTarget();
+	const shelfScrolled: number[] = [];
+	const contentScrolled: number[] = [];
+	const button = {
+		matches: (selector: string) => selector.split(",").includes("button"),
+		closest: (selector: string) => selector.split(",").includes("button") ? button : null,
+	};
+	let splashActive = false;
+	let mode: "stage" | "off" = "stage";
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getMode: () => mode,
+			getSnapshot: () => ({
+				...closedSnapshot(),
+				mode,
+				openCardIdx: 2,
+			}),
+			setSelectedIdx: () => {},
+			clearSelected: () => {},
+			getCenterIdx: () => 0,
+			scrollBy: (delta) => shelfScrolled.push(delta),
+			openDetail: () => {},
+			hasOpenContent: () => true,
+			getContentList: () => ({
+				scrollBy: (delta: number) => contentScrolled.push(delta),
+			}) as never,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(2),
+		getSplashActive: () => splashActive,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		isDetailWheelTarget: () => true,
+	});
+
+	const ui = makeWheelEvent({ deltaY: 120, target: button });
+	target.emit("wheel", ui);
+	splashActive = true;
+	const splash = makeWheelEvent({ deltaY: 120 });
+	target.emit("wheel", splash);
+	splashActive = false;
+	mode = "off";
+	const off = makeWheelEvent({ deltaY: 120 });
+	target.emit("wheel", off);
+	cleanup();
+
+	expect(contentScrolled).toEqual([]);
+	expect(shelfScrolled).toEqual([]);
+	expect(ui.calls).toEqual([]);
+	expect(splash.calls).toEqual([]);
+	expect(off.calls).toEqual([]);
+});
+
 test("attachShelfPointerInteractionWiring contextmenu toggles side pinned state and focus", () => {
 	const target = new FakePointerTarget();
 	const pinnedCalls: boolean[] = [];
@@ -1572,7 +1758,7 @@ test("attachShelfPointerInteractionWiring contextmenu closes open detail, pins s
 	]);
 });
 
-test("attachShelfPointerInteractionWiring ignores wheel over UI, splash, open detail snapshot, and mode off", () => {
+test("attachShelfPointerInteractionWiring ignores first-level wheel over UI, splash, and mode off", () => {
 	const target = new FakePointerTarget();
 	const scrolled: number[] = [];
 	const button = {
@@ -1581,7 +1767,6 @@ test("attachShelfPointerInteractionWiring ignores wheel over UI, splash, open de
 	};
 	let splashActive = false;
 	let mode: "stage" | "off" = "stage";
-	let openCardIdx = -1;
 	const cleanup = attachShelfPointerInteractionWiring({
 		target,
 		shelfManager: makeShelfManagerMock({
@@ -1589,7 +1774,6 @@ test("attachShelfPointerInteractionWiring ignores wheel over UI, splash, open de
 			getSnapshot: () => ({
 				...closedSnapshot(),
 				mode,
-				openCardIdx,
 			}),
 			setSelectedIdx: () => {},
 			clearSelected: () => {},
@@ -1612,10 +1796,6 @@ test("attachShelfPointerInteractionWiring ignores wheel over UI, splash, open de
 	const splash = makeWheelEvent({ deltaY: 120 });
 	target.emit("wheel", splash);
 	splashActive = false;
-	openCardIdx = 2;
-	const detail = makeWheelEvent({ deltaY: 120 });
-	target.emit("wheel", detail);
-	openCardIdx = -1;
 	mode = "off";
 	const off = makeWheelEvent({ deltaY: 120 });
 	target.emit("wheel", off);
@@ -1624,7 +1804,6 @@ test("attachShelfPointerInteractionWiring ignores wheel over UI, splash, open de
 	expect(scrolled).toEqual([]);
 	expect(ui.calls).toEqual([]);
 	expect(splash.calls).toEqual([]);
-	expect(detail.calls).toEqual([]);
 	expect(off.calls).toEqual([]);
 });
 
