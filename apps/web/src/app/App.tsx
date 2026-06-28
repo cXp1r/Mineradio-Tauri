@@ -5,7 +5,11 @@ import { selectCurrentIndex } from "../lyrics/select-current-index";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useProviderStore } from "../stores/provider-store";
+import { useUiStore } from "../stores/ui-store";
 import { getRuntimeConfig, type RuntimeConfig } from "../tauri/runtime";
+import { BottomControlsHost } from "../components/shell/BottomControlsHost";
+import { SearchShell } from "../components/shell/SearchShell";
+import { TopRightControls } from "../components/shell/TopRightControls";
 import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost } from "../visual/SplashHost";
 import { VisualEngineHost } from "../visual/VisualEngineHost";
@@ -39,6 +43,8 @@ export function App(): ReactElement {
 	const isPlaying = usePlaybackStore((s) => s.isPlaying);
 	const positionMs = usePlaybackStore((s) => s.positionMs);
 	const setMatrix = useProviderStore((s) => s.setMatrix);
+	const consoleVisible = useUiStore((s) => s.consoleVisible);
+	const setConsole = useUiStore((s) => s.setConsole);
 
 	const lyricsPayload = useLyricsStore((s) => s.payload);
 	const setLyricsPayload = useLyricsStore((s) => s.setPayload);
@@ -66,6 +72,33 @@ export function App(): ReactElement {
 		setSidecarClient(client);
 		return client;
 	}, []);
+
+	const emptyHomeActive = !splashActive && !currentTrack && queue.length === 0 && !isPlaying;
+
+	const revealConsole = useCallback(() => {
+		setConsole(true);
+	}, [setConsole]);
+
+	const focusSearch = useCallback(() => {
+		if (typeof document === "undefined") return;
+		const input = document.getElementById("search-input");
+		if (input instanceof HTMLInputElement) input.focus();
+	}, []);
+
+	const goHome = useCallback(() => {
+		setConsole(false);
+		focusSearch();
+	}, [focusSearch, setConsole]);
+
+	useEffect(() => {
+		if (typeof document === "undefined") return;
+		document.body.classList.toggle("splash-active", splashActive);
+		document.body.classList.toggle("empty-home-active", emptyHomeActive);
+		document.body.classList.toggle("controls-visible", consoleVisible);
+		return () => {
+			document.body.classList.remove("splash-active", "empty-home-active", "controls-visible");
+		};
+	}, [consoleVisible, emptyHomeActive, splashActive]);
 
 	useEffect(() => {
 		cancelledRef.current = false;
@@ -213,7 +246,6 @@ export function App(): ReactElement {
 					onDismissed={() => setSplashActive(false)}
 				/>
 			)}
-			<EmptyHomeHost />
 			<VisualEngineHost
 				audioElementRef={audioRef}
 				controllerRef={controllerRef}
@@ -234,6 +266,14 @@ export function App(): ReactElement {
 					void loader(payload);
 				}}
 			/>
+			<EmptyHomeHost
+				onSearchFocus={focusSearch}
+				onOpenLibrary={focusSearch}
+				onOpenConsole={revealConsole}
+			/>
+			<SearchShell onFocus={focusSearch} />
+			<TopRightControls onHome={goHome} />
+			<BottomControlsHost visible={consoleVisible} onReveal={revealConsole} />
 		</>
 	);
 }

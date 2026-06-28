@@ -7,6 +7,8 @@ import {
 } from "@mineradio/visual-engine";
 
 export interface PlayerConsoleHostProps {
+	visible?: boolean;
+	onReveal?: () => void;
 	onMinimize?: () => void;
 	onToggleMaximize?: () => void;
 	onToggleFullscreen?: () => void;
@@ -27,7 +29,9 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const playBtnRef = useRef<HTMLButtonElement | null>(null);
 	const normalBtnRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 	const motionRef = useRef<ControlConsoleMotion | null>(null);
+	const visibleRef = useRef(!!props.visible);
 
+	visibleRef.current = !!props.visible;
 	const onMinimizeRef = useRef(props.onMinimize);
 	onMinimizeRef.current = props.onMinimize;
 	const onToggleMaximizeRef = useRef(props.onToggleMaximize);
@@ -62,11 +66,14 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 		let cancelled = false;
 		void motion.init().then(() => {
 			if (cancelled) return;
-			motion.reveal(520);
+			if (visibleRef.current) motion.reveal(520);
+			else motion.setHidden(true);
 		});
 
 		const onBarEnter = () => motion.reveal(520);
-		const onBarLeave = () => motion.setHidden(true);
+		const onBarLeave = () => {
+			if (!visibleRef.current) motion.setHidden(true);
+		};
 		bar.addEventListener("pointerenter", onBarEnter);
 		bar.addEventListener("pointerleave", onBarLeave);
 
@@ -124,6 +131,13 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 		};
 	}, []);
 
+	useEffect(() => {
+		const bar = barRef.current;
+		if (!bar) return;
+		bar.classList.toggle("visible", !!props.visible);
+		bar.classList.toggle("soft-hidden", !props.visible);
+	}, [props.visible]);
+
 	const cyclePlayModeStub = useCallback(() => {
 		motionRef.current?.toggleModeButton("shuffle");
 	}, []);
@@ -142,7 +156,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	}, []);
 
 	return (
-		<div id="bottom-bar" ref={barRef}>
+		<div id="bottom-bar" className={props.visible ? "visible" : "soft-hidden"} ref={barRef}>
 			<div id="progress-bar">
 				<div id="progress-fill" />
 			</div>
