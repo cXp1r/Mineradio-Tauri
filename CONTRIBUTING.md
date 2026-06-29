@@ -1,50 +1,58 @@
 # Mineradio Tauri Rewrite 贡献指南
 
-感谢参与贡献。本项目是迁移中的桌面应用，范围清晰、证据明确的小 PR 会比大范围重写更容易 review 和合并。
+感谢参与贡献。本项目仍处于 Tauri 迁移期，最欢迎范围清晰、证据明确、能独立 review 的小 PR。大型重写、视觉系统迁移、provider 接入、updater/installer 发布链路改动，建议先开 issue 或在现有迁移计划下确认范围。
+
+## 贡献方式
+
+你可以从这些方向参与：
+
+- 修 bug：请尽量附复现步骤、期望行为、实际行为、系统环境和相关日志。
+- 补测试：优先覆盖 shared schema、sidecar provider、visual-engine lifecycle、React 状态和 Tauri command 边界。
+- 改文档：修正过期状态、补充验证步骤、解释迁移 gate，但不要把未验收能力写成已发布。
+- 做小功能：先确认它符合 `docs/migration/DECISIONS.md` 和当前 capability gate。
+- 做视觉 parity：必须保留 Electron baseline 的质感、节奏、手感和层级，并附截图或录屏说明。
+
+不建议直接提交的改动：
+
+- 大块重写 `public/index.html`。
+- 一个 PR 同时修改 provider、视觉、installer、updater 和发布文档。
+- 未经计划要求移动 legacy baseline 文件。
+- 未完成 license review 就新增依赖。
+- 没有证据就声明 parity 或 release gate 已完成。
 
 ## 开始之前
 
-1. 先读本文件。
-2. 通过 `README.md` 了解项目状态和整体架构。
+1. 阅读 `README.md`，确认当前项目状态。
+2. 阅读本文件，确认贡献流程和验证要求。
 3. 修改子模块前，阅读对应目录的 `AGENTS.md`：
    - `apps/web/AGENTS.md`
    - `apps/desktop/src-tauri/AGENTS.md`
    - `sidecars/api/AGENTS.md`
    - `packages/visual-engine/AGENTS.md`
-4. 涉及迁移或发布行为时，阅读 `docs/migration/DECISIONS.md` 和 `docs/migration/CAPABILITY_PARITY_CHECKLIST.md`。
-5. 涉及依赖或 provider 时，阅读 `docs/migration/LICENSE_GATE.md`。
+4. 涉及迁移、发布或能力状态时，阅读：
+   - `docs/migration/DECISIONS.md`
+   - `docs/migration/CAPABILITY_PARITY_CHECKLIST.md`
+   - `docs/migration/DEFERRED_CAPABILITIES.md`
+5. 涉及依赖、provider、license、packaging 或 notices 时，阅读 `docs/migration/LICENSE_GATE.md`。
 
-不要从 `public/index.html`、`desktop/` 或 `server.js` 的旧实现直接推断新架构。这些文件保留为 Electron baseline 参考，不是新的 Tauri 运行时结构。
+`public/`、`desktop/` 和 `server.js` 是 Electron baseline 参考，不是新的 Tauri 运行时架构。除非任务明确要求修改 legacy 行为，否则不要把旧实现当成新主线入口。
 
-## 适合贡献的内容
+## 本地开发
 
-推荐贡献：
+需要先安装：
 
-- shared zod schema、typed API contract 和回归测试。
-- sidecar provider adapter 修复，并配套 fake-network 测试。
-- 范围明确、可截图或可测试验证的 React UI parity 任务。
-- 保持 baseline 动效、手感和渲染质量的 visual-engine 迁移。
-- 带 Rust 测试和运行说明的 Tauri command、窗口、updater 改动。
-- 澄清当前迁移状态的文档，不把未验收能力写成已发布。
-- 防止 app identity、updater、license、privacy 或 packaging 回退的 policy check。
+- Bun
+- Rust stable toolchain
+- 当前系统对应的 Tauri 2 构建环境
+- Windows 10/11 + WebView2，用于接近发布质量的运行验证
 
-不要在一个 PR 里混做：
-
-- 大块重写 `public/index.html`。
-- 同时修改 provider、视觉、installer 和 updater。
-- 未经迁移计划要求移动 legacy baseline 文件。
-- 未完成 license review 就新增依赖。
-- 没有证据就声明 parity 或 release gate 已完成。
-
-## 开发环境
-
-在仓库根目录安装依赖：
+安装依赖：
 
 ```bash
 bun install
 ```
 
-启动应用：
+启动 Tauri 开发环境：
 
 ```bash
 bun run tauri:dev
@@ -56,7 +64,7 @@ bun run tauri:dev
 bun run web:build
 ```
 
-启动 sidecar API：
+单独启动 sidecar API：
 
 ```bash
 bun run sidecar:dev
@@ -69,6 +77,20 @@ bun run tauri:build
 ```
 
 新主线使用 Bun workspace 脚本。不要用旧 Electron 的 `npm start`、`npm run build:win` 或 electron-builder 流程验收 Tauri 工作。
+
+## 工作流
+
+推荐流程：
+
+1. 从当前目标分支拉取最新代码。
+2. 为本次改动创建独立分支。
+3. 先确认相关 docs、issue 或 migration gate。
+4. 小步修改，避免混入无关格式化或重构。
+5. 按改动区域运行 focused checks。
+6. 更新相关文档或 gate 备注。
+7. 提交 PR，并在描述里列出修改范围、验证结果和剩余风险。
+
+如果你在修 bug，PR 里应写清楚复现路径和修复前后的行为差异。如果你在加功能，PR 里应说明为什么需要该功能、它属于哪个迁移阶段，以及是否影响 release gate。
 
 ## 代码分区
 
@@ -134,6 +156,8 @@ git diff --check
 node --check server.js
 ```
 
+无法运行某项检查时，请在 PR 里说明原因、环境限制和你实际完成的替代验证。
+
 ## 策略门禁
 
 改到相关区域时运行对应 policy check：
@@ -153,7 +177,29 @@ bun run license-transitive:check
 bun run packaged-notices:check
 ```
 
-如果 policy check 失败，要修复回退点；只有规则本身确实过时，才应在 PR 中解释并更新规则。
+如果 policy check 失败，优先修复回退点。只有规则本身确实过时，才应在 PR 中解释原因并更新规则。
+
+## PR 要求
+
+PR 描述应包含：
+
+- 改了什么。
+- 为什么要改。
+- 涉及哪些路径或模块。
+- 运行了哪些测试或检查。
+- 有哪些无法自动验证的手动证据。
+- 是否更新了 migration gate、license gate 或 deferred capabilities。
+- 还剩哪些风险或后续工作。
+
+Review 期间可以保留多个小提交，方便讨论；合并前可以整理成更清晰的提交历史。请保持 PR 聚焦：如果多个改动可以独立 review，就拆成多个 PR。
+
+更容易被接受的 PR 通常具备：
+
+- 改动范围小。
+- 测试或验证结果明确。
+- 没有无关格式化。
+- 文档和 gate 状态同步。
+- 没有新增隐私、license 或发布风险。
 
 ## 视觉对齐规则
 
@@ -196,17 +242,12 @@ bun run packaged-notices:check
 - 依赖、provider、packaging 或 notices 变化时，更新 `docs/migration/LICENSE_GATE.md`。
 - 没有真实证据时，不要把 unchecked release gate 写成完成。
 
-## PR 检查清单
+## 行为和安全
 
-发 PR 前确认：
-
-- PR 只有一个清晰目标。
-- 描述了修改区域和风险。
-- 列出了已运行的 focused tests 或 checks。
-- 涉及视觉、播放、登录、updater、installer 或 Windows runtime 行为时，附上手动证据。
-- 没有提交凭证、cookies、本地 app data 或包含隐私信息的生成日志。
-- 新依赖已记录并通过 license review。
-- release/parity checklist 只在证据充分时更新。
+- 技术讨论请聚焦事实、复现、证据和可维护性。
+- 不要公开粘贴凭证、cookies、账号信息、私有日志或用户数据。
+- 安全、隐私或授权风险不要只在普通 PR 描述里一笔带过；请明确标注风险、影响范围和验证方式。
+- 如果某个改动可能影响公开分发、第三方平台条款或 GPL-3.0 合规性，请先在 issue 或 PR 说明里讲清楚。
 
 ## 发布相关贡献
 
