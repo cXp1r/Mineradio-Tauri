@@ -57,6 +57,19 @@ test("loadVisualFxFromStorage accepts baseline numeric fx state and keeps wallpa
 	expect(fx?.lyricFont).toBe("kai-song");
 });
 
+test("loadVisualFxFromStorage keeps the baseline-disabled float layer off even if an old archive enables it", () => {
+	const storage = new Map<string, string>();
+	const fakeStorage = {
+		getItem: (key: string) => storage.get(key) ?? null,
+		setItem: (key: string, value: string) => { storage.set(key, value); },
+	};
+	fakeStorage.setItem(VISUAL_SETTINGS_STORE_KEY, JSON.stringify({
+		floatLayer: true,
+	}));
+	const fx = loadVisualFxFromStorage(fakeStorage);
+	expect(fx?.floatLayer).toBe(false);
+});
+
 test("loadVisualFxFromStorage normalizes unsupported lyric font keys", () => {
 	const storage = new Map<string, string>();
 	const fakeStorage = {

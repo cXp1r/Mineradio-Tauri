@@ -32,11 +32,14 @@ test("VisualControlPanelHost renders baseline DIY control sections", () => {
 	expect(html).toContain('id="lyric-font-grid"');
 	expect(html).toContain('data-font="stone-song"');
 	expect(html).toContain('id="fx-overlay-fold"');
+	expect(html).not.toContain('id="t-float"');
 	expect(html).toContain('id="t-desktopLyrics"');
 	expect(html).toContain('id="t-wallpaperMode"');
 	expect(html).toContain("开发中");
 	expect(html).toContain('id="fx-stage-fold"');
 	expect(html).toContain('id="shelf-seg"');
+	expect(html).not.toContain('data-cam="gesture"');
+	expect(html).not.toContain("手势触碰");
 	expect(html).toContain('id="fx-advanced"');
 	expect(html).toContain('id="performance-quality-seg"');
 });

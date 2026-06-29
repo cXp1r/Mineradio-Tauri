@@ -65,7 +65,7 @@ export function normalizeVisualFxState(input?: Partial<FxState> | null): FxState
 		desktopLyricsHighlight: booleanValue(input.desktopLyricsHighlight, fx.desktopLyricsHighlight),
 		lyricFont: lyricFontValue(input.lyricFont, fx.lyricFont),
 		wallpaperMode: false,
-		floatLayer: booleanValue(input.floatLayer, fx.floatLayer),
+		floatLayer: false,
 		cinema: booleanValue(input.cinema, fx.cinema),
 		edge: booleanValue(input.edge, fx.edge),
 		bloom: booleanValue(input.bloom, fx.bloom),

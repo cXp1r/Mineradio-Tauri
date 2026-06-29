@@ -65,7 +65,6 @@ const ADVANCED_SLIDERS: SliderDef[] = [
 ];
 
 const OVERLAY_TOGGLES: ToggleDef[] = [
-	{ key: "floatLayer", id: "t-float", label: "浮空粒子层" },
 	{ key: "cinema", id: "t-cinema", label: "电影镜头" },
 	{ key: "lyricGlow", id: "t-lyricGlow", label: "歌词溢光" },
 	{ key: "lyricGlowBeat", id: "t-lyricGlowBeat", label: "鼓点溢光" },
@@ -269,7 +268,6 @@ export function VisualControlPanelHost(props: VisualControlPanelHostProps): Reac
 						<div className="fx-section-label">摄像头交互</div>
 						<div className="fx-seg" id="cam-seg">
 							<button type="button" data-cam="off" className="active">关闭</button>
-							<button type="button" data-cam="gesture">手势触碰</button>
 						</div>
 					</div>
 				</div>
