@@ -5,6 +5,7 @@ import type { AudioSnapshot } from "../audio/audio-snapshot";
 import type { FrameContext } from "../runtime/frame-context";
 import { createHomeVisual } from "./home-visual";
 import { SKULL_PRESET_INDEX } from "./preset-state";
+import { skullBreathOffset } from "./skull-particles";
 
 function makeFakeThree(): ThreeFactory {
 	const Points = function (geo: unknown, mat: unknown) {
@@ -415,6 +416,39 @@ test("HomeVisual exposes skull mouth world transform for stage lyrics", async ()
 	expect(mouth?.position.z).toBeGreaterThan(0.10);
 	expect(mouth?.quaternion.x).toBeCloseTo(Math.sin(-0.26 / 2), 3);
 	expect(mouth?.quaternion.w).toBeCloseTo(Math.cos(-0.26 / 2), 3);
+});
+
+test("HomeVisual applies baseline skull shelf composition target and returns to base target", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		skullAssetData: new Float32Array([0.025, -0.72, 0.62, 1, 42]),
+	} as never);
+	hv.setPreset(SKULL_PRESET_INDEX);
+	hv.update({ ...makeFrameCtx({}, { uTime: { value: 0 } }), dt: 0 } as unknown as FrameContext);
+	const skull = hv.getSkullParticles() as unknown as {
+		position: { x: number; y: number; z: number };
+		scale: { x: number; y: number; z: number };
+	};
+	expect(skull.position.x).toBeCloseTo(0, 6);
+	expect(skull.position.y).toBeCloseTo(0.22, 6);
+	expect(skull.scale.x).toBeCloseTo(2.34, 6);
+
+	hv.setSkullShelfCompositionActive(true);
+	hv.update({ ...makeFrameCtx({}, { uTime: { value: 0 } }), dt: 1 } as unknown as FrameContext);
+	const shelfDrift = skullBreathOffset(0, true);
+	expect(skull.position.x).toBeCloseTo(-1.18 + shelfDrift.x, 3);
+	expect(skull.position.y).toBeCloseTo(0.32 + shelfDrift.y, 3);
+	expect(skull.position.z).toBeCloseTo(0.10 + shelfDrift.z, 3);
+	expect(skull.scale.x).toBeCloseTo(3.02, 3);
+
+	hv.setSkullShelfCompositionActive(false);
+	hv.update({ ...makeFrameCtx({}, { uTime: { value: 0 } }), dt: 1 } as unknown as FrameContext);
+	const baseDrift = skullBreathOffset(0, false);
+	expect(skull.position.x).toBeCloseTo(baseDrift.x, 3);
+	expect(skull.position.y).toBeCloseTo(0.22 + baseDrift.y, 3);
+	expect(skull.scale.x).toBeCloseTo(2.34, 3);
 });
 
 test("bloom gate: when fx.bloom=false, bloomPoints.visible=false; when fx.bloom=true && bloomStrength>0.01, bloomPoints.visible=true (unless skull)", async () => {

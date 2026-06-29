@@ -8,6 +8,8 @@ export const SKULL_MODEL_BASE_ROTATION_X = -0.26;
 export const SKULL_MODEL_BASE_ROTATION_Y = 0.0;
 export const SKULL_MODEL_SCALE = 2.34;
 export const SKULL_MODEL_BASE_POSITION = { x: 0, y: 0.22, z: 0.10 };
+export const SKULL_SHELF_COMPOSITION_POSITION = { x: -1.18, y: 0.32, z: 0.10 };
+export const SKULL_SHELF_COMPOSITION_SCALE = 3.02;
 export const SKULL_LYRIC_MOUTH_LOCAL = { x: 0.025, y: -0.72, z: 0.62 };
 
 export interface SkullParticleControllerOptions {
@@ -19,6 +21,7 @@ export interface SkullParticleControllerOptions {
 
 export interface SkullParticleController {
 	update(ctx: FrameContext, fx: FxState): void;
+	setShelfCompositionActive(active: boolean): void;
 	getObject(): THREE.Points | null;
 	getMouthTransform(): SkullMouthTransform | null;
 	dispose(): void;
@@ -144,6 +147,8 @@ export async function createSkullParticleController(
 	let ampPulse = 0;
 	let beatFlash = 0;
 	let jawOpen = 0;
+	let shelfCompositionActive = false;
+	let shelfMix = 0;
 
 	function ensureObject(): THREE.Points | null {
 		if (object) return object;
@@ -190,13 +195,20 @@ export async function createSkullParticleController(
 			const jawTarget = clamp(0.60 + (0.5 + 0.5 * Math.sin(uTime * 0.50)) * 0.050 + ctx.snapshot.bass * 0.060 + beatFlash * 0.090, 0.52, 0.88);
 			jawOpen += (jawTarget - jawOpen) * Math.min(1, ctx.dt * (jawTarget > jawOpen ? 7.8 : 3.4));
 			setUniform("uJawOpen", jawOpen);
-			const drift = skullBreathOffset(uTime, false);
+			const shelfMixTarget = shelfCompositionActive ? 1 : 0;
+			shelfMix += (shelfMixTarget - shelfMix) * Math.min(1, ctx.dt * (shelfMixTarget > shelfMix ? 4.6 : 5.8));
+			if (Math.abs(shelfMix - shelfMixTarget) < 0.002) shelfMix = shelfMixTarget;
+			const drift = skullBreathOffset(uTime, shelfCompositionActive);
 			const ampTarget = clamp(ctx.snapshot.bass * 0.006 + ctx.snapshot.mid * 0.004 + beatFlash * 0.070, 0, 0.090);
 			ampPulse += (ampTarget - ampPulse) * Math.min(1, ctx.dt * (ampTarget > ampPulse ? 11.0 : 4.0));
-			const targetScale = SKULL_MODEL_SCALE * (1 + ampPulse);
-			object.position.x += (SKULL_MODEL_BASE_POSITION.x + drift.x - object.position.x) * Math.min(1, ctx.dt * 4.2);
-			object.position.y += (SKULL_MODEL_BASE_POSITION.y + drift.y - object.position.y) * Math.min(1, ctx.dt * 4.8);
-			object.position.z += (SKULL_MODEL_BASE_POSITION.z + drift.z - object.position.z) * Math.min(1, ctx.dt * 4.2);
+			const baseScale = SKULL_MODEL_SCALE + (SKULL_SHELF_COMPOSITION_SCALE - SKULL_MODEL_SCALE) * shelfMix;
+			const targetScale = baseScale * (1 + ampPulse);
+			const targetX = SKULL_MODEL_BASE_POSITION.x + (SKULL_SHELF_COMPOSITION_POSITION.x - SKULL_MODEL_BASE_POSITION.x) * shelfMix + drift.x;
+			const targetY = SKULL_MODEL_BASE_POSITION.y + (SKULL_SHELF_COMPOSITION_POSITION.y - SKULL_MODEL_BASE_POSITION.y) * shelfMix + drift.y;
+			const targetZ = SKULL_MODEL_BASE_POSITION.z + (SKULL_SHELF_COMPOSITION_POSITION.z - SKULL_MODEL_BASE_POSITION.z) * shelfMix + drift.z;
+			object.position.x += (targetX - object.position.x) * Math.min(1, ctx.dt * 4.2);
+			object.position.y += (targetY - object.position.y) * Math.min(1, ctx.dt * 4.8);
+			object.position.z += (targetZ - object.position.z) * Math.min(1, ctx.dt * 4.2);
 			object.scale.x += (targetScale - object.scale.x) * Math.min(1, ctx.dt * 4.6);
 			object.scale.y = object.scale.x;
 			object.scale.z = object.scale.x;
@@ -207,6 +219,9 @@ export async function createSkullParticleController(
 		},
 		getObject() {
 			return object;
+		},
+		setShelfCompositionActive(active) {
+			shelfCompositionActive = !!active;
 		},
 		getMouthTransform() {
 			if (!object || !object.visible) return null;

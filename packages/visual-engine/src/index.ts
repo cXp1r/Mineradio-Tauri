@@ -233,6 +233,8 @@ export {
 	SKULL_MODEL_BASE_ROTATION_X,
 	SKULL_MODEL_BASE_ROTATION_Y,
 	SKULL_MODEL_SCALE,
+	SKULL_SHELF_COMPOSITION_POSITION,
+	SKULL_SHELF_COMPOSITION_SCALE,
 	skullBreathOffset,
 } from "./home-visual/skull-particles";
 export type { SkullParticleController, SkullParticleControllerOptions } from "./home-visual/skull-particles";

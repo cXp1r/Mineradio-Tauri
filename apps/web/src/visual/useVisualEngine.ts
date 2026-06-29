@@ -237,6 +237,20 @@ export function isRuntimeShelfPreviewActive(
 	return presence === "auto" && shelfVisibility > 0.16;
 }
 
+export interface SkullShelfCompositionInput {
+	preset: number | null | undefined;
+	shelfMode: string | null | undefined;
+	shelfVisibility: number;
+	pinnedOpen: boolean;
+	hasOpenContent: boolean;
+}
+
+export function resolveSkullShelfCompositionActive(input: SkullShelfCompositionInput): boolean {
+	if (Number(input.preset) !== 6) return false;
+	if (input.shelfMode !== "side") return false;
+	return input.pinnedOpen || input.shelfVisibility > 0.18 || input.hasOpenContent;
+}
+
 export function setRuntimeShelfMode(
 	shelfModeRef: RefObject<string> | undefined,
 	mode: "side",
@@ -553,6 +567,13 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					}
 					if (uniforms.uFloatAlpha) uniforms.uFloatAlpha.value = 0;
 				}
+				homeVisual.setSkullShelfCompositionActive(resolveSkullShelfCompositionActive({
+					preset: homeVisual.getFx().preset,
+					shelfMode: shelfManager.getMode(),
+					shelfVisibility: shelfManager.getShelfVisibility(),
+					pinnedOpen: shelfManager.getShelfPinnedOpen(),
+					hasOpenContent: shelfManager.hasOpenContent(),
+				}));
 				homeVisual.update(ctx);
 			});
 			const offCamera = renderLoop.registerStep(RenderStepSlot.CameraCinematic, (ctx) => {

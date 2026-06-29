@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { isRuntimeShelfPreviewActive, resolveHomeVisualPreset, resolveStageLyricLayoutOptions, setRuntimeShelfMode } from "./useVisualEngine";
+import { isRuntimeShelfPreviewActive, resolveHomeVisualPreset, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, setRuntimeShelfMode } from "./useVisualEngine";
 
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
 	expect(isRuntimeShelfPreviewActive("auto", 0.17)).toBe(true);
@@ -7,6 +7,44 @@ test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness",
 	expect(isRuntimeShelfPreviewActive("auto", 0)).toBe(false);
 	expect(isRuntimeShelfPreviewActive("always", 0.9)).toBe(false);
 	expect(isRuntimeShelfPreviewActive(undefined, 0.9)).toBe(false);
+});
+
+test("resolveSkullShelfCompositionActive follows baseline side shelf composition conditions", () => {
+	expect(resolveSkullShelfCompositionActive({
+		preset: 6,
+		shelfMode: "side",
+		shelfVisibility: 0.19,
+		pinnedOpen: false,
+		hasOpenContent: false,
+	})).toBe(true);
+	expect(resolveSkullShelfCompositionActive({
+		preset: 6,
+		shelfMode: "side",
+		shelfVisibility: 0.03,
+		pinnedOpen: true,
+		hasOpenContent: false,
+	})).toBe(true);
+	expect(resolveSkullShelfCompositionActive({
+		preset: 6,
+		shelfMode: "side",
+		shelfVisibility: 0,
+		pinnedOpen: false,
+		hasOpenContent: true,
+	})).toBe(true);
+	expect(resolveSkullShelfCompositionActive({
+		preset: 6,
+		shelfMode: "stage",
+		shelfVisibility: 1,
+		pinnedOpen: true,
+		hasOpenContent: true,
+	})).toBe(false);
+	expect(resolveSkullShelfCompositionActive({
+		preset: 5,
+		shelfMode: "side",
+		shelfVisibility: 1,
+		pinnedOpen: true,
+		hasOpenContent: true,
+	})).toBe(false);
 });
 
 test("setRuntimeShelfMode mutates the render-loop source shelf mode ref", () => {
