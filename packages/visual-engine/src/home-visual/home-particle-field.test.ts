@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import type { ThreeFactory } from "../runtime/renderer-setup";
 import { createHomeParticleField, coverParticleGridForResolution, normalizeCoverResolution } from "./home-particle-field";
+import { cloneFxState } from "./fx-defaults";
 
 function makeFakeThree(): ThreeFactory {
 	const Points = function (geo: unknown, mat: unknown) {
@@ -36,7 +37,12 @@ function makeFakeThree(): ThreeFactory {
 	} as never;
 	const Texture = function () { return { minFilter: 0, magFilter: 0, disposed: false, dispose() { this.disposed = true; } }; } as never;
 	const CanvasTexture = function (image: unknown) { return { image, minFilter: 0, magFilter: 0, disposed: false, dispose() { this.disposed = true; } }; } as never;
-	const Color = function (h: string) { return { hex: h }; } as never;
+	const Color = function (h: string) {
+		return {
+			hex: h,
+			set(this: { hex: string }, next: string) { this.hex = next; return this; },
+		};
+	} as never;
 	const Vector2 = function (x: number, y: number) {
 		return { x, y, set(this: { x: number; y: number }, nx: number, ny: number) { this.x = nx; this.y = ny; } };
 	} as never;
@@ -174,4 +180,21 @@ test("dispose removes both Points from scene, calls geometry/material/bloomMater
 	expect(geo.disposed).toBe(true);
 	expect(mat.disposed).toBe(true);
 	expect(bloomMat.disposed).toBe(true);
+});
+
+test("applyFxState maps baseline visual tint mode/color into shader uniforms", async () => {
+	const scene = makeFakeScene();
+	const field = await createHomeParticleField(scene as never, { threeFactory: makeFakeThree() });
+	const fx = cloneFxState();
+	fx.visualTintMode = "custom";
+	fx.visualTintColor = "#223344";
+
+	field.applyFxState(fx);
+
+	expect((field.materialUniforms.uTintColor.value as { hex: string }).hex).toBe("#223344");
+	expect(field.materialUniforms.uTintStrength.value).toBe(0.42);
+
+	fx.visualTintMode = "auto";
+	field.applyFxState(fx);
+	expect(field.materialUniforms.uTintStrength.value).toBe(0);
 });

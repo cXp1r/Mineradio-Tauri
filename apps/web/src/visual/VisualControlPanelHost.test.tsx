@@ -137,3 +137,53 @@ test("VisualControlPanelHost opens the panel and emits baseline preset/setting c
   root.unmount();
   container.remove();
 });
+
+test("VisualControlPanelHost emits baseline UI accent and visual tint color controls", async () => {
+  await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+  const calls: string[] = [];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  root.render(
+    React.createElement(VisualControlPanelHost, {
+      settings: {
+        uiAccentColor: "#ffffff",
+        visualTintMode: "custom",
+        visualTintColor: "#445566",
+      },
+      onStringSettingChange: (key, value) => calls.push(`${key}:${value}`),
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  const uiAccent = container.querySelector(
+    "#ui-accent-picker",
+  ) as HTMLInputElement;
+  valueSetter?.call(uiAccent, "#12abef");
+  uiAccent.dispatchEvent(new window.Event("input", { bubbles: true }));
+  (container.querySelector("#ui-accent-default-btn") as HTMLButtonElement).click();
+
+  const visualTint = container.querySelector(
+    "#visual-tint-picker",
+  ) as HTMLInputElement;
+  valueSetter?.call(visualTint, "#223344");
+  visualTint.dispatchEvent(new window.Event("input", { bubbles: true }));
+  (container.querySelector("#visual-tint-auto-btn") as HTMLButtonElement).click();
+  (container.querySelector("#visual-tint-default-btn") as HTMLButtonElement).click();
+
+  expect(calls).toEqual([
+    "uiAccentColor:#12abef",
+    "uiAccentColor:#ffffff",
+    "visualTintMode:custom",
+    "visualTintColor:#223344",
+    "visualTintMode:auto",
+    "visualTintMode:auto",
+    "visualTintColor:#9db8cf",
+  ]);
+  root.unmount();
+  container.remove();
+});

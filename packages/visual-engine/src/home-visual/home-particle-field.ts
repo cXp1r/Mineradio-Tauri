@@ -42,6 +42,12 @@ export function coverParticleGridForResolution(v: number): number {
 	return grid1 % 2 ? grid1 : grid1 + 1;
 }
 
+function normalizeHexColor(value: unknown, fallback: string): string {
+	const raw = typeof value === "string" ? value.trim() : "";
+	const normalized = raw.startsWith("#") ? raw : `#${raw}`;
+	return /^#[0-9a-f]{6}$/i.test(normalized) ? normalized.toLowerCase() : fallback;
+}
+
 type ThreeModule = typeof import("three");
 
 function buildGeometry(THREE: ThreeModule, grid: number): THREE.BufferGeometry {
@@ -276,6 +282,11 @@ export async function createHomeParticleField(
 			u.uBgFade.value = fx.bgFade;
 			u.uBloomStrength.value = fx.bloom ? fx.bloomStrength : 0;
 			u.uEdgeEnabled.value = fx.edge ? 1 : 0;
+			const tint = normalizeHexColor(fx.visualTintColor, "#9db8cf");
+			const tintColor = u.uTintColor.value as { set?: (color: string) => unknown };
+			if (tintColor && typeof tintColor.set === "function") tintColor.set(tint);
+			else u.uTintColor.value = tint;
+			u.uTintStrength.value = fx.visualTintMode === "custom" ? 0.42 : 0;
 			bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01);
 		},
 		applySnapshotSync(_fx, _snapshot, _runtimeUniforms, _dt) {

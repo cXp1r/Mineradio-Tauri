@@ -63,6 +63,18 @@ function enumStringValue(
   return allowed.has(key) ? key : fallback;
 }
 
+function hexColorValue(value: unknown, fallback: string): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  const normalized = raw.startsWith("#") ? raw : `#${raw}`;
+  return /^#[0-9a-f]{6}$/i.test(normalized) ? normalized.toLowerCase() : fallback;
+}
+
+function visualTintModeValue(value: unknown, fallback: string): string {
+  const key = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (key === "custom") return "custom";
+  return fallback === "custom" ? "custom" : "auto";
+}
+
 function desktopLyricsFpsValue(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -120,6 +132,15 @@ export function normalizeVisualFxState(
       input.desktopLyricsFps,
       fx.desktopLyricsFps,
     ),
+    visualTintMode: visualTintModeValue(
+      input.visualTintMode,
+      fx.visualTintMode,
+    ),
+    visualTintColor: hexColorValue(
+      input.visualTintColor,
+      fx.visualTintColor,
+    ),
+    uiAccentColor: hexColorValue(input.uiAccentColor, fx.uiAccentColor),
     backgroundOpacity: clamp(
       input.backgroundOpacity,
       fx.backgroundOpacity,

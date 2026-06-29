@@ -76,6 +76,7 @@ import {
   AI_DEPTH_STATUS_EVENT,
   type AiDepthStatusDetail,
 } from "../visual/ai-depth-estimator";
+import { applyVisualThemeToRoot } from "../visual/visual-theme";
 import { VisualControlPanelHost } from "../visual/VisualControlPanelHost";
 import {
   VisualEngineHost,
@@ -1698,6 +1699,11 @@ export function App({
       setVisualStringSetting,
     ],
   );
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    applyVisualThemeToRoot(document.documentElement, visualFx);
+  }, [visualFx]);
 
   const setPlaybackQuality = useCallback(
     (quality: PlaybackQuality) => {

@@ -348,6 +348,17 @@ function stringValue(
   return typeof value === "string" ? value : "";
 }
 
+function hexSettingValue(
+  props: VisualControlPanelHostProps,
+  key: keyof FxState,
+): string {
+  const raw = props.settings?.[key] ?? FX_DEFAULTS[key];
+  const value = typeof raw === "string" ? raw.trim() : "";
+  const normalized = value.startsWith("#") ? value : `#${value}`;
+  const fallback = String(FX_DEFAULTS[key] ?? "#000000");
+  return /^#[0-9a-f]{6}$/i.test(normalized) ? normalized.toLowerCase() : fallback;
+}
+
 function Slider(props: {
   def: SliderDef;
   hostProps: VisualControlPanelHostProps;
@@ -465,6 +476,32 @@ export function VisualControlPanelHost(
       onNumberSettingChange={props.onNumberSettingChange}
     />
   );
+  const setUiAccentColor = useCallback(
+    (color: string) => {
+      props.onStringSettingChange?.("uiAccentColor", color.toLowerCase());
+    },
+    [props],
+  );
+  const resetUiAccentColor = useCallback(() => {
+    props.onStringSettingChange?.("uiAccentColor", FX_DEFAULTS.uiAccentColor);
+  }, [props]);
+  const setVisualTintCustom = useCallback(
+    (color: string) => {
+      props.onStringSettingChange?.("visualTintMode", "custom");
+      props.onStringSettingChange?.("visualTintColor", color.toLowerCase());
+    },
+    [props],
+  );
+  const setVisualTintAuto = useCallback(() => {
+    props.onStringSettingChange?.("visualTintMode", "auto");
+  }, [props]);
+  const resetVisualTintColor = useCallback(() => {
+    props.onStringSettingChange?.("visualTintMode", "auto");
+    props.onStringSettingChange?.("visualTintColor", FX_DEFAULTS.visualTintColor);
+  }, [props]);
+  const uiAccentColor = hexSettingValue(props, "uiAccentColor");
+  const visualTintColor = hexSettingValue(props, "visualTintColor");
+  const visualTintAuto = stringValue(props, "visualTintMode") !== "custom";
 
   return (
     <>
@@ -543,17 +580,17 @@ export function VisualControlPanelHost(
             id="ui-accent-picker"
             className="lyric-color-picker"
             type="color"
-            value={props.settings?.uiAccentColor ?? FX_DEFAULTS.uiAccentColor}
-            onChange={() => {}}
+            value={uiAccentColor}
+            onInput={(event) => setUiAccentColor(event.currentTarget.value)}
             title="界面高亮色"
           />
           <div className="fx-color-row-label">
             界面高亮
             <small id="ui-accent-value">
-              {props.settings?.uiAccentColor ?? FX_DEFAULTS.uiAccentColor}
+              {uiAccentColor.toUpperCase()}
             </small>
           </div>
-          <button className="fx-mini-btn ghost" type="button">
+          <button id="ui-accent-default-btn" className="fx-mini-btn ghost" type="button" onClick={resetUiAccentColor}>
             默认
           </button>
         </div>
@@ -562,23 +599,22 @@ export function VisualControlPanelHost(
             id="visual-tint-picker"
             className="lyric-color-picker"
             type="color"
-            value={
-              props.settings?.visualTintColor ?? FX_DEFAULTS.visualTintColor
-            }
-            onChange={() => {}}
+            value={visualTintColor}
+            onInput={(event) => setVisualTintCustom(event.currentTarget.value)}
             title="视觉主色"
           />
           <div className="fx-color-row-label">
-            视觉主色<small id="visual-tint-value">封面取色</small>
+            视觉主色<small id="visual-tint-value">{visualTintAuto ? "封面取色" : visualTintColor.toUpperCase()}</small>
           </div>
           <button
-            className="fx-mini-btn ghost"
+            className={visualTintAuto ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"}
             id="visual-tint-auto-btn"
             type="button"
+            onClick={setVisualTintAuto}
           >
             封面
           </button>
-          <button className="fx-mini-btn ghost" type="button">
+          <button id="visual-tint-default-btn" className="fx-mini-btn ghost" type="button" onClick={resetVisualTintColor}>
             默认
           </button>
         </div>

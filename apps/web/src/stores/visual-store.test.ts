@@ -159,3 +159,25 @@ test("loadVisualFxFromStorage clamps baseline desktop lyrics controls", () => {
   expect(fx?.desktopLyricsY).toBe(0.92);
   expect(fx?.desktopLyricsFps).toBe(120);
 });
+
+test("loadVisualFxFromStorage normalizes baseline visual color controls", () => {
+  const storage = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+  };
+  fakeStorage.setItem(
+    VISUAL_SETTINGS_STORE_KEY,
+    JSON.stringify({
+      visualTintMode: "CUSTOM",
+      visualTintColor: "12ABEF",
+      uiAccentColor: "not-a-color",
+    }),
+  );
+  const fx = loadVisualFxFromStorage(fakeStorage);
+  expect(fx?.visualTintMode).toBe("custom");
+  expect(fx?.visualTintColor).toBe("#12abef");
+  expect(fx?.uiAccentColor).toBe("#ffffff");
+});
