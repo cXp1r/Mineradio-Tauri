@@ -296,6 +296,7 @@ export type {
 	SkullMouthTransform,
 	StageLyricsLifecycle,
 	StageLyricsLifecycleOpts,
+	StageLyricsMotionSnapshot,
 } from "./stage-lyrics/lifecycle";
 
 export {

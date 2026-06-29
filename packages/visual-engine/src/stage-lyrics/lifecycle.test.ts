@@ -1228,6 +1228,45 @@ test("update() drives uOpacity toward 0.30 when shelfVisibility > 0.5 with skull
 	(async () => { void lifecycle.dispose(); })();
 });
 
+test("getMotionSnapshot exposes clamped live bloom and audio fields for desktop lyrics", async () => {
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [{ t: 0, text: "motion" }] as never,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0.85,
+		lyricGlowBeatFlagSupplier: () => true,
+		lyricSunEnergyHolder: { get: () => 1.2, set: () => {} },
+		getBeatCamKick: () => ({
+			thetaKick: 0,
+			phiKick: 0,
+			rollKick: 0,
+			radiusKick: 1.1,
+			punch: 0.9,
+		}),
+		dotTexture: makeFakeDotTexture(),
+		rand: () => 0.35,
+	} as never);
+	const scene = makeFakeScene();
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "motion" }]);
+	lifecycle.update(makeCtx(0.5, 0.016, { beatPulse: 1.1, bass: 0.64 }));
+
+	const snapshot = lifecycle.getMotionSnapshot();
+
+	expect(snapshot.highBloom).toBeGreaterThan(0);
+	expect(snapshot.highBloom).toBeLessThanOrEqual(1.45);
+	expect(snapshot.beatGlow).toBeGreaterThan(0);
+	expect(snapshot.beatGlow).toBeLessThanOrEqual(1.7);
+	expect(snapshot.beatPulse).toBe(1.1);
+	expect(snapshot.bass).toBe(0.64);
+	lifecycle.dispose();
+});
+
 test("setLyricLines replaces the active fixture set", async () => {
 	const { lifecycle, setNow } = await buildLifecycleWithCurrent({
 		lyrics: [{ t: 0, text: "A" }, { t: 2, text: "B" }],

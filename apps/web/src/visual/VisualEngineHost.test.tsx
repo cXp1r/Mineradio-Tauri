@@ -7,9 +7,11 @@ import {
 	resolveRuntimeShelfMode,
 	resolveVisualShelfSettings,
 	syncRuntimeShelfModeOverride,
+	syncDesktopLyricsMotionRef,
 	mapLyricPayload,
 	countShelfPanePlaylists,
 	VisualEngineHost,
+	type DesktopLyricsMotionSnapshot,
 } from "./VisualEngineHost";
 
 test("VisualEngineHost server-renders a visual-host placeholder div without invoking WebGL/AudioContext", () => {
@@ -115,4 +117,32 @@ test("mapLyricPayload preserves native karaoke timing for stage lyrics", () => {
 			],
 		},
 	]);
+});
+
+test("syncDesktopLyricsMotionRef copies lifecycle motion snapshot into a mutable ref", () => {
+	const target = {
+		current: {
+			highBloom: 0,
+			beatGlow: 0,
+			beatPulse: 0,
+			bass: 0,
+		} satisfies DesktopLyricsMotionSnapshot,
+	};
+	const lifecycle = {
+		getMotionSnapshot: () => ({
+			highBloom: 0.42,
+			beatGlow: 0.73,
+			beatPulse: 1.1,
+			bass: 0.64,
+		}),
+	};
+
+	syncDesktopLyricsMotionRef(target, lifecycle);
+
+	expect(target.current).toEqual({
+		highBloom: 0.42,
+		beatGlow: 0.73,
+		beatPulse: 1.1,
+		bass: 0.64,
+	});
 });

@@ -31,6 +31,7 @@ import {
 	type ShelfPane,
 	type ShelfSelectSoundPlayer,
 	type StageLyricsLifecycle,
+	type StageLyricsMotionSnapshot,
 } from "@mineradio/visual-engine";
 import {
 	attachFreeCameraHost,
@@ -74,6 +75,7 @@ export interface VisualEngineRefs {
 	onShelfOpenDetailContentRef?: RefObject<((payload: ShelfOpenDetailContentPayload, writer: ShelfDetailContentListController) => void) | undefined>;
 	onShelfPaneChangeRef?: RefObject<((pane: ShelfPane) => void) | undefined>;
 	lifecycleRef: RefObject<StageLyricsLifecycle | null>;
+	desktopLyricsMotionRef?: RefObject<StageLyricsMotionSnapshot>;
 	coverResolution: number;
 	fxDefaults?: Partial<FxState>;
 	fxRef?: RefObject<Partial<FxState> | undefined>;
@@ -624,6 +626,9 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 			});
 			const offLyrics = renderLoop.registerStep(RenderStepSlot.StageLyrics, (ctx) => {
 				lifecycle.update(ctx);
+				if (refs.desktopLyricsMotionRef) {
+					refs.desktopLyricsMotionRef.current = lifecycle.getMotionSnapshot();
+				}
 			});
 			const offAudio = audioEngine.subscribeBeat((burst, isScheduled) => {
 				cinema.applyBeat(burst, isScheduled);

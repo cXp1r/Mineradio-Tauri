@@ -86,8 +86,16 @@ export interface StageLyricsLifecycle {
 	setShelfVisibility(v: number): void;
 	getCurrentIdx(): number;
 	getCurrentText(): string;
+	getMotionSnapshot(): StageLyricsMotionSnapshot;
 	whenIdle(): Promise<void>;
 	dispose(): void;
+}
+
+export interface StageLyricsMotionSnapshot {
+	highBloom: number;
+	beatGlow: number;
+	beatPulse: number;
+	bass: number;
 }
 
 type Vec3Like = { x: number; y: number; z: number };
@@ -213,6 +221,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		currentText: "",
 		highBloom: 0,
 		beatGlow: 0,
+		beatPulse: 0,
+		bass: 0,
 		glowFollowX: 0,
 		glowFollowY: 0,
 		glowFollowRoll: 0,
@@ -942,6 +952,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		const glowBreath = lyricGlowStrength > 0 ? 0.5 + 0.5 * Math.sin(t * 1.05) : 0;
 		const lyricSunEnergy = opts.lyricSunEnergyHolder ? opts.lyricSunEnergyHolder.get() : 0;
 		const beatPulseValue = fallbackNumber(snapshot.beatPulse, 0);
+		state.beatPulse = clamp(beatPulseValue, 0, 1.4);
+		state.bass = clamp(fallbackNumber(snapshot.bass, 0), 0, 1.2);
 		const musicBloom = Math.max(lyricSunEnergy, beatPulseValue * 0.10);
 		const kicks = opts.getBeatCamKick ? opts.getBeatCamKick() : null;
 		const beatGlowRaw = glowBeatFlag && lyricGlowStrength > 0
@@ -1040,6 +1052,14 @@ update(ctx: FrameContext) {
 		},
 		getCurrentText() {
 			return state.currentText;
+		},
+		getMotionSnapshot() {
+			return {
+				highBloom: clamp(state.highBloom, 0, 1.45),
+				beatGlow: clamp(state.beatGlow, 0, 1.7),
+				beatPulse: clamp(state.beatPulse, 0, 1.4),
+				bass: clamp(state.bass, 0, 1.2),
+			};
 		},
 		async whenIdle() {
 			while (state.activeBuilds > 0) {

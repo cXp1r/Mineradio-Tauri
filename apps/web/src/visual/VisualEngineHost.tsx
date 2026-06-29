@@ -7,6 +7,7 @@ import {
 	type ShelfOpenDetailContentPayload,
 	type ShelfPane,
 	type StageLyricsLifecycle,
+	type StageLyricsMotionSnapshot,
 } from "@mineradio/visual-engine";
 import { useVisualEngine } from "./useVisualEngine";
 import type { ShelfDetailRowClickPayload } from "./shelf-pointer-interactions";
@@ -39,7 +40,10 @@ export interface VisualEngineHostProps {
 	onShelfPlayQueueIndex?: (index: number) => void;
 	onShelfDetailRowClick?: (payload: ShelfDetailRowClickPayload) => void;
 	onShelfOpenDetailContent?: (payload: ShelfOpenDetailContentPayload, writer: ShelfDetailContentListController) => void;
+	desktopLyricsMotionRef?: RefObject<DesktopLyricsMotionSnapshot>;
 }
+
+export type DesktopLyricsMotionSnapshot = StageLyricsMotionSnapshot;
 
 export function resolveVisualShelfSettings(
 	fxDefaults: Partial<FxState> | undefined,
@@ -114,6 +118,14 @@ export function countShelfPanePlaylists(playlists: PlaylistSummary[]): { mineCou
 		else mineCount += 1;
 	}
 	return { mineCount, favCount };
+}
+
+export function syncDesktopLyricsMotionRef(
+	target: RefObject<DesktopLyricsMotionSnapshot> | undefined,
+	lifecycle: Pick<StageLyricsLifecycle, "getMotionSnapshot"> | null,
+): void {
+	if (!target || !lifecycle) return;
+	target.current = lifecycle.getMotionSnapshot();
 }
 
 export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
@@ -249,6 +261,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		onShelfOpenDetailContentRef,
 		onShelfPaneChangeRef,
 		lifecycleRef,
+		desktopLyricsMotionRef: props.desktopLyricsMotionRef,
 		coverResolution: props.coverResolution ?? 1.55,
 		fxDefaults: props.fxDefaults,
 		fxRef: fxStateRef,

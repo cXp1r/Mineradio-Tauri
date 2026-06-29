@@ -68,7 +68,10 @@ import { UpdateHost } from "../components/shell/UpdateHost";
 import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import { VisualControlPanelHost } from "../visual/VisualControlPanelHost";
-import { VisualEngineHost } from "../visual/VisualEngineHost";
+import {
+  VisualEngineHost,
+  type DesktopLyricsMotionSnapshot,
+} from "../visual/VisualEngineHost";
 import {
   createPodcastRadioDetailOpener,
   createShelfDetailContentLoader,
@@ -508,6 +511,12 @@ export function App({
     null,
   );
   const desktopLyricsPushStateRef = useRef(createDesktopLyricsPushState());
+  const desktopLyricsMotionRef = useRef<DesktopLyricsMotionSnapshot>({
+    highBloom: 0,
+    beatGlow: 0,
+    beatPulse: 0,
+    bass: 0,
+  });
 
   const positionRef = useRef(positionMs);
   positionRef.current = positionMs;
@@ -1263,6 +1272,7 @@ export function App({
     const playback = usePlaybackStore.getState();
     const duration = playback.durationMs ?? 0;
     const snapshot = currentDesktopLyricSnapshot();
+    const motion = desktopLyricsMotionRef.current;
     const payload = buildDesktopLyricsPayloadPatch(
       useVisualStore.getState().fx,
       snapshot.text,
@@ -1275,6 +1285,10 @@ export function App({
         positionMs: playback.positionMs,
         durationMs: duration,
         playbackRate: audioRef.current?.playbackRate,
+        highBloom: motion.highBloom,
+        beatGlow: motion.beatGlow,
+        beatPulse: motion.beatPulse,
+        bass: motion.bass,
       },
     );
     if (
@@ -1434,6 +1448,7 @@ export function App({
   useEffect(() => {
     if (!desktopLyricsEnabled) return;
     const snapshot = currentDesktopLyricSnapshot();
+    const motion = desktopLyricsMotionRef.current;
     const payload = buildDesktopLyricsPayloadPatch(
       visualFx,
       snapshot.text,
@@ -1446,6 +1461,10 @@ export function App({
         positionMs,
         durationMs,
         playbackRate: audioRef.current?.playbackRate,
+        highBloom: motion.highBloom,
+        beatGlow: motion.beatGlow,
+        beatPulse: motion.beatPulse,
+        bass: motion.bass,
       },
     );
     if (
@@ -1804,6 +1823,7 @@ export function App({
           });
           void loader(payload);
         }}
+        desktopLyricsMotionRef={desktopLyricsMotionRef}
       />
       <VisualControlPanelHost
         preset={visualPreset}
