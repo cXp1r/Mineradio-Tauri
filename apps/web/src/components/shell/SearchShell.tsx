@@ -10,11 +10,13 @@ export interface SearchShellProps {
 	client: SidecarClient | null;
 	onFocus?: () => void;
 	onUpload?: () => void;
+	onClearCustomCover?: () => void;
 	onResultPlay?: (track: Track) => void;
 	onResultLike?: (track: Track) => void;
 	onResultCollect?: (track: Track) => void;
 	isResultLiked?: (track: Track) => boolean;
 	isResultLikeBusy?: (track: Track) => boolean;
+	hasCustomCover?: boolean;
 }
 
 const HISTORY_CHIPS: Array<{ label: string; mode?: SearchMode; keyword: string }> = [
@@ -86,11 +88,13 @@ export function SearchShell({
 	client,
 	onFocus,
 	onUpload,
+	onClearCustomCover,
 	onResultPlay,
 	onResultLike,
 	onResultCollect,
 	isResultLiked,
 	isResultLikeBusy,
+	hasCustomCover = false,
 }: SearchShellProps): ReactElement {
 	const provider = useSearchStore((s) => s.provider);
 	const keyword = useSearchStore((s) => s.keyword);
@@ -308,7 +312,17 @@ export function SearchShell({
 						<line x1="12" y1="3" x2="12" y2="15" />
 					</svg>
 				</button>
-				<button id="clear-cover-btn" className="icon-btn" type="button" title="取消自定义封面" aria-label="取消自定义封面" onClick={() => setError("当前没有自定义封面")}>×</button>
+				<button
+					id="clear-cover-btn"
+					className={hasCustomCover ? "icon-btn has-cover" : "icon-btn"}
+					type="button"
+					title={hasCustomCover ? "取消自定义封面" : "当前没有自定义封面"}
+					aria-label={hasCustomCover ? "取消自定义封面" : "当前没有自定义封面"}
+					onClick={() => {
+						if (hasCustomCover) onClearCustomCover?.();
+						else setError("当前没有自定义封面");
+					}}
+				>×</button>
 				<div id="upload-tip" role="status" aria-live="polite">
 					<button className="upload-tip-close" type="button" aria-label="关闭提示" onClick={() => setError(null)}>×</button>
 					<span className="upload-tip-title">导入入口</span>

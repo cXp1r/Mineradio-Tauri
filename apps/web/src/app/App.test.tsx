@@ -1098,6 +1098,100 @@ test("App imports a local audio file from the baseline Home import tile", async 
 	}
 });
 
+test("App applies and clears a custom cover image from the baseline import controls", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	const coverTrack: Track = {
+		provider: "netease",
+		id: "cover-song-1",
+		sourceId: "cover-song-1",
+		title: "Cover Song",
+		artists: ["Alice"],
+		album: "",
+		coverUrl: "https://img.example/default.jpg",
+		durationMs: 10000,
+		qualityHints: [],
+		playableState: "playable",
+	};
+	usePlaybackStore.getState().setQueue([coverTrack]);
+	usePlaybackStore.getState().playAt(0);
+
+	const fakeClient = {
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return {
+				loggedIn: false,
+				user: null,
+				mode: "starter",
+				dailySongs: [],
+				playlists: [],
+				podcasts: [],
+				updatedAt: 1,
+			};
+		},
+		async resolveSongUrl() {
+			return { url: "https://example.com/audio.mp3", quality: "standard", proxied: true };
+		},
+		audioProxyUrl(url: string) {
+			return url;
+		},
+		async lyric() {
+			return {
+				provider: "netease",
+				trackId: "cover-song-1",
+				lines: [],
+				hasTranslation: false,
+				isWordByWord: false,
+			};
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const input = host.querySelector("#file-input") as HTMLInputElement;
+		const imageFile = new File(["cover"], "Cover.png", { type: "image/png", lastModified: 456 });
+		Object.defineProperty(input, "files", { value: [imageFile], configurable: true });
+		input.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+		for (let i = 0; i < 12 && !usePlaybackStore.getState().currentTrack?.coverUrl?.startsWith("data:image/"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(usePlaybackStore.getState().currentTrack?.coverUrl?.startsWith("data:image/")).toBe(true);
+		expect(usePlaybackStore.getState().queue[0]?.coverUrl?.startsWith("data:image/")).toBe(true);
+		expect(host.querySelector("#clear-cover-btn")?.className).toContain("has-cover");
+
+		(host.querySelector("#clear-cover-btn") as HTMLButtonElement).click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(usePlaybackStore.getState().currentTrack?.coverUrl).toBe("https://img.example/default.jpg");
+		expect(host.querySelector("#clear-cover-btn")?.className).not.toContain("has-cover");
+		expect(host.querySelector("#toast.show")?.textContent).toContain("已恢复默认封面");
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
 test("App opens the baseline collect picker for shelf detail collect and adds only after a playlist is chosen", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;

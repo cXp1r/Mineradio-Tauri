@@ -10,8 +10,17 @@ import {
   LOCAL_AUDIO_ACCEPT,
   createLocalAudioTrack,
   firstLocalAudioFile,
+  firstLocalCoverFile,
+  readLocalFileAsDataUrl,
 } from "../audio/local-audio-import";
 import { PlayerController } from "../audio/player-controller";
+import {
+  clearCustomCoverForTrack,
+  customCoverKeyForTrack,
+  hasCustomCoverForTrack,
+  saveCustomCoverForTrack,
+  withStoredCustomCover,
+} from "../cover/custom-cover";
 import {
   deleteCustomLyricForTrack,
   getCustomLyricPreferenceForTrack,
@@ -730,6 +739,7 @@ export function App({
   const currentLikeKey = trackLikeKey(currentTrack);
   const currentLiked = currentLikeKey ? likedSongMap[currentLikeKey] === true : false;
   const currentLikeBusy = currentLikeKey ? likeBusyMap[currentLikeKey] === true : false;
+  const currentHasCustomCover = hasCustomCoverForTrack(currentTrack);
   void customLyricVersion;
 
   const revealConsole = useCallback(() => {
@@ -768,6 +778,65 @@ export function App({
     },
     [showToast],
   );
+
+  const patchCustomCoverTrack = useCallback((target: Track, nextTrack: Track) => {
+    const key = customCoverKeyForTrack(target);
+    if (!key) return;
+    const runtime = nextTrack as Track & {
+      customCover?: string;
+      defaultCoverUrl?: string;
+    };
+    const merge = (track: Track): Track => {
+      if (customCoverKeyForTrack(track) !== key) return track;
+      const patched = {
+        ...track,
+        coverUrl: nextTrack.coverUrl,
+      } as Track & { customCover?: string; defaultCoverUrl?: string };
+      if (runtime.customCover) patched.customCover = runtime.customCover;
+      else delete patched.customCover;
+      if (runtime.defaultCoverUrl) patched.defaultCoverUrl = runtime.defaultCoverUrl;
+      else delete patched.defaultCoverUrl;
+      return patched as Track;
+    };
+    usePlaybackStore.setState((state) => ({
+      currentTrack: state.currentTrack ? merge(state.currentTrack) : state.currentTrack,
+      queue: state.queue.map(merge),
+    }));
+  }, []);
+
+  const applyCustomCoverImage = useCallback(
+    async (file: Blob, explicitTrack?: Track) => {
+      const target = explicitTrack ?? usePlaybackStore.getState().currentTrack;
+      if (!target) {
+        showToast("先播放或选择一首歌");
+        return;
+      }
+      try {
+        const dataUrl = await readLocalFileAsDataUrl(file);
+        const result = saveCustomCoverForTrack(target, dataUrl);
+        patchCustomCoverTrack(target, result.track);
+        showToast(result.saved ? "封面已保存" : "封面已应用，存储空间不足");
+      } catch {
+        showToast("封面读取失败");
+      }
+    },
+    [patchCustomCoverTrack, showToast],
+  );
+
+  const clearCustomCoverImage = useCallback(() => {
+    const target = usePlaybackStore.getState().currentTrack;
+    if (!target) {
+      showToast("先播放或选择一首歌");
+      return;
+    }
+    const result = clearCustomCoverForTrack(target);
+    if (!result.existed) {
+      showToast("当前没有自定义封面");
+      return;
+    }
+    patchCustomCoverTrack(target, result.track);
+    showToast("已恢复默认封面");
+  }, [patchCustomCoverTrack, showToast]);
 
   const applyOriginalLyrics = useCallback(() => {
     const track = usePlaybackStore.getState().currentTrack;
@@ -913,22 +982,28 @@ export function App({
   const importLocalFiles = useCallback((files: FileList | File[] | null) => {
     if (!files) return;
     const file = firstLocalAudioFile(files);
-    if (!file) {
-      showToast("请选择音频文件");
+    const coverFile = firstLocalCoverFile(files);
+    if (!file && !coverFile) {
+      showToast("请选择音频或图片文件");
       return;
     }
-    const url = URL.createObjectURL(file);
-    const track = createLocalAudioTrack(file);
-    const key = `${track.provider}:${track.id}`;
-    const previousUrl = localAudioUrlsRef.current.get(key);
-    if (previousUrl && previousUrl !== url) URL.revokeObjectURL(previousUrl);
-    localAudioUrlsRef.current.set(key, url);
-    usePlaybackStore.getState().setQueue([track]);
-    usePlaybackStore.getState().playAt(0);
-    enterPlaybackSurface();
-    setCurrentBeatMapState(null);
-    showToast(track.title);
-  }, [enterPlaybackSurface, showToast]);
+    if (file) {
+      const url = URL.createObjectURL(file);
+      const track = withStoredCustomCover(createLocalAudioTrack(file));
+      const key = `${track.provider}:${track.id}`;
+      const previousUrl = localAudioUrlsRef.current.get(key);
+      if (previousUrl && previousUrl !== url) URL.revokeObjectURL(previousUrl);
+      localAudioUrlsRef.current.set(key, url);
+      usePlaybackStore.getState().setQueue([track]);
+      usePlaybackStore.getState().playAt(0);
+      enterPlaybackSurface();
+      setCurrentBeatMapState(null);
+      showToast(track.title);
+      if (coverFile) void applyCustomCoverImage(coverFile, track);
+      return;
+    }
+    if (coverFile) void applyCustomCoverImage(coverFile);
+  }, [applyCustomCoverImage, enterPlaybackSurface, showToast]);
 
   const refreshUpdateStatus = useCallback(
     async (manual = false) => {
@@ -2151,6 +2226,13 @@ export function App({
   ]);
 
   useEffect(() => {
+    if (!currentTrack) return;
+    const hydrated = withStoredCustomCover(currentTrack);
+    if (hydrated === currentTrack || hydrated.coverUrl === currentTrack.coverUrl) return;
+    patchCustomCoverTrack(currentTrack, hydrated);
+  }, [currentTrack, patchCustomCoverTrack]);
+
+  useEffect(() => {
     const track = currentTrack;
     const client = sidecarClient;
     if (!client || !isNeteaseLikeSupported(track)) return;
@@ -2454,6 +2536,7 @@ export function App({
         client={sidecarClient}
         onFocus={focusSearch}
         onUpload={openLocalFileImport}
+        onClearCustomCover={clearCustomCoverImage}
         onResultPlay={enterPlaybackSurface}
         onResultLike={(track) => void toggleLikeTrack(track)}
         onResultCollect={openCollectPicker}
@@ -2465,6 +2548,7 @@ export function App({
           const key = trackLikeKey(track);
           return key ? likeBusyMap[key] === true : false;
         }}
+        hasCustomCover={currentHasCustomCover}
       />
       <TopRightControls
         onHome={goHome}

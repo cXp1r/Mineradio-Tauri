@@ -3,7 +3,10 @@ import {
   LOCAL_AUDIO_ACCEPT,
   createLocalAudioTrack,
   firstLocalAudioFile,
-  isLocalAudioFile
+  firstLocalCoverFile,
+  isLocalAudioFile,
+  isLocalCoverFile,
+  readLocalFileAsDataUrl
 } from "./local-audio-import";
 
 test("isLocalAudioFile accepts the baseline audio extensions and MIME types", () => {
@@ -21,6 +24,18 @@ test("firstLocalAudioFile picks the first audio file from a mixed import selecti
   ];
 
   expect(firstLocalAudioFile(files)?.name).toBe("live.m4a");
+});
+
+test("local cover helpers pick image files and preserve image MIME in data URLs", async () => {
+  const files = [
+    { name: "notes.txt", type: "text/plain" },
+    new File(["cover"], "Cover.JPG", { type: "" })
+  ];
+
+  expect(isLocalCoverFile({ name: "folder.png", type: "" })).toBe(true);
+  expect(isLocalCoverFile({ name: "song.mp3", type: "audio/mpeg" })).toBe(false);
+  expect(firstLocalCoverFile(files)?.name).toBe("Cover.JPG");
+  expect(await readLocalFileAsDataUrl(files[1] as File)).toBe("data:image/jpeg;base64,Y292ZXI=");
 });
 
 test("createLocalAudioTrack maps a local file into a playback-compatible track", () => {

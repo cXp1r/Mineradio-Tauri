@@ -327,9 +327,24 @@ body.splash-active:not(.splash-revealing) #search-area {
   display: none;
   width: 28px;
   height: 28px;
+  border-color: rgba(255, 255, 255, .08);
+  background: rgba(255, 255, 255, .035);
   color: rgba(255, 255, 255, .34);
   font-size: 18px;
   line-height: 1;
+}
+
+#clear-cover-btn.has-cover {
+  display: flex;
+  border-color: rgba(244, 210, 138, .30);
+  background: rgba(244, 210, 138, .08);
+  color: rgba(244, 210, 138, .84);
+}
+
+#clear-cover-btn.has-cover:hover {
+  border-color: rgba(244, 210, 138, .55);
+  background: rgba(244, 210, 138, .14);
+  color: #fff0bf;
 }
 
 #upload-tip {
