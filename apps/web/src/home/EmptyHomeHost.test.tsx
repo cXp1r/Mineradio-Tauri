@@ -38,6 +38,55 @@ test("EmptyHomeHost renders baseline logged-out starter tiles", () => {
 	expect(html).toContain("看看视觉舞台");
 });
 
+test("EmptyHomeHost prefers baseline weather radio songs in the rail when discover is logged out", () => {
+	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
+		discover: {
+			loggedIn: false,
+			user: null,
+			dailySongs: [],
+			playlists: [],
+			podcasts: [],
+			mode: "starter",
+			updatedAt: 1782656256000,
+		},
+		weatherRadio: {
+			ok: true,
+			weather: {
+				provider: "open-meteo",
+				location: { name: "上海", country: "中国", admin1: "", latitude: 31.23, longitude: 121.47, timezone: "Asia/Shanghai", fallback: false },
+				label: "雨",
+				weatherCode: 61,
+				temperature: 22,
+				apparentTemperature: 21,
+				humidity: 88,
+				precipitation: 1,
+				cloudCover: 90,
+				windSpeed: 6,
+				windGusts: 10,
+				isDay: 1,
+				time: "",
+				updatedAt: 1,
+				error: "",
+				mood: { key: "rain", title: "雨天电台", tagline: "留一点潮湿的空间给旋律", energy: 0.38, warmth: 0.42, focus: 0.64, melancholy: 0.66, keywords: ["雨天 R&B"] },
+			},
+			radio: {
+				title: "雨天电台",
+				subtitle: "留一点潮湿的空间给旋律",
+				seedQueries: ["雨天 R&B"],
+				updatedAt: 1,
+				songs: [
+					{ provider: "netease", id: "weather-1", sourceId: "weather-1", title: "Rain One", artists: ["Alice"], album: "", coverUrl: "https://img.example/rain.jpg", qualityHints: [], playableState: "playable" },
+				],
+			},
+		},
+	}));
+
+	expect(html).toContain("Rain One");
+	expect(html).toContain("Alice");
+	expect(html).toContain("刚刚更新 · 点击即可播放");
+	expect(html).not.toContain("登录同步歌单");
+});
+
 test("EmptyHomeHost renders discover songs, playlists, and podcasts into baseline cards and rail", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
 		discover: {
@@ -74,6 +123,54 @@ test("EmptyHomeHost routes the private radio card to the baseline Home private c
 	(host.querySelector('[data-home-card="private"]') as HTMLButtonElement).click();
 
 	expect(calls).toEqual(["private"]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost routes weather song tiles to the baseline weather callback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: number[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		discover={{ loggedIn: false, user: null, dailySongs: [], playlists: [], podcasts: [], mode: "starter", updatedAt: 1 }}
+		weatherRadio={{
+			ok: true,
+			weather: {
+				provider: "open-meteo",
+				location: { name: "上海", country: "中国", admin1: "", latitude: 31.23, longitude: 121.47, timezone: "Asia/Shanghai", fallback: false },
+				label: "雨",
+				weatherCode: 61,
+				temperature: 22,
+				apparentTemperature: 21,
+				humidity: 88,
+				precipitation: 1,
+				cloudCover: 90,
+				windSpeed: 6,
+				windGusts: 10,
+				isDay: 1,
+				time: "",
+				updatedAt: 1,
+				error: "",
+				mood: { key: "rain", title: "雨天电台", tagline: "留一点潮湿的空间给旋律", energy: 0.38, warmth: 0.42, focus: 0.64, melancholy: 0.66, keywords: ["雨天 R&B"] },
+			},
+			radio: {
+				title: "雨天电台",
+				subtitle: "留一点潮湿的空间给旋律",
+				seedQueries: ["雨天 R&B"],
+				updatedAt: 1,
+				songs: [
+					{ provider: "netease", id: "weather-1", sourceId: "weather-1", title: "Rain One", artists: ["Alice"], album: "", coverUrl: "", qualityHints: [], playableState: "playable" },
+				],
+			},
+		}}
+		onPlayWeatherSong={(index) => calls.push(index)}
+	/>));
+	(host.querySelector(".home-tile") as HTMLButtonElement).click();
+
+	expect(calls).toEqual([0]);
 	root.unmount();
 	host.remove();
 });

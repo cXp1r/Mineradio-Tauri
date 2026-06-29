@@ -1,8 +1,9 @@
 import type { CSSProperties, ReactElement } from "react";
-import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, Track } from "@mineradio/shared";
+import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, Track, WeatherRadioResponse } from "@mineradio/shared";
 
 export interface EmptyHomeHostProps {
 	discover?: DiscoverHomeResponse | null;
+	weatherRadio?: WeatherRadioResponse | null;
 	onSearchFocus?: () => void;
 	onOpenLibrary?: () => void;
 	onOpenConsole?: () => void;
@@ -18,6 +19,7 @@ export interface EmptyHomeHostProps {
 	onOpenPodcastSearch?: () => void;
 	onOpenInsight?: () => void;
 	onPlayRecent?: () => void;
+	onPlayWeatherSong?: (index: number) => void;
 }
 
 const STARTER_TILES = [
@@ -32,7 +34,8 @@ type HomeTile =
 	| (typeof STARTER_TILES)[number]
 	| { kind: "song"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
 	| { kind: "playlist"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
-	| { kind: "podcast"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string };
+	| { kind: "podcast"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
+	| { kind: "weatherSong"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string };
 
 function artistLine(track: Track | null | undefined, fallback = "推荐歌曲"): string {
 	if (!track) return fallback;
@@ -53,7 +56,22 @@ function podcastSub(podcast: PodcastRadio | null | undefined): string {
 	return podcast.djName || podcast.category || "Podcast";
 }
 
-function buildHomeTiles(discover: DiscoverHomeResponse | null | undefined): HomeTile[] {
+function buildHomeTiles(
+	discover: DiscoverHomeResponse | null | undefined,
+	weatherRadio: WeatherRadioResponse | null | undefined,
+): HomeTile[] {
+	const weatherSongs = weatherRadio?.radio.songs ?? [];
+	if (!discover?.loggedIn && weatherSongs.length) {
+		return weatherSongs.slice(0, 5).map((song, index) => ({
+			kind: "weatherSong",
+			tone: "daily",
+			title: song.title || "天气电台歌曲",
+			sub: artistLine(song, "天气电台"),
+			action: "Play",
+			index,
+			coverUrl: song.coverUrl,
+		}));
+	}
 	if (!discover?.loggedIn) return [...STARTER_TILES];
 	const tiles: HomeTile[] = [];
 	discover.dailySongs.slice(0, 4).forEach((song, index) => {
@@ -89,6 +107,17 @@ function buildHomeTiles(discover: DiscoverHomeResponse | null | undefined): Home
 			coverUrl: podcast.coverUrl,
 		});
 	});
+	weatherSongs.slice(0, Math.max(0, 5 - tiles.length)).forEach((song, index) => {
+		tiles.push({
+			kind: "weatherSong",
+			tone: "daily",
+			title: song.title || "天气电台歌曲",
+			sub: artistLine(song, "天气电台"),
+			action: "Play",
+			index,
+			coverUrl: song.coverUrl,
+		});
+	});
 	return tiles.length ? tiles.slice(0, 5) : [...STARTER_TILES];
 }
 
@@ -101,17 +130,19 @@ function handleTileAction(props: EmptyHomeHostProps, tile: HomeTile): void {
 	else if (tile.kind === "song") props.onPlaySong?.(tile.index);
 	else if (tile.kind === "playlist") props.onOpenPlaylist?.(tile.index);
 	else if (tile.kind === "podcast") props.onOpenPodcast?.(tile.index);
+	else if (tile.kind === "weatherSong") props.onPlayWeatherSong?.(tile.index);
 }
 
 export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 	const discover = props.discover ?? null;
 	const loggedOut = !discover?.loggedIn;
+	const hasWeatherSongs = !!props.weatherRadio?.radio.songs.length;
 	const daily = discover?.dailySongs[0] ?? null;
 	const privateSong = discover?.dailySongs[1] ?? null;
 	const thirdSong = discover?.dailySongs[2] ?? null;
 	const firstPlaylist = discover?.playlists[0] ?? null;
 	const firstPodcast = discover?.podcasts[0] ?? null;
-	const tiles = buildHomeTiles(discover);
+	const tiles = buildHomeTiles(discover, props.weatherRadio);
 
 	return (
 		<section id="empty-home" aria-label="Mineradio home">
@@ -173,7 +204,7 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 				<div className="home-rail">
 					<div className="home-section-head">
 						<div className="home-section-title" id="home-rail-title">{loggedOut ? "先从这里开始" : "你的歌单与推荐"}</div>
-						<div className="home-section-note" id="home-rail-note">{loggedOut ? "不会自动拉取外部推荐" : "刚刚更新 · 点击即可播放"}</div>
+						<div className="home-section-note" id="home-rail-note">{loggedOut && !hasWeatherSongs ? "不会自动拉取外部推荐" : "刚刚更新 · 点击即可播放"}</div>
 					</div>
 					<div id="home-tile-row" className="home-tile-row">
 						{tiles.map((tile) => (

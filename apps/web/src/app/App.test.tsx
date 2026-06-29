@@ -907,6 +907,129 @@ test("App starts baseline Home private radar from discover songs", async () => {
 	localStorage.clear();
 });
 
+test("App starts baseline Home weather radio from a weather rail song", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+
+	const fakeClient = {
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return {
+				loggedIn: false,
+				user: null,
+				mode: "starter",
+				dailySongs: [],
+				playlists: [],
+				podcasts: [],
+				updatedAt: 1,
+			};
+		},
+		async weatherRadio() {
+			return {
+				ok: true,
+				weather: {
+					provider: "open-meteo",
+					location: {
+						name: "上海",
+						country: "中国",
+						admin1: "",
+						latitude: 31.23,
+						longitude: 121.47,
+						timezone: "Asia/Shanghai",
+						fallback: false,
+					},
+					label: "雨",
+					weatherCode: 61,
+					temperature: 22,
+					apparentTemperature: 21,
+					humidity: 88,
+					precipitation: 1,
+					cloudCover: 90,
+					windSpeed: 6,
+					windGusts: 10,
+					isDay: 1,
+					time: "",
+					updatedAt: 1,
+					error: "",
+					mood: {
+						key: "rain",
+						title: "雨天电台",
+						tagline: "留一点潮湿的空间给旋律",
+						energy: 0.38,
+						warmth: 0.42,
+						focus: 0.64,
+						melancholy: 0.66,
+						keywords: ["雨天 R&B"],
+					},
+				},
+				radio: {
+					title: "雨天电台",
+					subtitle: "留一点潮湿的空间给旋律",
+					seedQueries: ["雨天 R&B"],
+					songs: [
+						{
+							provider: "netease",
+							id: "rain-1",
+							sourceId: "rain-1",
+							title: "Rain One",
+							artists: ["Alice"],
+							album: "",
+							coverUrl: "",
+							durationMs: 1000,
+							qualityHints: [],
+							playableState: "playable",
+						},
+						{
+							provider: "qq",
+							id: "rain-2",
+							sourceId: "rain-2",
+							title: "Rain Two",
+							artists: ["Bob"],
+							album: "",
+							coverUrl: "",
+							durationMs: 2000,
+							qualityHints: [],
+							playableState: "unknown",
+						},
+					],
+					updatedAt: 1,
+				},
+			};
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	const weatherTile = Array.from(host.querySelectorAll(".home-tile"))
+		.find((button) => button.textContent?.includes("Rain Two")) as HTMLButtonElement;
+	weatherTile.click();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["rain-1", "rain-2"]);
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("rain-2");
+	expect(host.querySelector("#toast.show")?.textContent).toContain("雨天电台 · 2 首");
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	localStorage.clear();
+});
+
 test("App imports a local audio file from the baseline Home import tile", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;

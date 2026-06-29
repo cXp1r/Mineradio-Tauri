@@ -97,6 +97,7 @@ import {
   type ProviderLoginStatus,
   type SongUrlResult,
   type Track,
+  type WeatherRadioResponse,
 } from "@mineradio/shared";
 import type { FxState } from "@mineradio/visual-engine";
 
@@ -589,6 +590,8 @@ export function App({
     useState<WindowState | null>(null);
   const [homeDiscover, setHomeDiscover] =
     useState<DiscoverHomeResponse | null>(null);
+  const [homeWeatherRadio, setHomeWeatherRadio] =
+    useState<WeatherRadioResponse | null>(null);
 
   const currentTrack = usePlaybackStore((s) => s.currentTrack);
   const queue = usePlaybackStore((s) => s.queue);
@@ -682,6 +685,7 @@ export function App({
   likeBusyMapRef.current = likeBusyMap;
   const likeStatusRequestSeqRef = useRef(0);
   const homeDiscoverRequestSeqRef = useRef(0);
+  const homeWeatherRadioRequestSeqRef = useRef(0);
 
   const positionRef = useRef(positionMs);
   positionRef.current = positionMs;
@@ -1067,16 +1071,40 @@ export function App({
     }
   }, [sidecarClient]);
 
+  const refreshHomeWeatherRadio = useCallback(async () => {
+    const client = sidecarClient;
+    const weatherRadio = client?.weatherRadio;
+    if (!client || typeof weatherRadio !== "function") {
+      setHomeWeatherRadio(null);
+      return null;
+    }
+    const seq = ++homeWeatherRadioRequestSeqRef.current;
+    try {
+      const next = await weatherRadio.call(client, {
+        city: "上海",
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "auto",
+      });
+      if (seq === homeWeatherRadioRequestSeqRef.current) setHomeWeatherRadio(next);
+      return next;
+    } catch {
+      if (seq === homeWeatherRadioRequestSeqRef.current) setHomeWeatherRadio(null);
+      return null;
+    }
+  }, [sidecarClient]);
+
   useEffect(() => {
     if (!sidecarClient) {
       setHomeDiscover(null);
+      setHomeWeatherRadio(null);
       return;
     }
     void refreshHomeDiscover();
+    void refreshHomeWeatherRadio();
   }, [
     neteaseStatus?.loggedIn,
     qqStatus?.loggedIn,
     refreshHomeDiscover,
+    refreshHomeWeatherRadio,
     sidecarClient,
   ]);
 
@@ -1235,6 +1263,35 @@ export function App({
       searchQuery,
       showToast,
       sidecarClient,
+    ],
+  );
+
+  const playHomeWeatherSong = useCallback(
+    async (index: number) => {
+      let radio = homeWeatherRadio;
+      if (!radio?.radio.songs.length) {
+        showToast("正在生成天气电台");
+        radio = await refreshHomeWeatherRadio();
+      }
+      const songs = radio?.radio.songs ?? [];
+      if (!songs.length) {
+        const seed = radio?.radio.seedQueries[0] || "雨天 R&B";
+        showToast("天气队列暂时为空，先打开搜索");
+        searchQuery(seed);
+        return;
+      }
+      const targetIndex = Math.max(0, Math.min(index, songs.length - 1));
+      usePlaybackStore.getState().setQueue(songs);
+      usePlaybackStore.getState().playAt(targetIndex);
+      enterPlaybackSurface();
+      showToast(`${radio?.radio.title || "天气电台"} · ${songs.length} 首`);
+    },
+    [
+      enterPlaybackSurface,
+      homeWeatherRadio,
+      refreshHomeWeatherRadio,
+      searchQuery,
+      showToast,
     ],
   );
 
@@ -2366,6 +2423,7 @@ export function App({
       />
       <EmptyHomeHost
         discover={homeDiscover}
+        weatherRadio={homeWeatherRadio}
         onSearchFocus={focusSearch}
         onOpenLibrary={openHomeLibrary}
         onOpenConsole={revealConsole}
@@ -2384,6 +2442,7 @@ export function App({
         onOpenPodcastSearch={openHomePodcastSearch}
         onOpenInsight={openHomeInsight}
         onPlayRecent={playHomeRecent}
+        onPlayWeatherSong={(index) => void playHomeWeatherSong(index)}
       />
       <SearchShell
         client={sidecarClient}
