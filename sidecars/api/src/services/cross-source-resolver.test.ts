@@ -158,7 +158,7 @@ test("resolveSearch without provider mirrors baseline merged limits for the acti
   const result = await resolver.resolveSearch({ keyword: "夜航", limit: 30 });
 
   expect(calls.sort()).toEqual(["netease:14", "qq:12"]);
-  expect(result).toHaveLength(18);
+  expect(result.length).toBe(18);
 });
 
 test("resolveSearch scoring follows baseline QQ intent boost and derivative penalty", async () => {

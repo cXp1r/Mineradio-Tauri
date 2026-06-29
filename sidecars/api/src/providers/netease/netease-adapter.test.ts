@@ -40,6 +40,7 @@ function noopDeps(overrides: Partial<NeteaseHanaDeps>): NeteaseHanaDeps {
     cloudsearch: call,
     songDetail: call,
     songUrlV1: call,
+    songUrl: call,
     lyric: call,
     lyricNew: call,
 	    playlistDetail: call,
@@ -126,6 +127,58 @@ test("songUrl sends requested playback quality to hana and returns resolved qual
   expect(out.level).toBe("exhigh");
   expect(out.quality).toBe("极高");
   expect(out.br).toBe(999000);
+  expect(out.requestedQuality).toBe("exhigh");
+});
+
+test("songUrl walks the baseline quality ladder until a playable Netease URL is found", async () => {
+  const calls: string[] = [];
+  const deps = noopDeps({
+    songUrlV1: async (query) => {
+      calls.push(String(query["level"]));
+      if (query["level"] === "lossless") {
+        return {
+          body: { data: [{ id: 1, url: null, br: 1411000, fee: 0, code: 200 }] }
+        };
+      }
+      return {
+        body: { data: [{ id: 1, url: "http://audio-320", br: 999000, fee: 0, code: 200 }] }
+      };
+    }
+  });
+  const adapter = createNeteaseAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
+
+  expect(calls).toEqual(["lossless", "exhigh"]);
+  expect(out.url).toBe("http://audio-320");
+  expect(out.level).toBe("exhigh");
+  expect(out.quality).toBe("极高");
+  expect(out.br).toBe(999000);
+  expect(out.requestedQuality).toBe("lossless");
+});
+
+test("songUrl falls back to legacy br endpoint when Netease songUrlV1 throws", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const deps = noopDeps({
+    songUrlV1: async (query) => {
+      calls.push({ endpoint: "v1", ...query });
+      throw new Error("v1 down");
+    },
+    songUrl: async (query) => {
+      calls.push({ endpoint: "legacy", ...query });
+      return {
+        body: { data: [{ id: 1, url: "http://legacy-audio", br: 999000, fee: 0, code: 200 }] }
+      };
+    }
+  });
+  const adapter = createNeteaseAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "exhigh" });
+
+  expect(calls).toEqual([
+    { endpoint: "v1", id: "1", level: "exhigh" },
+    { endpoint: "legacy", id: "1", br: 999000 }
+  ]);
+  expect(out.url).toBe("http://legacy-audio");
+  expect(out.level).toBe("exhigh");
   expect(out.requestedQuality).toBe("exhigh");
 });
 

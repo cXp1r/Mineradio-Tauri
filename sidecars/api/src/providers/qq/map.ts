@@ -112,20 +112,51 @@ export function parseLrc(text: string): LyricLine[] {
   return out;
 }
 
+export function parseQrc(text: string): LyricLine[] {
+  const out: LyricLine[] = [];
+  if (!text || typeof text !== "string") return out;
+  const lineRe = /\[(\d+),(\d+)\]([^\r\n]*)/g;
+  let m: RegExpExecArray | null;
+  while ((m = lineRe.exec(text)) !== null) {
+    const timeMs = Math.max(0, parseInt(m[1], 10) || 0);
+    const durationMs = Math.max(0, parseInt(m[2], 10) || 0);
+    const rawText = String(m[3] ?? "")
+      .replace(/\(\d+,\d+(?:,\d+)?\)/g, "")
+      .trim();
+    if (!rawText) continue;
+    out.push({
+      timeMs,
+      durationMs,
+      text: rawText,
+      source: "qrc"
+    });
+  }
+  return out;
+}
+
 export function mapQqLyricToPayload(opts: {
   trackId: string;
   lyric?: string;
   trans?: string;
+  qrc?: string;
+  source?: string;
 }): LyricPayload {
   const lrcText = opts.lyric ?? "";
   const transText = opts.trans ?? "";
-  const baseLines = parseLrc(lrcText);
+  const qrcText = opts.qrc ?? "";
+  let source = opts.source;
+  let baseLines = parseLrc(lrcText);
+  if (baseLines.length === 0 && qrcText.trim()) {
+    baseLines = parseQrc(qrcText);
+    source = "qrc";
+  }
   const transLines = parseLrc(transText);
   const transMap = new Map<number, string>();
   for (const t of transLines) transMap.set(t.timeMs, t.text);
   const lines: LyricLine[] = baseLines.map(l => {
     const tr = transMap.get(l.timeMs);
-    return tr != null ? { timeMs: l.timeMs, text: l.text, translation: tr } : l;
+    const line = source ? { ...l, source } : l;
+    return tr != null ? { ...line, translation: tr } : line;
   });
   const hasTranslation = transText.trim().length > 0 && transLines.length > 0;
   return {

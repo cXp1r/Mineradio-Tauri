@@ -1,5 +1,6 @@
 import type {
   Track,
+  PlaybackQuality,
   PlaylistSummary,
   PlaylistDetail,
   LyricPayload
@@ -50,6 +51,7 @@ export interface QqClientDeps {
   logout: QqCall;
   getConfig(): { cookie?: string };
   smartboxSearch?: (keyword: string, limit: number) => Promise<unknown[]>;
+  legacyLyric?: QqCall;
 }
 
 function cast(fn: unknown): QqCall {
@@ -68,7 +70,8 @@ const defaultDeps: QqClientDeps = {
   loginStatus: cast(qqClient.loginStatus),
   logout: cast(qqClient.logout),
   getConfig,
-  smartboxSearch: fallbackSmartboxSearch
+  smartboxSearch: fallbackSmartboxSearch,
+  legacyLyric: legacyQqLyric
 };
 
 function asObj(v: unknown): Record<string, unknown> | null {
@@ -119,6 +122,36 @@ async function fallbackSmartboxSearch(keyword: string, limit: number): Promise<u
   const song = asObj(data?.song);
   const list = song && Array.isArray(song.itemlist) ? song.itemlist : [];
   return list.slice(0, Math.max(0, limit));
+}
+
+async function legacyQqLyric(query: Record<string, unknown>, config?: { cookie?: string }): Promise<{ body: unknown }> {
+  const songmid = String(query.songmid ?? query.songMID ?? query.mid ?? "").trim();
+  if (!songmid) return { body: {} };
+  const loginUin = config?.cookie ? (qqUserIdFromCookie(config.cookie) ?? "0") : "0";
+  const params = new URLSearchParams({
+    songmid,
+    songtype: "0",
+    format: "json",
+    nobase64: "1",
+    g_tk: "5381",
+    loginUin,
+    hostUin: "0",
+    inCharset: "utf8",
+    outCharset: "utf-8",
+    notice: "0",
+    platform: "yqq.json",
+    needNewCode: "0"
+  });
+  const headers: Record<string, string> = {
+    Referer: "https://y.qq.com/portal/player.html",
+    "user-agent": "Mozilla/5.0"
+  };
+  if (config?.cookie) headers.Cookie = config.cookie;
+  const res = await fetch(`https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?${params.toString()}`, { headers });
+  if (!res.ok) {
+    throw new ProviderError("qq", "UNAVAILABLE", `qq legacy lyric failed with status ${res.status}`);
+  }
+  return { body: await res.json() };
 }
 
 function cfgOf(deps: QqClientDeps): { cookie?: string } {
@@ -188,16 +221,22 @@ function mapQqUserPlaylists(rawList: unknown[], seen: Set<string>, subscribed = 
   return out;
 }
 
-const QQ_QUALITY_META = {
-  jymaster: { type: "flac", level: "lossless", label: "无损 FLAC" },
-  hires: { type: "flac", level: "lossless", label: "无损 FLAC" },
-  lossless: { type: "flac", level: "lossless", label: "无损 FLAC" },
-  exhigh: { type: "320", level: "exhigh", label: "320k MP3" },
-  standard: { type: "128", level: "standard", label: "128k MP3" }
-} as const;
+type QqQualityCandidate = {
+  type: string;
+  level: PlaybackQuality;
+  label: string;
+};
 
-function qqQualityMeta(opts?: SongUrlOptions) {
-  return QQ_QUALITY_META[opts?.quality ?? "hires"];
+const QQ_QUALITY_CANDIDATES: QqQualityCandidate[] = [
+  { type: "flac", level: "lossless", label: "无损 FLAC" },
+  { type: "320", level: "exhigh", label: "320k MP3" },
+  { type: "128", level: "standard", label: "128k MP3" },
+];
+
+function qqQualityCandidatesFrom(requested: PlaybackQuality): QqQualityCandidate[] {
+  if (requested === "standard") return QQ_QUALITY_CANDIDATES.slice(2);
+  if (requested === "exhigh") return QQ_QUALITY_CANDIDATES.slice(1);
+  return QQ_QUALITY_CANDIDATES;
 }
 
 export function createQqAdapter(
@@ -224,20 +263,43 @@ export function createQqAdapter(
     async songUrl(track, opts): Promise<SongUrlResult> {
       const cfg = cfgOf(deps);
       const hasCookie = !!deps.getConfig().cookie;
-      const quality = qqQualityMeta(opts);
-      let body: unknown;
-      try {
-        body = (await deps.songUrl({ id: track.sourceId, type: quality.type }, cfg)).body;
-      } catch (err) {
-        if (!hasCookie) {
-          throw new ProviderError(
-            "qq",
-            "LOGIN_REQUIRED",
-            `qq song-url ${track.sourceId} requires cookie`,
-            { retryable: true }
-          );
+      const requested = opts?.quality ?? "hires";
+      let lastError: unknown = null;
+      for (const quality of qqQualityCandidatesFrom(requested)) {
+        try {
+          const body = (await deps.songUrl({ id: track.sourceId, type: quality.type }, cfg)).body;
+          const url = typeof body === "string" ? body : null;
+          if (url) {
+            return {
+              url,
+              proxied: false,
+              level: quality.level,
+              quality: quality.label,
+              requestedQuality: requested
+            };
+          }
+        } catch (err) {
+          if (!hasCookie) {
+            throw new ProviderError(
+              "qq",
+              "LOGIN_REQUIRED",
+              `qq song-url ${track.sourceId} requires cookie`,
+              { retryable: true, action: "login" }
+            );
+          }
+          lastError = err;
         }
-        const msg = err instanceof Error ? err.message : String(err);
+      }
+      if (!hasCookie) {
+        throw new ProviderError(
+          "qq",
+          "LOGIN_REQUIRED",
+          `qq song-url ${track.sourceId} requires cookie`,
+          { retryable: true, action: "login" }
+        );
+      }
+      if (lastError) {
+        const msg = lastError instanceof Error ? lastError.message : String(lastError);
         throw new ProviderError(
           "qq",
           "UNAVAILABLE",
@@ -245,40 +307,44 @@ export function createQqAdapter(
           { retryable: false }
         );
       }
-      const url = typeof body === "string" ? body : null;
-      if (!url) {
-        if (!hasCookie) {
-          throw new ProviderError(
-            "qq",
-            "LOGIN_REQUIRED",
-            `qq song-url ${track.sourceId} requires cookie`,
-            { retryable: true }
-          );
-        }
-        throw new ProviderError(
-          "qq",
-          "UNAVAILABLE",
-          `qq song-url ${track.sourceId} returned no url`
-        );
-      }
-      return {
-        url,
-        proxied: false,
-        level: quality.level,
-        quality: quality.label,
-        requestedQuality: opts?.quality ?? "hires"
-      };
+      throw new ProviderError(
+        "qq",
+        "UNAVAILABLE",
+        `qq song-url ${track.sourceId} returned no url`
+      );
     },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);
       const resp = await deps.lyric({ songmid: track.sourceId }, cfg);
       const o = asObj(resp.body) ?? {};
-      const lyric = typeof o.lyric === "string" ? o.lyric : "";
-      const trans = typeof o.trans === "string" ? o.trans : "";
+      let lyric = typeof o.lyric === "string" ? o.lyric : "";
+      let trans = typeof o.trans === "string" ? o.trans : "";
+      const qrc = typeof o.qrc === "string" ? o.qrc : "";
+      let source = "qq-musicu";
+      if (!lyric.trim() && deps.legacyLyric) {
+        try {
+          const legacy = asObj((await deps.legacyLyric({ songmid: track.sourceId }, cfg)).body) ?? {};
+          const legacyLyric = typeof legacy.lyric === "string" ? legacy.lyric : "";
+          const legacyTrans = typeof legacy.trans === "string"
+            ? legacy.trans
+            : typeof legacy.tlyric === "string"
+              ? legacy.tlyric
+              : "";
+          if (legacyLyric.trim()) {
+            lyric = legacyLyric;
+            trans = legacyTrans || trans;
+            source = "qq-legacy";
+          }
+        } catch {
+          // QQ legacy lyric is best-effort, matching the Electron baseline.
+        }
+      }
       return mapQqLyricToPayload({
         trackId: track.sourceId,
         lyric,
-        trans
+        trans,
+        qrc,
+        source
       });
     },
     async playlistList(): Promise<PlaylistSummary[]> {

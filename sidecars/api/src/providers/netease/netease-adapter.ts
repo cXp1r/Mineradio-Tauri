@@ -1,5 +1,6 @@
 import type {
   Track,
+  PlaybackQuality,
   PlaylistSummary,
   PlaylistDetail,
   LyricPayload,
@@ -37,6 +38,7 @@ export interface NeteaseHanaDeps {
   cloudsearch: NeteaseHanaCall;
   songDetail: NeteaseHanaCall;
   songUrlV1: NeteaseHanaCall;
+  songUrl: NeteaseHanaCall;
   lyric: NeteaseHanaCall;
   lyricNew: NeteaseHanaCall;
   playlistDetail: NeteaseHanaCall;
@@ -66,6 +68,7 @@ const defaultDeps: NeteaseHanaDeps = {
   cloudsearch: cast(hanaClient.cloudsearch),
   songDetail: cast(hanaClient.songDetail),
   songUrlV1: cast(hanaClient.songUrlV1),
+  songUrl: cast(hanaClient.songUrl),
   lyric: cast(hanaClient.lyric),
   lyricNew: cast(hanaClient.lyricNew),
   playlistDetail: cast(hanaClient.playlistDetail),
@@ -131,16 +134,57 @@ const STATE_TO_CODE: Record<string, string> = {
   unknown: "UNAVAILABLE"
 };
 
-const NETEASE_QUALITY_LABELS = {
-  jymaster: "超清母带",
-  hires: "高清臻音",
-  lossless: "无损",
-  exhigh: "极高",
-  standard: "标准"
-} as const;
+type NeteaseQualityCandidate = {
+  level: PlaybackQuality;
+  br: number;
+  label: string;
+};
+
+const NETEASE_QUALITY_CANDIDATES: NeteaseQualityCandidate[] = [
+  { level: "jymaster", br: 1999000, label: "超清母带" },
+  { level: "hires", br: 1999000, label: "高清臻音" },
+  { level: "lossless", br: 1411000, label: "无损" },
+  { level: "exhigh", br: 999000, label: "极高" },
+  { level: "standard", br: 128000, label: "标准" },
+];
 
 function requestedQuality(opts?: SongUrlOptions) {
   return opts?.quality ?? "hires";
+}
+
+function qualityCandidatesFrom(target: PlaybackQuality): NeteaseQualityCandidate[] {
+  const start = NETEASE_QUALITY_CANDIDATES.findIndex(item => item.level === target);
+  return NETEASE_QUALITY_CANDIDATES.slice(start >= 0 ? start : 1);
+}
+
+async function requestSongUrlForQuality(
+  deps: NeteaseHanaDeps,
+  track: Track,
+  quality: NeteaseQualityCandidate,
+  cfg: { cookie?: string },
+): Promise<{ body: unknown }> {
+  try {
+    return await deps.songUrlV1(
+      { id: track.sourceId, level: quality.level },
+      cfg
+    );
+  } catch {
+    return await deps.songUrl(
+      { id: track.sourceId, br: quality.br },
+      cfg
+    );
+  }
+}
+
+function pickSongUrlDatum(body: Record<string, unknown> | null, track: Track): Record<string, unknown> | null {
+  const dataArr = body && Array.isArray(body.data) ? (body.data as unknown[]) : [];
+  const targetId = String(track.sourceId);
+  const matched =
+    dataArr.find(d => {
+      const o = asObj(d);
+      return o != null && String(o.id) === targetId;
+    }) ?? dataArr[0];
+  return asObj(matched);
 }
 
 function responseCode(resp: { body: unknown } | unknown): number {
@@ -179,62 +223,63 @@ export function createNeteaseAdapter(
     },
     async songUrl(track, opts): Promise<SongUrlResult> {
       const cfg = cfgOf(deps);
-      const quality = requestedQuality(opts);
-      const resp = await deps.songUrlV1(
-        { id: track.sourceId, level: quality },
-        cfg
-      );
-      const body = asObj(resp.body);
-      const dataArr = body && Array.isArray(body.data) ? (body.data as unknown[]) : [];
-      const targetId = String(track.sourceId);
-      const matched =
-        dataArr.find(d => {
-          const o = asObj(d);
-          return o != null && String(o.id) === targetId;
-        }) ?? dataArr[0];
-      const datum = asObj(matched);
-      if (!datum) {
+      const requested = requestedQuality(opts);
+      let trialFallback: SongUrlResult | null = null;
+      let lastDatum: Record<string, unknown> | null = null;
+      let lastState = "unknown";
+      let lastError: unknown = null;
+      for (const quality of qualityCandidatesFrom(requested)) {
+        try {
+          const resp = await requestSongUrlForQuality(deps, track, quality, cfg);
+          const datum = pickSongUrlDatum(asObj(resp.body), track);
+          if (!datum) continue;
+          lastDatum = datum;
+          const fee = datum.fee;
+          const code = datum.code;
+          const freeTrialInfo = datum.freeTrialInfo;
+          const url = typeof datum.url === "string" ? datum.url : null;
+          const state = mapPlayable(
+            fee,
+            code,
+            freeTrialInfo,
+            !!deps.getConfig().cookie,
+            url
+          );
+          lastState = state;
+          if (state !== "playable" || !url) continue;
+          const br = typeof datum.br === "number" && Number.isFinite(datum.br) ? Math.max(0, Math.floor(datum.br)) : undefined;
+          const result = {
+            url,
+            proxied: false,
+            level: quality.level,
+            quality: quality.label,
+            br,
+            requestedQuality: requested
+          };
+          if (freeTrialInfo != null) {
+            trialFallback ??= result;
+            continue;
+          }
+          return result;
+        } catch (err) {
+          lastError = err;
+        }
+      }
+      if (trialFallback) return trialFallback;
+      if (!lastDatum && lastError instanceof ProviderError) throw lastError;
+      if (!lastDatum) {
         throw new ProviderError(
           "netease",
           "UNAVAILABLE",
           `netease song-url returned no data for ${track.sourceId}`
         );
       }
-      const fee = datum.fee;
-      const code = datum.code;
-      const freeTrialInfo = datum.freeTrialInfo;
-      const url = typeof datum.url === "string" ? datum.url : null;
-      const state = mapPlayable(
-        fee,
-        code,
-        freeTrialInfo,
-        !!deps.getConfig().cookie,
-        url
+      throw new ProviderError(
+        "netease",
+        STATE_TO_CODE[lastState] ?? "UNAVAILABLE",
+        `netease song-url ${track.sourceId} state ${lastState}`,
+        { retryable: lastState === "login_required", action: lastState === "login_required" ? "login" : undefined }
       );
-      if (state !== "playable") {
-        throw new ProviderError(
-          "netease",
-          STATE_TO_CODE[state] ?? "UNAVAILABLE",
-          `netease song-url ${track.sourceId} state ${state}`,
-          { retryable: state === "login_required" }
-        );
-      }
-      if (!url) {
-        throw new ProviderError(
-          "netease",
-          "UNAVAILABLE",
-          `netease song-url missing url for ${track.sourceId}`
-        );
-      }
-      const br = typeof datum.br === "number" && Number.isFinite(datum.br) ? Math.max(0, Math.floor(datum.br)) : undefined;
-      return {
-        url,
-        proxied: false,
-        level: quality,
-        quality: NETEASE_QUALITY_LABELS[quality],
-        br,
-        requestedQuality: quality
-      };
     },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);

@@ -48,6 +48,7 @@ function noopDeps(overrides: Partial<QqClientDeps>): QqClientDeps {
     loginStatus: call,
     logout: call,
     getConfig: () => ({}),
+    legacyLyric: call,
     ...overrides
   };
 }
@@ -202,6 +203,25 @@ test("songUrl maps requested playback quality to qq type and returns resolved qu
   expect(out.requestedQuality).toBe("lossless");
 });
 
+test("songUrl walks the QQ quality ladder until a playable URL is returned", async () => {
+  const calls: string[] = [];
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
+    songUrl: async (query) => {
+      calls.push(String(query["type"]));
+      return { body: query["type"] === "320" ? "http://audio.example/320.mp3" : "" };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
+
+  expect(calls).toEqual(["flac", "320"]);
+  expect(out.url).toBe("http://audio.example/320.mp3");
+  expect(out.level).toBe("exhigh");
+  expect(out.quality).toBe("320k MP3");
+  expect(out.requestedQuality).toBe("lossless");
+});
+
 test("songUrl with cookie but empty url throws ProviderError UNAVAILABLE", async () => {
   const deps = noopDeps({
     getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
@@ -251,6 +271,57 @@ test("lyric with no trans returns hasTranslation false", async () => {
   const out = await adapter.lyric(trackFixture);
   expect(out.lines.length).toBe(1);
   expect(out.hasTranslation).toBe(false);
+});
+
+test("lyric falls back to legacy fcg_query_lyric_new payload when QQ musicu lyric is empty", async () => {
+  const calls: Array<Record<string, unknown>> = [];
+  const deps = noopDeps({
+    lyric: async (query) => {
+      calls.push({ endpoint: "musicu", ...query });
+      return { body: { lyric: "", trans: "" } };
+    },
+    legacyLyric: async (query) => {
+      calls.push({ endpoint: "legacy", ...query });
+      return {
+        body: {
+          lyric: "[00:01.00]legacy line",
+          tlyric: "[00:01.00]legacy trans"
+        }
+      };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.lyric(trackFixture);
+
+  expect(calls).toEqual([
+    { endpoint: "musicu", songmid: "002Zkt5S2oAB7X" },
+    { endpoint: "legacy", songmid: "002Zkt5S2oAB7X" }
+  ]);
+  expect(out.lines.length).toBe(1);
+  expect(out.lines[0].text).toBe("legacy line");
+  expect(out.lines[0].translation).toBe("legacy trans");
+  expect(out.lines[0].source).toBe("qq-legacy");
+  expect(out.hasTranslation).toBe(true);
+});
+
+test("lyric maps QQ qrc-only payload into timed native lyric lines", async () => {
+  const deps = noopDeps({
+    lyric: async () => ({
+      body: {
+        lyric: "",
+        trans: "",
+        qrc: "[1000,2500](1000,500)你(1500,500)好"
+      }
+    }),
+    legacyLyric: undefined
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.lyric(trackFixture);
+
+  expect(out.lines).toEqual([
+    { timeMs: 1000, durationMs: 2500, text: "你好", source: "qrc" }
+  ]);
+  expect(out.isWordByWord).toBe(false);
 });
 
 test("playlistList without cookie returns empty list without calling qq", async () => {
