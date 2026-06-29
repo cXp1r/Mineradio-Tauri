@@ -24,6 +24,7 @@ export interface SkullParticleController {
 	setShelfCompositionActive(active: boolean): void;
 	getObject(): THREE.Points | null;
 	getMouthTransform(): SkullMouthTransform | null;
+	getBeatFlash(): number;
 	dispose(): void;
 }
 
@@ -245,6 +246,9 @@ export async function createSkullParticleController(
 				},
 				quaternion: q,
 			};
+		},
+		getBeatFlash() {
+			return beatFlash;
 		},
 		dispose() {
 			if (!object) return;

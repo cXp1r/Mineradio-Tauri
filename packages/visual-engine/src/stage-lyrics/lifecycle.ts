@@ -55,6 +55,8 @@ export interface StageLyricsLifecycleOpts {
 	lyricTextOptionsSupplier?: () => LyricTextOptions;
 	lyricLayoutOptionsSupplier?: () => LyricLayoutOptions;
 	skullMouthTransformSupplier?: () => SkullMouthTransform | null;
+	skullBeatFlashSupplier?: () => number;
+	coverWorldTransformSupplier?: () => StageLyricsWorldTransform | null;
 	cameraSupplier?: () => THREE.PerspectiveCamera | null;
 	lyricSunEnergyHolder?: { get(): number; set(v: number): void };
 	getBeatCamKick?: () => {
@@ -105,6 +107,13 @@ export interface SkullMouthTransform {
 	visible?: boolean;
 	position: Vec3Like;
 	quaternion: QuatLike;
+}
+export interface StageLyricsWorldTransform {
+	position?: Vec3Like;
+	quaternion?: QuatLike;
+	updateMatrixWorld?: (force?: boolean) => void;
+	getWorldPosition?: (target: Vec3Like) => Vec3Like;
+	getWorldQuaternion?: (target: QuatLike) => QuatLike;
 }
 export interface LyricLayoutOptions {
 	lyricCameraLock?: boolean;
@@ -240,6 +249,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		activeBuilds: 0,
 		textOptionsSignature: "",
 		lockFitScale: 1,
+		lastFrame: null as { dt: number; t: number; snapshot: AudioSnapshot } | null,
 		pendingBuildPromise: null as Promise<void> | null,
 		paletteRuntime: new LyricPaletteRuntime(opts.palette),
 		reduceMotionFlag: false,
@@ -465,6 +475,32 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		}
 	}
 
+	function setGroupQuaternion(
+		group: {
+			quaternion?: { x: number; y: number; z: number; w: number; copy?: (q: { x: number; y: number; z: number; w: number }) => unknown };
+			rotation?: { x: number; y: number; z: number };
+		},
+		q: { x: number; y: number; z: number; w: number },
+		tiltX: number,
+		tiltY: number,
+	): void {
+		if (group.quaternion?.copy) {
+			group.quaternion.copy(q);
+			return;
+		}
+		if (group.quaternion) {
+			group.quaternion.x = q.x;
+			group.quaternion.y = q.y;
+			group.quaternion.z = q.z;
+			group.quaternion.w = q.w;
+			return;
+		}
+		if (group.rotation) {
+			group.rotation.x = tiltX * Math.PI / 180;
+			group.rotation.y = tiltY * Math.PI / 180;
+		}
+	}
+
 	function applyStageLyricLayout(): void {
 		if (!state.group) return;
 		const layout = getLyricLayoutOptions();
@@ -558,14 +594,34 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			return;
 		}
 		if (group.userData) group.userData.skullMouthLocked = false;
-		const x = layout.lyricOffsetX;
-		const y = 0.2 + layout.lyricOffsetY;
-		const z = 1.46 + layout.lyricOffsetZ;
-		setGroupPosition(group, x, y, z);
-		if (group.rotation) {
-			group.rotation.x = layout.lyricTiltX * Math.PI / 180;
-			group.rotation.y = layout.lyricTiltY * Math.PI / 180;
+		const cover = opts.coverWorldTransformSupplier?.() ?? null;
+		const basePos = { x: 0, y: 0, z: 0 };
+		const baseQuat = { x: 0, y: 0, z: 0, w: 1 };
+		if (cover) {
+			cover.updateMatrixWorld?.(true);
+			if (cover.getWorldPosition) cover.getWorldPosition(basePos);
+			else if (cover.position) {
+				basePos.x = cover.position.x;
+				basePos.y = cover.position.y;
+				basePos.z = cover.position.z;
+			}
+			if (cover.getWorldQuaternion) cover.getWorldQuaternion(baseQuat);
+			else if (cover.quaternion) {
+				baseQuat.x = cover.quaternion.x;
+				baseQuat.y = cover.quaternion.y;
+				baseQuat.z = cover.quaternion.z;
+				baseQuat.w = cover.quaternion.w;
+			}
 		}
+		const right = normalizeVec(applyQuaternionToVec({ x: 1, y: 0, z: 0 }, baseQuat));
+		const up = normalizeVec(applyQuaternionToVec({ x: 0, y: 1, z: 0 }, baseQuat));
+		const forward = normalizeVec(applyQuaternionToVec({ x: 0, y: 0, z: 1 }, baseQuat));
+		const x = basePos.x + right.x * layout.lyricOffsetX + up.x * layout.lyricOffsetY + forward.x * layout.lyricOffsetZ;
+		const y = basePos.y + right.y * layout.lyricOffsetX + up.y * layout.lyricOffsetY + forward.y * layout.lyricOffsetZ;
+		const z = basePos.z + right.z * layout.lyricOffsetX + up.z * layout.lyricOffsetY + forward.z * layout.lyricOffsetZ;
+		setGroupPosition(group, x, y, z);
+		const targetQuat = multiplyQuaternions(baseQuat, tiltQuaternionYXZ(layout.lyricTiltX, layout.lyricTiltY));
+		setGroupQuaternion(group, targetQuat, layout.lyricTiltX, layout.lyricTiltY);
 	}
 
 	function getShelfProfile() {
@@ -724,6 +780,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 				}
 				(state.group as unknown as { add: (c: unknown) => void }).add(lyric.group);
 				state.current = lyric;
+				if (state.lastFrame) {
+					updateStageLyrics3D(state.lastFrame.dt, state.lastFrame.t, state.lastFrame.snapshot);
+				}
 				try {
 					await ensureGsap();
 				} catch {
@@ -964,11 +1023,23 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			: 0;
 		state.beatGlow += (beatGlowRaw - state.beatGlow) * (beatGlowRaw > state.beatGlow ? 0.32 : 0.10);
 		state.beatGlow = finiteOr(state.beatGlow, 0);
-		const solarBloom = lyricGlowStrength > 0
+		const layout = getLyricLayoutOptions();
+		const skullLyricPreset = layout.preset === 6;
+		let solarBloom = lyricGlowStrength > 0
 			? (0.18 + glowBreath * 0.16 + musicBloom * 0.90 + state.beatGlow * 1.18 + Math.sin(t * 0.37 + 1.2) * 0.035) * glowDrive
 			: 0;
+		if (skullLyricPreset && lyricGlowStrength > 0) {
+			const skullBeatFlash = opts.skullBeatFlashSupplier ? opts.skullBeatFlashSupplier() : 0;
+			solarBloom = (
+				0.035 +
+				glowBreath * 0.030 +
+				musicBloom * 0.11 +
+				Math.pow(Math.max(0, state.beatGlow), 1.26) * 1.45 +
+				Math.pow(Math.max(0, skullBeatFlash || 0), 1.08) * 1.18
+			) * glowDrive;
+		}
 		const solarBloomClamped = Math.max(0, Math.min(1.45, solarBloom));
-		state.highBloom += (solarBloomClamped - state.highBloom) * (solarBloomClamped > state.highBloom ? 0.075 : 0.050);
+		state.highBloom += (solarBloomClamped - state.highBloom) * (solarBloomClamped > state.highBloom ? (skullLyricPreset ? 0.22 : 0.075) : (skullLyricPreset ? 0.070 : 0.050));
 		state.highBloom = finiteOr(state.highBloom, 0);
 		const followDrive = glowBeatFlag && lyricGlowStrength > 0 ? Math.min(1.35, state.beatGlow) : 0;
 		const followXTarget = followDrive * ((kicks?.thetaKick ?? 0) * 34 + (kicks?.rollKick ?? 0) * 8);
@@ -1024,14 +1095,15 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			state.lines = Array.isArray(lines) ? lines.slice() : [];
 			state.currentIdx = -1;
 		},
-update(ctx: FrameContext) {
+		update(ctx: FrameContext) {
 			if (state.disposed) return;
 			if (!state.group) return;
 			const dt = ctx.dt;
 			const t = ctx.now;
-			updateStageLyrics3D(dt, t, ctx.snapshot);
+			state.lastFrame = { dt, t, snapshot: ctx.snapshot };
 			const nowSeconds = opts.currentTimeSupplier ? opts.currentTimeSupplier() : 0;
 			tickLyricsParticles(nowSeconds);
+			updateStageLyrics3D(dt, t, ctx.snapshot);
 		},
 		setPalette(palette: Partial<LyricPalette>) {
 			state.paletteRuntime.set(palette);

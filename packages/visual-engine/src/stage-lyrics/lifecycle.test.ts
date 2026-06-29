@@ -451,17 +451,99 @@ test("update applies baseline free lyric layout scale, offsets, and tilt to the 
 	lifecycle.update(makeCtx(0.6, 0.1));
 	const group = lifecycle.group as unknown as {
 		position: { x: number; y: number; z: number };
-		rotation: { x: number; y: number; z: number };
+		quaternion: { x: number; y: number; z: number; w: number };
 		scale: { x: number; y: number; z: number };
 	};
 	expect(group.position.x).toBeCloseTo(0.45, 6);
-	expect(group.position.y).toBeCloseTo(-0.05, 6);
-	expect(group.position.z).toBeCloseTo(2.18, 6);
+	expect(group.position.y).toBeCloseTo(-0.25, 6);
+	expect(group.position.z).toBeCloseTo(0.72, 6);
 	expect(group.scale.x).toBeCloseTo(1.35, 6);
 	expect(group.scale.y).toBeCloseTo(1.35, 6);
 	expect(group.scale.z).toBeCloseTo(1.35, 6);
-	expect(group.rotation.x).toBeCloseTo(12 * Math.PI / 180, 6);
-	expect(group.rotation.y).toBeCloseTo(-18 * Math.PI / 180, 6);
+	const tiltX = 12 * Math.PI / 180;
+	const tiltY = -18 * Math.PI / 180;
+	expect(group.quaternion.x).toBeCloseTo(Math.sin(tiltX / 2) * Math.cos(tiltY / 2), 6);
+	expect(group.quaternion.y).toBeCloseTo(Math.cos(tiltX / 2) * Math.sin(tiltY / 2), 6);
+	expect(group.quaternion.z).toBeCloseTo(-Math.sin(tiltX / 2) * Math.sin(tiltY / 2), 6);
+	expect(group.quaternion.w).toBeCloseTo(Math.cos(tiltX / 2) * Math.cos(tiltY / 2), 6);
+	lifecycle.dispose();
+});
+
+test("free lyric layout binds the stage group to the cover particle world transform", async () => {
+	const scene = makeFakeScene();
+	const cover = {
+		updateMatrixWorldCalled: false,
+		position: { x: 10, y: 20, z: 30 },
+		quaternion: { x: 0, y: Math.sin(Math.PI / 4), z: 0, w: Math.cos(Math.PI / 4) },
+		updateMatrixWorld(force?: boolean) {
+			this.updateMatrixWorldCalled = force === true;
+		},
+		getWorldPosition(target: { x: number; y: number; z: number }) {
+			target.x = this.position.x;
+			target.y = this.position.y;
+			target.z = this.position.z;
+			return target;
+		},
+		getWorldQuaternion(target: { x: number; y: number; z: number; w: number }) {
+			target.x = this.quaternion.x;
+			target.y = this.quaternion.y;
+			target.z = this.quaternion.z;
+			target.w = this.quaternion.w;
+			return target;
+		},
+	};
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [{ t: 0, text: "Cover axis lyric" }] as never,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		dotTexture: makeFakeDotTexture(),
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0,
+		lyricGlowBeatFlagSupplier: () => false,
+		lyricSunEnergyHolder: { get: () => 0, set: () => {} },
+		lyricLayoutOptionsSupplier: () => ({
+			lyricCameraLock: false,
+			lyricScale: 1,
+			lyricOffsetX: 0.25,
+			lyricOffsetY: -0.5,
+			lyricOffsetZ: 0.75,
+			lyricTiltX: 0,
+			lyricTiltY: 0,
+		}),
+		coverWorldTransformSupplier: () => cover,
+		rand: () => 0.35,
+	} as never);
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Cover axis lyric" }]);
+	lifecycle.update(makeCtx(0.5, 0.1));
+	const group = lifecycle.group as unknown as {
+		position: { x: number; y: number; z: number };
+		quaternion: { x: number; y: number; z: number; w: number };
+	};
+	expect(cover.updateMatrixWorldCalled).toBe(true);
+	expect(group.position.x).toBeCloseTo(10.75, 6);
+	expect(group.position.y).toBeCloseTo(19.5, 6);
+	expect(group.position.z).toBeCloseTo(29.75, 6);
+	expect(group.quaternion.x).toBeCloseTo(cover.quaternion.x, 6);
+	expect(group.quaternion.y).toBeCloseTo(cover.quaternion.y, 6);
+	expect(group.quaternion.z).toBeCloseTo(cover.quaternion.z, 6);
+	expect(group.quaternion.w).toBeCloseTo(cover.quaternion.w, 6);
+	lifecycle.dispose();
+});
+
+test("newly built current lyric is processed by the stage tick before it can render", async () => {
+	const { lifecycle } = await buildLifecycleWithCurrent({
+		lyrics: [{ t: 0, text: "First frame lyric" }],
+		currentTime: 0.5,
+	});
+	const group = lifecycle.group as unknown as { children: Array<{ userData: { lyric?: { textMat?: { uniforms?: { uOpacity?: { value: number } } } } } }> };
+	const current = group.children[0];
+	expect(current.userData.lyric?.textMat?.uniforms?.uOpacity?.value ?? 0).toBeGreaterThan(0);
 	lifecycle.dispose();
 });
 
@@ -505,8 +587,8 @@ test("update applies baseline non-skull shelf-detail lyric offset when side deta
 	expect(group.scale.y).toBeCloseTo(1.4 * 0.56, 6);
 	expect(group.scale.z).toBeCloseTo(1.4 * 0.56, 6);
 	expect(group.position.x).toBeCloseTo(0.2 - 1.78, 6);
-	expect(group.position.y).toBeCloseTo(0.2 - 0.1 + 0.18, 6);
-	expect(group.position.z).toBeCloseTo(1.46 + 0.3 + 0.84, 6);
+	expect(group.position.y).toBeCloseTo(-0.1 + 0.18, 6);
+	expect(group.position.z).toBeCloseTo(0.3 + 0.84, 6);
 	lifecycle.dispose();
 });
 
@@ -707,8 +789,8 @@ test("update applies baseline skull edge-guard lockFit without camera lock", asy
 	const firstFrameLockFitScale = 1 + (lockFit - 1) * 0.18;
 	expect(group.scale.x).toBeCloseTo(1.65 * firstFrameLockFitScale, 6);
 	expect(group.position.x).toBeCloseTo(1.45, 6);
-	expect(group.position.y).toBeCloseTo(0.2 + 0.9, 6);
-	expect(group.position.z).toBeCloseTo(1.46 + 0.3, 6);
+	expect(group.position.y).toBeCloseTo(0.9, 6);
+	expect(group.position.z).toBeCloseTo(0.3, 6);
 	lifecycle.dispose();
 });
 
@@ -760,8 +842,8 @@ test("update applies baseline skull-mouth scale and lockFit distance", async () 
 	const firstFrameLockFitScale = 1 + (lockFit - 1) * (lockFit < 1 ? 0.18 : 0.10);
 	expect(group.scale.x).toBeCloseTo(layoutScale * firstFrameLockFitScale, 6);
 	expect(group.position.x).toBeCloseTo(0.2, 6);
-	expect(group.position.y).toBeCloseTo(0.2 + 0.1, 6);
-	expect(group.position.z).toBeCloseTo(1.46 + 0.4, 6);
+	expect(group.position.y).toBeCloseTo(0.1, 6);
+	expect(group.position.z).toBeCloseTo(0.4, 6);
 	lifecycle.dispose();
 });
 
@@ -819,8 +901,8 @@ test("update applies baseline skull-mouth shelf avoid offsets", async () => {
 	const firstFrameLockFitScale = 1 + (lockFit - 1) * (lockFit < 1 ? 0.18 : 0.10);
 	expect(group.scale.x).toBeCloseTo(layoutScale * firstFrameLockFitScale, 6);
 	expect(group.position.x).toBeCloseTo(layoutX, 6);
-	expect(group.position.y).toBeCloseTo(0.2 + layoutY, 6);
-	expect(group.position.z).toBeCloseTo(1.46 + layoutZ, 6);
+	expect(group.position.y).toBeCloseTo(layoutY, 6);
+	expect(group.position.z).toBeCloseTo(layoutZ, 6);
 	lifecycle.dispose();
 });
 
@@ -875,8 +957,8 @@ test("update applies baseline skull-mouth shelf detail scale without avoid offse
 	const firstFrameLockFitScale = 1 + (lockFit - 1) * (lockFit < 1 ? 0.18 : 0.10);
 	expect(group.scale.x).toBeCloseTo(layoutScale * firstFrameLockFitScale, 6);
 	expect(group.position.x).toBeCloseTo(0.1, 6);
-	expect(group.position.y).toBeCloseTo(0.2 - 0.05, 6);
-	expect(group.position.z).toBeCloseTo(1.46 + 0.2, 6);
+	expect(group.position.y).toBeCloseTo(-0.05, 6);
+	expect(group.position.z).toBeCloseTo(0.2, 6);
 	lifecycle.dispose();
 });
 
@@ -1264,6 +1346,51 @@ test("getMotionSnapshot exposes clamped live bloom and audio fields for desktop 
 	expect(snapshot.beatGlow).toBeLessThanOrEqual(1.7);
 	expect(snapshot.beatPulse).toBe(1.1);
 	expect(snapshot.bass).toBe(0.64);
+	lifecycle.dispose();
+});
+
+test("skull preset lyric bloom uses baseline skull flash formula and faster attack", async () => {
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [] as never,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0.85,
+		lyricGlowBeatFlagSupplier: () => true,
+		lyricSunEnergyHolder: { get: () => 1.2, set: () => {} },
+		getBeatCamKick: () => ({
+			thetaKick: 0,
+			phiKick: 0,
+			rollKick: 0,
+			radiusKick: 1.1,
+			punch: 0.9,
+		}),
+		lyricLayoutOptionsSupplier: () => ({
+			lyricCameraLock: false,
+			lyricScale: 1,
+			lyricOffsetX: 0,
+			lyricOffsetY: 0,
+			lyricOffsetZ: 0,
+			lyricTiltX: 0,
+			lyricTiltY: 0,
+			preset: 6,
+		}),
+		skullBeatFlashSupplier: () => 1,
+		dotTexture: makeFakeDotTexture(),
+		rand: () => 0.35,
+	} as never);
+	const scene = makeFakeScene();
+	await lifecycle.mount(scene as never);
+	lifecycle.update(makeCtx(0.5, 0.016, { beatPulse: 1.1, bass: 0.64 }));
+
+	const snapshot = lifecycle.getMotionSnapshot();
+
+	expect(snapshot.highBloom).toBeGreaterThan(0.25);
+	expect(snapshot.highBloom).toBeLessThanOrEqual(1.45);
 	lifecycle.dispose();
 });
 

@@ -54,6 +54,7 @@ export interface HomeVisual {
 	getRipples(): HomeRipples;
 	getSkullParticles(): THREE.Points | null;
 	getSkullMouthTransform(): SkullMouthTransform | null;
+	getSkullBeatFlash(): number;
 	setSkullShelfCompositionActive(active: boolean): void;
 	whenIdle(): Promise<void>;
 }
@@ -220,6 +221,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		},
 		getSkullMouthTransform() {
 			return skullParticles.getMouthTransform();
+		},
+		getSkullBeatFlash() {
+			return skullParticles.getBeatFlash();
 		},
 		setSkullShelfCompositionActive(active) {
 			skullParticles.setShelfCompositionActive(active);

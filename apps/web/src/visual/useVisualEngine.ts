@@ -559,6 +559,15 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					});
 				},
 				skullMouthTransformSupplier: () => homeVisual.getSkullMouthTransform(),
+				skullBeatFlashSupplier: () => homeVisual.getSkullBeatFlash(),
+				coverWorldTransformSupplier: () => {
+					const points = homeVisual.getField().points;
+					return {
+						position: points.position,
+						quaternion: points.quaternion,
+						updateMatrixWorld: (force?: boolean) => points.updateMatrixWorld(force),
+					};
+				},
 				cameraSupplier: () => renderer.camera,
 				pixelScale: 1,
 				reduceMotion: prefersReducedMotion,
