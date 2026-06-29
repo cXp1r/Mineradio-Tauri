@@ -127,6 +127,7 @@ impl SidecarLaunchPlan {
         Self::Bundled(path)
     }
 
+    #[cfg(test)]
     pub fn is_bundled(&self) -> bool {
         matches!(self, Self::Bundled(_))
     }

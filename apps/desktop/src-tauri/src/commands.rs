@@ -56,7 +56,6 @@ const QQ_LOGIN_COOKIE_PROBE_URLS: &[&str] =
 pub mod labels {
     pub const MAIN: &str = "main";
     pub const DESKTOP_LYRICS: &str = "desktop-lyrics";
-    pub const WALLPAPER: &str = "wallpaper";
     pub const LOGIN_NETEASE: &str = "login-netease";
     pub const LOGIN_QQ: &str = "login-qq";
 }
@@ -1106,6 +1105,7 @@ pub fn build_window_state_snapshot(
     }
 }
 
+#[cfg(test)]
 pub fn window_state_emit_mode(event_name: &str) -> Option<WindowStateEmitMode> {
     match event_name {
         "maximize"
