@@ -435,37 +435,32 @@ export function SearchShell({
 								const likeBusy = isResultLikeBusy?.(track) === true;
 								return (
 									<li key={`${track.provider}-${track.id}-${index}`} className="search-shell-row" data-disabled={disabled ? "true" : "false"}>
-										<button
-											type="button"
-											className="search-shell-row-btn"
-											disabled={disabled}
-											onClick={() => {
-												if (!disabled) playResult(track);
-											}}
-										>
-											<span className="search-shell-cover" style={track.coverUrl ? { backgroundImage: `url("${track.coverUrl}")` } : undefined} />
-											<span className="search-shell-meta">
-												<span className="search-shell-title">{track.title}</span>
-												<span
-													className="search-shell-sub search-artist-link"
-													role="button"
-													tabIndex={0}
-													onClick={(event) => {
-														event.stopPropagation();
-														openArtist(track);
-													}}
-													onKeyDown={(event) => {
-														if (event.key !== "Enter" && event.key !== " ") return;
-														event.preventDefault();
-														event.stopPropagation();
-														openArtist(track);
-													}}
-												>
-													{trackArtists(track)}
+										<div className="search-shell-main">
+											<button
+												type="button"
+												className="search-shell-row-btn"
+												disabled={disabled}
+												onClick={() => {
+													if (!disabled) playResult(track);
+												}}
+											>
+												<span className="search-shell-cover" style={track.coverUrl ? { backgroundImage: `url("${track.coverUrl}")` } : undefined} />
+												<span className="search-shell-meta">
+													<span className="search-shell-title">{track.title}</span>
 												</span>
-											</span>
-											<span className="search-shell-provider">{track.provider === provider ? track.provider : track.provider.toUpperCase()}</span>
-										</button>
+												<span className="search-shell-provider">{track.provider === provider ? track.provider : track.provider.toUpperCase()}</span>
+											</button>
+											<button
+												type="button"
+												className="search-shell-sub search-artist-link"
+												onClick={(event) => {
+													event.stopPropagation();
+													openArtist(track);
+												}}
+											>
+												{trackArtists(track)}
+											</button>
+										</div>
 										<div className="search-shell-actions" aria-label="歌曲操作">
 											<button
 												type="button"

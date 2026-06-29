@@ -145,6 +145,29 @@ test("SearchShell artist link routes to baseline artist search without starting 
 	root.unmount();
 });
 
+test("SearchShell artist link is an independent baseline button outside the row play button", async () => {
+	const track = makeTrack("100");
+	const calls: string[] = [];
+	useSearchStore.getState().setResults([track]);
+
+	const { root, container } = await renderSearchShell(
+		<SearchShell
+			client={null}
+			onResultPlay={(candidate) => calls.push(`play:${candidate.id}`)}
+			onArtistSearch={(artist, candidate) => calls.push(`artist:${artist}:${candidate.id}`)}
+		/>,
+	);
+
+	const artist = container.querySelector<HTMLButtonElement>(".search-artist-link");
+	expect(artist?.tagName).toBe("BUTTON");
+	expect(artist?.closest(".search-shell-row-btn")).toBeNull();
+	artist!.click();
+
+	expect(calls).toEqual(["artist:Artist:100"]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	root.unmount();
+});
+
 test("SearchShell follows baseline peek class from its host state", async () => {
 	useSearchStore.setState({ keyword: "", results: [], loading: false, error: null });
 	const first = await renderSearchShell(<SearchShell client={null} peek={false} />);

@@ -226,6 +226,12 @@ body.splash-active:not(.splash-revealing) #search-area {
   background: rgba(255, 255, 255, .055);
 }
 
+.search-shell-main {
+  position: relative;
+  min-width: 0;
+  min-height: 54px;
+}
+
 .search-shell-row-btn {
   width: 100%;
   min-height: 54px;
@@ -286,8 +292,19 @@ body.splash-active:not(.splash-revealing) #search-area {
 }
 
 .search-artist-link {
+  position: absolute;
+  left: 58px;
+  top: 30px;
+  max-width: calc(100% - 118px);
+  border: 0;
+  background: transparent;
   color: rgba(244, 210, 138, .70);
   cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-weight: 650;
+  margin: 0;
+  padding: 0;
 }
 
 .search-artist-link:hover,
