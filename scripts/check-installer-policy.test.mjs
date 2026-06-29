@@ -17,6 +17,7 @@ describe("installer policy check", () => {
             installMode: "currentUser",
             installerIcon: "icons/icon.ico",
             uninstallerIcon: "icons/icon.ico",
+            startMenuFolder: "Mineradio Tauri Rewrite",
             languages: ["SimpChinese", "English"],
             displayLanguageSelector: false
           }
@@ -31,6 +32,7 @@ describe("installer policy check", () => {
       installMode: "currentUser",
       installerIcon: "icons/icon.ico",
       uninstallerIcon: "icons/icon.ico",
+      startMenuFolder: "Mineradio Tauri Rewrite",
       languages: ["SimpChinese", "English"],
       displayLanguageSelector: false
     });
@@ -44,6 +46,7 @@ describe("installer policy check", () => {
       installMode: "both",
       installerIcon: "",
       uninstallerIcon: "",
+      startMenuFolder: "Mineradio",
       languages: ["English"],
       displayLanguageSelector: true
     });
@@ -53,5 +56,6 @@ describe("installer policy check", () => {
     expect(result.errors).toContain("bundle.windows.nsis.installMode must stay currentUser");
     expect(result.errors).toContain("bundle.windows.allowDowngrades must be false");
     expect(result.errors).toContain("bundle.windows.webviewInstallMode must use silent downloadBootstrapper");
+    expect(result.errors).toContain("bundle.windows.nsis.startMenuFolder must stay Mineradio Tauri Rewrite");
   });
 });

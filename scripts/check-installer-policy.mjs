@@ -13,6 +13,7 @@ export function extractWindowsInstallerPolicy(tauriConfig) {
     installMode: nsis.installMode,
     installerIcon: nsis.installerIcon,
     uninstallerIcon: nsis.uninstallerIcon,
+    startMenuFolder: nsis.startMenuFolder,
     languages: nsis.languages,
     displayLanguageSelector: nsis.displayLanguageSelector
   };
@@ -40,6 +41,9 @@ export function evaluateInstallerPolicy(policy) {
   }
   if (policy.uninstallerIcon !== "icons/icon.ico") {
     errors.push("bundle.windows.nsis.uninstallerIcon must use icons/icon.ico");
+  }
+  if (policy.startMenuFolder !== "Mineradio Tauri Rewrite") {
+    errors.push("bundle.windows.nsis.startMenuFolder must stay Mineradio Tauri Rewrite");
   }
   if (!Array.isArray(policy.languages) || policy.languages[0] !== "SimpChinese" || !policy.languages.includes("English")) {
     errors.push("bundle.windows.nsis.languages must prefer SimpChinese and include English fallback");
