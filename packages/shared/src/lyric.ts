@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ProviderIdSchema } from "./provider";
+import type { Track } from "./track";
 
 export const LyricLineSchema = z.object({
   timeMs: z.number().nonnegative(),
@@ -38,6 +39,36 @@ const NO_LYRIC_TEXTS = new Set([
 function isNoLyricText(text: string): boolean {
   const compact = String(text || "").replace(/\s+/g, "").replace(/[，,。.!！?？、~～]/g, "");
   return !compact || NO_LYRIC_TEXTS.has(compact);
+}
+
+function lyricFallbackText(track: Track): string {
+  const title = String(track.title || "").trim();
+  const artist = track.artists.map((name) => String(name || "").trim()).filter(Boolean).join(" / ");
+  if (title && artist) return `${title} - ${artist}`;
+  return title || artist;
+}
+
+export function ensureLyricFallbackPayload(payload: LyricPayload, track: Track): LyricPayload {
+  const lines = Array.isArray(payload.lines)
+    ? payload.lines.filter((line) => line && String(line.text || "").trim())
+    : [];
+  if (lines.length > 0 && !lines.every((line) => isNoLyricText(line.text))) {
+    return { ...payload, lines };
+  }
+  const text = lyricFallbackText(track);
+  if (!text) return { ...payload, lines: [] };
+  return {
+    ...payload,
+    lines: [{
+      timeMs: 0,
+      durationMs: 9999000,
+      text,
+      source: "fallback",
+      charCount: Math.max(1, text.length)
+    }],
+    hasTranslation: false,
+    isWordByWord: false
+  };
 }
 
 function parseTagTimeMs(min: string, sec: string, frac?: string): number {

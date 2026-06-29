@@ -49,7 +49,7 @@ function adapter(
   };
 }
 
-test("resolveSearch returns first successful non-empty preferred provider result", async () => {
+test("resolveSearch with an explicit provider keeps provider-specific fallback behavior", async () => {
   const calls: Calls = [];
   const resolver = createCrossSourceResolver({
     providers: {
@@ -72,6 +72,129 @@ test("resolveSearch returns first successful non-empty preferred provider result
 
   expect(result).toEqual([{ ...baseTrack, title: "夜航" }]);
   expect(calls).toEqual(["netease:search:夜航:5"]);
+});
+
+test("resolveSearch without provider merges Netease and QQ results with stable dedupe", async () => {
+  const calls: Calls = [];
+  const resolver = createCrossSourceResolver({
+    providers: {
+      netease: adapter(
+        "netease",
+        {
+          async search(query) {
+            calls.push(`netease:search:${query.keyword}:${query.limit}`);
+            return [
+              { ...baseTrack, id: "n-1", sourceId: "n-1", title: "夜航", artists: ["星野"] },
+              { ...baseTrack, id: "same", sourceId: "same", title: "同名", artists: ["Ada"] }
+            ];
+          }
+        },
+        calls
+      ),
+      qq: adapter(
+        "qq",
+        {
+          async search(query) {
+            calls.push(`qq:search:${query.keyword}:${query.limit}`);
+            return [
+              { ...baseTrack, provider: "qq", id: "q-1", sourceId: "q-1", title: "夜航", artists: ["星野"] },
+              { ...baseTrack, provider: "qq", id: "same", sourceId: "same", title: "同名", artists: ["Ada"] }
+            ];
+          }
+        },
+        calls
+      )
+    },
+    providerOrder: ["netease", "qq"]
+  });
+
+  const result = await resolver.resolveSearch({ keyword: "夜航", limit: 3 });
+
+  expect(calls.sort()).toEqual(["netease:search:夜航:3", "qq:search:夜航:3"]);
+  expect(result.map((track) => `${track.provider}:${track.id}`)).toEqual([
+    "qq:q-1",
+    "netease:n-1",
+    "qq:same"
+  ]);
+});
+
+test("resolveSearch without provider mirrors baseline merged limits for the active shell", async () => {
+  const calls: Calls = [];
+  const makeTracks = (provider: ProviderId, count: number): Track[] =>
+    Array.from({ length: count }, (_, index) => ({
+      ...baseTrack,
+      provider,
+      id: `${provider}-${index}`,
+      sourceId: `${provider}-${index}`,
+      title: `夜航 ${index}`,
+      artists: [provider]
+    }));
+  const resolver = createCrossSourceResolver({
+    providers: {
+      netease: adapter(
+        "netease",
+        {
+          async search(query) {
+            calls.push(`netease:${query.limit}`);
+            return makeTracks("netease", 20);
+          }
+        },
+        calls
+      ),
+      qq: adapter(
+        "qq",
+        {
+          async search(query) {
+            calls.push(`qq:${query.limit}`);
+            return makeTracks("qq", 20);
+          }
+        },
+        calls
+      )
+    },
+    providerOrder: ["netease", "qq"]
+  });
+
+  const result = await resolver.resolveSearch({ keyword: "夜航", limit: 30 });
+
+  expect(calls.sort()).toEqual(["netease:14", "qq:12"]);
+  expect(result).toHaveLength(18);
+});
+
+test("resolveSearch scoring follows baseline QQ intent boost and derivative penalty", async () => {
+  const resolver = createCrossSourceResolver({
+    providers: {
+      netease: adapter(
+        "netease",
+        {
+          async search() {
+            return [
+              { ...baseTrack, id: "cover", sourceId: "cover", title: "晴天 Cover", artists: ["某歌手"] },
+              { ...baseTrack, id: "netease-original", sourceId: "netease-original", title: "晴天", artists: ["周杰伦"] }
+            ];
+          }
+        },
+        []
+      ),
+      qq: adapter(
+        "qq",
+        {
+          async search() {
+            return [
+              { ...baseTrack, provider: "qq", id: "qq-original", sourceId: "qq-original", title: "晴天", artists: ["周杰伦"] }
+            ];
+          }
+        },
+        []
+      )
+    },
+    providerOrder: ["netease", "qq"]
+  });
+
+  const result = await resolver.resolveSearch({ keyword: "周杰伦 晴天", limit: 30 });
+
+  expect(result.map((track) => track.id).slice(0, 2)).toEqual(["qq-original", "netease-original"]);
+  expect(result.findIndex((track) => track.id === "cover")).toBeGreaterThan(1);
 });
 
 test("resolveSearch falls back when preferred provider fails or returns empty", async () => {

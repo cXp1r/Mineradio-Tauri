@@ -74,7 +74,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 	durationMs: null,
 	volume: 0.84,
 	muted: false,
-	mode: "queue",
+	mode: "loop",
 	queue: [],
 	setCurrentTrack: (track) =>
 		set({
@@ -109,11 +109,8 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 			if (existingIdx >= 0 && existingIdx < currentIdx) adjustedCurrentIdx -= 1;
 
 			if (adjustedCurrentIdx < 0) {
-				next.unshift(moved);
-				return {
-					queue: next,
-					...playbackPatchForTrack(moved),
-				};
+				next.push(moved);
+				return { queue: next };
 			}
 
 			const insertAt = Math.min(next.length, adjustedCurrentIdx + 1);

@@ -1,9 +1,11 @@
 import { expect, test } from "bun:test";
 import {
   LyricPayloadSchema,
+  ensureLyricFallbackPayload,
   parseCustomLyricText,
   resolvePreferredLyricPayload
 } from "./lyric";
+import type { Track } from "./track";
 
 test("LyricPayloadSchema carries native karaoke word timing without losing plain line fields", () => {
   const parsed = LyricPayloadSchema.parse({
@@ -87,4 +89,31 @@ test("resolvePreferredLyricPayload picks custom lyrics when original payload is 
   expect(picked.payload.lines[0].durationMs).toBe(4800);
   expect(pinnedOriginal.source).toBe("original");
   expect(pinnedOriginal.payload.lines[0].text).toBe("Song - Artist");
+});
+
+test("ensureLyricFallbackPayload mirrors baseline title-artist fallback for empty provider lyrics", () => {
+  const track: Track = {
+    provider: "netease",
+    id: "42",
+    sourceId: "42",
+    title: "夜航",
+    artists: ["星野"],
+    album: "",
+    coverUrl: "",
+    qualityHints: [],
+    playableState: "playable"
+  };
+  const original = LyricPayloadSchema.parse({
+    provider: "netease",
+    trackId: "42",
+    lines: [],
+    hasTranslation: false,
+    isWordByWord: false
+  });
+
+  const payload = ensureLyricFallbackPayload(original, track);
+
+  expect(payload.lines).toEqual([
+    { timeMs: 0, durationMs: 9999000, text: "夜航 - 星野", source: "fallback", charCount: 7 }
+  ]);
 });

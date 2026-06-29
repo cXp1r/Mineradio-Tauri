@@ -21,6 +21,54 @@ import type { SidecarClient } from "../api/sidecar-client";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
 
+class AppStubAudioElement extends EventTarget {
+	currentTime = 0;
+	duration = Number.NaN;
+	src = "";
+	volume = 1;
+	preload = "";
+	loadCalled = 0;
+	playCalled = 0;
+	pauseCalled = 0;
+	error: MediaError | null = null;
+	load(): void {
+		this.loadCalled += 1;
+	}
+	async play(): Promise<void> {
+		this.playCalled += 1;
+		this.dispatchEvent(new Event("play"));
+	}
+	pause(): void {
+		this.pauseCalled += 1;
+		this.dispatchEvent(new Event("pause"));
+	}
+}
+
+function installAppStubAudio(): () => void {
+	const previousWindowAudio = (window as unknown as { Audio?: typeof Audio }).Audio;
+	const hadGlobalAudio = "Audio" in globalThis;
+	const previousGlobalAudio = (globalThis as unknown as { Audio?: typeof Audio }).Audio;
+	const hadGlobalHtmlAudioElement = "HTMLAudioElement" in globalThis;
+	const previousGlobalHtmlAudioElement = (globalThis as unknown as { HTMLAudioElement?: typeof HTMLAudioElement }).HTMLAudioElement;
+	const AudioCtor = AppStubAudioElement as unknown as typeof Audio;
+	(window as unknown as { Audio?: typeof Audio }).Audio = AudioCtor;
+	(globalThis as unknown as { Audio?: typeof Audio }).Audio = AudioCtor;
+	(globalThis as unknown as { HTMLAudioElement?: typeof HTMLAudioElement }).HTMLAudioElement = AppStubAudioElement as unknown as typeof HTMLAudioElement;
+	return () => {
+		(window as unknown as { Audio?: typeof Audio }).Audio = previousWindowAudio;
+		if (hadGlobalAudio) {
+			(globalThis as unknown as { Audio?: typeof Audio }).Audio = previousGlobalAudio;
+		} else {
+			delete (globalThis as unknown as { Audio?: typeof Audio }).Audio;
+		}
+		if (hadGlobalHtmlAudioElement) {
+			(globalThis as unknown as { HTMLAudioElement?: typeof HTMLAudioElement }).HTMLAudioElement = previousGlobalHtmlAudioElement;
+		} else {
+			delete (globalThis as unknown as { HTMLAudioElement?: typeof HTMLAudioElement }).HTMLAudioElement;
+		}
+	};
+}
+
 test("App keeps the empty-home music page mounted behind the splash gate", () => {
 	const html = renderToStaticMarkup(React.createElement(App));
 	expect(html).toContain('class="visual-splash-root"');
@@ -318,6 +366,141 @@ test("App custom lyric modal saves text and applies custom lyrics to current tra
 	usePlaybackStore.getState().clearQueue();
 	useLyricsStore.getState().reset();
 	localStorage.clear();
+});
+
+test("App applies baseline lyric fallback when provider lyric fetch rejects", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	usePlaybackStore.getState().setCurrentTrack({
+		provider: "netease",
+		id: "lyric-fail-1",
+		sourceId: "lyric-fail-1",
+		title: "Song",
+		artists: ["Artist"],
+		album: "",
+		coverUrl: "",
+		durationMs: 10000,
+		qualityHints: [],
+		playableState: "unknown",
+	});
+
+	const fakeClient = {
+		async resolveSongUrl() {
+			return { url: "https://example.com/audio.mp3", quality: "standard", proxied: true };
+		},
+		audioProxyUrl(url: string) {
+			return url;
+		},
+		async lyric() {
+			throw new Error("lyric api failed");
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+	for (let i = 0; i < 8 && !useLyricsStore.getState().payload?.lines.length; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(useLyricsStore.getState().payload?.lines[0]).toEqual({
+		timeMs: 0,
+		text: "Song - Artist",
+		source: "fallback",
+		durationMs: 9999000,
+		charCount: 13,
+	});
+	expect(useLyricsStore.getState().error).toBe("lyric api failed");
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
+	restoreAudio();
+});
+
+test("App replaces stale lyrics with current track fallback while provider lyric fetch is pending", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	useLyricsStore.getState().setPayload({
+		provider: "netease",
+		trackId: "old-track",
+		lines: [{ timeMs: 0, text: "Old lyric", source: "lrc" }],
+		hasTranslation: false,
+		isWordByWord: false,
+	});
+	usePlaybackStore.getState().setCurrentTrack({
+		provider: "netease",
+		id: "pending-lyric-1",
+		sourceId: "pending-lyric-1",
+		title: "Pending Song",
+		artists: ["Pending Artist"],
+		album: "",
+		coverUrl: "",
+		durationMs: 10000,
+		qualityHints: [],
+		playableState: "unknown",
+	});
+
+	const fakeClient = {
+		async resolveSongUrl() {
+			return { url: "https://example.com/audio.mp3", quality: "standard", proxied: true };
+		},
+		audioProxyUrl(url: string) {
+			return url;
+		},
+		async lyric() {
+			return await new Promise(() => undefined);
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+	for (let i = 0; i < 8 && useLyricsStore.getState().payload?.trackId === "old-track"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(useLyricsStore.getState().payload?.trackId).toBe("pending-lyric-1");
+	expect(useLyricsStore.getState().payload?.lines[0]).toEqual({
+		timeMs: 0,
+		text: "Pending Song - Pending Artist",
+		source: "fallback",
+		durationMs: 9999000,
+		charCount: 29,
+	});
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
+	restoreAudio();
 });
 
 test("App starts weather radio from the Home private radio card by replacing the queue and playing the first song", async () => {

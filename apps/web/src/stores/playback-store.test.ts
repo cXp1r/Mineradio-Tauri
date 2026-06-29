@@ -24,7 +24,7 @@ function resetStore() {
 		durationMs: null,
 		volume: 0.84,
 		muted: false,
-		mode: "queue",
+		mode: "loop",
 		queue: [],
 	});
 }
@@ -48,6 +48,7 @@ test("setCurrentTrack sets the track and toggles play", () => {
 test("next in queue mode advances and stops at the end", () => {
 	const a = makeTrack("a");
 	const b = makeTrack("b");
+	usePlaybackStore.getState().setMode("queue");
 	usePlaybackStore.getState().enqueue(a);
 	usePlaybackStore.getState().enqueue(b);
 	usePlaybackStore.getState().setCurrentTrack(a);
@@ -56,6 +57,10 @@ test("next in queue mode advances and stops at the end", () => {
 	usePlaybackStore.getState().next();
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 	expect(usePlaybackStore.getState().isPlaying).toBe(false);
+});
+
+test("default playback mode follows baseline loop mode", () => {
+	expect(usePlaybackStore.getState().mode).toBe("loop");
 });
 
 test("setQueue replaces the queue and playAt jumps to a specific track", () => {
@@ -147,11 +152,12 @@ test("insertNext dedupes and preserves current track when moving an earlier item
 	expect(usePlaybackStore.getState().currentTrack?.id).toBe("c");
 });
 
-test("insertNext puts the first track at the front and starts it when there is no current track", () => {
+test("insertNext appends without auto-start when there is no current track", () => {
 	const store = usePlaybackStore.getState();
 	store.insertNext(makeTrack("a"));
 	expect(usePlaybackStore.getState().queue.map((t) => t.id)).toEqual(["a"]);
-	expect(usePlaybackStore.getState().currentTrack?.id).toBe("a");
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	expect(usePlaybackStore.getState().isPlaying).toBe(false);
 });
 
 test("removeAt removes tracks and advances current track identity safely", () => {

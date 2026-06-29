@@ -79,13 +79,14 @@ import {
   mapShelfDetailRowToTrack,
   type ShelfDetailContentListController,
 } from "../visual/shelf-detail-data";
-import type {
-  PlaybackQuality,
-  PlaylistSummary,
-  PodcastCollection,
-  ProviderId,
-  ProviderLoginStatus,
-  Track,
+import {
+  ensureLyricFallbackPayload,
+  type PlaybackQuality,
+  type PlaylistSummary,
+  type PodcastCollection,
+  type ProviderId,
+  type ProviderLoginStatus,
+  type Track,
 } from "@mineradio/shared";
 import type { FxState } from "@mineradio/visual-engine";
 
@@ -115,6 +116,16 @@ function placeholderRuntimeConfig(): RuntimeConfig {
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
+}
+
+function buildTrackLyricFallback(track: Track) {
+  return ensureLyricFallbackPayload({
+    provider: track.provider,
+    trackId: track.id,
+    lines: [],
+    hasTranslation: false,
+    isWordByWord: false,
+  }, track);
 }
 
 function readPlaybackQualityPreference(): PlaybackQuality {
@@ -1699,6 +1710,15 @@ export function App({
     lastLoadedKeyRef.current = key;
     const seq = playbackRequestSeqRef.current + 1;
     playbackRequestSeqRef.current = seq;
+    const fallbackLyric = buildTrackLyricFallback(currentTrack);
+    originalLyricsPayloadRef.current = fallbackLyric;
+    const resolvedFallbackLyric = resolveLyricsForTrack({
+      track: currentTrack,
+      original: fallbackLyric,
+      durationMs:
+        usePlaybackStore.getState().durationMs ?? currentTrack.durationMs,
+    });
+    setLyricsPayload(resolvedFallbackLyric.payload);
 
     void (async () => {
       try {
@@ -1727,7 +1747,7 @@ export function App({
       }
       try {
         setLyricsLoading(true);
-        const lyric = await client.lyric(currentTrack);
+        const lyric = ensureLyricFallbackPayload(await client.lyric(currentTrack), currentTrack);
         if (playbackRequestSeqRef.current !== seq) return;
         originalLyricsPayloadRef.current = lyric;
         const resolvedLyric = resolveLyricsForTrack({
@@ -1740,6 +1760,15 @@ export function App({
       } catch (e) {
         if (playbackRequestSeqRef.current !== seq) return;
         const message = e instanceof Error ? e.message : "lyrics failed";
+        const fallbackLyric = buildTrackLyricFallback(currentTrack);
+        originalLyricsPayloadRef.current = fallbackLyric;
+        const resolvedLyric = resolveLyricsForTrack({
+          track: currentTrack,
+          original: fallbackLyric,
+          durationMs:
+            usePlaybackStore.getState().durationMs ?? currentTrack.durationMs,
+        });
+        setLyricsPayload(resolvedLyric.payload);
         setLyricsError(message);
       }
     })();
