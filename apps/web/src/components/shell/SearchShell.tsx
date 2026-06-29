@@ -11,6 +11,10 @@ export interface SearchShellProps {
 	onFocus?: () => void;
 	onUpload?: () => void;
 	onResultPlay?: (track: Track) => void;
+	onResultLike?: (track: Track) => void;
+	onResultCollect?: (track: Track) => void;
+	isResultLiked?: (track: Track) => boolean;
+	isResultLikeBusy?: (track: Track) => boolean;
 }
 
 const HISTORY_CHIPS: Array<{ label: string; mode?: SearchMode; keyword: string }> = [
@@ -61,7 +65,33 @@ export function clearSearchAfterPlayback(
 	ops.setError(null);
 }
 
-export function SearchShell({ client, onFocus, onUpload, onResultPlay }: SearchShellProps): ReactElement {
+function HeartIcon(): ReactElement {
+	return (
+		<svg className="heart-svg" viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M12 21.45c-.32 0-.62-.12-.86-.34l-1.23-1.12C5.54 16.03 2.25 13.05 2.25 8.9 2.25 5.48 4.88 2.9 8.28 2.9c1.7 0 3.35.72 4.52 1.96C13.97 3.62 15.62 2.9 17.32 2.9c3.4 0 6.03 2.58 6.03 6 0 4.15-3.29 7.13-7.66 11.09l-1.23 1.12c-.24.22-.54.34-.86.34z" />
+		</svg>
+	);
+}
+
+function CollectIcon(): ReactElement {
+	return (
+		<svg width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
+			<path d="M12 5v14" />
+			<path d="M5 12h14" />
+		</svg>
+	);
+}
+
+export function SearchShell({
+	client,
+	onFocus,
+	onUpload,
+	onResultPlay,
+	onResultLike,
+	onResultCollect,
+	isResultLiked,
+	isResultLikeBusy,
+}: SearchShellProps): ReactElement {
 	const provider = useSearchStore((s) => s.provider);
 	const keyword = useSearchStore((s) => s.keyword);
 	const results = useSearchStore((s) => s.results);
@@ -217,6 +247,8 @@ export function SearchShell({ client, onFocus, onUpload, onResultPlay }: SearchS
 						<ul className="search-shell-list">
 							{results.map((track, index) => {
 								const disabled = !isPlayable(track.playableState);
+								const liked = isResultLiked?.(track) === true;
+								const likeBusy = isResultLikeBusy?.(track) === true;
 								return (
 									<li key={`${track.provider}-${track.id}-${index}`} className="search-shell-row" data-disabled={disabled ? "true" : "false"}>
 										<button
@@ -234,6 +266,33 @@ export function SearchShell({ client, onFocus, onUpload, onResultPlay }: SearchS
 											</span>
 											<span className="search-shell-provider">{track.provider === provider ? track.provider : track.provider.toUpperCase()}</span>
 										</button>
+										<div className="search-shell-actions" aria-label="歌曲操作">
+											<button
+												type="button"
+												className={`search-shell-action song-action-btn search-shell-like${liked ? " liked" : ""}${likeBusy ? " busy" : ""}`}
+												title={liked ? "取消红心" : "红心喜欢"}
+												aria-label={liked ? "取消红心" : "红心喜欢"}
+												disabled={likeBusy}
+												onClick={(event) => {
+													event.stopPropagation();
+													onResultLike?.(track);
+												}}
+											>
+												<HeartIcon />
+											</button>
+											<button
+												type="button"
+												className="search-shell-action song-action-btn search-shell-collect"
+												title="收藏到歌单"
+												aria-label="收藏到歌单"
+												onClick={(event) => {
+													event.stopPropagation();
+													onResultCollect?.(track);
+												}}
+											>
+												<CollectIcon />
+											</button>
+										</div>
 									</li>
 								);
 							})}

@@ -1128,8 +1128,7 @@ export function App({
     ],
   );
 
-  const toggleLikeCurrent = useCallback(async () => {
-    const track = usePlaybackStore.getState().currentTrack;
+  const toggleLikeTrack = useCallback(async (track: Track | null | undefined) => {
     if (!isNeteaseLikeSupported(track)) {
       showToast(likeUnsupportedMessage(track));
       return;
@@ -1168,6 +1167,10 @@ export function App({
       });
     }
   }, [showToast, sidecarClient]);
+
+  const toggleLikeCurrent = useCallback(async () => {
+    await toggleLikeTrack(usePlaybackStore.getState().currentTrack);
+  }, [toggleLikeTrack]);
 
   const closeLoginModal = useCallback(() => {
     setLoginModalOpen(false);
@@ -2180,6 +2183,16 @@ export function App({
         onFocus={focusSearch}
         onUpload={() => void importLocalJson()}
         onResultPlay={enterPlaybackSurface}
+        onResultLike={(track) => void toggleLikeTrack(track)}
+        onResultCollect={openCollectPicker}
+        isResultLiked={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likedSongMap[key] === true : false;
+        }}
+        isResultLikeBusy={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likeBusyMap[key] === true : false;
+        }}
       />
       <TopRightControls
         onHome={goHome}
