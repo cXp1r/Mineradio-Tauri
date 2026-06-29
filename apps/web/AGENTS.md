@@ -12,7 +12,8 @@ src/
 ├── bun-test.d.ts           # bun:test ambient 类型 stub
 ├── app/App.tsx             # App shell：phase machine + sidecar boot + audio+lyric lifecycle + splash + VisualEngineHost
 ├── tauri/
-│   └── runtime.ts          # isTauriRuntime() + getRuntimeConfig() dynamic-import @tauri-apps/api
+│   ├── runtime.ts          # isTauriRuntime() + runtime/window/import/export/login bridge
+│   └── updater.ts          # Tauri updater detection-only bridge（B2 未签名时不下载/安装）
 ├── audio/
 │   └── player-controller.ts # HTMLAudioElement event relay：play/pause/timeupdate/durationchange/ended/error
 ├── api/
@@ -24,9 +25,9 @@ src/
 │   ├── provider-store.ts    # matrix/status/error matrix 派生
 │   ├── visual-store.ts      # preset/intensity/custom + loadFromStorage/serialize (PersistedVisualStateSchema guarded)
 │   ├── lyrics-store.ts      # payload/loading/error/currentIndex + reset
-│   ├── shelf-store.ts      # mode/open/selectedPlaylistId —— STUB 未接 VisualEngineHost
+│   ├── shelf-store.ts      # shelf mode/camera/presence/podcast/merge settings，接 VisualEngineHost + 控制台
 │   ├── ui-store.ts          # modal/consoleVisible
-│   ├── update-store.ts      # status(idle|checking|available|not-available|downloading|installing|error)/version/message —— 纯 state bucket
+│   ├── update-store.ts      # Tauri updater check/status 结果桶，App.tsx + UpdateHost 消费
 │   └── search-store.ts      # results/loading/error/provider/keyword
 ├── components/
 │   ├── lyrics/LyricView.tsx        # memoized 排序 + lyric-current 高亮
@@ -36,7 +37,7 @@ src/
     ├── SplashHost.tsx              # Splash engine 容器 + auto-dismiss 计时
     ├── VisualEngineHost.tsx        # visual-engine 流水线 react 容器（#visual-host 根 div）
     ├── useVisualEngine.ts          # visual-engine monolith：AudioContext + createRenderer + render loop + registered visual steps + 2 pointer subsystems
-    ├── PlayerConsoleHost.tsx       # 控制台 + GSAP console motion + SVG glass卉 (独立未挂 App.tsx)
+    ├── PlayerConsoleHost.tsx       # 控制台主体 + GSAP console motion + SVG glass，由 BottomControlsHost 挂入 App.tsx
     └── shelf-*.{ts,tsx} 4 files    # pointer interactions / focus zone / detail data / items mapper (host-side shelf 接 VisualEngineHost)
 ```
 
@@ -50,7 +51,7 @@ src/
 | 加 visual-engine 模块 mount | `visual/useVisualEngine.ts` `useEffect` 中按顺序创建 + `registerStep(slot, fn)` 注册 | 11 个 RenderStepSlot 顺序固定 (见 visual-engine AGENTS.md) |
 | 加 SearchPanel provider | `components/search/SearchPanel.tsx` provider `<select>` 已启用 netease/qq；A6/7c32b2b 已接 sidecar QQ provider，Stage 2 已移除前端 QQ search gate | 加新 provider 1) 改 `search-store` default 2) 改 SearchPanel provider 数组 3) 保留 songUrl cookie-gated 错误提示路径 |
 | 处理 lyric 索引 | `lyrics/select-current-index.ts` 防御 sort；同一 track 中 `selectCurrentIndex` 在 3 处调用（App timeupdate handler + App useMemo + LyricView useMemo）—— **performance follow-up**，可 memoize 中 |
-| 处理 Tauri 缺失 (SSR/test) | 唯一 guard 点 `tauri/runtime.ts:isTauriRuntime`；其他 SSR-safe（无 jsdom 依赖；所有 WebGL/Canvas 第一次用到时检查 typeof window） | 不要 spread guard 到每个组件；集中 IS ONE TRUTH |
+| 处理 Tauri 缺失 (SSR/test) | `tauri/runtime.ts:isTauriRuntime` + `tauri/updater.ts` detection-only fallback；其他 SSR-safe（无 jsdom 依赖；所有 WebGL/Canvas 第一次用到时检查 typeof window） | 不要 spread guard 到每个组件；集中 Tauri bridge |
 
 ## CONVENTIONS（仅记录偏离标准）
 
@@ -59,7 +60,7 @@ src/
 - **fallback `placeholderRuntimeConfig()`** 用于非 Tauri 测试 / `tauri dev` 启动早期 sidecar 未就绪：`{sidecarBaseUrl:"", appVersion:"0.0.0-dev", schemaVersion:"0.1.0"}`。下游若读空字符串会被 sidecar-client 拒绝 → phase `error`。
 - **visual-store 持久化通过 `PersistedVisualStateSchema.safeParse`**：旧数据 / 不合法 JSON 返回 null 不 crash (见 `visual-store.ts loadFromStorage`)
 - **lyric 时间戳防御性 sort by `timeMs`**: NCM lrc 经常简繁交叠同时间戳行；`select-current-index.ts` 复制 payload.lines → map+sort → 二分前向；返回 **sorted index** 不是 original index
-- **订阅 LRUClocalStorage 视觉存档**: localStorage `mineradio-lyric-layout-v1` 在 baseline 是用户私有数据，迁移不读不写 —— 见 DECISIONS B4 「禁止修改用户私密数据」
+- **shelf settings store**: localStorage `mineradio-tauri-shelf-settings-v1` 只存迁移版 shelf UI 设置；不要读写旧 Electron 私有布局键。
 
 ## ANTI-PATTERNS (THIS PROJECT)
 
@@ -75,19 +76,20 @@ src/
 
 - **single visual-engine host monolith `useVisualEngine.ts`**: 不拆；它 hold住所有 Three.js handle + render-loop step 注册（HomeVisual / Shelf / StageLyrics 等）+ 2 个 pointer 子系统 attach；组件内部拆 helper 即可，保持单 useEffect correctness。
 - **17 try/catch disposeHandles**: visual-engine 各模块 dispose 不稳定（部分 throw on double-dispose）；逐个 try/catch 容错；新接的模块同样处理。
-- **AudioContext handle `handles.audioContext` 当前永远是 `null`**: 这是已知缺陷 — hot-reload 会 orphan 一个 AudioContext（中等优先，先记 follow-up）。改 useVisualEngine 记得 closing 它。
-- **`shelf-store` 是 stub**：当前实际 shelf UI 状态走 raw refs（VisualEngineHost 里 shelfModeRef 等）；未接 store；后续 P9 移到 store-driven。
-- **`update-store` 纯状态 bucket**：无 Tauri updater invoke 实际调用；后续 P10 在 `apps/web/src/visual/UpdateHost.tsx` (待建) 配 update-shop 真接 Tauri updater。
+- **AudioContext lifecycle**: `useVisualEngine` owns the visual WebAudio/Three handles; add new handles to the existing dispose path and keep refs nulled after cleanup.
+- **`shelf-store` 已接产品主流程**：App.tsx 从 store 读取 mode/camera/presence/showPodcasts/mergeCollections，VisualEngineHost 通过 refs 与 runtime right-click promotion 同步。
+- **`update-store` 已接 Tauri updater 检测路径**：App.tsx 调 `getUpdaterStatus()` / `checkForUpdate()`，`components/shell/UpdateHost.tsx` 渲染 baseline-style 入口；B2 未签名时保持 detection-only。
 - **`SearchPanel` 中文 play state labels**：未知 / 可播放 / 需登录 / VIP / 付费 / 无音源 / 试听；QQ search gate 已移除，但仍必须保留不可播放状态防误点，尤其是 `login_required`。
 
 ## COMMANDS
 
 ```powershell
 $bun = "C:\Users\zhanw\.bun\bin\bun.exe"
-& $bun test apps/web                 # 133 pass / 0 fail
+& $bun test apps/web
 & $bun run --filter ./apps/web build # tsc --noEmit + vite build (webview dist)
 & $bun run --filter ./apps/web dev   # vite dev server
 & $bun run --filter ./apps/desktop tauri dev   # Tauri webview 拉起 dist
+& $bun run main-flow-policy:check    # 技术栈 + 产品主流程代码侧闭环 guard
 ```
 
 ## NOTES

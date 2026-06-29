@@ -52,6 +52,7 @@ import {
 import { buildDiscoverHome, type DiscoverRequester } from "./services/discover-home";
 import {
   clearRuntimeProviderCookie,
+  getProviderCookie,
   setRuntimeProviderCookie
 } from "./services/auth-session";
 
@@ -336,10 +337,17 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
           return response;
         }
         if (sub === "logout" && method === "POST") {
+          const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
+          clearRuntimeProviderCookie(providerId);
           try {
             await adapter.logout();
-          } finally {
-            clearRuntimeProviderCookie(providerId);
+          } catch (err) {
+            if (
+              !hadRuntimeOrEnvSession ||
+              !(err instanceof ProviderNotImplementedError && err.action === "no-session")
+            ) {
+              throw err;
+            }
           }
           response = json(ok({ provider: providerId, loggedOut: true }));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });

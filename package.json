@@ -30,6 +30,7 @@
     "release-manifest:generate": "node scripts/generate-updater-manifest.mjs",
     "release-notes-policy:check": "node scripts/check-release-notes-policy.mjs",
     "frontend-debug-log-policy:check": "node scripts/check-frontend-debug-logs.mjs",
+    "main-flow-policy:check": "node scripts/check-main-flow-policy.mjs",
     "sidecar-runtime-policy:check": "node scripts/check-sidecar-runtime-policy.mjs",
     "updater-policy:check": "node scripts/check-updater-policy.mjs"
   }

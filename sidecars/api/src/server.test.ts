@@ -2,7 +2,8 @@ import { expect, test } from "bun:test";
 import { routeHandler, createRouteHandler } from "./server";
 import type { Track } from "@mineradio/shared";
 import { providers } from "./providers/registry";
-import { ProviderError, type ProviderAdapter } from "./providers/provider-adapter";
+import { ProviderError, ProviderNotImplementedError, type ProviderAdapter } from "./providers/provider-adapter";
+import { getProviderCookie } from "./services/auth-session";
 import type { SidecarLogger } from "./services/sidecar-log";
 
 async function call(path: string, init?: RequestInit): Promise<Response> {
@@ -370,26 +371,42 @@ test("POST /providers/qq/session-cookie stores runtime cookie without echoing se
 test("POST /providers/qq/logout clears runtime cookie before best-effort provider logout", async () => {
   const secret = "uin=123; qqmusic_key=runtime-secret";
   try {
-    await call("/providers/qq/session-cookie", {
+    const fakeQq: ProviderAdapter = {
+      ...providers.qq,
+      async loginStatus() {
+        return { provider: "qq", loggedIn: !!getProviderCookie("qq") };
+      },
+      async logout() {
+        expect(getProviderCookie("qq")).toBeUndefined();
+        throw new ProviderNotImplementedError("qq", "no-session");
+      }
+    };
+    const handler = createRouteHandler({
+      providerAdapters: { ...providers, qq: fakeQq }
+    });
+    const localCall = (path: string, init?: RequestInit) =>
+      handler(new Request(`http://127.0.0.1${path}`, init));
+
+    await localCall("/providers/qq/session-cookie", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ cookie: secret })
     });
 
-    const before = await body(await call("/providers/qq/login-status"));
+    const before = await body(await localCall("/providers/qq/login-status"));
     expect(before.data.loggedIn).toBe(true);
 
-    const logout = await call("/providers/qq/logout", { method: "POST" });
+    const logout = await localCall("/providers/qq/logout", { method: "POST" });
     expect(logout.status).toBe(200);
     const logoutBody = await body(logout);
     expect(logoutBody).toEqual({ ok: true, data: { provider: "qq", loggedOut: true } });
     expect(JSON.stringify(logoutBody)).not.toContain(secret);
 
-    const after = await body(await call("/providers/qq/login-status"));
+    const after = await body(await localCall("/providers/qq/login-status"));
     expect(after.data.provider).toBe("qq");
     expect(after.data.loggedIn).toBe(false);
 
-    const secondLogout = await call("/providers/qq/logout", { method: "POST" });
+    const secondLogout = await localCall("/providers/qq/logout", { method: "POST" });
     expect(secondLogout.status).toBe(501);
     const secondBody = await body(secondLogout);
     expect(secondBody.error.action).toBe("no-session");
