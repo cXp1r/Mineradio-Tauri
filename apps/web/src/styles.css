@@ -285,6 +285,20 @@ body.splash-active:not(.splash-revealing) #search-area {
   font-size: 11px;
 }
 
+.search-artist-link {
+  color: rgba(244, 210, 138, .70);
+  cursor: pointer;
+}
+
+.search-artist-link:hover,
+.search-artist-link:focus-visible {
+  color: #fff;
+  outline: none;
+  text-decoration: underline;
+  text-decoration-color: rgba(244, 210, 138, .36);
+  text-underline-offset: 3px;
+}
+
 .search-shell-provider {
   color: rgba(0, 245, 212, .72);
   font-size: 10px;
@@ -301,6 +315,12 @@ body.splash-active:not(.splash-revealing) #search-area {
 .search-shell-action {
   width: 28px;
   height: 28px;
+}
+
+.search-shell-next {
+  font-size: 18px;
+  font-weight: 680;
+  line-height: 1;
 }
 
 .search-shell-action.busy {

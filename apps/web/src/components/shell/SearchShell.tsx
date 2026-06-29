@@ -12,8 +12,10 @@ export interface SearchShellProps {
 	onUpload?: () => void;
 	onClearCustomCover?: () => void;
 	onResultPlay?: (track: Track) => void;
+	onResultNext?: (track: Track) => void;
 	onResultLike?: (track: Track) => void;
 	onResultCollect?: (track: Track) => void;
+	onArtistSearch?: (artist: string, track: Track) => void;
 	isResultLiked?: (track: Track) => boolean;
 	isResultLikeBusy?: (track: Track) => boolean;
 	hasCustomCover?: boolean;
@@ -93,8 +95,10 @@ export function SearchShell({
 	onUpload,
 	onClearCustomCover,
 	onResultPlay,
+	onResultNext,
 	onResultLike,
 	onResultCollect,
+	onArtistSearch,
 	isResultLiked,
 	isResultLikeBusy,
 	hasCustomCover = false,
@@ -239,6 +243,12 @@ export function SearchShell({
 		onResultPlay?.(track);
 	};
 
+	const openArtist = (track: Track) => {
+		const artist = track.artists.find((name) => name.trim().length > 0)?.trim();
+		if (!artist) return;
+		onArtistSearch?.(artist, track);
+	};
+
 	const onInputKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
 		if (event.key === "Enter") {
 			event.preventDefault();
@@ -346,7 +356,23 @@ export function SearchShell({
 											<span className="search-shell-cover" style={track.coverUrl ? { backgroundImage: `url("${track.coverUrl}")` } : undefined} />
 											<span className="search-shell-meta">
 												<span className="search-shell-title">{track.title}</span>
-												<span className="search-shell-sub">{trackArtists(track)}</span>
+												<span
+													className="search-shell-sub search-artist-link"
+													role="button"
+													tabIndex={0}
+													onClick={(event) => {
+														event.stopPropagation();
+														openArtist(track);
+													}}
+													onKeyDown={(event) => {
+														if (event.key !== "Enter" && event.key !== " ") return;
+														event.preventDefault();
+														event.stopPropagation();
+														openArtist(track);
+													}}
+												>
+													{trackArtists(track)}
+												</span>
 											</span>
 											<span className="search-shell-provider">{track.provider === provider ? track.provider : track.provider.toUpperCase()}</span>
 										</button>
@@ -375,6 +401,19 @@ export function SearchShell({
 												}}
 											>
 												<CollectIcon />
+											</button>
+											<button
+												type="button"
+												className="search-shell-action add-btn search-shell-next"
+												title="下一首播放"
+												aria-label="下一首播放"
+												disabled={disabled}
+												onClick={(event) => {
+													event.stopPropagation();
+													if (!disabled) onResultNext?.(track);
+												}}
+											>
+												+
 											</button>
 										</div>
 									</li>

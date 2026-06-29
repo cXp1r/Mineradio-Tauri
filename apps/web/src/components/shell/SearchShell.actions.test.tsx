@@ -77,7 +77,7 @@ async function renderSearchShell(
 	return { root, container: domRoot };
 }
 
-test("SearchShell renders baseline like and collect action buttons for each song result", async () => {
+test("SearchShell renders baseline like collect and next action buttons for each song result", async () => {
 	const track = makeTrack("100");
 	useSearchStore.getState().setResults([track]);
 
@@ -90,14 +90,15 @@ test("SearchShell renders baseline like and collect action buttons for each song
 		/>,
 	);
 
-	expect(container.querySelectorAll(".search-shell-action.song-action-btn").length).toBe(2);
+	expect(container.querySelectorAll(".search-shell-action").length).toBe(3);
 	expect(container.querySelector(".search-shell-like.liked")).not.toBeNull();
 	expect(container.querySelector<HTMLButtonElement>('[aria-label="取消红心"]')).not.toBeNull();
 	expect(container.querySelector<HTMLButtonElement>('[aria-label="收藏到歌单"]')).not.toBeNull();
+	expect(container.querySelector<HTMLButtonElement>('[aria-label="下一首播放"]')).not.toBeNull();
 	root.unmount();
 });
 
-test("SearchShell action buttons call like and collect callbacks without starting playback", async () => {
+test("SearchShell action buttons call like collect and next callbacks without starting playback", async () => {
 	const track = makeTrack("100");
 	const calls: string[] = [];
 	useSearchStore.getState().setResults([track]);
@@ -107,17 +108,39 @@ test("SearchShell action buttons call like and collect callbacks without startin
 			client={null}
 			onResultLike={(candidate) => calls.push(`like:${candidate.id}`)}
 			onResultCollect={(candidate) => calls.push(`collect:${candidate.id}`)}
+			onResultNext={(candidate) => calls.push(`next:${candidate.id}`)}
 		/>,
 	);
 
 	const like = container.querySelector<HTMLButtonElement>(".search-shell-like");
 	const collect = container.querySelector<HTMLButtonElement>(".search-shell-collect");
+	const next = container.querySelector<HTMLButtonElement>(".search-shell-next");
 	expect(like).not.toBeNull();
 	expect(collect).not.toBeNull();
+	expect(next).not.toBeNull();
 	like!.click();
 	collect!.click();
+	next!.click();
 
-	expect(calls).toEqual(["like:100", "collect:100"]);
+	expect(calls).toEqual(["like:100", "collect:100", "next:100"]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	root.unmount();
+});
+
+test("SearchShell artist link routes to baseline artist search without starting playback", async () => {
+	const track = makeTrack("100");
+	const calls: string[] = [];
+	useSearchStore.getState().setResults([track]);
+
+	const { root, container } = await renderSearchShell(
+		<SearchShell
+			client={null}
+			onArtistSearch={(artist, candidate) => calls.push(`${artist}:${candidate.id}`)}
+		/>,
+	);
+
+	(container.querySelector(".search-artist-link") as HTMLElement).click();
+	expect(calls).toEqual(["Artist:100"]);
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 	root.unmount();
 });

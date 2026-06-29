@@ -1992,6 +1992,21 @@ export function App({
     [insertQueueNext, showToast],
   );
 
+  const insertSearchResultNext = useCallback(
+    (track: Track) => {
+      insertQueueNext(track);
+      showToast(`已设为下一首: ${track.title}`);
+    },
+    [insertQueueNext, showToast],
+  );
+
+  const searchArtistFromResult = useCallback(
+    (artist: string) => {
+      searchQuery(artist, "song");
+    },
+    [searchQuery],
+  );
+
   const seekPlayback = useCallback(
     (position: number) => {
       controllerRef.current?.seek(position);
@@ -2943,8 +2958,10 @@ export function App({
         onUpload={openLocalFileImport}
         onClearCustomCover={clearCustomCoverImage}
         onResultPlay={enterPlaybackSurface}
+        onResultNext={insertSearchResultNext}
         onResultLike={(track) => void toggleLikeTrack(track)}
         onResultCollect={openCollectPicker}
+        onArtistSearch={searchArtistFromResult}
         isResultLiked={(track) => {
           const key = trackLikeKey(track);
           return key ? likedSongMap[key] === true : false;
