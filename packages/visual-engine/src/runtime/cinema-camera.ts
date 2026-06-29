@@ -29,6 +29,7 @@ export interface CinemaState {
 	readonly cinemaTrackProfile: CinemaTrackProfile;
 	readonly beatCam: BeatCamState;
 	readonly orbit: OrbitState;
+	readonly skullCamera: SkullCameraState;
 	readonly cineOffset: { theta: number; phi: number; radius: number };
 	readonly cameraPunch: number;
 }
@@ -108,9 +109,24 @@ export interface OrbitState {
 	lookAt: { x: number; y: number; z: number };
 }
 
+export interface SkullCameraState {
+	blend: number;
+	shelfMix: number;
+	targetPosition: { x: number; y: number; z: number };
+	lookAt: { x: number; y: number; z: number };
+}
+
+export interface SkullCameraPoseOptions {
+	active: boolean;
+	portrait: boolean;
+	shelfComposition: boolean;
+	zoom?: number;
+}
+
 export interface CinemaCamera {
 	update(ctx: FrameContext): void;
 	applyBeat(burst: number, isScheduled: boolean): void;
+	applySkullCameraPose(ctx: FrameContext, opts: SkullCameraPoseOptions): void;
 	setFocusZone(type: FocusZoneType | null, opts?: SetFocusZoneOptions): void;
 	setPresetCameraBaseline(preset: number): void;
 	setProfile(profile: CinemaProfile): void;
@@ -203,6 +219,12 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 		hold: 0.030,
 		release: 0.185,
 		events: [],
+	};
+	const skullCamera: SkullCameraState = {
+		blend: 0,
+		shelfMix: 0,
+		targetPosition: { x: 0, y: -2.52, z: 4.98 },
+		lookAt: { x: 0, y: -0.20, z: 0.02 },
 	};
 	let cinemaT = 0;
 	let camPunch = 0;
@@ -403,6 +425,67 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 		camera.fov += (targetFOV - camera.fov) * fovEase;
 		camera.updateProjectionMatrix();
 		camPunch *= 0.86;
+	}
+
+	function skullCameraTargetVectors(
+		portrait: boolean,
+		shelfComposition: boolean,
+		zoom = 0,
+	): { position: { x: number; y: number; z: number }; lookAt: { x: number; y: number; z: number } } {
+		if (shelfComposition) {
+			return {
+				position: {
+					x: portrait ? -0.06 : 0,
+					y: portrait ? -2.36 : -2.50,
+					z: (portrait ? 4.88 : 4.96) + zoom * 0.78,
+				},
+				lookAt: {
+					x: portrait ? -0.04 : 0,
+					y: portrait ? -0.26 : -0.20,
+					z: 0.03,
+				},
+			};
+		}
+		return {
+			position: {
+				x: 0,
+				y: portrait ? -2.38 : -2.52,
+				z: (portrait ? 4.92 : 4.98) + zoom,
+			},
+			lookAt: {
+				x: 0,
+				y: portrait ? -0.28 : -0.20,
+				z: 0.02,
+			},
+		};
+	}
+
+	function applySkullCameraPose(ctx: FrameContext, pose: SkullCameraPoseOptions): void {
+		if (disposed) return;
+		const active = !!pose.active;
+		skullCamera.blend += ((active ? 1 : 0) - skullCamera.blend) * Math.min(1, ctx.dt * (active ? 4.8 : 7.2));
+		if (skullCamera.blend < 0.002) return;
+		const shelfTarget = pose.shelfComposition ? 1 : 0;
+		skullCamera.shelfMix += (shelfTarget - skullCamera.shelfMix) * Math.min(1, ctx.dt * (shelfTarget > skullCamera.shelfMix ? 4.6 : 5.8));
+		if (Math.abs(skullCamera.shelfMix - shelfTarget) < 0.002) skullCamera.shelfMix = shelfTarget;
+		const base = skullCameraTargetVectors(pose.portrait, false, pose.zoom);
+		const shelf = skullCameraTargetVectors(pose.portrait, true, pose.zoom);
+		const mix = skullCamera.shelfMix;
+		skullCamera.targetPosition = {
+			x: base.position.x + (shelf.position.x - base.position.x) * mix,
+			y: base.position.y + (shelf.position.y - base.position.y) * mix,
+			z: base.position.z + (shelf.position.z - base.position.z) * mix,
+		};
+		skullCamera.lookAt = {
+			x: base.lookAt.x + (shelf.lookAt.x - base.lookAt.x) * mix,
+			y: base.lookAt.y + (shelf.lookAt.y - base.lookAt.y) * mix,
+			z: base.lookAt.z + (shelf.lookAt.z - base.lookAt.z) * mix,
+		};
+		camera.position.x += (skullCamera.targetPosition.x - camera.position.x) * skullCamera.blend;
+		camera.position.y += (skullCamera.targetPosition.y - camera.position.y) * skullCamera.blend;
+		camera.position.z += (skullCamera.targetPosition.z - camera.position.z) * skullCamera.blend;
+		camera.lookAt(skullCamera.lookAt.x, skullCamera.lookAt.y, skullCamera.lookAt.z);
+		camera.updateProjectionMatrix();
 	}
 
 	function clearFocusPendingTimer(): void {
@@ -637,6 +720,7 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 			};
 			scheduleBeatCamera(now, burst, isScheduled, snapshot);
 		},
+		applySkullCameraPose,
 		setFocusZone,
 		setPresetCameraBaseline,
 		setProfile(next) {
@@ -654,6 +738,7 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 				cinemaTrackProfile,
 				beatCam,
 				orbit,
+				skullCamera,
 				cineOffset: { theta: orbit.cineTheta, phi: orbit.cinePhi, radius: orbit.cineRadius },
 				cameraPunch: camPunch,
 			};

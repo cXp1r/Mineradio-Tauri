@@ -205,6 +205,27 @@ test("setPresetCameraBaseline applies baseline wallpaper pulse camera numbers", 
 	cinema.dispose();
 });
 
+test("applySkullCameraPose moves camera toward baseline skull target vectors", () => {
+	const camera = makeFakeCamera();
+	const cinema = createCinemaCamera({
+		camera: camera as never,
+		defaultProfile: { cinema: true, cinemaShake: 1.0, isDj: false, trackScaleAuto: true },
+	});
+	const ctx = makeContext(makeSnapshot({ energy: 0.2, rb: 0.2 }), 1);
+	cinema.applySkullCameraPose(ctx, { active: true, portrait: false, shelfComposition: false, zoom: 0 });
+	expect(camera.position.x).toBeCloseTo(0, 4);
+	expect(camera.position.y).toBeCloseTo(-2.52, 4);
+	expect(camera.position.z).toBeCloseTo(4.98, 4);
+	expect(cinema.getState().skullCamera.lookAt).toEqual({ x: 0, y: -0.20, z: 0.02 });
+
+	cinema.applySkullCameraPose(ctx, { active: true, portrait: false, shelfComposition: true, zoom: 0 });
+	expect(camera.position.x).toBeCloseTo(0, 4);
+	expect(camera.position.y).toBeCloseTo(-2.50, 4);
+	expect(camera.position.z).toBeCloseTo(4.96, 4);
+	expect(cinema.getState().skullCamera.lookAt).toEqual({ x: 0, y: -0.20, z: 0.03 });
+	cinema.dispose();
+});
+
 test("setFocusZone delayed activation and queue exit timing match baseline timers", () => {
 	const camera = makeFakeCamera();
 	let timerNow = 0;

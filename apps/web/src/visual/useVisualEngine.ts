@@ -585,6 +585,21 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					return;
 				}
 				cinema.update(ctx);
+				const fx = homeVisual.getFx();
+				if (Number(fx.preset) === 6) {
+					cinema.applySkullCameraPose(ctx, {
+						active: true,
+						portrait: window.innerHeight > window.innerWidth * 1.08,
+						shelfComposition: resolveSkullShelfCompositionActive({
+							preset: fx.preset,
+							shelfMode: shelfManager.getMode(),
+							shelfVisibility: shelfManager.getShelfVisibility(),
+							pinnedOpen: shelfManager.getShelfPinnedOpen(),
+							hasOpenContent: shelfManager.hasOpenContent(),
+						}),
+						zoom: 0,
+					});
+				}
 			});
 			const shelfStep = createShelfStep(shelfManager, {
 				getShelfMode: () => refs.shelfModeRef?.current ?? refs.fxDefaults?.shelf ?? "side",
