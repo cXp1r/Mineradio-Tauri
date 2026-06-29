@@ -1983,10 +1983,6 @@ export function App({
       if (cancelledRef.current) return;
 
       if (!cfg.sidecarBaseUrl) {
-        console.warn("sidecar base url not configured", {
-          code: "NO_RUNTIME",
-          message: "sidecar base url not configured",
-        });
         return;
       }
 
@@ -2004,20 +2000,9 @@ export function App({
             // 能力矩阵仅用于运行期同步，失败不阻断视觉宿主。
           }
           if (!cancelledRef.current) void refreshShelfPlaylists(client);
-        } catch (e) {
+        } catch {
           if (cancelledRef.current) return;
           attempts += 1;
-          if (e instanceof SidecarClientError) {
-            console.warn("sidecar health failed", {
-              code: e.code,
-              message: e.message,
-            });
-          } else {
-            console.warn("sidecar health failed", {
-              code: "UNKNOWN",
-              message: "unknown error",
-            });
-          }
           if (attempts < 5) {
             timer = setTimeout(() => {
               void poll();
@@ -2088,10 +2073,6 @@ export function App({
       setTrialBanner(null);
       setSearchError(message);
       showToast(message);
-      console.warn("audio playback failed", {
-        code: `AUDIO_${payload.code}`,
-        message,
-      });
     });
     return () => {
       controllerRef.current = null;
@@ -2237,13 +2218,11 @@ export function App({
         setHomeSuppressed(true);
       } catch (e) {
         if (playbackRequestSeqRef.current !== seq) return;
-        const code = e instanceof SidecarClientError ? e.code : "AUDIO_UNKNOWN";
         const message = e instanceof Error ? e.message : "playback error";
         setTrialBanner(null);
         setPlaying(false);
         setSearchError(message);
         showToast(message);
-        console.warn("playback load failed", { code, message });
       }
       try {
         setLyricsLoading(true);

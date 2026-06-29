@@ -30,7 +30,6 @@ export function attachControlGlassNode(barEl: HTMLElement | null, optsGlass: Con
 		return () => {};
 	}
 	if (typeof ResizeObserver === "undefined") {
-		if (typeof console !== "undefined") console.warn("control-glass-node: ResizeObserver unavailable; SVG glass texture disabled");
 		return () => {};
 	}
 
@@ -38,8 +37,7 @@ export function attachControlGlassNode(barEl: HTMLElement | null, optsGlass: Con
 	if (!svg) {
 		try {
 			svg = createControlGlassSvg(document.body);
-		} catch (e) {
-			if (typeof console !== "undefined") console.warn("control-glass-node: createControlGlassSvg failed", e);
+		} catch {
 			return () => {};
 		}
 	}
