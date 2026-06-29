@@ -264,20 +264,23 @@ test("handleShelfDetailRowAction routes Netease like action through provider mut
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });
 
-test("handleShelfDetailRowAction keeps collect routed but non-mutating until playlist picker parity exists", async () => {
+test("handleShelfDetailRowAction opens the baseline collect picker without direct playlist mutation", async () => {
 	resetPlaybackStore();
 	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!;
+	const opened: unknown[] = [];
 
 	expect(await handleShelfDetailRowAction({
 		row,
 		index: 0,
 		action: "collect",
+		onOpenCollect: (track) => opened.push(track),
 		client: {
 			async addSongToPlaylist() {
-				throw new Error("collect should wait for playlist picker parity");
+				throw new Error("collect should wait for a playlist choice");
 			},
 		},
-	})).toBe(false);
+	})).toBe(true);
+	expect(opened).toEqual([mapShelfDetailRowToTrack(row)]);
 	expect(usePlaybackStore.getState().queue).toEqual([]);
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });

@@ -28,6 +28,7 @@ export interface ShelfDetailRowActionPayload extends ShelfDetailRowClickPayload 
 	client?: ShelfDetailMutationClient | null;
 	isLiked?: (track: Track) => boolean;
 	onResult?: (message: string, tone?: "good" | "fail") => void;
+	onOpenCollect?: (track: Track) => void;
 	onOpenPodcastRadio?: (radioId: string, title: string) => void;
 }
 
@@ -193,7 +194,6 @@ export function playShelfDetailRow(payload: ShelfDetailRowClickPayload): boolean
 
 export async function handleShelfDetailRowAction(payload: ShelfDetailRowActionPayload): Promise<boolean> {
 	const action = payload.action ?? "row";
-	if (action === "collect") return false;
 	if (payload.row.type === "podcast-radio") {
 		const radioId = payload.row.sourceId || payload.row.id || "";
 		if (!radioId || !payload.onOpenPodcastRadio) return false;
@@ -202,7 +202,15 @@ export async function handleShelfDetailRowAction(payload: ShelfDetailRowActionPa
 	}
 
 	const track = mapShelfDetailRowToTrack(payload.row);
-	if (!track || !isPlayable(track.playableState)) return false;
+	if (!track) return false;
+
+	if (action === "collect") {
+		if (!payload.onOpenCollect) return false;
+		payload.onOpenCollect(track);
+		return true;
+	}
+
+	if (!isPlayable(track.playableState)) return false;
 
 	if (action === "like") {
 		if (track.provider !== "netease" || !payload.client?.likeSong) {

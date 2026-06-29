@@ -81,7 +81,6 @@ import {
   createPodcastRadioDetailOpener,
   createShelfDetailContentLoader,
   handleShelfDetailRowAction,
-  mapShelfDetailRowToTrack,
   type ShelfDetailContentListController,
 } from "../visual/shelf-detail-data";
 import {
@@ -2114,16 +2113,12 @@ export function App({
           usePlaybackStore.getState().playAt(index)
         }
         onShelfDetailRowClick={(payload) => {
-          if (payload.action === "collect") {
-            const track = mapShelfDetailRowToTrack(payload.row);
-            if (track) openCollectPicker(track);
-            return;
-          }
           void handleShelfDetailRowAction({
             ...payload,
             client: sidecarClient,
             isLiked: () => false,
             onResult: (message) => showToast(message),
+            onOpenCollect: openCollectPicker,
             onOpenPodcastRadio: (radioId, title) => {
               const loader = createShelfDetailContentLoader({
                 client: sidecarClient,
