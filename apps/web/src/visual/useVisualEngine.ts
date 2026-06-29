@@ -284,6 +284,7 @@ export function resolveStageLyricLayoutOptions(fx: Partial<FxState>) {
 		lyricOffsetZ: fx.lyricOffsetZ,
 		lyricTiltX: fx.lyricTiltX,
 		lyricTiltY: fx.lyricTiltY,
+		preset: fx.preset,
 	};
 }
 

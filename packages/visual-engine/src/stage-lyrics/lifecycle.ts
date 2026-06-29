@@ -98,6 +98,7 @@ export interface LyricLayoutOptions {
 	lyricOffsetZ?: number;
 	lyricTiltX?: number;
 	lyricTiltY?: number;
+	preset?: number;
 }
 function clamp(v: number, lo: number, hi: number): number {
 	if (!isFinite(v)) return lo;
@@ -291,7 +292,13 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		return `${opts0.lyricFont ?? ""}|${opts0.lyricLetterSpacing ?? ""}|${opts0.lyricLineHeight ?? ""}|${opts0.lyricWeight ?? ""}`;
 	}
 
-	function getLyricLayoutOptions(): Required<LyricLayoutOptions> {
+	function shouldDimWallpaperForShelf(): boolean {
+		if (getShelfMode() !== "side") return false;
+		if (getShelfHasOpenContent()) return true;
+		return getShelfVisibility() > 0.24;
+	}
+
+	function getLyricLayoutOptions(): Required<LyricLayoutOptions> & { lockBaseDistance: number } {
 		const raw = opts.lyricLayoutOptionsSupplier?.() ?? {};
 		const layout = {
 			lyricCameraLock: !!raw.lyricCameraLock,
@@ -301,8 +308,18 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			lyricOffsetZ: clamp(Number(raw.lyricOffsetZ) || 0, -1.6, 1.6),
 			lyricTiltX: clamp(Number(raw.lyricTiltX) || 0, -42, 42),
 			lyricTiltY: clamp(Number(raw.lyricTiltY) || 0, -42, 42),
+			preset: Number(raw.preset) || 0,
+			lockBaseDistance: 4.85,
 		};
-		if (
+		const wallpaperLyricLock = layout.preset === 5 && layout.lyricCameraLock;
+		if (wallpaperLyricLock) {
+			const dimForShelf = shouldDimWallpaperForShelf();
+			layout.lyricScale *= dimForShelf ? 0.60 : 0.84;
+			layout.lyricOffsetX = clamp(layout.lyricOffsetX + (dimForShelf ? -1.34 : 0), -2, 2);
+			layout.lyricOffsetY = clamp(layout.lyricOffsetY + (dimForShelf ? -0.04 : 0.08), -1.2, 1.35);
+			layout.lyricOffsetZ = clamp(layout.lyricOffsetZ + (dimForShelf ? 1.02 : 1.15), -1.6, 1.6);
+			layout.lockBaseDistance = dimForShelf ? 5.58 : 4.85;
+		} else if (
 			!layout.lyricCameraLock &&
 			getShelfMode() === "side" &&
 			getShelfHasOpenContent() &&
@@ -404,7 +421,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		setGroupScale(group, layout.lyricScale);
 		const camera = layout.lyricCameraLock ? opts.cameraSupplier?.() ?? null : null;
 		if (camera) {
-			const lockFit = lyricCameraLockFit(camera, layout.lyricScale, layout.lyricOffsetX, layout.lyricOffsetY, 4.85 + layout.lyricOffsetZ);
+			const lockDistance = layout.lockBaseDistance + layout.lyricOffsetZ;
+			const lockFit = lyricCameraLockFit(camera, layout.lyricScale, layout.lyricOffsetX, layout.lyricOffsetY, lockDistance);
 			state.lockFitScale += (lockFit - state.lockFitScale) * (lockFit < state.lockFitScale ? 0.18 : 0.10);
 			state.lockFitScale = finiteOr(state.lockFitScale, 1);
 			setGroupScale(group, layout.lyricScale * state.lockFitScale);
@@ -416,9 +434,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 				? camera.getWorldDirection({ x: 0, y: 0, z: 0, normalize() { return normalizeVec(this); } } as never) as unknown as Vec3Like
 				: applyQuaternionToVec(dir, q);
 			const forward = normalizeVec({ x: worldDir.x, y: worldDir.y, z: worldDir.z });
-			const x = camera.position.x + forward.x * 4.85 + right.x * layout.lyricOffsetX + up.x * layout.lyricOffsetY + forward.x * layout.lyricOffsetZ;
-			const y = camera.position.y + forward.y * 4.85 + right.y * layout.lyricOffsetX + up.y * layout.lyricOffsetY + forward.y * layout.lyricOffsetZ;
-			const z = camera.position.z + forward.z * 4.85 + right.z * layout.lyricOffsetX + up.z * layout.lyricOffsetY + forward.z * layout.lyricOffsetZ;
+			const x = camera.position.x + forward.x * layout.lockBaseDistance + right.x * layout.lyricOffsetX + up.x * layout.lyricOffsetY + forward.x * layout.lyricOffsetZ;
+			const y = camera.position.y + forward.y * layout.lockBaseDistance + right.y * layout.lyricOffsetX + up.y * layout.lyricOffsetY + forward.y * layout.lyricOffsetZ;
+			const z = camera.position.z + forward.z * layout.lockBaseDistance + right.z * layout.lyricOffsetX + up.z * layout.lyricOffsetY + forward.z * layout.lyricOffsetZ;
 			if (group.position?.lerp) group.position.lerp({ x, y, z }, 0.24);
 			else setGroupPosition(group, x, y, z);
 			const targetQuat = multiplyQuaternions(q, tiltQuaternionYXZ(layout.lyricTiltX, layout.lyricTiltY));
