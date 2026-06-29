@@ -280,6 +280,8 @@ export {
 	createStageLyricsLifecycle,
 } from "./stage-lyrics/lifecycle";
 export type {
+	LyricLayoutOptions,
+	SkullMouthTransform,
 	StageLyricsLifecycle,
 	StageLyricsLifecycleOpts,
 } from "./stage-lyrics/lifecycle";

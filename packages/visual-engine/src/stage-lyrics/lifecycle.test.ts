@@ -880,6 +880,129 @@ test("update applies baseline skull-mouth shelf detail scale without avoid offse
 	lifecycle.dispose();
 });
 
+test("update locks skull-mouth lyrics to supplied mouth world transform", async () => {
+	const scene = makeFakeScene();
+	const camera = makeFakeCamera({ x: 0, y: 0, z: 0 });
+	let mouth = {
+		visible: true,
+		position: { x: 1, y: 2, z: 3 },
+		quaternion: { x: 0, y: 0, z: 0, w: 1 },
+	};
+	let tiltY = 0;
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [] as never,
+		currentTimeSupplier: () => 0,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		dotTexture: makeFakeDotTexture(),
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0,
+		lyricGlowBeatFlagSupplier: () => false,
+		lyricSunEnergyHolder: { get: () => 0, set: () => {} },
+		lyricLayoutOptionsSupplier: () => ({
+			lyricCameraLock: false,
+			lyricScale: 1,
+			lyricOffsetX: 0.2,
+			lyricOffsetY: 0.1,
+			lyricOffsetZ: 0.4,
+			lyricTiltX: 0,
+			lyricTiltY: tiltY,
+			preset: 6,
+			skullMouthLyrics: true,
+		} as never),
+		skullMouthTransformSupplier: () => mouth,
+		cameraSupplier: () => camera as never,
+		rand: () => 0.35,
+	});
+	await lifecycle.mount(scene as never);
+	lifecycle.update(makeCtx(0, 0.1));
+	const group = lifecycle.group as unknown as {
+		position: { x: number; y: number; z: number };
+		quaternion: { x: number; y: number; z: number; w: number };
+		userData: Record<string, unknown>;
+	};
+	expect(group.position.x).toBeCloseTo(1.2, 6);
+	expect(group.position.y).toBeCloseTo(2.1, 6);
+	expect(group.position.z).toBeCloseTo(3.42, 6);
+	expect(group.quaternion.x).toBeCloseTo(0, 6);
+	expect(group.quaternion.y).toBeCloseTo(0, 6);
+	expect(group.quaternion.z).toBeCloseTo(0, 6);
+	expect(group.quaternion.w).toBeCloseTo(1, 6);
+	expect(group.userData.skullMouthLocked).toBe(true);
+
+	mouth = {
+		visible: true,
+		position: { x: 3, y: 5, z: 7 },
+		quaternion: { x: 0, y: 0, z: 0, w: 1 },
+	};
+	tiltY = 20;
+	lifecycle.update(makeCtx(0.1, 0.1));
+	const targetTiltY = Math.sin((20 * Math.PI / 180) / 2);
+	const targetTiltW = Math.cos((20 * Math.PI / 180) / 2);
+	expect(group.position.x).toBeCloseTo(1.2 + ((3.2) - 1.2) * 0.26, 6);
+	expect(group.position.y).toBeCloseTo(2.1 + ((5.1) - 2.1) * 0.26, 6);
+	expect(group.position.z).toBeCloseTo(3.42 + ((7.42) - 3.42) * 0.26, 6);
+	expect(group.quaternion.x).toBeCloseTo(0, 6);
+	expect(group.quaternion.y).toBeCloseTo(targetTiltY * 0.30, 6);
+	expect(group.quaternion.z).toBeCloseTo(0, 6);
+	expect(group.quaternion.w).toBeCloseTo(1 + (targetTiltW - 1) * 0.30, 6);
+	lifecycle.dispose();
+});
+
+test("update resets skull-mouth snap state when leaving mouth layout", async () => {
+	const scene = makeFakeScene();
+	const camera = makeFakeCamera({ x: 0, y: 0, z: 0 });
+	let skullMouthLyrics = true;
+	let lyricCameraLock = false;
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [] as never,
+		currentTimeSupplier: () => 0,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		dotTexture: makeFakeDotTexture(),
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0,
+		lyricGlowBeatFlagSupplier: () => false,
+		lyricSunEnergyHolder: { get: () => 0, set: () => {} },
+		lyricLayoutOptionsSupplier: () => ({
+			lyricCameraLock,
+			lyricScale: 1,
+			lyricOffsetX: 0,
+			lyricOffsetY: 0,
+			lyricOffsetZ: 0,
+			lyricTiltX: 0,
+			lyricTiltY: 0,
+			preset: skullMouthLyrics ? 6 : 0,
+			skullMouthLyrics,
+		} as never),
+		skullMouthTransformSupplier: () => ({
+			visible: true,
+			position: { x: 1, y: 2, z: 3 },
+			quaternion: { x: 0, y: 0, z: 0, w: 1 },
+		}),
+		cameraSupplier: () => camera as never,
+		rand: () => 0.35,
+	});
+	await lifecycle.mount(scene as never);
+	lifecycle.update(makeCtx(0, 0.1));
+	const group = lifecycle.group as unknown as { userData: Record<string, unknown> };
+	expect(group.userData.skullMouthLocked).toBe(true);
+
+	skullMouthLyrics = false;
+	lyricCameraLock = true;
+	lifecycle.update(makeCtx(0.1, 0.1));
+	expect(group.userData.skullMouthLocked).toBe(false);
+	lifecycle.dispose();
+});
+
 test("update applies baseline wallpaper camera-lock layout and distance when shelf dims wallpaper", async () => {
 	const scene = makeFakeScene();
 	const camera = makeFakeCamera({ x: 0, y: 0, z: 0 });

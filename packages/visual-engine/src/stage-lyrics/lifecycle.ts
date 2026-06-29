@@ -54,6 +54,7 @@ export interface StageLyricsLifecycleOpts {
 	lyricGlowBeatFlagSupplier?: () => boolean;
 	lyricTextOptionsSupplier?: () => LyricTextOptions;
 	lyricLayoutOptionsSupplier?: () => LyricLayoutOptions;
+	skullMouthTransformSupplier?: () => SkullMouthTransform | null;
 	cameraSupplier?: () => THREE.PerspectiveCamera | null;
 	lyricSunEnergyHolder?: { get(): number; set(v: number): void };
 	getBeatCamKick?: () => {
@@ -90,6 +91,12 @@ export interface StageLyricsLifecycle {
 }
 
 type Vec3Like = { x: number; y: number; z: number };
+type QuatLike = { x: number; y: number; z: number; w: number };
+export interface SkullMouthTransform {
+	visible?: boolean;
+	position: Vec3Like;
+	quaternion: QuatLike;
+}
 export interface LyricLayoutOptions {
 	lyricCameraLock?: boolean;
 	lyricScale?: number;
@@ -455,10 +462,12 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			quaternion?: { x: number; y: number; z: number; w: number; slerp?: (q: { x: number; y: number; z: number; w: number }, a: number) => void };
 			rotation?: { x: number; y: number; z: number };
 			scale?: { setScalar?: (s: number) => void; set?: (x: number, y: number, z: number) => void; x: number; y: number; z: number };
+			userData?: Record<string, unknown>;
 		};
 		setGroupScale(group, layout.lyricScale);
 		const camera = layout.lyricCameraLock ? opts.cameraSupplier?.() ?? null : null;
 		if (camera) {
+			if (group.userData) group.userData.skullMouthLocked = false;
 			const lockDistance = layout.lockBaseDistance + layout.lyricOffsetZ;
 			const lockFit = lyricCameraLockFit(camera, layout.lyricScale, layout.lyricOffsetX, layout.lyricOffsetY, lockDistance);
 			state.lockFitScale += (lockFit - state.lockFitScale) * (lockFit < state.lockFitScale ? 0.18 : 0.10);
@@ -504,6 +513,40 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		} else {
 			state.lockFitScale = 1;
 		}
+		const mouth = layout.skullMouthLyrics ? opts.skullMouthTransformSupplier?.() ?? null : null;
+		if (mouth && mouth.visible !== false) {
+			group.userData = group.userData ?? {};
+			const q = mouth.quaternion;
+			const right = normalizeVec(applyQuaternionToVec({ x: 1, y: 0, z: 0 }, q));
+			const up = normalizeVec(applyQuaternionToVec({ x: 0, y: 1, z: 0 }, q));
+			const forward = normalizeVec(applyQuaternionToVec({ x: 0, y: 0, z: 1 }, q));
+			const x = mouth.position.x + right.x * layout.lyricOffsetX + up.x * layout.lyricOffsetY + forward.x * (layout.lyricOffsetZ + 0.020);
+			const y = mouth.position.y + right.y * layout.lyricOffsetX + up.y * layout.lyricOffsetY + forward.y * (layout.lyricOffsetZ + 0.020);
+			const z = mouth.position.z + right.z * layout.lyricOffsetX + up.z * layout.lyricOffsetY + forward.z * (layout.lyricOffsetZ + 0.020);
+			const targetQuat = multiplyQuaternions(q, tiltQuaternionYXZ(layout.lyricTiltX, layout.lyricTiltY));
+			if (!group.userData.skullMouthLocked) {
+				setGroupPosition(group, x, y, z);
+				if (group.quaternion) {
+					group.quaternion.x = targetQuat.x;
+					group.quaternion.y = targetQuat.y;
+					group.quaternion.z = targetQuat.z;
+					group.quaternion.w = targetQuat.w;
+				}
+				group.userData.skullMouthLocked = true;
+			} else {
+				if (group.position?.lerp) group.position.lerp({ x, y, z }, 0.26);
+				else setGroupPosition(group, x, y, z);
+				if (group.quaternion?.slerp) group.quaternion.slerp(targetQuat, 0.30);
+				else if (group.quaternion) {
+					group.quaternion.x = targetQuat.x;
+					group.quaternion.y = targetQuat.y;
+					group.quaternion.z = targetQuat.z;
+					group.quaternion.w = targetQuat.w;
+				}
+			}
+			return;
+		}
+		if (group.userData) group.userData.skullMouthLocked = false;
 		const x = layout.lyricOffsetX;
 		const y = 0.2 + layout.lyricOffsetY;
 		const z = 1.46 + layout.lyricOffsetZ;
