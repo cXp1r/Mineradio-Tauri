@@ -33,6 +33,9 @@ test("VisualControlPanelHost renders baseline DIY control sections", () => {
   expect(html).toContain('id="fx-cineshake"');
   expect(html).toContain('id="fx-lyricglow"');
   expect(html).toContain('id="fx-lyric-fold"');
+  expect(html).toContain('id="lyric-color-picker"');
+  expect(html).toContain('id="lyric-highlight-picker"');
+  expect(html).toContain('id="lyric-glow-picker"');
   expect(html).toContain('id="lyric-font-grid"');
   expect(html).toContain('data-font="stone-song"');
   expect(html).toContain('id="fx-overlay-fold"');
@@ -247,6 +250,57 @@ test("VisualControlPanelHost emits baseline UI accent and visual tint color cont
     "visualTintMode:auto",
     "visualTintMode:auto",
     "visualTintColor:#9db8cf",
+  ]);
+  root.unmount();
+  container.remove();
+});
+
+test("VisualControlPanelHost emits baseline stage lyric color controls", async () => {
+  await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+  const calls: string[] = [];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  root.render(
+    React.createElement(VisualControlPanelHost, {
+      settings: {
+        lyricColorMode: "auto",
+        lyricColor: "#a9b8c8",
+        lyricHighlightMode: "auto",
+        lyricHighlightColor: "#fac900",
+        lyricGlowLinked: true,
+        lyricGlowColor: "#008aff",
+      },
+      onStringSettingChange: (key, value) => calls.push(`${key}:${value}`),
+      onBooleanSettingChange: (key, value) => calls.push(`${key}:${value}`),
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  const lyricColor = container.querySelector("#lyric-color-picker") as HTMLInputElement;
+  valueSetter?.call(lyricColor, "#112233");
+  lyricColor.dispatchEvent(new window.Event("input", { bubbles: true }));
+  const highlightColor = container.querySelector("#lyric-highlight-picker") as HTMLInputElement;
+  valueSetter?.call(highlightColor, "#445566");
+  highlightColor.dispatchEvent(new window.Event("input", { bubbles: true }));
+  (container.querySelector("#lyric-glow-linked") as HTMLButtonElement).click();
+  const glowColor = container.querySelector("#lyric-glow-picker") as HTMLInputElement;
+  valueSetter?.call(glowColor, "#778899");
+  glowColor.dispatchEvent(new window.Event("input", { bubbles: true }));
+  (container.querySelector("#lyric-color-auto-btn") as HTMLButtonElement).click();
+
+  expect(calls).toEqual([
+    "lyricColorMode:custom",
+    "lyricColor:#112233",
+    "lyricHighlightMode:custom",
+    "lyricHighlightColor:#445566",
+    "lyricGlowLinked:false",
+    "lyricGlowColor:#778899",
+    "lyricColorMode:auto",
   ]);
   root.unmount();
   container.remove();

@@ -6,6 +6,7 @@ import {
 	resolveVisualCoverUrlForSidecar,
 	resolveRuntimeShelfMode,
 	resolveVisualShelfSettings,
+	resolveVisualWallpaperSafe,
 	syncRuntimeShelfModeOverride,
 	syncDesktopLyricsMotionRef,
 	createStageLyricsHostSuppliers,
@@ -63,6 +64,11 @@ test("resolveVisualShelfSettings prefers explicit shelf store settings over fx d
 		showPodcasts: true,
 		mergeCollections: false,
 	});
+});
+
+test("resolveVisualWallpaperSafe follows runtime fx preset ahead of defaults", () => {
+	expect(resolveVisualWallpaperSafe({ preset: 0 }, { preset: 5 })).toBe(true);
+	expect(resolveVisualWallpaperSafe({ preset: 5 }, { preset: 6 })).toBe(false);
 });
 
 test("countShelfPanePlaylists follows baseline mine and favorite split", () => {

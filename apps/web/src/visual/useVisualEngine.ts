@@ -26,6 +26,7 @@ import {
 	type FxState,
 	type HomeVisual,
 	type LyricLine as VisualLyricLine,
+	type LyricPalette,
 	type RendererHandle,
 	type RenderLoop,
 	type ConnectorParticles,
@@ -37,6 +38,7 @@ import {
 	type StageLyricsLifecycle,
 	type StageLyricsLifecycleOpts,
 	type StageLyricsMotionSnapshot,
+	DEFAULT_LYRIC_PALETTE,
 } from "@mineradio/visual-engine";
 import {
 	attachFreeCameraHost,
@@ -147,7 +149,7 @@ export interface StageLyricsHostSupplierRefs {
 
 export function createStageLyricsHostSuppliers(input: StageLyricsHostSupplierRefs): Required<Pick<
 	StageLyricsLifecycleOpts,
-	"audioDurationSupplier" | "fallbackTextSupplier" | "particleLyricsFlagSupplier" | "lyricGlowParticlesSupplier" | "lyricsHasNativeKaraokeSupplier"
+	"audioDurationSupplier" | "fallbackTextSupplier" | "particleLyricsFlagSupplier" | "lyricGlowParticlesSupplier" | "lyricGlowStrengthSupplier" | "lyricGlowBeatFlagSupplier" | "lyricsHasNativeKaraokeSupplier"
 >> {
 	const readFx = (): FxState => mergeFxState(mergeFxState(cloneFxState(), input.fxDefaults), input.fxRef?.current);
 	return {
@@ -158,6 +160,14 @@ export function createStageLyricsHostSuppliers(input: StageLyricsHostSupplierRef
 		fallbackTextSupplier: () => input.fallbackTextRef?.current ?? "",
 		particleLyricsFlagSupplier: () => readFx().particleLyrics !== false,
 		lyricGlowParticlesSupplier: () => readFx().lyricGlowParticles === true,
+		lyricGlowStrengthSupplier: () => {
+			const fx = readFx();
+			return fx.lyricGlow ? Math.min(0.85, Math.max(0, Number(fx.lyricGlowStrength) || 0)) : 0;
+		},
+		lyricGlowBeatFlagSupplier: () => {
+			const fx = readFx();
+			return fx.lyricGlow === true && fx.lyricGlowBeat === true;
+		},
 		lyricsHasNativeKaraokeSupplier: () => input.lyricsHasNativeKaraokeRef?.current === true,
 	};
 }
@@ -340,6 +350,139 @@ export function shouldDimWallpaperParticlesForShelf(input: WallpaperShelfDimInpu
 	return input.pinnedOpen || input.hasOpenContent;
 }
 
+export function resolveSkullMouthLyricsActive(input: {
+	preset: number | null | undefined;
+	skullParticlesVisible?: boolean;
+}): boolean {
+	return Number(input.preset) === 6 && input.skullParticlesVisible === true;
+}
+
+export function resolveRuntimeWallpaperSafe(input: {
+	fxDefaults?: Partial<FxState>;
+	fxRef?: RefObject<Partial<FxState> | undefined>;
+}): boolean {
+	const fx = mergeFxState(mergeFxState(cloneFxState(), input.fxDefaults), input.fxRef?.current);
+	return isWallpaperSafeShelfPreset(fx.preset);
+}
+
+function clampRange(value: number, min: number, max: number): number {
+	return Math.max(min, Math.min(max, Number.isFinite(value) ? value : min));
+}
+
+function hexToRgbValue(hex: string): { r: number; g: number; b: number } {
+	const raw = String(hex || "").trim().replace(/^#/, "");
+	const normalized = /^[0-9a-f]{3}$/i.test(raw)
+		? raw.split("").map((c) => c + c).join("")
+		: raw;
+	const valid = /^[0-9a-f]{6}$/i.test(normalized) ? normalized : "a9b8c8";
+	const n = parseInt(valid, 16);
+	return {
+		r: (n >> 16) & 255,
+		g: (n >> 8) & 255,
+		b: n & 255,
+	};
+}
+
+function rgbToHslValue(r: number, g: number, b: number): { h: number; s: number; l: number } {
+	const rn = r / 255;
+	const gn = g / 255;
+	const bn = b / 255;
+	const max = Math.max(rn, gn, bn);
+	const min = Math.min(rn, gn, bn);
+	let h = 0;
+	let s = 0;
+	const l = (max + min) / 2;
+	if (max !== min) {
+		const d = max - min;
+		s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+		if (max === rn) h = (gn - bn) / d + (gn < bn ? 6 : 0);
+		else if (max === gn) h = (bn - rn) / d + 2;
+		else h = (rn - gn) / d + 4;
+		h /= 6;
+	}
+	return { h, s, l };
+}
+
+function hueToRgbValue(p: number, q: number, t: number): number {
+	let v = t;
+	if (v < 0) v += 1;
+	if (v > 1) v -= 1;
+	if (v < 1 / 6) return p + (q - p) * 6 * v;
+	if (v < 1 / 2) return q;
+	if (v < 2 / 3) return p + (q - p) * (2 / 3 - v) * 6;
+	return p;
+}
+
+function hslToRgbCss(h: number, s: number, l: number): string {
+	let r: number;
+	let g: number;
+	let b: number;
+	if (s === 0) {
+		r = g = b = l;
+	} else {
+		const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+		const p = 2 * l - q;
+		r = hueToRgbValue(p, q, h + 1 / 3);
+		g = hueToRgbValue(p, q, h);
+		b = hueToRgbValue(p, q, h - 1 / 3);
+	}
+	return `rgb(${Math.round(r * 255)},${Math.round(g * 255)},${Math.round(b * 255)})`;
+}
+
+export function lyricPaletteFromHex(hex: string): LyricPalette {
+	const c = hexToRgbValue(hex);
+	const hsl = rgbToHslValue(c.r, c.g, c.b);
+	const neutral = hsl.s < 0.035;
+	const s = neutral ? 0 : clampRange(hsl.s * 1.08, 0.14, 0.92);
+	let l = hsl.l;
+	if (l < 0.11) l = 0.15 + l * 1.18;
+	else if (l < 0.28) l = 0.21 + (l - 0.11) * 1.18;
+	else l = clampRange(l, 0.30, 0.82);
+	l = clampRange(l, 0.14, 0.84);
+	const primary = hslToRgbCss(hsl.h, s, l);
+	const secondary = hslToRgbCss(
+		(hsl.h + 0.055) % 1,
+		neutral ? 0 : clampRange(s * 0.88, 0.12, 0.78),
+		clampRange(l + (l < 0.38 ? 0.10 : -0.08), 0.18, 0.76),
+	);
+	const highlight = hslToRgbCss(
+		(hsl.h + 0.018) % 1,
+		neutral ? 0 : clampRange(s * 0.72, 0.10, 0.70),
+		clampRange(l + 0.22, 0.38, 0.92),
+	);
+	return {
+		primary,
+		secondary,
+		highlight,
+		glowColor: secondary,
+	};
+}
+
+export function resolveStageLyricPalette(
+	fxInput: Partial<FxState>,
+	coverPalette?: LyricPalette | null,
+): LyricPalette {
+	const fx = mergeFxState(cloneFxState(), fxInput);
+	const base = fx.lyricColorMode === "custom"
+		? lyricPaletteFromHex(fx.lyricColor)
+		: coverPalette ?? DEFAULT_LYRIC_PALETTE;
+	const primary = base.primary;
+	const highlightPalette = fx.lyricHighlightMode === "custom"
+		? lyricPaletteFromHex(fx.lyricHighlightColor)
+		: null;
+	const glowPalette = fx.lyricGlowLinked === false
+		? lyricPaletteFromHex(fx.lyricGlowColor)
+		: null;
+	const highlight = highlightPalette?.primary ?? base.highlight;
+	const glowColor = glowPalette?.primary ?? highlightPalette?.secondary ?? base.glowColor;
+	return {
+		primary,
+		secondary: base.secondary,
+		highlight,
+		glowColor,
+	};
+}
+
 export function setRuntimeShelfMode(
 	shelfModeRef: RefObject<string> | undefined,
 	mode: "side",
@@ -381,6 +524,7 @@ export function resolveHomeVisualPreset(
 export function resolveStageLyricLayoutOptions(
 	fx: Partial<FxState>,
 	orbitState: { orbitCenterLocked?: boolean; orbitRecentering?: boolean } = {},
+	opts: { skullParticlesVisible?: boolean } = {},
 ) {
 	return {
 		lyricCameraLock: !!fx.lyricCameraLock,
@@ -392,7 +536,10 @@ export function resolveStageLyricLayoutOptions(
 		lyricTiltY: fx.lyricTiltY,
 		preset: fx.preset,
 		skullLyricEdgeGuard: Number(fx.preset) === 6 && !!(orbitState.orbitCenterLocked || orbitState.orbitRecentering),
-		skullMouthLyrics: Number(fx.preset) === 6,
+		skullMouthLyrics: resolveSkullMouthLyricsActive({
+			preset: fx.preset,
+			skullParticlesVisible: opts.skullParticlesVisible,
+		}),
 	};
 }
 
@@ -531,11 +678,26 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 			});
 			const freeCamera = createDefaultFreeCameraState();
 			const runtimeFx = mergeFxState(mergeFxState(cloneFxState(), refs.fxDefaults), refs.fxRef?.current);
+			let latestCoverLyricPalette: LyricPalette | null = null;
+			let lastAppliedLyricPaletteKey = "";
+			const applyStageLyricPalette = () => {
+				const fx = mergeFxState(mergeFxState(cloneFxState(), refs.fxDefaults), refs.fxRef?.current);
+				const palette = resolveStageLyricPalette(fx, latestCoverLyricPalette);
+				const key = `${palette.primary}|${palette.secondary}|${palette.highlight}|${palette.glowColor}`;
+				if (key === lastAppliedLyricPaletteKey) return;
+				lastAppliedLyricPaletteKey = key;
+				refs.lifecycleRef.current?.setPalette(palette);
+			};
 			const homeVisual = await createHomeVisual({
 				scene: renderer.scene,
 				coverResolution: refs.coverResolution,
 				fx: runtimeFx,
 				estimateAiDepth: aiDepthEstimatorRef.current ?? undefined,
+				onCoverLyricPalette: (palette) => {
+					latestCoverLyricPalette = palette;
+					lastAppliedLyricPaletteKey = "";
+					applyStageLyricPalette();
+				},
 			});
 			let homeVisualPreviousPreset: number | null = null;
 			let homeVisualPreviewActive = false;
@@ -614,6 +776,8 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					const orbit = cinema.getState().orbit;
 					return resolveStageLyricLayoutOptions(fx, {
 						orbitCenterLocked: orbit.centerLocked,
+					}, {
+						skullParticlesVisible: homeVisual.getSkullParticles()?.visible === true,
 					});
 				},
 				skullMouthTransformSupplier: () => homeVisual.getSkullMouthTransform(),
@@ -652,6 +816,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				lifecycle.setLyricLines(refs.lyricLinesRef.current);
 			} catch {
 			}
+			applyStageLyricPalette();
 			const renderLoop = createRenderLoop({
 				renderer: renderer.renderer,
 				scene: renderer.scene,
@@ -679,6 +844,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					syncedCoverUrlVersion = refs.coverUrlVersionRef.current;
 					homeVisual.setCoverUrl(refs.coverUrlRef?.current ?? "");
 				}
+				applyStageLyricPalette();
 				const homeActive = refs.homeActiveRef?.current === true;
 				const enteringHomePreview = homeActive && !homeVisualPreviewActive;
 				const preset = resolveHomeVisualPreset(
@@ -766,6 +932,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				if (shelfContentOpen !== syncedShelfContentOpen) {
 					syncedShelfContentOpen = shelfContentOpen;
 					refs.onShelfOpenContentChangeRef?.current?.(shelfContentOpen);
+					lifecycle.requestCameraSnap(10);
 				}
 				const connectorVisible =
 					shelfManager.getMode() === "stage" &&
@@ -846,7 +1013,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				getSplashActive: () => refs.splashActiveRef.current,
 				getShelfCameraMode: () => refs.shelfCameraModeRef?.current ?? refs.fxDefaults?.shelfCameraMode ?? "static",
 				getPortrait: () => window.innerHeight > window.innerWidth,
-				getWallpaperSafe: () => refs.wallpaperSafeRef?.current ?? isWallpaperSafeShelfPreset(refs.fxDefaults?.preset),
+				getWallpaperSafe: () => refs.wallpaperSafeRef?.current ?? resolveRuntimeWallpaperSafe(refs),
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
 				getQueueFocusActive: (pointer) => {
@@ -857,6 +1024,11 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					});
 				},
 				getSideShelfFocusHit,
+				onFocusZoneChange: (result) => {
+					if (result.wallpaperSafe && (result.type === "shelf-side" || result.type === "shelf-detail")) {
+						lifecycle.requestCameraSnap(10);
+					}
+				},
 			});
 			const offShelfPointerInteractions = attachShelfPointerInteractionWiring({
 				target: window,
@@ -867,7 +1039,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				getStrictDetailRowHit: getStrictShelfDetailRowHit,
 				getSplashActive: () => refs.splashActiveRef.current,
 				getPortrait: () => window.innerHeight > window.innerWidth,
-				getWallpaperSafe: () => refs.wallpaperSafeRef?.current ?? isWallpaperSafeShelfPreset(refs.fxDefaults?.preset),
+				getWallpaperSafe: () => refs.wallpaperSafeRef?.current ?? resolveRuntimeWallpaperSafe(refs),
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
 				getShelfPresence: () => refs.shelfPresenceRef?.current ?? refs.fxDefaults?.shelfPresence ?? "always",
@@ -885,6 +1057,11 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				onShelfDetailRowClick: (payload) => refs.onShelfDetailRowClickRef?.current?.(payload),
 				onShelfSelectFeedback: (direction, variant) => {
 					shelfSelectSound.play(direction, variant);
+				},
+				onFocusZoneChange: (type, opts) => {
+					if (opts?.wallpaperSafe && (type === "shelf-side" || type === "shelf-detail")) {
+						lifecycle.requestCameraSnap(10);
+					}
 				},
 			});
 			const offFreeCamera = attachFreeCameraHost({

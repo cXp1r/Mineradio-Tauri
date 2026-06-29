@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createStageLyricsShelfSuppliers, isRuntimeShelfPreviewActive, resolveHomeVisualPreset, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, shouldDimWallpaperParticlesForShelf, setRuntimeShelfMode } from "./useVisualEngine";
+import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, isRuntimeShelfPreviewActive, lyricPaletteFromHex, resolveHomeVisualPreset, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, setRuntimeShelfMode } from "./useVisualEngine";
 
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
 	expect(isRuntimeShelfPreviewActive("auto", 0.17)).toBe(true);
@@ -152,12 +152,18 @@ test("resolveStageLyricLayoutOptions carries baseline camera lock and layout con
 	});
 });
 
-test("resolveStageLyricLayoutOptions enables skull-mouth lyrics for skull preset", () => {
+test("resolveStageLyricLayoutOptions enables skull-mouth lyrics for visible skull preset", () => {
 	const layout = resolveStageLyricLayoutOptions({
 		preset: 6,
 		lyricCameraLock: false,
+	}, {}, {
+		skullParticlesVisible: true,
 	});
 	expect(layout.skullMouthLyrics).toBe(true);
+	expect(resolveSkullMouthLyricsActive({
+		preset: 6,
+		skullParticlesVisible: false,
+	})).toBe(false);
 });
 
 test("resolveStageLyricLayoutOptions enables skull edge guard while skull orbit is centered", () => {
@@ -211,4 +217,72 @@ test("createStageLyricsShelfSuppliers resolves skull shelf state from runtime fx
 	});
 
 	expect(suppliers.getSkullShelfOpen()).toBe(true);
+});
+
+test("createStageLyricsHostSuppliers bridges glow strength and beat flags from runtime fx", () => {
+	const suppliers = createStageLyricsHostSuppliers({
+		fxDefaults: { lyricGlow: true, lyricGlowStrength: 0.1, lyricGlowBeat: false },
+		fxRef: { current: { lyricGlowStrength: 0.52, lyricGlowBeat: true } },
+	});
+	expect(suppliers.lyricGlowStrengthSupplier()).toBe(0.52);
+	expect(suppliers.lyricGlowBeatFlagSupplier()).toBe(true);
+
+	const disabled = createStageLyricsHostSuppliers({
+		fxDefaults: { lyricGlow: false, lyricGlowStrength: 0.85, lyricGlowBeat: true },
+	});
+	expect(disabled.lyricGlowStrengthSupplier()).toBe(0);
+	expect(disabled.lyricGlowBeatFlagSupplier()).toBe(false);
+});
+
+test("resolveStageLyricPalette applies cover auto colors and custom lyric overrides", () => {
+	const cover = {
+		primary: "#112233",
+		secondary: "#445566",
+		highlight: "#778899",
+		glowColor: "#aabbcc",
+	};
+	expect(resolveStageLyricPalette({}, cover)).toEqual(cover);
+	expect(lyricPaletteFromHex("#336699")).toEqual({
+		primary: "rgb(47,102,157)",
+		secondary: "rgb(43,56,120)",
+		highlight: "rgb(120,150,196)",
+		glowColor: "rgb(43,56,120)",
+	});
+	expect(resolveStageLyricPalette({
+		lyricColorMode: "custom",
+		lyricColor: "#336699",
+	}, cover)).toEqual({
+		primary: "rgb(47,102,157)",
+		secondary: "rgb(43,56,120)",
+		highlight: "rgb(120,150,196)",
+		glowColor: "rgb(43,56,120)",
+	});
+	expect(resolveStageLyricPalette({
+		lyricColorMode: "custom",
+		lyricColor: "#010203",
+		lyricHighlightMode: "custom",
+		lyricHighlightColor: "#040506",
+		lyricGlowLinked: false,
+		lyricGlowColor: "#070809",
+	}, cover)).toEqual({
+		primary: "rgb(19,41,63)",
+		secondary: "rgb(35,45,98)",
+		highlight: "rgb(35,44,54)",
+		glowColor: "rgb(41,48,54)",
+	});
+	expect(resolveStageLyricPalette({
+		lyricHighlightMode: "custom",
+		lyricHighlightColor: "#abcdef",
+		lyricGlowLinked: true,
+	}, cover)).toEqual({
+		primary: "#112233",
+		secondary: "#445566",
+		highlight: "rgb(168,205,242)",
+		glowColor: "rgb(139,155,230)",
+	});
+});
+
+test("resolveRuntimeWallpaperSafe follows live fx preset ahead of defaults", () => {
+	expect(resolveRuntimeWallpaperSafe({ fxDefaults: { preset: 0 }, fxRef: { current: { preset: 5 } } })).toBe(true);
+	expect(resolveRuntimeWallpaperSafe({ fxDefaults: { preset: 5 }, fxRef: { current: { preset: 6 } } })).toBe(false);
 });

@@ -75,6 +75,12 @@ function visualTintModeValue(value: unknown, fallback: string): string {
   return fallback === "custom" ? "custom" : "auto";
 }
 
+function lyricColorModeValue(value: unknown, fallback: string): string {
+  const key = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (key === "custom") return "custom";
+  return fallback === "custom" ? "custom" : "auto";
+}
+
 function desktopLyricsFpsValue(value: unknown, fallback: number): number {
   const n = typeof value === "number" ? value : Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -140,6 +146,21 @@ export function normalizeVisualFxState(
       input.visualTintColor,
       fx.visualTintColor,
     ),
+    lyricColorMode: lyricColorModeValue(
+      input.lyricColorMode,
+      fx.lyricColorMode,
+    ),
+    lyricColor: hexColorValue(input.lyricColor, fx.lyricColor),
+    lyricHighlightMode: lyricColorModeValue(
+      input.lyricHighlightMode,
+      fx.lyricHighlightMode,
+    ),
+    lyricHighlightColor: hexColorValue(
+      input.lyricHighlightColor,
+      fx.lyricHighlightColor,
+    ),
+    lyricGlowLinked: booleanValue(input.lyricGlowLinked, fx.lyricGlowLinked),
+    lyricGlowColor: hexColorValue(input.lyricGlowColor, fx.lyricGlowColor),
     uiAccentColor: hexColorValue(input.uiAccentColor, fx.uiAccentColor),
     backgroundOpacity: clamp(
       input.backgroundOpacity,

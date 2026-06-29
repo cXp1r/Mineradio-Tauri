@@ -28,6 +28,11 @@ const PEAK_ENERGY_RELEASE_MS = -1000 / 60 / Math.log(0.995);
 
 const ENV_ATTACK_PER_FRAME = 60;
 
+function smoothstep01(v: number): number {
+	const x = clamp01(v);
+	return x * x * (3 - 2 * x);
+}
+
 export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioReactivityEngine {
 	const mainAnalyserConfig = opts.mainAnalyser ?? { fftSize: 2048, smoothingTimeConstant: 0.58 };
 	const beatAnalyserConfig = opts.beatAnalyser ?? { fftSize: 2048, smoothingTimeConstant: 0.10 };
@@ -54,6 +59,11 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let smoothEnergy = 0;
 	let prevEnergy = 0;
 	let beatPulse = 0;
+	let lyricSunEnergy = 0;
+	let lyricSunTarget = 0;
+	let lyricSunHold = 0;
+	let lyricSunAvg = 0;
+	let lyricSunPeak = 0.55;
 	let scheduledBeatPulse = 0;
 	let scheduledBeatFlag = false;
 	let beatOnsetFlag = false;
@@ -91,6 +101,36 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		smoothTreb *= 0.91;
 		smoothEnergy *= 0.91;
 		beatPulse *= 0.82;
+		lyricSunTarget = 0;
+		lyricSunHold *= 0.90;
+		lyricSunEnergy *= 0.92;
+		lyricSunAvg *= 0.995;
+		lyricSunPeak = Math.max(0.48, lyricSunPeak * 0.997);
+	}
+
+	function resetLyricSunEnergy(): void {
+		lyricSunEnergy = 0;
+		lyricSunTarget = 0;
+		lyricSunHold = 0;
+		lyricSunAvg = 0;
+		lyricSunPeak = 0.55;
+	}
+
+	function updateLyricSunEnergy(vocal: number): void {
+		const sunEnergy = clamp01((smoothEnergy - 0.18) / 0.38);
+		const sunVoice = clamp01((vocal - 0.11) / 0.34);
+		const sunMelody = clamp01((smoothMid - 0.16) / 0.27);
+		const sunAir = clamp01((smoothTreb - 0.105) / 0.17);
+		let sunRaw = clamp01(sunEnergy * 0.36 + sunVoice * 0.18 + sunMelody * 0.26 + sunAir * 0.20);
+		sunRaw = smoothstep01(sunRaw);
+		lyricSunAvg += (sunRaw - lyricSunAvg) * 0.006;
+		lyricSunPeak = Math.max(0.48, lyricSunPeak * 0.9985, sunRaw);
+		const sunThreshold = Math.max(0.78, lyricSunAvg + 0.20, lyricSunPeak * 0.74);
+		let sunGate = clamp01((sunRaw - sunThreshold) / Math.max(0.08, 1.0 - sunThreshold));
+		sunGate = smoothstep01(sunGate);
+		lyricSunHold += (sunGate - lyricSunHold) * (sunGate > lyricSunHold ? 0.035 : 0.014);
+		lyricSunTarget = lyricSunHold > 0.16 ? clamp01((lyricSunHold - 0.16) / 0.84) : 0;
+		lyricSunEnergy += (lyricSunTarget - lyricSunEnergy) * (lyricSunTarget > lyricSunEnergy ? 0.075 : 0.030);
 	}
 
 	function applySnapshotPostBlock(dt: number) {
@@ -111,6 +151,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			smoothTreb = 0;
 			smoothEnergy = 0;
 			beatPulse = 0;
+			resetLyricSunEnergy();
 			scheduledBeatPulse = 0;
 			scheduledBeatFlag = false;
 			prevEnergy = 0;
@@ -220,6 +261,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		smoothMid = env(smoothMid, Math.min(0.68, rm * 0.64 + re * 0.025), 0.18, 0.060, dtSec);
 		smoothTreb = env(smoothTreb, Math.min(0.56, rt * 0.54), 0.18, 0.055, dtSec);
 		smoothEnergy = env(smoothEnergy, Math.min(0.72, re), 0.16, 0.055, dtSec);
+		updateLyricSunEnergy(main.vocal);
 
 		applySnapshotPostBlock(dtSec);
 	}
@@ -235,6 +277,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			rt,
 			re,
 			beatPulse,
+			lyricSunEnergy,
 			scheduledBeatPulse,
 			beatOnsetFlag,
 		};
@@ -296,6 +339,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		smoothBass = smoothMid = smoothTreb = smoothEnergy = 0;
 		prevEnergy = 0;
 		beatPulse = 0;
+		resetLyricSunEnergy();
 		scheduledBeatPulse = 0;
 		bassPeak.reset();
 		midPeak.reset();

@@ -629,6 +629,30 @@ test("buildDesktopLyricsPayloadPatch mirrors baseline metadata typography motion
 	expect(payload.playback.rate).toBe(1.25);
 });
 
+test("buildDesktopLyricsPayloadPatch prefers runtime stage lyric palette for desktop lyric colors", () => {
+	const fx = cloneFxState();
+	fx.lyricColor = "#010203";
+	fx.visualTintColor = "#040506";
+	fx.lyricHighlightColor = "#070809";
+	fx.lyricGlowColor = "#0a0b0c";
+	const payload = buildDesktopLyricsPayloadPatch(fx, "line", 0.42, {
+		stageLyricPalette: {
+			primary: "#112233",
+			secondary: "#445566",
+			highlight: "#778899",
+			glowColor: "#aabbcc",
+		},
+	});
+
+	expect(payload.colors).toEqual({
+		primary: "#112233",
+		secondary: "#445566",
+		background: "rgba(0, 0, 0, 0.22)",
+		highlight: "#778899",
+		glow: "#aabbcc",
+	});
+});
+
 test("App custom lyric modal saves text and applies custom lyrics to current track", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;

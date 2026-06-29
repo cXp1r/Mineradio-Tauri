@@ -181,3 +181,31 @@ test("loadVisualFxFromStorage normalizes baseline visual color controls", () => 
   expect(fx?.visualTintColor).toBe("#12abef");
   expect(fx?.uiAccentColor).toBe("#ffffff");
 });
+
+test("loadVisualFxFromStorage normalizes baseline stage lyric color controls", () => {
+  const storage = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+  };
+  fakeStorage.setItem(
+    VISUAL_SETTINGS_STORE_KEY,
+    JSON.stringify({
+      lyricColorMode: "CUSTOM",
+      lyricColor: "123456",
+      lyricHighlightMode: "CUSTOM",
+      lyricHighlightColor: "#abcdef",
+      lyricGlowLinked: false,
+      lyricGlowColor: "fedcba",
+    }),
+  );
+  const fx = loadVisualFxFromStorage(fakeStorage);
+  expect(fx?.lyricColorMode).toBe("custom");
+  expect(fx?.lyricColor).toBe("#123456");
+  expect(fx?.lyricHighlightMode).toBe("custom");
+  expect(fx?.lyricHighlightColor).toBe("#abcdef");
+  expect(fx?.lyricGlowLinked).toBe(false);
+  expect(fx?.lyricGlowColor).toBe("#fedcba");
+});

@@ -123,7 +123,7 @@ import {
   type Track,
   type WeatherRadioResponse,
 } from "@mineradio/shared";
-import type { FxState } from "@mineradio/visual-engine";
+import type { FxState, LyricPalette } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const SIDECAR_STATUS_POLL_MS = 1500;
@@ -221,6 +221,7 @@ export interface DesktopLyricsPayloadContext {
   beatGlow?: number;
   beatPulse?: number;
   bass?: number;
+  stageLyricPalette?: LyricPalette;
   hasNativeKaraoke?: boolean;
   beatMapKey?: string;
   beatMap?: JsonValue | null;
@@ -595,11 +596,11 @@ export function buildDesktopLyricsPayloadPatch(
       ? { beatMap: context.beatMap ?? null }
       : {}),
     colors: {
-      primary: desktopOverlayColorValue(fx.lyricColor, "#d6f8ff"),
-      secondary: desktopOverlayColorValue(fx.visualTintColor, "#9cffdf"),
+      primary: desktopOverlayColorValue(context.stageLyricPalette?.primary ?? fx.lyricColor, "#d6f8ff"),
+      secondary: desktopOverlayColorValue(context.stageLyricPalette?.secondary ?? fx.visualTintColor, "#9cffdf"),
       background: "rgba(0, 0, 0, 0.22)",
-      highlight: desktopOverlayColorValue(fx.lyricHighlightColor, "#fff0b8"),
-      glow: desktopOverlayColorValue(fx.lyricGlowColor, "#9cffdf"),
+      highlight: desktopOverlayColorValue(context.stageLyricPalette?.highlight ?? fx.lyricHighlightColor, "#fff0b8"),
+      glow: desktopOverlayColorValue(context.stageLyricPalette?.glowColor ?? fx.lyricGlowColor, "#9cffdf"),
     },
     font: {
       family: desktopLyricFontStackForKey(fx.lyricFont),
@@ -2576,6 +2577,7 @@ export function App({
         beatGlow: motion.beatGlow,
         beatPulse: motion.beatPulse,
         bass: motion.bass,
+        stageLyricPalette: motion.palette,
         ...beatMapContext,
       },
     );
@@ -2790,6 +2792,7 @@ export function App({
         beatGlow: motion.beatGlow,
         beatPulse: motion.beatPulse,
         bass: motion.bass,
+        stageLyricPalette: motion.palette,
         ...beatMapContext,
       },
     );

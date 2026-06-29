@@ -1823,6 +1823,7 @@ test("attachShelfPointerInteractionWiring does not use padded fallback when deta
 	const target = new FakePointerTarget();
 	const closed: unknown[] = [];
 	const focus: unknown[] = [];
+	const focusChanges: unknown[] = [];
 	const pinnedCalls: boolean[] = [];
 	const scrolled: number[] = [];
 	const cleanup = attachShelfPointerInteractionWiring({
@@ -1853,6 +1854,7 @@ test("attachShelfPointerInteractionWiring does not use padded fallback when deta
 		getWallpaperSafe: () => true,
 		getViewportWidth: () => 1200,
 		getViewportHeight: () => 900,
+		onFocusZoneChange: (type, opts) => focusChanges.push([type, opts]),
 	});
 
 	const event = makeClickEvent({ clientX: 321, clientY: 240 });
@@ -1862,6 +1864,7 @@ test("attachShelfPointerInteractionWiring does not use padded fallback when deta
 	expect(closed).toEqual([{ immediate: true }]);
 	expect(pinnedCalls).toEqual([true]);
 	expect(focus).toEqual([["shelf-side", { immediate: true, portrait: false, wallpaperSafe: true }]]);
+	expect(focusChanges).toEqual([["shelf-side", { immediate: true, portrait: false, wallpaperSafe: true }]]);
 	expect(scrolled).toEqual([]);
 	expect(event.calls).toEqual(["preventDefault", "stopImmediatePropagation"]);
 });

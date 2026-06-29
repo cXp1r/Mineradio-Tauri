@@ -8,6 +8,7 @@ export interface AudioSnapshot {
 	rt: number;
 	re: number;
 	beatPulse: number;
+	lyricSunEnergy?: number;
 	scheduledBeatPulse: number;
 	beatOnsetFlag: boolean;
 }

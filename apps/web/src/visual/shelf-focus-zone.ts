@@ -80,6 +80,7 @@ export interface ShelfFocusPointerWiringOptions {
 	getViewportHeight: () => number;
 	getQueueFocusActive?: (pointer: ShelfFocusPointerInfo) => boolean;
 	getSideShelfFocusHit?: (pointer: ShelfFocusPointerInfo) => boolean;
+	onFocusZoneChange?: (result: ResolvedShelfFocusZone) => void;
 }
 
 export const SECONDARY_PLAYLIST_EDGE_MIN_X = 36;
@@ -195,6 +196,7 @@ export function attachShelfFocusZonePointerWiring(opts: ShelfFocusPointerWiringO
 			wallpaperSafe: result.wallpaperSafe,
 		};
 		opts.cinema.setFocusZone(result.type, zoneOpts);
+		opts.onFocusZoneChange?.(result);
 	};
 
 	const resolveFromPointer = (pointer: ShelfFocusPointerInfo): ResolvedShelfFocusZone => {

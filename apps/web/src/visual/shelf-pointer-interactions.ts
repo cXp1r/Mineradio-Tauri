@@ -73,6 +73,10 @@ export interface ShelfPointerInteractionOptions {
 	onShelfDetailRowClick?: (payload: ShelfDetailRowClickPayload) => void;
 	onShelfSelectFeedback?: (direction: number, variant: ShelfSelectSoundVariant) => void;
 	onOpenQueuePanel?: () => void;
+	onFocusZoneChange?: (
+		type: Parameters<CinemaCamera["setFocusZone"]>[0],
+		opts: Parameters<CinemaCamera["setFocusZone"]>[1],
+	) => void;
 }
 
 const UI_TARGET_SELECTOR = [
@@ -225,8 +229,16 @@ export function attachShelfPointerInteractionWiring(
 		return opts.shelfManager.getShelfPinnedOpen();
 	};
 
+	const setFocusZone = (
+		type: Parameters<CinemaCamera["setFocusZone"]>[0],
+		zoneOpts: Parameters<CinemaCamera["setFocusZone"]>[1],
+	): void => {
+		opts.cinema.setFocusZone(type, zoneOpts);
+		opts.onFocusZoneChange?.(type, zoneOpts);
+	};
+
 	const focusSide = (): void => {
-		opts.cinema.setFocusZone("shelf-side", {
+		setFocusZone("shelf-side", {
 			immediate: true,
 			portrait: opts.getPortrait(),
 			wallpaperSafe: opts.getWallpaperSafe(),
@@ -438,7 +450,7 @@ export function attachShelfPointerInteractionWiring(
 			onPlayQueueIndex: opts.onShelfPlayQueueIndex,
 			onOpenQueuePanel: opts.onOpenQueuePanel,
 			onOpenDetail: () => {
-				opts.cinema.setFocusZone("shelf-detail", {
+				setFocusZone("shelf-detail", {
 					immediate: true,
 					portrait: opts.getPortrait(),
 					wallpaperSafe: opts.getWallpaperSafe(),
@@ -520,7 +532,7 @@ export function attachShelfPointerInteractionWiring(
 		}
 		const nextOpen = !isShelfPinnedOpen();
 		opts.shelfManager.setShelfPinnedOpen(nextOpen);
-		opts.cinema.setFocusZone(nextOpen ? "shelf-side" : null, {
+		setFocusZone(nextOpen ? "shelf-side" : null, {
 			immediate: true,
 			portrait: opts.getPortrait(),
 			wallpaperSafe: opts.getWallpaperSafe(),

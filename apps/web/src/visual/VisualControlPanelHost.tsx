@@ -565,9 +565,44 @@ export function VisualControlPanelHost(
     props.onStringSettingChange?.("visualTintMode", "auto");
     props.onStringSettingChange?.("visualTintColor", FX_DEFAULTS.visualTintColor);
   }, [props]);
+  const setLyricColorCustom = useCallback(
+    (color: string) => {
+      props.onStringSettingChange?.("lyricColorMode", "custom");
+      props.onStringSettingChange?.("lyricColor", color.toLowerCase());
+    },
+    [props],
+  );
+  const setLyricColorAuto = useCallback(() => {
+    props.onStringSettingChange?.("lyricColorMode", "auto");
+  }, [props]);
+  const setLyricHighlightCustom = useCallback(
+    (color: string) => {
+      props.onStringSettingChange?.("lyricHighlightMode", "custom");
+      props.onStringSettingChange?.("lyricHighlightColor", color.toLowerCase());
+    },
+    [props],
+  );
+  const setLyricHighlightAuto = useCallback(() => {
+    props.onStringSettingChange?.("lyricHighlightMode", "auto");
+  }, [props]);
+  const toggleLyricGlowLinked = useCallback(() => {
+    props.onBooleanSettingChange?.("lyricGlowLinked", !booleanValue(props, "lyricGlowLinked"));
+  }, [props]);
+  const setLyricGlowColor = useCallback(
+    (color: string) => {
+      props.onStringSettingChange?.("lyricGlowColor", color.toLowerCase());
+    },
+    [props],
+  );
   const uiAccentColor = hexSettingValue(props, "uiAccentColor");
   const visualTintColor = hexSettingValue(props, "visualTintColor");
   const visualTintAuto = stringValue(props, "visualTintMode") !== "custom";
+  const lyricColor = hexSettingValue(props, "lyricColor");
+  const lyricColorAuto = stringValue(props, "lyricColorMode") !== "custom";
+  const lyricHighlightColor = hexSettingValue(props, "lyricHighlightColor");
+  const lyricHighlightAuto = stringValue(props, "lyricHighlightMode") !== "custom";
+  const lyricGlowColor = hexSettingValue(props, "lyricGlowColor");
+  const lyricGlowLinked = booleanValue(props, "lyricGlowLinked");
 
   return (
     <>
@@ -700,6 +735,55 @@ export function VisualControlPanelHost(
             <span className="arrow">▶</span>
           </div>
           <div className="fx-fold-body">
+            <div className="fx-section-label">歌词颜色</div>
+            <div className="lyric-color-row">
+              <input
+                id="lyric-color-picker"
+                className="lyric-color-picker"
+                type="color"
+                value={lyricColor}
+                onInput={(event) => setLyricColorCustom(event.currentTarget.value)}
+                title="歌词主色"
+              />
+              <div className="fx-color-row-label">
+                歌词主色<small id="lyric-color-value">{lyricColorAuto ? "封面取色" : lyricColor.toUpperCase()}</small>
+              </div>
+              <button id="lyric-color-auto-btn" className={lyricColorAuto ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"} type="button" onClick={setLyricColorAuto}>
+                封面
+              </button>
+            </div>
+            <div className="lyric-color-row">
+              <input
+                id="lyric-highlight-picker"
+                className="lyric-color-picker"
+                type="color"
+                value={lyricHighlightColor}
+                onInput={(event) => setLyricHighlightCustom(event.currentTarget.value)}
+                title="歌词高亮色"
+              />
+              <div className="fx-color-row-label">
+                歌词高亮<small id="lyric-highlight-value">{lyricHighlightAuto ? "封面取色" : lyricHighlightColor.toUpperCase()}</small>
+              </div>
+              <button id="lyric-highlight-auto-btn" className={lyricHighlightAuto ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"} type="button" onClick={setLyricHighlightAuto}>
+                封面
+              </button>
+            </div>
+            <div className="lyric-color-row">
+              <input
+                id="lyric-glow-picker"
+                className="lyric-color-picker"
+                type="color"
+                value={lyricGlowColor}
+                onInput={(event) => setLyricGlowColor(event.currentTarget.value)}
+                title="歌词溢光色"
+              />
+              <div className="fx-color-row-label">
+                溢光色<small id="lyric-glow-value">{lyricGlowLinked ? "跟随高亮" : lyricGlowColor.toUpperCase()}</small>
+              </div>
+              <button id="lyric-glow-linked" className={lyricGlowLinked ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"} type="button" onClick={toggleLyricGlowLinked}>
+                链接
+              </button>
+            </div>
             <div className="fx-section-label">歌词字体</div>
             <div className="fx-font-grid expanded" id="lyric-font-grid">
               {LYRIC_FONTS.map(([key, label]) => (

@@ -208,6 +208,44 @@ test("attachShelfFocusZonePointerWiring calls cinema focus from global pointer m
 	expect(target.count("blur")).toBe(0);
 });
 
+test("attachShelfFocusZonePointerWiring notifies wallpaper-safe shelf focus changes for lyric camera snap", () => {
+	const target = new FakePointerTarget();
+	const changes: unknown[] = [];
+	const cleanup = attachShelfFocusZonePointerWiring({
+		target,
+		cinema: {
+			setFocusZone: () => {},
+		},
+		shelfManager: {
+			getSnapshot: () => ({
+				centerIdx: 0,
+				centerSmooth: 0,
+				mode: "side",
+				presence: "always",
+				shelfPane: "mine",
+				shelfVisibility: 1,
+				openCardIdx: -1,
+				pinnedOpen: false,
+				breathPulse: 0,
+			}),
+			getData: () => [{ title: "Queued track" }],
+			getMode: () => "side",
+		},
+		getSplashActive: () => false,
+		getShelfCameraMode: () => "dynamic",
+		getPortrait: () => false,
+		getWallpaperSafe: () => true,
+		getViewportHeight: () => 900,
+		getSideShelfFocusHit: () => true,
+		onFocusZoneChange: (result) => changes.push([result.type, result.wallpaperSafe]),
+	});
+
+	target.emit("pointermove", { clientX: 1100, clientY: 500 });
+	cleanup();
+
+	expect(changes).toEqual([["shelf-side", true]]);
+});
+
 test("isQueueFocusActive follows baseline edge trigger band without a panel", () => {
 	const basePointer = { clientX: 14, clientY: 133, viewportWidth: 1200, viewportHeight: 900 };
 	expect(isQueueFocusActive(basePointer)).toBe(true);

@@ -35,6 +35,7 @@ test("disabled engine returns zeroed snapshot", () => {
 	expect(snap.energy).toBe(0);
 	expect(snap.rb).toBe(0);
 	expect(snap.beatPulse).toBe(0);
+	expect(snap.lyricSunEnergy).toBe(0);
 	expect(snap.scheduledBeatPulse).toBe(0);
 	expect(snap.beatOnsetFlag).toBe(false);
 });
@@ -158,4 +159,38 @@ test("paused frame decays residual bands toward zero", () => {
 	}
 	const after = engine.getSnapshot();
 	expect(after.bass).toBeLessThan(0.02);
+});
+
+test("sustained high vocal and spectral energy opens the baseline lyric sun gate", () => {
+	let t = 0;
+	const engine = createAudioReactivity({
+		frameSource: () => makeFrame({ playing: true, t, value: 255 }),
+	});
+	for (let i = 0; i < 420; i++) {
+		t += DT;
+		engine.update(DT);
+	}
+	const snap = engine.getSnapshot();
+	expect(snap.lyricSunEnergy ?? 0).toBeGreaterThan(0.02);
+	expect(snap.lyricSunEnergy ?? 0).toBeLessThanOrEqual(1);
+});
+
+test("paused frames decay lyric sun energy with the original idle branch", () => {
+	let t = 0;
+	const state = { paused: false };
+	const engine = createAudioReactivity({
+		frameSource: () => makeFrame({ playing: !state.paused, t, value: 255 }),
+	});
+	for (let i = 0; i < 420; i++) {
+		t += DT;
+		engine.update(DT);
+	}
+	const before = engine.getSnapshot().lyricSunEnergy ?? 0;
+	expect(before).toBeGreaterThan(0.02);
+	state.paused = true;
+	for (let i = 0; i < 120; i++) {
+		t += DT;
+		engine.update(DT);
+	}
+	expect(engine.getSnapshot().lyricSunEnergy ?? 0).toBeLessThan(before * 0.5);
 });

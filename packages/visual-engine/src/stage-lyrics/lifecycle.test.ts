@@ -1867,6 +1867,40 @@ test("current lyric tick updates glow sun and spark colors from baseline solar p
 	lifecycle.dispose();
 });
 
+async function highBloomForSnapshotSun(lyricSunEnergy: number): Promise<number> {
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowParticlesSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0.85,
+		lyricGlowBeatFlagSupplier: () => false,
+		dotTexture: makeFakeDotTexture(),
+		rand: () => 0.35,
+	} as never);
+	const scene = makeFakeScene();
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "snapshot sun lyric" }]);
+	lifecycle.update(makeCtx(0.5, 0.1, { lyricSunEnergy, beatPulse: 0, bass: 0.2, mid: 0.2 }));
+	await lifecycle.whenIdle();
+	lifecycle.update(makeCtx(0.7, 0.1, { lyricSunEnergy, beatPulse: 0, bass: 0.2, mid: 0.2 }));
+
+	const highBloom = lifecycle.getMotionSnapshot().highBloom;
+	lifecycle.dispose();
+	return highBloom;
+}
+
+test("stage lyric high bloom reads lyricSunEnergy from audio snapshot when no holder is supplied", async () => {
+	const low = await highBloomForSnapshotSun(0);
+	const high = await highBloomForSnapshotSun(1);
+
+	expect(high).toBeGreaterThan(low + 0.08);
+});
+
 test("skull preset lyric bloom uses baseline skull flash formula and faster attack", async () => {
 	const lifecycle = createStageLyricsLifecycle({
 		threeFactory: makeFakeThree(),

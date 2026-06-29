@@ -9,12 +9,11 @@ import {
 	type StageLyricsLifecycle,
 	type StageLyricsMotionSnapshot,
 } from "@mineradio/visual-engine";
-import { useVisualEngine } from "./useVisualEngine";
+import { resolveRuntimeWallpaperSafe, useVisualEngine } from "./useVisualEngine";
 import type { ShelfDetailRowClickPayload, ShelfPlayPlaylistPayload } from "./shelf-pointer-interactions";
 import type { ShelfDetailContentListController } from "./shelf-detail-data";
 import { PlayerController } from "../audio/player-controller";
 import { resolveShelfItems } from "./shelf-items";
-import { isWallpaperSafeShelfPreset } from "./shelf-focus-zone";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence, ShelfSettings } from "../stores/shelf-store";
 
 export interface VisualEngineHostProps {
@@ -63,6 +62,16 @@ export function resolveVisualShelfSettings(
 		showPodcasts: settings?.showPodcasts ?? (fxDefaults?.shelfShowPodcasts !== false),
 		mergeCollections: settings?.mergeCollections ?? (fxDefaults?.shelfMergeCollections === true),
 	};
+}
+
+export function resolveVisualWallpaperSafe(
+	fxDefaults: Partial<FxState> | undefined,
+	fxState: Partial<FxState> | undefined,
+): boolean {
+	return resolveRuntimeWallpaperSafe({
+		fxDefaults,
+		fxRef: { current: fxState },
+	});
 }
 
 export function mapLyricPayload(payload: LyricPayload | null): VisualLyricLine[] {
@@ -171,7 +180,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	const shelfMergeCollectionsRef = useRef<boolean>(initialShelfSettings.mergeCollections);
 	const shelfMineCountRef = useRef<number>(0);
 	const shelfFavCountRef = useRef<number>(0);
-	const wallpaperSafeRef = useRef<boolean>(isWallpaperSafeShelfPreset(props.fxDefaults?.preset));
+	const wallpaperSafeRef = useRef<boolean>(resolveVisualWallpaperSafe(props.fxDefaults, props.fxState));
 	const onShelfPlayQueueIndexRef = useRef<((index: number) => void) | undefined>(props.onShelfPlayQueueIndex);
 	const onShelfPlayPlaylistRef = useRef<((payload: ShelfPlayPlaylistPayload) => void) | undefined>(props.onShelfPlayPlaylist);
 	const onShelfDetailRowClickRef = useRef<((payload: ShelfDetailRowClickPayload) => void) | undefined>(props.onShelfDetailRowClick);
@@ -200,7 +209,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	shelfCameraModeRef.current = visualShelfSettings.cameraMode;
 	shelfPresenceRef.current = visualShelfSettings.presence;
 	shelfMergeCollectionsRef.current = visualShelfSettings.mergeCollections;
-	wallpaperSafeRef.current = isWallpaperSafeShelfPreset(props.fxDefaults?.preset);
+	wallpaperSafeRef.current = resolveVisualWallpaperSafe(props.fxDefaults, props.fxState);
 	onShelfPlayQueueIndexRef.current = props.onShelfPlayQueueIndex;
 	onShelfPlayPlaylistRef.current = props.onShelfPlayPlaylist;
 	onShelfDetailRowClickRef.current = props.onShelfDetailRowClick;
