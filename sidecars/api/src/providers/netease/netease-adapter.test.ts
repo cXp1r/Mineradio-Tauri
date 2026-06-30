@@ -95,7 +95,7 @@ test("search calls hana cloudsearch with keywords/limit/type and maps result to 
   expect(t.artists.length).toBe(1);
   expect(t.artists[0]).toBe("art one");
   expect(t.album).toBe("album one");
-  expect(t.coverUrl).toBe("http://cover");
+  expect(t.coverUrl).toBe("https://cover");
   expect(t.durationMs).toBe(180000);
 });
 
@@ -506,7 +506,7 @@ test("playlistList uses logged-in user id and maps userPlaylist payload", async 
     provider: "netease",
     id: "101",
     name: "我喜欢的音乐",
-    coverUrl: "http://cover/like.jpg",
+    coverUrl: "https://cover/like.jpg",
     trackCount: 12,
     trackIds: ["1", "2"],
     subscribed: false

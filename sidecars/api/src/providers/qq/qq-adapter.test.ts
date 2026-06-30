@@ -4,7 +4,7 @@ import {
   ProviderNotImplementedError
 } from "../provider-adapter";
 import { createQqAdapter, type QqClientDeps } from "./qq-adapter";
-import { mapQqSongToTrack } from "./map";
+import { mapQqSongToTrack, normalizeProviderImageUrl } from "./map";
 import type { Track } from "@mineradio/shared";
 
 const trackFixture: Track = {
@@ -28,6 +28,12 @@ test("mapQqSongToTrack preserves QQ file media_mid for vkey filename generation"
 
   expect(track.sourceId).toBe("song-mid");
   expect(track.mediaMid).toBe("media-mid");
+});
+
+test("QQ map normalizes protocol-relative and http cover URLs for WebGL consumers", () => {
+  expect(normalizeProviderImageUrl("//y.gtimg.cn/music/photo_new/a.jpg")).toBe("https://y.gtimg.cn/music/photo_new/a.jpg");
+  expect(normalizeProviderImageUrl("http://y.gtimg.cn/music/photo_new/a.jpg")).toBe("https://y.gtimg.cn/music/photo_new/a.jpg");
+  expect(mapQqSongToTrack({ songmid: "s", pic: "//y.gtimg.cn/music/photo_new/a.jpg" }).coverUrl).toBe("https://y.gtimg.cn/music/photo_new/a.jpg");
 });
 
 function withEnv(key: string, value: string | undefined, run: () => Promise<void> | void): Promise<void> {
@@ -544,7 +550,7 @@ test("playlistList merges created and collected QQ playlists, filters qzone, and
     provider: "qq",
     id: "201",
     name: "我喜欢",
-    coverUrl: "http://cover/like.jpg",
+    coverUrl: "https://cover/like.jpg",
     trackCount: 8,
     trackIds: [],
     subscribed: false

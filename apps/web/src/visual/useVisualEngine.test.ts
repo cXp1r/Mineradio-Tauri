@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, isRuntimeShelfPreviewActive, lyricPaletteFromHex, resolveHomeVisualPreset, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, setRuntimeShelfMode } from "./useVisualEngine";
+import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, setRuntimeShelfMode } from "./useVisualEngine";
 
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
 	expect(isRuntimeShelfPreviewActive("auto", 0.17)).toBe(true);
@@ -93,6 +93,12 @@ test("setRuntimeShelfMode notifies the persistent shelf mode source", () => {
 	const calls: string[] = [];
 	setRuntimeShelfMode(ref, "side", (mode) => calls.push(mode));
 	expect(calls).toEqual(["side"]);
+});
+
+test("readVisualCurrentTimeSeconds prefers frame-accurate audio time over React position state", () => {
+	expect(readVisualCurrentTimeSeconds({ currentTime: 12.345 } as HTMLAudioElement, 10_000)).toBe(12.345);
+	expect(readVisualCurrentTimeSeconds({ currentTime: NaN } as HTMLAudioElement, 10_000)).toBe(10);
+	expect(readVisualCurrentTimeSeconds(null, 0)).toBe(0);
 });
 
 test("resolveHomeVisualPreset applies baseline idle wallpaper preset and restores previous preset", () => {

@@ -26,6 +26,13 @@ export interface HanaPlaylistBody {
   subscribed?: boolean;
 }
 
+export function normalizeProviderImageUrl(url: string | null | undefined): string {
+  const value = String(url ?? "").trim();
+  if (!value) return "";
+  if (value.startsWith("//")) return `https:${value}`;
+  return value.replace(/^http:\/\//i, "https://");
+}
+
 export function mapPlayable(
   fee: unknown,
   code: unknown,
@@ -67,7 +74,7 @@ export function mapHanaSongToTrack(raw: HanaSong): Track {
     title: raw?.name ?? "",
     artists,
     album: al?.name ?? "",
-    coverUrl: al?.picUrl ?? "",
+    coverUrl: normalizeProviderImageUrl(al?.picUrl),
     durationMs: typeof raw?.dt === "number" ? raw.dt : undefined,
     qualityHints: ["standard"],
     playableState
@@ -224,7 +231,7 @@ export function mapHanaPlaylistToSummary(
     provider: "netease",
     id: idStr,
     name: raw?.name ?? "",
-    coverUrl: raw?.coverImgUrl ?? "",
+    coverUrl: normalizeProviderImageUrl(raw?.coverImgUrl),
     trackCount: typeof raw?.trackCount === "number" ? raw.trackCount : undefined,
     trackIds,
     subscribed: raw?.subscribed === true

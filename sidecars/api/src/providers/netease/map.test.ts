@@ -6,6 +6,7 @@ import {
   mapHanaLyricToPayload,
   mapHanaPlaylistToSummary,
   mapHanaPlaylistToDetail,
+  normalizeProviderImageUrl,
   mapPlayable
 } from "./map";
 
@@ -61,6 +62,12 @@ test("mapHanaSongToTrack maps all fields with provider netease and sourceId from
   expect(t.qualityHints.length).toBe(1);
   expect(t.qualityHints[0]).toBe("standard");
   expect(t.playableState).toBe("unknown");
+});
+
+test("normalizeProviderImageUrl keeps protocol-relative provider covers usable outside CSS", () => {
+  expect(normalizeProviderImageUrl("//p3.music.126.net/a.jpg")).toBe("https://p3.music.126.net/a.jpg");
+  expect(normalizeProviderImageUrl("http://p3.music.126.net/a.jpg")).toBe("https://p3.music.126.net/a.jpg");
+  expect(normalizeProviderImageUrl(" https://p3.music.126.net/a.jpg ")).toBe("https://p3.music.126.net/a.jpg");
 });
 
 test("mapHanaSongToTrack maps fee to playableState (1=>vip_required, 4=>paid_required, 8=>trial_only)", () => {

@@ -50,6 +50,13 @@ export interface QqPlaylistBody {
   songlist?: QqSong[];
 }
 
+export function normalizeProviderImageUrl(url: string | null | undefined): string {
+  const value = String(url ?? "").trim();
+  if (!value) return "";
+  if (value.startsWith("//")) return `https:${value}`;
+  return value.replace(/^http:\/\//i, "https://");
+}
+
 export function mapQqSongToTrack(raw: QqSong): Track {
   const idStr = raw && raw.songmid != null ? String(raw.songmid) : (raw?.mid != null ? String(raw.mid) : "");
   const mediaMidRaw =
@@ -80,7 +87,7 @@ export function mapQqSongToTrack(raw: QqSong): Track {
   //   https://y.gtimg.cn/music/photo_new/T002R300x300M000${albummid}.jpg
   const albumMid = raw && typeof raw.albummid === "string" ? raw.albummid : "";
   const coverUrl = typeof raw?.pic === "string" && raw.pic.length > 0
-    ? raw.pic.replace(/^http:\/\//, "https://")
+    ? normalizeProviderImageUrl(raw.pic)
     : albumMid.length > 0
     ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${albumMid}.jpg`
     : "";
@@ -207,7 +214,7 @@ export function mapQqPlaylistToSummary(
     provider: "qq",
     id: idStr,
     name: raw?.dissname ?? raw?.diss_name ?? raw?.name ?? raw?.title ?? "",
-    coverUrl: raw?.logo ?? raw?.diss_cover ?? raw?.picurl ?? raw?.cover ?? "",
+    coverUrl: normalizeProviderImageUrl(raw?.logo ?? raw?.diss_cover ?? raw?.picurl ?? raw?.cover),
     trackCount:
       typeof raw?.total_song_num === "number" ? raw.total_song_num :
       typeof raw?.song_cnt === "number" ? raw.song_cnt :

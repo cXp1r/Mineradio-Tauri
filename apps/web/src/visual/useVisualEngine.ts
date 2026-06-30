@@ -299,6 +299,13 @@ function makeFallbackFrameSource(): AudioFrameSource {
 	};
 }
 
+export function readVisualCurrentTimeSeconds(audio: HTMLAudioElement | null | undefined, fallbackPositionMs: number): number {
+	const audioTime = Number(audio?.currentTime);
+	if (Number.isFinite(audioTime) && audioTime >= 0) return audioTime;
+	const fallback = Number(fallbackPositionMs);
+	return Number.isFinite(fallback) && fallback > 0 ? fallback / 1000 : 0;
+}
+
 function attachBaselineCanvasPointerInput(input: {
 	target: HTMLElement;
 	windowTarget: Window;
@@ -857,7 +864,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 			}
 			const lifecycle = createStageLyricsLifecycle({
 				scene: renderer.scene,
-				currentTimeSupplier: () => refs.positionRef.current / 1000,
+				currentTimeSupplier: () => readVisualCurrentTimeSeconds(refs.audioElementRef.current, refs.positionRef.current),
 				isPlayingSupplier: () => refs.isPlayingRef.current,
 				lyricLinesSupplier: () => refs.lyricLinesRef.current,
 				...createStageLyricsHostSuppliers(refs),
@@ -963,7 +970,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					);
 				}
 				audioEngine.update(ctx.dt);
-				beatMapScheduler.update((refs.positionRef.current ?? 0) / 1000);
+				beatMapScheduler.update(readVisualCurrentTimeSeconds(refs.audioElementRef.current, refs.positionRef.current));
 			});
 			const offHome = renderLoop.registerStep(RenderStepSlot.HomeVisual, (ctx) => {
 				mergeFxState(homeVisual.getFx(), refs.fxRef?.current);

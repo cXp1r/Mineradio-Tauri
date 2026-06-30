@@ -116,13 +116,21 @@ export function resolveVisualCoverUrl(currentCoverUrl: string | null | undefined
 	return currentCoverUrl ?? currentTrack?.coverUrl ?? "";
 }
 
+export function normalizeVisualCoverUrl(coverUrl: string): string {
+	const url = String(coverUrl || "").trim();
+	if (!url) return "";
+	if (/^\/\//.test(url)) return `https:${url}`;
+	return url;
+}
+
 export function resolveVisualCoverUrlForSidecar(coverUrl: string, sidecarBaseUrl: string | null | undefined): string {
-	if (!coverUrl) return "";
-	if (/^data:image\//i.test(coverUrl) || /^blob:/i.test(coverUrl)) return coverUrl;
-	if (!/^https?:\/\//i.test(coverUrl)) return "";
+	const normalizedCoverUrl = normalizeVisualCoverUrl(coverUrl);
+	if (!normalizedCoverUrl) return "";
+	if (/^data:image\//i.test(normalizedCoverUrl) || /^blob:/i.test(normalizedCoverUrl)) return normalizedCoverUrl;
+	if (!/^https?:\/\//i.test(normalizedCoverUrl)) return "";
 	const base = String(sidecarBaseUrl ?? "").replace(/\/$/, "");
-	if (!base) return coverUrl;
-	const params = new URLSearchParams({ url: coverUrl });
+	if (!base) return normalizedCoverUrl;
+	const params = new URLSearchParams({ url: normalizedCoverUrl });
 	return `${base}/image-proxy?${params.toString()}`;
 }
 

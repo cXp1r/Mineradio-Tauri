@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
 import {
+	normalizeVisualCoverUrl,
 	resolveVisualCoverUrl,
 	resolveVisualCoverUrlForSidecar,
 	resolveRuntimeShelfMode,
@@ -92,9 +93,16 @@ test("resolveVisualCoverUrl prefers explicit currentCoverUrl and falls back to c
 
 test("resolveVisualCoverUrlForSidecar proxies remote covers through sidecar and preserves inline sources", () => {
 	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg");
+	expect(resolveVisualCoverUrlForSidecar("//p3.music.126.net/cover.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fp3.music.126.net%2Fcover.jpg");
 	expect(resolveVisualCoverUrlForSidecar("data:image/png;base64,abc", "http://127.0.0.1:4111")).toBe("data:image/png;base64,abc");
 	expect(resolveVisualCoverUrlForSidecar("file:///tmp/a.jpg", "http://127.0.0.1:4111")).toBe("");
 	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "")).toBe("https://img.example/a.jpg");
+});
+
+test("normalizeVisualCoverUrl keeps baseline protocol-relative provider covers usable for WebGL", () => {
+	expect(normalizeVisualCoverUrl("//p4.music.126.net/a.jpg")).toBe("https://p4.music.126.net/a.jpg");
+	expect(normalizeVisualCoverUrl(" https://img.example/a.jpg ")).toBe("https://img.example/a.jpg");
+	expect(normalizeVisualCoverUrl("")).toBe("");
 });
 
 test("mapLyricPayload preserves native karaoke timing for stage lyrics", () => {
