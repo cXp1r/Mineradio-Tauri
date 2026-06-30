@@ -366,8 +366,8 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 					<div className="control-track">
 						<div id="control-cover" className={props.currentCoverUrl ? "control-cover has-cover" : "control-cover cover-empty"} style={props.currentCoverUrl ? { backgroundImage: `url(${props.currentCoverUrl})` } : undefined} aria-hidden="true" />
 						<div className="control-meta">
-							<div id="control-title" className="control-title">{props.currentTitle ?? "Mineradio"}</div>
-							<div id="control-artist" className="control-artist">{props.currentArtist ?? "等待播放"}</div>
+							<div id="control-title" className="control-title">{props.currentTitle ?? ""}</div>
+							<div id="control-artist" className="control-artist">{props.currentArtist ?? ""}</div>
 						</div>
 					</div>
 					<div id="quality-control" className="quality-control">
