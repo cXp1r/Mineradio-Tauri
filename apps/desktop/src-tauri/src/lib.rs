@@ -1,4 +1,5 @@
 mod commands;
+mod db;
 mod paths;
 mod sidecar;
 mod updater;
@@ -80,6 +81,8 @@ pub struct AppState {
     pub desktop_lyrics: Mutex<DesktopLyricsRuntimeState>,
     pub sidecar: Mutex<sidecar::SidecarRuntimeState>,
     pub sidecar_supervisor_running: AtomicBool,
+    pub db: Option<Mutex<db::DbRuntimeState>>,
+    pub db_init_error: Option<String>,
 }
 
 impl AppState {
@@ -90,6 +93,8 @@ impl AppState {
         schema_version: String,
         updater_public_key_configured: bool,
         sidecar_log_path: PathBuf,
+        db: Option<Mutex<db::DbRuntimeState>>,
+        db_init_error: Option<String>,
     ) -> Self {
         Self {
             config: RuntimeConfig {
@@ -114,6 +119,8 @@ impl AppState {
                 sidecar_log_path,
             )),
             sidecar_supervisor_running: AtomicBool::new(true),
+            db,
+            db_init_error,
         }
     }
 }
@@ -246,6 +253,20 @@ pub fn run() {
     let base_url = format!("http://127.0.0.1:{}", port);
     let sidecar_log_path = sidecar::sidecar_log_path(&log_dir);
 
+    // SQLite 本地存储初始化
+    let (db_state, db_init_error) = match db::initialize(&app_data_dir) {
+        Ok(s) => (Some(Mutex::new(s)), None),
+        Err(e) => {
+            let msg = format!(
+                "db::initialize failed at {}: {:?}",
+                app_data_dir.display(),
+                e
+            );
+            eprintln!("{}", msg);
+            (None, Some(msg))
+        }
+    };
+
     let state = AppState::new(
         base_url.clone(),
         app_data_dir.to_string_lossy().to_string(),
@@ -253,6 +274,8 @@ pub fn run() {
         schema_version.clone(),
         updater_public_key_configured,
         sidecar_log_path,
+        db_state,
+        db_init_error,
     );
 
     let setup_app_version = app_version.clone();
@@ -269,6 +292,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_config,
             commands::get_sidecar_status,
+            commands::get_database_status,
             commands::configure_global_hotkeys,
             commands::get_updater_status,
             commands::check_for_update,
@@ -378,6 +402,12 @@ mod tests {
 
     #[test]
     fn app_state_new_builds_config() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let db_state = db::DbRuntimeState {
+            conn,
+            path: std::path::PathBuf::from("/data/mineradio.db"),
+        };
+
         let s = AppState::new(
             "http://127.0.0.1:1".into(),
             "/data".into(),
@@ -385,6 +415,8 @@ mod tests {
             "0.1.0".into(),
             false,
             std::path::PathBuf::from("/logs/sidecar-runtime.log"),
+            Some(Mutex::new(db_state)),
+            None,
         );
         assert_eq!(s.config.sidecar_base_url, "http://127.0.0.1:1");
         assert_eq!(s.config.app_data_dir, "/data");
