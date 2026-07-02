@@ -194,8 +194,31 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
     async playlistDetail(_: string): Promise<PlaylistDetail> {
       return fail("playlistDetail");
     },
-    async likeSong(_: string, __: boolean): Promise<SongLikeAck> {
-      return fail("likeSong");
+    async likeSong(id: string, liked: boolean): Promise<SongLikeAck> {
+      const cfg = deps.getConfig();
+      if (!cfg.cookie) {
+        throw new ProviderError(SODA_PROVIDER_ID, "LOGIN_REQUIRED", "soda like-song requires login", {
+          retryable: true,
+          action: "login"
+        });
+      }
+      const cleanId = id.trim();
+      const resp = await client.collectionMedia(cleanId, liked);
+      const body = asObj(resp.body) ?? {};
+      const message = typeof body.message === "string" ? body.message : "";
+      if (resp.status < 200 || resp.status >= 300) {
+        throw new ProviderError(
+          SODA_PROVIDER_ID,
+          "UNAVAILABLE",
+          message || `soda like-song failed with status ${resp.status}`
+        );
+      }
+      return {
+        provider: SODA_PROVIDER_ID,
+        id: cleanId,
+        liked,
+        code: resp.status
+      };
     },
     async checkSongLikes(_: string[]): Promise<SongLikeCheckAck> {
       return fail("checkSongLikes");

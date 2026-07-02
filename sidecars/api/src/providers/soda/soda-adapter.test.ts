@@ -203,6 +203,39 @@ test("soda client logout requests qishui logout with cookie", async () => {
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client collectionMedia posts collection body to favorite and delete endpoints", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ message: "success" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.collectionMedia("6941309256906622978", true);
+  await client.collectionMedia("6941309256906622978", false);
+
+  const favoriteUrl = new URL(calls[0]?.input ?? "");
+  const deleteUrl = new URL(calls[1]?.input ?? "");
+  expect(favoriteUrl.origin + favoriteUrl.pathname).toBe("https://api.qishui.com/luna/pc/me/collection/media");
+  expect(deleteUrl.origin + deleteUrl.pathname).toBe("https://api.qishui.com/luna/pc/me/collection/media/delete");
+  expect(calls[0]?.init?.method).toBe("POST");
+  expect(calls[0]?.init?.headers).toMatchObject({
+    cookie: "soda_session=abc123",
+    "content-type": "application/json"
+  });
+  expect(calls[0]?.init?.body).toBe(JSON.stringify({
+    media: [{ type: "track", id: "6941309256906622978" }],
+    scene: ""
+  }));
+});
+
 test("soda adapter maps search results from client", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
@@ -235,6 +268,7 @@ test("soda adapter maps search results from client", async () => {
       songUrl: async () => ({ body: {} }),
       lyric: async () => ({ body: {} }),
       trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),
@@ -282,6 +316,7 @@ test("soda adapter maps lyric payload from client detail response", async () => 
           }
         }
       }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),
@@ -333,6 +368,7 @@ test("soda adapter logout requires a cookie and delegates to client logout", asy
       songUrl: async () => ({ body: {} }),
       lyric: async () => ({ body: {} }),
       trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),
@@ -345,6 +381,70 @@ test("soda adapter logout requires a cookie and delegates to client logout", asy
 
   await adapter.logout();
   expect(calls.length).toBe(1);
+});
+
+test("soda adapter likeSong calls collection endpoint with liked flag", async () => {
+  const calls: Array<{ id: string; liked: boolean }> = [];
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async (trackId, liked) => {
+        calls.push({ id: trackId, liked });
+        return { body: { message: "success" }, status: 200 };
+      },
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: { message: "success" } })
+    }
+  });
+
+  const ack = await adapter.likeSong!("6941309256906622978", true);
+  expect(ack).toEqual({
+    provider: "soda",
+    id: "6941309256906622978",
+    liked: true,
+    code: 200
+  });
+  expect(calls).toEqual([{ id: "6941309256906622978", liked: true }]);
+});
+
+test("soda adapter unlikeSong calls delete collection endpoint", async () => {
+  const calls: Array<{ id: string; liked: boolean }> = [];
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async (trackId, liked) => {
+        calls.push({ id: trackId, liked });
+        return { body: { message: "success" }, status: 200 };
+      },
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: { message: "success" } })
+    }
+  });
+
+  const ack = await adapter.likeSong!("6941309256906622978", false);
+  expect(ack).toEqual({
+    provider: "soda",
+    id: "6941309256906622978",
+    liked: false,
+    code: 200
+  });
+  expect(calls).toEqual([{ id: "6941309256906622978", liked: false }]);
 });
 
 test("soda adapter logout without cookie throws ProviderNotImplementedError no-session", async () => {
