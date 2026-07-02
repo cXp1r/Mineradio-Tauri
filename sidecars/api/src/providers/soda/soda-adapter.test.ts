@@ -53,6 +53,38 @@ test("soda client search requests qishui track search with keyword", async () =>
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client lyric requests qishui track detail with track id", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({
+        data: {
+          lyric: {
+            content: "[00:01.00]hello",
+            lang_translations: {
+              zh: { content: "[00:01.00]你好", lang: "zh" }
+            }
+          }
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.lyric("track-1");
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/track_v2");
+  expect(url.searchParams.get("track_id")).toBe("track-1");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda adapter maps search results from client", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
@@ -107,6 +139,69 @@ test("soda adapter maps search results from client", async () => {
       playableState: "trial_only"
     }
   ]);
+});
+
+test("soda adapter maps lyric payload from client detail response", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({
+        body: {
+          data: {
+            lyric: {
+              content: "[00:01.00]hello\n[00:02.00]world",
+              lang_translations: {
+                zh: {
+                  content: "[00:01.00]你好\n[00:02.00]世界",
+                  lang: "zh"
+                }
+              }
+            }
+          }
+        }
+      }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const payload = await adapter.lyric({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "unknown"
+  });
+
+  expect(payload).toEqual({
+    provider: "soda",
+    trackId: "soda-1",
+    lines: [
+      {
+        timeMs: 1000,
+        text: "hello",
+        translation: "你好"
+      },
+      {
+        timeMs: 2000,
+        text: "world",
+        translation: "世界"
+      }
+    ],
+    hasTranslation: true,
+    isWordByWord: false
+  });
 });
 
 test("soda adapter keeps non-search actions scaffolded as not yet implemented", async () => {

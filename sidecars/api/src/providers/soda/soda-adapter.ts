@@ -32,6 +32,10 @@ function asObj(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function readString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
 function readSodaSearchList(body: unknown): unknown[] {
   const root = asObj(body);
   if (!root) return [];
@@ -71,7 +75,6 @@ function readSodaSearchList(body: unknown): unknown[] {
 
 export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
   const client = deps.client ?? createSodaClient(deps);
-  void mapSodaLyricToPayload;
   void mapSodaPlaylistToSummary;
   void mapSodaPlaylistToDetail;
 
@@ -86,8 +89,24 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
     async songUrl(_: Track, __?: SongUrlOptions): Promise<SongUrlResult> {
       return fail("songUrl");
     },
-    async lyric(_: Track): Promise<LyricPayload> {
-      return fail("lyric");
+    async lyric(track: Track): Promise<LyricPayload> {
+      const resp = await client.lyric(track.sourceId);
+      const root = asObj(resp.body);
+      const data = asObj(root?.data) ?? root;
+      const lyric = asObj(data?.lyric);
+      const transMap = asObj(lyric?.lang_translations);
+      const trans = transMap
+        ? Object.values(transMap)
+            .map(value => asObj(value)?.content)
+            .map(readString)
+            .filter(Boolean)
+            .join("\n")
+        : "";
+      return mapSodaLyricToPayload({
+        trackId: track.sourceId,
+        lyric: readString(lyric?.content),
+        trans
+      });
     },
     async playlistList(): Promise<PlaylistSummary[]> {
       return fail("playlistList");
