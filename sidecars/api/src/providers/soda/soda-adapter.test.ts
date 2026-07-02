@@ -85,6 +85,28 @@ test("soda client lyric requests qishui track detail with track id", async () =>
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client logout requests qishui logout with cookie", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ message: "success" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.logout();
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/passport/web/logout/");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda adapter maps search results from client", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
@@ -204,7 +226,31 @@ test("soda adapter maps lyric payload from client detail response", async () => 
   });
 });
 
-test("soda adapter keeps non-search actions scaffolded as not yet implemented", async () => {
+test("soda adapter logout requires a cookie and delegates to client logout", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => {
+        calls.push({ input: "logout" });
+        return { body: { message: "success" } };
+      }
+    }
+  });
+
+  await adapter.logout();
+  expect(calls.length).toBe(1);
+});
+
+test("soda adapter logout without cookie throws ProviderNotImplementedError no-session", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
       return {};
@@ -216,5 +262,6 @@ test("soda adapter keeps non-search actions scaffolded as not yet implemented", 
     throw new Error("expected logout to throw");
   } catch (err) {
     expect(err).toBeInstanceOf(ProviderNotImplementedError);
+    expect((err as ProviderNotImplementedError).action).toBe("no-session");
   }
 });

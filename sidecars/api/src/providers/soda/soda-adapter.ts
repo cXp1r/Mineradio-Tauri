@@ -124,7 +124,11 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       return fail("loginStatus");
     },
     async logout(): Promise<void> {
-      fail("logout");
+      const cfg = deps.getConfig();
+      if (!cfg.cookie) {
+        throw new ProviderNotImplementedError(SODA_PROVIDER_ID, "no-session");
+      }
+      await client.logout();
     }
   };
 }

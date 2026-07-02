@@ -4,6 +4,7 @@ const SODA_PROVIDER_ID = "soda";
 const SODA_SEARCH_URL =
   "https://api.qishui.com/luna/pc/search/track?q=&aid=386088&app_name=&region=&geo_region=&os_region=&sim_region=&device_id=&cdid=&iid=&version_name=&version_code=&channel=&build_mode=&network_carrier=&ac=&tz_name=&resolution=&device_platform=&device_type=&os_version=&fp=&cursor=&search_id=&search_method=input&debug_params=&from_search_id=&search_scene=";
 const SODA_LYRIC_URL = "https://api.qishui.com/luna/pc/track_v2?track_id=&media_type=track&queue_type=&aid=386088&iid=114514";
+const SODA_LOGOUT_URL = "https://api.qishui.com/passport/web/logout/";
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
@@ -42,6 +43,10 @@ function withTrackId(trackId: string): string {
   return url.toString();
 }
 
+function withLogoutUrl(): string {
+  return SODA_LOGOUT_URL;
+}
+
 async function readJsonBody(resp: Response, action: string): Promise<{ body: unknown }> {
   if (!resp.ok) {
     throw new Error(`SODA_${action.toUpperCase()}_HTTP_${resp.status}`);
@@ -71,6 +76,12 @@ export function createSodaClient(deps: SodaClientDeps): SodaClient {
     async playlistList() { return notImplemented("playlistList"); },
     async playlistDetail() { return notImplemented("playlistDetail"); },
     async loginStatus() { return notImplemented("loginStatus"); },
-    async logout() { return notImplemented("logout"); }
+    async logout() {
+      const cfg = deps.getConfig();
+      const headers: HeadersInit = {};
+      if (cfg.cookie) headers.cookie = cfg.cookie;
+      const resp = await fetcher(withLogoutUrl(), { method: "GET", headers });
+      return readJsonBody(resp, "logout");
+    }
   };
 }
