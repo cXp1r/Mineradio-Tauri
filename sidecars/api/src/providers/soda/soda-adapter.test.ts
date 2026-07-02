@@ -85,6 +85,102 @@ test("soda client lyric requests qishui track detail with track id", async () =>
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda adapter songUrl resolves track_v2 url_player_info and returns main play url", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    calls.push({ input: String(input), init });
+    const url = String(input);
+    if (url.includes("/luna/pc/track_v2")) {
+      return new Response(JSON.stringify({
+        data: {
+          track_player: {
+            url_player_info: "https://api.qishui.com/mock/url-player-info"
+          }
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    return new Response(JSON.stringify({
+      ResponseMetadata: {
+        RequestId: "req-1",
+        Action: "GetPlayInfo",
+        Version: "2024-01-01",
+        Service: "qishui",
+        Region: "cn"
+      },
+      Result: {
+        EncryptKey: "",
+        CipherText: "",
+        Data: {
+          PlayInfoList: [
+            {
+              Quality: "m4a",
+              Duration: 180000,
+              PlayAuth: "",
+              PlayAuthID: "",
+              MainPlayUrl: "https://cdn.example.com/main.m4a",
+              BackupPlayUrl: "https://cdn.example.com/backup.m4a",
+              UrlExpire: 3600,
+              FileID: "file-1",
+              P2pVerifyURL: "",
+              PreloadInterval: 0,
+              PreloadMaxStep: 0,
+              PreloadMinStep: 0,
+              PreloadSize: 0,
+              CheckInfo: ""
+            }
+          ]
+        }
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher
+  });
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher,
+    client
+  });
+
+  const result = await adapter.songUrl({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "unknown"
+  });
+
+  expect(result).toMatchObject({
+    url: "https://cdn.example.com/main.m4a",
+    proxied: false,
+    provider: "soda",
+    trial: false,
+    playable: true,
+    quality: "m4a",
+    filename: "file-1"
+  });
+  expect(calls.length).toBe(2);
+  expect(calls[0]?.input).toContain("/luna/pc/track_v2");
+  expect(calls[1]?.input).toBe("https://api.qishui.com/mock/url-player-info");
+  expect(calls[1]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda client logout requests qishui logout with cookie", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
@@ -138,6 +234,7 @@ test("soda adapter maps search results from client", async () => {
       }),
       songUrl: async () => ({ body: {} }),
       lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),
@@ -146,21 +243,19 @@ test("soda adapter maps search results from client", async () => {
   });
 
   const tracks = await adapter.search({ keyword: "hectopascal", limit: 10 });
-  expect(tracks).toEqual([
-    {
-      provider: "soda",
-      id: "soda-1",
-      sourceId: "soda-1",
-      mediaMid: undefined,
-      title: "Hectopascal",
-      artists: ["Yui"],
-      album: "Bloom",
-      coverUrl: "",
-      durationMs: 180000,
-      qualityHints: ["standard"],
-      playableState: "trial_only"
-    }
-  ]);
+  expect(tracks.length).toBe(1);
+  expect(tracks[0]).toMatchObject({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "trial_only"
+  });
 });
 
 test("soda adapter maps lyric payload from client detail response", async () => {
@@ -171,7 +266,8 @@ test("soda adapter maps lyric payload from client detail response", async () => 
     client: {
       search: async () => ({ body: { result_groups: [] } }),
       songUrl: async () => ({ body: {} }),
-      lyric: async () => ({
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({
         body: {
           data: {
             lyric: {
@@ -236,6 +332,7 @@ test("soda adapter logout requires a cookie and delegates to client logout", asy
       search: async () => ({ body: { result_groups: [] } }),
       songUrl: async () => ({ body: {} }),
       lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),

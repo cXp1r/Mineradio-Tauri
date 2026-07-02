@@ -21,6 +21,7 @@ export interface SodaClient {
   search(query: { keyword: string; limit: number }): Promise<{ body: unknown }>;
   songUrl(trackId: string): Promise<{ body: unknown }>;
   lyric(trackId: string): Promise<{ body: unknown }>;
+  trackDetail(trackId: string): Promise<{ body: unknown }>;
   playlistList(): Promise<{ body: unknown }>;
   playlistDetail(id: string): Promise<{ body: unknown }>;
   loginStatus(): Promise<{ body: unknown }>;
@@ -56,6 +57,13 @@ async function readJsonBody(resp: Response, action: string): Promise<{ body: unk
 
 export function createSodaClient(deps: SodaClientDeps): SodaClient {
   const fetcher = deps.fetch ?? fetch;
+  async function fetchTrackDetail(trackId: string): Promise<{ body: unknown }> {
+    const cfg = deps.getConfig();
+    const headers: HeadersInit = {};
+    if (cfg.cookie) headers.cookie = cfg.cookie;
+    const resp = await fetcher(withTrackId(trackId), { method: "GET", headers });
+    return readJsonBody(resp, "track-detail");
+  }
 
   return {
     async search({ keyword }) {
@@ -67,11 +75,10 @@ export function createSodaClient(deps: SodaClientDeps): SodaClient {
     },
     async songUrl() { return notImplemented("songUrl"); },
     async lyric(trackId: string) {
-      const cfg = deps.getConfig();
-      const headers: HeadersInit = {};
-      if (cfg.cookie) headers.cookie = cfg.cookie;
-      const resp = await fetcher(withTrackId(trackId), { method: "GET", headers });
-      return readJsonBody(resp, "lyric");
+      return fetchTrackDetail(trackId);
+    },
+    async trackDetail(trackId: string) {
+      return fetchTrackDetail(trackId);
     },
     async playlistList() { return notImplemented("playlistList"); },
     async playlistDetail() { return notImplemented("playlistDetail"); },
