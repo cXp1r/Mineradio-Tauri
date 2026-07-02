@@ -15,7 +15,7 @@ import {
   type SongUrlResult
 } from "../provider-adapter";
 import { createSodaClient, type SodaClient, type SodaClientDeps } from "./soda-client";
-import { mapSodaLyricToPayload, mapSodaPlaylistToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, type SodaSong } from "./map";
+import { mapSodaLyricToPayload, mapSodaPlaylistDetailToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, type SodaPlaylistBody, type SodaPlaylistDetailBody, type SodaSong } from "./map";
 
 const SODA_PROVIDER_ID = "soda";
 
@@ -108,6 +108,51 @@ function readSodaSearchList(body: unknown): unknown[] {
   return [];
 }
 
+function readSodaPlaylistList(body: unknown): unknown[] {
+  const root = asObj(body);
+  if (!root) return [];
+  if (Array.isArray(root.list)) return root.list;
+  if (Array.isArray(root.items)) return root.items;
+  if (Array.isArray(root.playlists)) return root.playlists;
+  if (Array.isArray(root.data)) return root.data;
+
+  const data = asObj(root.data);
+  if (!data) return [];
+  if (Array.isArray(data.list)) return data.list;
+  if (Array.isArray(data.items)) return data.items;
+  if (Array.isArray(data.playlists)) return data.playlists;
+  if (Array.isArray(data.playlist)) return data.playlist;
+  if (Array.isArray(data.collection)) return data.collection;
+  return [];
+}
+
+function readSodaPlaylistDetail(body: unknown): SodaPlaylistDetailBody | null {
+  const root = asObj(body);
+  if (!root) return null;
+  const data = asObj(root.data);
+  const playlist = asObj(root.playlist) ?? asObj(data?.playlist);
+  const mediaResources =
+    (Array.isArray(root.media_resources) ? root.media_resources : undefined) ??
+    (Array.isArray(data?.media_resources) ? data?.media_resources : undefined) ??
+    (Array.isArray(root.mediaResources) ? root.mediaResources : undefined) ??
+    (Array.isArray(data?.mediaResources) ? data?.mediaResources : undefined) ??
+    [];
+  if (playlist || mediaResources.length > 0) {
+    return {
+      playlist: (playlist ?? undefined) as SodaPlaylistBody | undefined,
+      media_resources: mediaResources as NonNullable<SodaPlaylistDetailBody["media_resources"]>
+    };
+  }
+  const fromList = readSodaPlaylistList(root);
+  if (fromList.length > 0) {
+    const first = asObj(fromList[0]);
+    if (first) {
+      return { playlist: first as SodaPlaylistBody };
+    }
+  }
+  return null;
+}
+
 export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
   const client = deps.client ?? createSodaClient(deps);
 
@@ -189,10 +234,14 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       });
     },
     async playlistList(): Promise<PlaylistSummary[]> {
-      return fail("playlistList");
+      const resp = await client.playlistList();
+      return readSodaPlaylistList(resp.body)
+        .map(item => mapSodaPlaylistToSummary(item as SodaPlaylistBody));
     },
-    async playlistDetail(_: string): Promise<PlaylistDetail> {
-      return fail("playlistDetail");
+    async playlistDetail(id: string): Promise<PlaylistDetail> {
+      const resp = await client.playlistDetail(id);
+      const playlist = readSodaPlaylistDetail(resp.body);
+      return mapSodaPlaylistDetailToDetail(playlist, id);
     },
     async likeSong(id: string, liked: boolean): Promise<SongLikeAck> {
       const cfg = deps.getConfig();

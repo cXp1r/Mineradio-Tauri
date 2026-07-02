@@ -203,6 +203,51 @@ test("soda client logout requests qishui logout with cookie", async () => {
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client playlistList requests qishui playlist list with cookie", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ data: [] }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.playlistList();
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/me/playlist");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
+test("soda client playlistDetail requests qishui playlist detail with playlist id", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ data: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.playlistDetail("7590144593510006847");
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/playlist/detail");
+  expect(url.searchParams.get("playlist_id")).toBe("7590144593510006847");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda client collectionMedia posts collection body to favorite and delete endpoints", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
@@ -289,6 +334,114 @@ test("soda adapter maps search results from client", async () => {
     durationMs: 180000,
     qualityHints: ["standard"],
     playableState: "trial_only"
+  });
+});
+
+test("soda adapter maps playlistList from client response", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({
+        body: {
+          data: [
+            {
+              id: "pl-1",
+              name: "Favorites",
+              coverUrl: "//cdn.example.com/pl.jpg",
+              trackCount: 2,
+              trackIds: ["1", 2],
+              subscribed: true
+            }
+          ]
+        }
+      }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const playlists = await adapter.playlistList();
+  expect(playlists).toEqual([
+    {
+      provider: "soda",
+      id: "pl-1",
+      name: "Favorites",
+      coverUrl: "https://cdn.example.com/pl.jpg",
+      trackCount: 2,
+      trackIds: ["1", "2"],
+      subscribed: true
+    }
+  ]);
+});
+
+test("soda adapter maps playlistDetail from client response", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({
+        body: {
+          playlist: {
+            id: "7590144593510006847",
+            title: "My Playlist",
+            url_cover: { urls: ["//cdn.example.com/detail.jpg"], uri: "" },
+            count_tracks: 3,
+            tracks: [
+              {
+                id: "t-1",
+                title: "Track 1",
+                artist: "Alice",
+                albumName: "Album",
+                durationMs: 120000
+              }
+            ]
+          }
+        }
+      }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const detail = await adapter.playlistDetail("7590144593510006847");
+  expect(detail).toEqual({
+    provider: "soda",
+    id: "7590144593510006847",
+    name: "My Playlist",
+    coverUrl: "https://cdn.example.com/detail.jpg",
+    trackCount: 3,
+    trackIds: [],
+    subscribed: false,
+    tracks: [
+      {
+        provider: "soda",
+        id: "t-1",
+        sourceId: "t-1",
+        mediaMid: undefined,
+        title: "Track 1",
+        artists: ["Alice"],
+        album: "Album",
+        coverUrl: "",
+        durationMs: 120000,
+        qualityHints: ["standard"],
+        playableState: "unknown"
+      }
+    ]
   });
 });
 

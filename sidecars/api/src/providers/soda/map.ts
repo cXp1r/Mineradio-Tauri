@@ -28,10 +28,47 @@ export interface SodaPlaylistBody {
   title?: string;
   name?: string;
   coverUrl?: string;
+  url_cover?: { uri?: string; urls?: string[]; template_prefix?: string } | string;
   trackCount?: number;
+  count_tracks?: number;
   trackIds?: Array<number | string>;
   tracks?: SodaSong[];
   subscribed?: boolean;
+  is_private?: boolean;
+  public_title?: string;
+  countTracks?: number;
+}
+
+export interface SodaPlaylistDetailBody {
+  playlist?: SodaPlaylistBody | null;
+  media_resources?: Array<{
+    id?: string;
+    type?: string;
+    entity?: {
+      track_wrapper?: {
+        track?: SodaSong | null;
+      } | null;
+    } | null;
+  } | null>;
+  mediaResources?: Array<{
+    id?: string;
+    type?: string;
+    entity?: {
+      track_wrapper?: {
+        track?: SodaSong | null;
+      } | null;
+    } | null;
+  } | null>;
+}
+
+function playlistCoverUrl(raw: SodaPlaylistBody): string {
+  const cover = raw.url_cover;
+  if (typeof cover === "string") return cover;
+  if (cover && typeof cover === "object") {
+    if (Array.isArray(cover.urls) && cover.urls[0]) return cover.urls[0];
+    if (cover.uri) return cover.uri;
+  }
+  return raw.coverUrl ?? "";
 }
 
 export function normalizeProviderImageUrl(url: string | null | undefined): string {
@@ -147,14 +184,19 @@ export function mapSodaLyricToPayload(opts: {
 
 export function mapSodaPlaylistToSummary(raw: SodaPlaylistBody, idHint?: string): PlaylistSummary {
   const id = String(raw.id ?? raw.playlistId ?? idHint ?? "").trim();
+  const trackCount =
+    typeof raw.trackCount === "number" ? raw.trackCount :
+    typeof raw.count_tracks === "number" ? raw.count_tracks :
+    typeof raw.countTracks === "number" ? raw.countTracks :
+    undefined;
   return {
     provider: SODA_PROVIDER_ID,
     id,
-    name: String(raw.title ?? raw.name ?? "").trim(),
-    coverUrl: normalizeProviderImageUrl(raw.coverUrl),
-    trackCount: typeof raw.trackCount === "number" ? raw.trackCount : undefined,
+    name: String(raw.title ?? raw.name ?? raw.public_title ?? "").trim(),
+    coverUrl: normalizeProviderImageUrl(playlistCoverUrl(raw)),
+    trackCount,
     trackIds: Array.isArray(raw.trackIds) ? raw.trackIds.map(String).filter(Boolean) : [],
-    subscribed: raw.subscribed === true
+    subscribed: raw.subscribed === true || raw.is_private === false
   };
 }
 
@@ -175,5 +217,28 @@ export function mapSodaPlaylistToDetail(raw: SodaPlaylistBody | null | undefined
   return {
     ...summary,
     tracks: Array.isArray(raw.tracks) ? raw.tracks.map(mapSodaSongToTrack) : []
+  };
+}
+
+export function mapSodaPlaylistDetailToDetail(
+  raw: SodaPlaylistDetailBody | null | undefined,
+  idHint?: string
+): PlaylistDetail {
+  const playlist = raw?.playlist ?? null;
+  const resources = raw
+    ? (Array.isArray(raw.media_resources) ? raw.media_resources : Array.isArray(raw.mediaResources) ? raw.mediaResources : [])
+    : [];
+  const tracks = resources
+    .map((item) => item?.entity?.track_wrapper?.track ?? null)
+    .filter(Boolean)
+    .map((track) => mapSodaSongToTrack(track as SodaSong));
+  const summary = mapSodaPlaylistToSummary(playlist ?? {}, idHint);
+  return {
+    ...summary,
+    tracks: tracks.length > 0
+      ? tracks
+      : Array.isArray((playlist as SodaPlaylistBody | null | undefined)?.tracks)
+        ? ((playlist as SodaPlaylistBody).tracks ?? []).map(mapSodaSongToTrack)
+        : []
   };
 }
