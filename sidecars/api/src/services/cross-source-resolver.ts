@@ -4,7 +4,7 @@ import { ProviderError } from "../providers/provider-adapter";
 import { providers as defaultProviders, PROVIDER_IDS } from "../providers/registry";
 
 export type CrossSourceResolverDeps = {
-  providers?: Record<ProviderId, ProviderAdapter>;
+  providers?: Partial<Record<ProviderId, ProviderAdapter>>;
   providerOrder?: ProviderId[];
 };
 
@@ -20,7 +20,7 @@ export type CrossSourceResolver = {
 };
 
 export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): CrossSourceResolver {
-  const registry = deps.providers ?? defaultProviders;
+  const registry: Partial<Record<ProviderId, ProviderAdapter>> = deps.providers ?? defaultProviders;
   const providerOrder = deps.providerOrder ?? PROVIDER_IDS;
 
   function orderedProviders(preferred?: ProviderId): ProviderId[] {

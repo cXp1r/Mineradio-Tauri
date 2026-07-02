@@ -321,24 +321,36 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
       try {
         if (sub === "login-qr-key" && method === "GET") {
           const qrLogin = qrLoginByProvider[providerId];
-          response = json(ok(ProviderLoginQrKeySchema.parse(await qrLogin.createKey())));
+          if (providerId === "soda") {
+            const sodaQrLogin = qrLogin as SodaQrLoginService;
+            const image = await sodaQrLogin.createImage();
+            response = json(ok(ProviderLoginQrKeySchema.parse({ provider: "soda", key: image.key })));
+          } else {
+            const legacyQrLogin = qrLogin as NeteaseQrLoginService | QqQrLoginService;
+            response = json(ok(ProviderLoginQrKeySchema.parse(await legacyQrLogin.createKey())));
+          }
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }
         if (sub === "login-qr-create" && method === "GET") {
           const qrLogin = qrLoginByProvider[providerId];
-          const key = url.searchParams.get("key")?.trim() ?? "";
-          if (!key) {
-            response = json(fail({
-              code: "BAD_REQUEST",
-              message: "QR key required",
-              provider: providerId,
-              retryable: false
-            }), 400);
-            await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
-            return response;
+          if (providerId === "soda") {
+            const sodaQrLogin = qrLogin as SodaQrLoginService;
+            response = json(ok(ProviderLoginQrImageSchema.parse(await sodaQrLogin.createImage())));
+          } else {
+            const key = url.searchParams.get("key")?.trim() ?? "";
+            if (!key) {
+              response = json(fail({
+                code: "BAD_REQUEST",
+                message: "QR key required",
+                provider: providerId,
+                retryable: false
+              }), 400);
+              await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+              return response;
+            }
+            response = json(ok(ProviderLoginQrImageSchema.parse(await qrLogin.createImage(key))));
           }
-          response = json(ok(ProviderLoginQrImageSchema.parse(await qrLogin.createImage(key))));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }

@@ -443,10 +443,9 @@ test("QQ QR login routes return key image and poll status without exposing cooki
 test("Soda QR login routes return key image and poll status without exposing cookies", async () => {
   const handler = createRouteHandler({
     sodaQrLogin: {
-      createKey: async () => ({ provider: "soda", key: "soda-qr-key-1" }),
-      createImage: async (key: string) => ({
+      createImage: async () => ({
         provider: "soda",
-        key,
+        key: "soda-qr-key-1",
         img: "data:image/png;base64,soda"
       }),
       check: async (key: string) => ({
@@ -463,7 +462,7 @@ test("Soda QR login routes return key image and poll status without exposing coo
   const key = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-key")));
   expect(key).toEqual({ ok: true, data: { provider: "soda", key: "soda-qr-key-1" } });
 
-  const image = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-create?key=soda-qr-key-1")));
+  const image = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-create")));
   expect(image.data.img).toBe("data:image/png;base64,soda");
 
   const checked = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-check?key=soda-qr-key-1")));
