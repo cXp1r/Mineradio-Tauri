@@ -116,9 +116,28 @@ function readSodaQrCodeBody(body: unknown): { qrcode: string; token: string } {
   return { qrcode, token };
 }
 
-function cookieFromSetCookieHeader(header: string | null): string | undefined {
-  const value = readString(header);
-  return value;
+function splitCombinedSetCookieHeader(header: string): string[] {
+  return header
+    .split(/,(?=\s*[^;,=\s]+=[^;,]*)/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function readSetCookieHeaders(headers: Headers): string[] {
+  const getSetCookie = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+  const values = typeof getSetCookie === "function" ? getSetCookie.call(headers) : [];
+  if (values.length > 0) return values.flatMap(splitCombinedSetCookieHeader);
+
+  const combined = readString(headers.get("set-cookie"));
+  return combined ? splitCombinedSetCookieHeader(combined) : [];
+}
+
+function cookieFromSetCookieHeaders(headers: Headers): string | undefined {
+  const cookie = readSetCookieHeaders(headers)
+    .map((header) => header.split(";")[0]?.trim() ?? "")
+    .filter(Boolean)
+    .join("; ");
+  return readString(cookie);
 }
 
 async function parseFetchJson(resp: Response): Promise<SodaApiResponse> {
@@ -215,7 +234,7 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
         : readString(data.qrcode) ?? "";
       const nextKey = expired ? readString(data.token) : undefined;
       if (loggedIn) {
-        const cookie = cookieFromSetCookieHeader(resp.headers.get("set-cookie"));
+        const cookie = cookieFromSetCookieHeaders(resp.headers);
         if (cookie) setRuntimeProviderCookie("soda", cookie);
       }
       return ProviderLoginQrCheckSchema.parse({
