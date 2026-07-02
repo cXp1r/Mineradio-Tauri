@@ -26,18 +26,62 @@ function fail(action: string): never {
   throw new ProviderNotImplementedError(SODA_PROVIDER_ID, action, `soda provider scaffold is not wired for ${action}`);
 }
 
+function asObj(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function readSodaSearchList(body: unknown): unknown[] {
+  const root = asObj(body);
+  if (!root) return [];
+  if (Array.isArray(root.result_groups)) {
+    return root.result_groups.flatMap(group => {
+      const items = asObj(group)?.data;
+      if (!Array.isArray(items)) return [];
+      return items.flatMap(item => {
+        const track = asObj(asObj(item)?.entity)?.track;
+        return track ? [track] : [];
+      });
+    });
+  }
+  if (Array.isArray(root.list)) return root.list;
+  if (Array.isArray(root.items)) return root.items;
+  if (Array.isArray(root.tracks)) return root.tracks;
+  if (Array.isArray(root.songs)) return root.songs;
+
+  const data = asObj(root.data);
+  if (data && Array.isArray(data.list)) return data.list;
+  if (data && Array.isArray(data.items)) return data.items;
+  if (data && Array.isArray(data.tracks)) return data.tracks;
+  if (data && Array.isArray(data.songs)) return data.songs;
+  if (data && Array.isArray(data.result_groups)) {
+    return data.result_groups.flatMap(group => {
+      const items = asObj(group)?.data;
+      if (!Array.isArray(items)) return [];
+      return items.flatMap(item => {
+        const track = asObj(asObj(item)?.entity)?.track;
+        return track ? [track] : [];
+      });
+    });
+  }
+
+  return [];
+}
+
 export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
   const client = deps.client ?? createSodaClient(deps);
-  void client;
-  void mapSodaSongToTrack;
   void mapSodaLyricToPayload;
   void mapSodaPlaylistToSummary;
   void mapSodaPlaylistToDetail;
 
   return {
     id: SODA_PROVIDER_ID,
-    async search(_: { keyword: string; limit: number }): Promise<Track[]> {
-      return fail("search");
+    async search({ keyword, limit }: { keyword: string; limit: number }): Promise<Track[]> {
+      const resp = await client.search({ keyword, limit });
+      return readSodaSearchList(resp.body)
+        .slice(0, Math.max(0, limit))
+        .map(item => mapSodaSongToTrack(item as SodaSong));
     },
     async songUrl(_: Track, __?: SongUrlOptions): Promise<SongUrlResult> {
       return fail("songUrl");

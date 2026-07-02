@@ -1,4 +1,4 @@
-import type { Track, PlaylistSummary, PlaylistDetail, LyricLine, LyricPayload } from "@mineradio/shared";
+import type { Track, PlaylistSummary, PlaylistDetail, LyricLine, LyricPayload, PlayableState } from "@mineradio/shared";
 
 const SODA_PROVIDER_ID = "soda";
 
@@ -9,13 +9,17 @@ export interface SodaSong {
   title?: string;
   name?: string;
   artist?: string;
-  artists?: Array<{ name?: string } | string | null | undefined>;
-  album?: string;
+  artists?: Array<{ id?: number | string; name?: string } | string | null | undefined>;
+  album?: string | { id?: number | string; name?: string; coverUrl?: string; picUrl?: string };
   albumName?: string;
   coverUrl?: string;
   durationMs?: number;
   duration?: number;
   mediaMid?: string;
+  preview?: {
+    start?: number;
+    duration?: number;
+  } | null;
 }
 
 export interface SodaPlaylistBody {
@@ -53,6 +57,26 @@ function toArtists(raw: SodaSong): string[] {
   return artists;
 }
 
+function albumName(raw: SodaSong): string {
+  if (typeof raw.album === "string") return raw.album.trim();
+  if (raw.album && typeof raw.album === "object" && typeof raw.album.name === "string") {
+    return raw.album.name.trim();
+  }
+  return String(raw.albumName ?? "").trim();
+}
+
+function albumCoverUrl(raw: SodaSong): string {
+  if (raw.coverUrl) return raw.coverUrl;
+  if (raw.album && typeof raw.album === "object") {
+    return raw.album.coverUrl ?? raw.album.picUrl ?? "";
+  }
+  return "";
+}
+
+function playableState(raw: SodaSong): PlayableState {
+  return raw.preview ? "trial_only" : "unknown";
+}
+
 export function mapSodaSongToTrack(raw: SodaSong): Track {
   const id = String(raw.id ?? raw.songId ?? raw.sourceId ?? "").trim();
   const durationMs =
@@ -68,11 +92,11 @@ export function mapSodaSongToTrack(raw: SodaSong): Track {
     mediaMid: raw.mediaMid ? String(raw.mediaMid) : undefined,
     title: String(raw.title ?? raw.name ?? "").trim(),
     artists: toArtists(raw),
-    album: String(raw.album ?? raw.albumName ?? "").trim(),
-    coverUrl: normalizeProviderImageUrl(raw.coverUrl),
+    album: albumName(raw),
+    coverUrl: normalizeProviderImageUrl(albumCoverUrl(raw)),
     durationMs,
-    qualityHints: [],
-    playableState: "unknown"
+    qualityHints: ["standard"],
+    playableState: playableState(raw)
   };
 }
 
