@@ -9,6 +9,7 @@ import type { PlaybackMode } from "../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../stores/shelf-store";
 import type { PlaybackQuality, Track } from "@mineradio/shared";
 import { createProgressDragParticleEmitter, type ProgressDragParticleEmitter } from "./progress-drag-particles";
+import { resolveVirtualListWindow } from "../components/shell/virtual-list";
 
 const PLAYBACK_QUALITY_OPTIONS: Array<{
 	value: PlaybackQuality;
@@ -23,6 +24,8 @@ const PLAYBACK_QUALITY_OPTIONS: Array<{
 	{ value: "exhigh", label: "极高 HQ", short: "HQ", detail: "320kbps" },
 	{ value: "standard", label: "标准", short: "STD", detail: "128kbps" },
 ];
+const MINI_QUEUE_ROW_HEIGHT = 58;
+const MINI_QUEUE_VIEWPORT_HEIGHT = 320;
 
 function playbackQualityOption(value: PlaybackQuality | undefined) {
 	return PLAYBACK_QUALITY_OPTIONS.find((option) => option.value === value) ?? PLAYBACK_QUALITY_OPTIONS[1];
@@ -162,6 +165,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const [progressDragging, setProgressDragging] = useState(false);
 	const [volumeOpen, setVolumeOpen] = useState(false);
 	const [qualityOpen, setQualityOpen] = useState(false);
+	const [miniQueueScrollTop, setMiniQueueScrollTop] = useState(0);
 
 	const registerNormal = useCallback((id: string) => (el: HTMLButtonElement | null) => {
 		normalBtnRefs.current[id] = el;
@@ -370,6 +374,21 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 		return `${m}:${s.toString().padStart(2, "0")}`;
 	};
 
+	const queue = props.queue ?? [];
+	const miniQueueWindow = resolveVirtualListWindow({
+		itemCount: queue.length,
+		rowHeight: MINI_QUEUE_ROW_HEIGHT,
+		viewportHeight: MINI_QUEUE_VIEWPORT_HEIGHT,
+		scrollTop: miniQueueScrollTop,
+	});
+	const visibleMiniQueue = queue.slice(miniQueueWindow.startIndex, miniQueueWindow.endIndex);
+	const miniQueueVirtualStyle = miniQueueWindow.virtualized
+		? {
+			paddingTop: miniQueueWindow.paddingTop,
+			paddingBottom: miniQueueWindow.paddingBottom,
+		}
+		: undefined;
+
 	return (
 		<div id="bottom-bar" className={props.visible ? "visible" : "soft-hidden"} ref={barRef}>
 			<div id="progress-bar" className={progressDragging ? "is-dragging" : ""} onPointerDown={seekStub} onPointerMove={seekMoveStub} onPointerUp={seekEndStub} onPointerCancel={seekEndStub}>
@@ -449,10 +468,17 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 								<div id="mini-queue-count" className="mini-queue-count">{props.queue?.length ?? 0} 首</div>
 							</div>
 						</div>
-						<div id="mini-queue-list" className="mini-queue-list">
-							{!props.queue || props.queue.length === 0 ? (
+						<div
+							id="mini-queue-list"
+							className="mini-queue-list"
+							data-virtualized={miniQueueWindow.virtualized ? "true" : undefined}
+							onScroll={(event) => setMiniQueueScrollTop(event.currentTarget.scrollTop)}
+							style={miniQueueVirtualStyle}
+						>
+							{queue.length === 0 ? (
 								<div className="mini-queue-empty">队列为空</div>
-							) : props.queue.map((track, index) => {
+							) : visibleMiniQueue.map((track, localIndex) => {
+								const index = miniQueueWindow.startIndex + localIndex;
 								const now = !!props.currentTrack && props.currentTrack.provider === track.provider && props.currentTrack.id === track.id;
 								return (
 									<div className={now ? "mini-queue-item now" : "mini-queue-item"} key={`${track.provider}-${track.id}-${index}`}>

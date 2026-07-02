@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import React from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
-import type { Track } from "@mineradio/shared";
+import type { PodcastProgram, Track } from "@mineradio/shared";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useSearchStore } from "../../stores/search-store";
 import { SearchShell } from "./SearchShell";
@@ -42,6 +42,28 @@ function makeTrack(id: string): Track {
 		coverUrl: "",
 		qualityHints: [],
 		playableState: "playable",
+	};
+}
+
+function makePodcastProgram(id: string, radioId = "radio-big"): PodcastProgram {
+	return {
+		provider: "netease",
+		id: `program-song-${id}`,
+		sourceId: `program-song-${id}`,
+		title: `第 ${id} 期`,
+		artists: ["DJ Alice"],
+		album: "长播客",
+		coverUrl: "",
+		qualityHints: [],
+		playableState: "playable",
+		type: "podcast",
+		programId: `program-${id}`,
+		radioId,
+		radioName: "长播客",
+		djName: "DJ Alice",
+		description: "",
+		createTime: 0,
+		serialNum: Number(id),
 	};
 }
 
@@ -123,6 +145,33 @@ test("SearchShell action buttons call like collect and next callbacks without st
 	next!.click();
 
 	expect(calls).toEqual(["like:100", "collect:100", "next:100"]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	root.unmount();
+});
+
+test("SearchShell virtualizes long song result lists while preserving row actions", async () => {
+	const calls: string[] = [];
+	const tracks = Array.from({ length: 180 }, (_, index) => makeTrack(String(index)));
+	useSearchStore.getState().setResults(tracks);
+
+	const { root, container } = await renderSearchShell(
+		<SearchShell
+			client={null}
+			onResultLike={(candidate) => calls.push(`like:${candidate.id}`)}
+			onResultCollect={(candidate) => calls.push(`collect:${candidate.id}`)}
+			onResultNext={(candidate) => calls.push(`next:${candidate.id}`)}
+		/>,
+	);
+
+	const list = container.querySelector(".search-shell-list");
+	expect(list?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".search-shell-row").length).toBeLessThan(60);
+	expect(container.querySelector(".search-shell-list")?.textContent).toContain("Song 0");
+	(container.querySelector(".search-shell-like") as HTMLButtonElement).click();
+	(container.querySelector(".search-shell-collect") as HTMLButtonElement).click();
+	(container.querySelector(".search-shell-next") as HTMLButtonElement).click();
+
+	expect(calls).toEqual(["like:0", "collect:0", "next:0"]);
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 	root.unmount();
 });
@@ -291,5 +340,65 @@ test("SearchShell podcast mode drills into programs with back next and play acti
 	expect(usePlaybackStore.getState().currentTrack?.id).toBe("program-song-1");
 	expect(container.querySelector("[data-podcast-program-id=\"program-1\"]")).toBeNull();
 	expect(container.querySelector("#search-results")?.classList.contains("show")).toBe(false);
+	root.unmount();
+});
+
+test("SearchShell virtualizes long podcast program lists", async () => {
+	useSearchStore.setState({
+		results: [],
+		loading: false,
+		error: null,
+		provider: "netease",
+		keyword: "",
+	});
+	const nextCalls: string[] = [];
+	const client = {
+		async podcastHot() {
+			return {
+				podcasts: [{
+					id: "radio-big",
+					rid: "radio-big",
+					name: "长播客",
+					coverUrl: "",
+					description: "",
+					djName: "DJ Alice",
+					category: "音乐",
+					programCount: 180,
+					subCount: 0,
+				}],
+				more: false,
+			};
+		},
+		async podcastPrograms(id: string) {
+			return {
+				radio: { id, rid: id, name: "长播客", djName: "DJ Alice" },
+				programs: Array.from({ length: 180 }, (_, index) => makePodcastProgram(String(index), id)),
+				more: false,
+				total: 180,
+			};
+		},
+	} as never;
+
+	const { root, container } = await renderSearchShell(
+		<SearchShell
+			client={client}
+			requestedMode="podcast"
+			onResultNext={(track) => nextCalls.push(track.id)}
+		/>,
+	);
+	for (let i = 0; i < 8 && !container.querySelector("[data-podcast-id]"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	(container.querySelector("[data-podcast-id=\"radio-big\"]") as HTMLButtonElement).click();
+	for (let i = 0; i < 8 && !container.querySelector("[data-podcast-program-id]"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	const list = container.querySelector(".search-shell-podcast-program-list");
+	expect(list?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".search-shell-row").length).toBeLessThan(60);
+	expect(list?.textContent).toContain("第 0 期");
+	(container.querySelector(".search-shell-next") as HTMLButtonElement).click();
+	expect(nextCalls).toEqual(["program-song-0"]);
 	root.unmount();
 });

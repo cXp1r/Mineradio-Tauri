@@ -2,7 +2,23 @@ import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import { createRoot } from "react-dom/client";
 import React from "react";
+import type { Track } from "@mineradio/shared";
 import { PlayerConsoleHost } from "./PlayerConsoleHost";
+
+function makeTrack(id: string): Track {
+	return {
+		provider: "netease",
+		id,
+		sourceId: id,
+		title: `Song ${id}`,
+		artists: ["Alice"],
+		album: "Album",
+		coverUrl: "",
+		durationMs: 1000,
+		qualityHints: [],
+		playableState: "playable",
+	};
+}
 
 test("PlayerConsoleHost server-renders the bottom-bar markup", () => {
 	const html = renderToStaticMarkup(React.createElement(PlayerConsoleHost, {}));
@@ -102,6 +118,35 @@ test("PlayerConsoleHost renders shelf mode controls and emits baseline setting c
 	(container.querySelector('#shelf-camera-seg [data-shelf-camera="static"]') as HTMLButtonElement).click();
 	(container.querySelector('#shelf-presence-seg [data-shelf-presence="always"]') as HTMLButtonElement).click();
 	expect(calls).toEqual(["mode:off", "camera:static", "presence:always"]);
+	root.unmount();
+	container.remove();
+});
+
+test("PlayerConsoleHost virtualizes the mini queue popover for long queues", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: string[] = [];
+	const queue = Array.from({ length: 240 }, (_, index) => makeTrack(String(index)));
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	root.render(
+		React.createElement(PlayerConsoleHost, {
+			miniQueueOpen: true,
+			queue,
+			currentTrack: queue[0],
+			onPlayQueueIndex: (index: number) => calls.push(`play:${index}`),
+			onInsertQueueNext: (index: number) => calls.push(`next:${index}`),
+			onRemoveQueueIndex: (index: number) => calls.push(`remove:${index}`),
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(container.querySelector("#mini-queue-list")?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".mini-queue-item").length).toBeLessThan(60);
+	(container.querySelector(".mini-queue-main") as HTMLButtonElement).click();
+	(container.querySelector(".mini-queue-next") as HTMLButtonElement).click();
+	(container.querySelector(".mini-queue-remove:last-child") as HTMLButtonElement).click();
+	expect(calls).toEqual(["play:0", "next:0", "remove:0"]);
 	root.unmount();
 	container.remove();
 });

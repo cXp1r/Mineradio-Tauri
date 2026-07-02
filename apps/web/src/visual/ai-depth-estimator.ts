@@ -91,9 +91,12 @@ async function loadPipeline(
 function makeAIDepthInputCanvas(
 	image: HomeCoverImage,
 	createCanvas: DepthCanvasFactory,
+	reuseCanvas?: ReturnType<DepthCanvasFactory> | null,
 ): HomeCoverImage {
-	const cv = createCanvas(160);
+	const cv = reuseCanvas ?? createCanvas(160);
 	if (!cv || typeof cv.getContext !== "function") return image;
+	cv.width = 160;
+	cv.height = 160;
 	const ctx = cv.getContext("2d");
 	if (!ctx || typeof ctx.drawImage !== "function") return image;
 	try {
@@ -127,6 +130,7 @@ export function createJsDelivrAiDepthEstimator(
 	let lastRunAt = -Infinity;
 	let failUntil = 0;
 	let busy = false;
+	let inputCanvas: ReturnType<DepthCanvasFactory> | null = null;
 
 	return async (image) => {
 		const current = now();
@@ -136,13 +140,16 @@ export function createJsDelivrAiDepthEstimator(
 		try {
 			emitAiDepthStatus({ visible: true, text: "后台增强封面深度…" }, onStatus);
 			const pipeline = await loadPipeline(importModule, onStatus);
-			const inputCanvas = makeAIDepthInputCanvas(image, createCanvas);
-			let input: unknown = inputCanvas;
+			inputCanvas = inputCanvas ?? createCanvas(160);
+			const inputCanvasImage = inputCanvas
+				? makeAIDepthInputCanvas(image, createCanvas, inputCanvas)
+				: image;
+			let input: unknown = inputCanvasImage;
 			try {
-				const maybeDataUrl = (inputCanvas as { toDataURL?: (type?: string, quality?: unknown) => string }).toDataURL;
-				if (typeof maybeDataUrl === "function") input = maybeDataUrl.call(inputCanvas, "image/jpeg", 0.82);
+				const maybeDataUrl = (inputCanvasImage as { toDataURL?: (type?: string, quality?: unknown) => string }).toDataURL;
+				if (typeof maybeDataUrl === "function") input = maybeDataUrl.call(inputCanvasImage, "image/jpeg", 0.82);
 			} catch {
-				input = inputCanvas;
+				input = inputCanvasImage;
 			}
 			const result = await pipeline(input);
 			const canvas = await canvasLikeFromDepthResult(result);

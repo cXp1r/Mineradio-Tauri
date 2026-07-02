@@ -21,7 +21,28 @@ export interface CoverDepthTween {
 	advance(dtSeconds: number): void;
 }
 
+interface CoverDepthScratch {
+	lum: Float32Array;
+	blur: Float32Array;
+	tmp: Float32Array;
+}
+
 const EDGE_SIZE = 256;
+const EDGE_COUNT = EDGE_SIZE * EDGE_SIZE;
+let sharedScratch: CoverDepthScratch | null = null;
+const EDGE_CENTER_BIAS = (() => {
+	const bias = new Float32Array(EDGE_COUNT);
+	for (let y = 0; y < EDGE_SIZE; y++) {
+		for (let x = 0; x < EDGE_SIZE; x++) {
+			const i = y * EDGE_SIZE + x;
+			const cx = (x / (EDGE_SIZE - 1) - 0.5) * 2;
+			const cy = (y / (EDGE_SIZE - 1) - 0.5) * 2;
+			const rr = Math.sqrt(cx * cx + cy * cy);
+			bias[i] = 1 - Math.min(1, rr * 0.75);
+		}
+	}
+	return bias;
+})();
 
 export function visualEase(t: number): number {
 	const clamped = Math.max(0, Math.min(1, Number(t) || 0));
@@ -34,6 +55,17 @@ function defaultCreateCanvas(width: number, height: number): CoverDepthCanvas | 
 	cv.width = width;
 	cv.height = height;
 	return cv as CoverDepthCanvas;
+}
+
+function getCoverDepthScratch(count: number): CoverDepthScratch {
+	if (!sharedScratch || sharedScratch.lum.length !== count) {
+		sharedScratch = {
+			lum: new Float32Array(count),
+			blur: new Float32Array(count),
+			tmp: new Float32Array(count),
+		};
+	}
+	return sharedScratch;
 }
 
 export function buildEdgeAndDepthCanvas(
@@ -53,10 +85,11 @@ export function buildEdgeAndDepthCanvas(
 	if (!sctx?.drawImage || !sctx.getImageData || !octx?.createImageData || !octx.putImageData) return null;
 	sctx.drawImage(srcCanvas, 0, 0, EDGE_SIZE, EDGE_SIZE);
 	const src = sctx.getImageData(0, 0, EDGE_SIZE, EDGE_SIZE).data;
-	const count = EDGE_SIZE * EDGE_SIZE;
-	const lum = new Float32Array(count);
-	const blur = new Float32Array(count);
-	const tmp = new Float32Array(count);
+	const count = EDGE_COUNT;
+	const scratch = getCoverDepthScratch(count);
+	const lum = scratch.lum;
+	const blur = scratch.blur;
+	const tmp = scratch.tmp;
 
 	for (let i = 0; i < count; i++) {
 		const di = i * 4;
@@ -65,7 +98,8 @@ export function buildEdgeAndDepthCanvas(
 
 	blurH(lum, tmp, 4);
 	blurV(tmp, blur, 4);
-	const edge = new Float32Array(count);
+	const edge = tmp;
+	edge.fill(0);
 	for (let y = 1; y < EDGE_SIZE - 1; y++) {
 		for (let x = 1; x < EDGE_SIZE - 1; x++) {
 			const gx = -blur[(y - 1) * EDGE_SIZE + (x - 1)] - 2 * blur[y * EDGE_SIZE + (x - 1)] - blur[(y + 1) * EDGE_SIZE + (x - 1)]
@@ -76,26 +110,14 @@ export function buildEdgeAndDepthCanvas(
 		}
 	}
 
-	const depth = new Float32Array(count);
-	const fg = new Float32Array(count);
-	for (let y = 0; y < EDGE_SIZE; y++) {
-		for (let x = 0; x < EDGE_SIZE; x++) {
-			const i = y * EDGE_SIZE + x;
-			const cx = (x / (EDGE_SIZE - 1) - 0.5) * 2;
-			const cy = (y / (EDGE_SIZE - 1) - 0.5) * 2;
-			const rr = Math.sqrt(cx * cx + cy * cy);
-			const centerBias = 1 - Math.min(1, rr * 0.75);
-			depth[i] = Math.min(1, blur[i] * 0.45 + centerBias * 0.55);
-			fg[i] = Math.min(1, depth[i] * 0.6 + edge[i] * 0.5);
-		}
-	}
-
 	const imgOut = octx.createImageData(EDGE_SIZE, EDGE_SIZE);
 	for (let i = 0; i < count; i++) {
 		const di = i * 4;
-		imgOut.data[di] = Math.round(depth[i] * 255);
+		const depth = Math.min(1, blur[i] * 0.45 + EDGE_CENTER_BIAS[i] * 0.55);
+		const fg = Math.min(1, depth * 0.6 + edge[i] * 0.5);
+		imgOut.data[di] = Math.round(depth * 255);
 		imgOut.data[di + 1] = Math.round(edge[i] * 255);
-		imgOut.data[di + 2] = Math.round(fg[i] * 255);
+		imgOut.data[di + 2] = Math.round(fg * 255);
 		imgOut.data[di + 3] = Math.round(lum[i] * 255);
 	}
 	octx.putImageData(imgOut, 0, 0);

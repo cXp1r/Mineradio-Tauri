@@ -52,3 +52,28 @@ test("selectCurrentIndex keeps stable order for equal timeMs (interleaved lrc)",
 	expect(selectCurrentIndex(0, p)).toBe(0);
 	expect(selectCurrentIndex(0, p)).not.toBe(1);
 });
+
+test("selectCurrentIndex reuses one normalized lyric index across playback ticks", () => {
+	const p = payload([
+		{ timeMs: 2000, text: "cached-c" },
+		{ timeMs: 0, text: "cached-a" },
+		{ timeMs: 1000, text: "cached-b" },
+	]);
+	const originalSort = Array.prototype.sort;
+	let sortCalls = 0;
+	Array.prototype.sort = function patchedSort<T>(
+		this: T[],
+		compareFn?: (a: T, b: T) => number,
+	): T[] {
+		sortCalls += 1;
+		return originalSort.call(this, compareFn) as T[];
+	};
+	try {
+		expect(selectCurrentIndex(500, p)).toBe(0);
+		expect(selectCurrentIndex(1500, p)).toBe(1);
+		expect(selectCurrentIndex(2500, p)).toBe(2);
+		expect(sortCalls).toBe(1);
+	} finally {
+		Array.prototype.sort = originalSort;
+	}
+});

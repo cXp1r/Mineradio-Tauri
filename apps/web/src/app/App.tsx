@@ -128,6 +128,8 @@ import type { FxState, LyricPalette } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const SIDECAR_STATUS_POLL_MS = 1500;
+const SIDECAR_STATUS_READY_MAX_POLL_MS = 12000;
+const SIDECAR_STATUS_HIDDEN_MAX_POLL_MS = 60000;
 const SIDECAR_RECOVERED_NOTICE_MS = 2600;
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
 const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
@@ -791,6 +793,22 @@ export function deriveSidecarRecoveryNoticeState(
     lastError: status.lastError,
     recovered,
   };
+}
+
+export function nextSidecarStatusPollDelayMs(input: {
+  status: SidecarStatus;
+  consecutiveReadyPolls: number;
+  documentHidden?: boolean;
+}): number {
+  if (input.status.phase !== "ready") return SIDECAR_STATUS_POLL_MS;
+  const readySteps = Math.max(0, Math.min(3, Math.floor(input.consecutiveReadyPolls)));
+  const foregroundDelay = Math.min(
+    SIDECAR_STATUS_READY_MAX_POLL_MS,
+    SIDECAR_STATUS_POLL_MS * 2 ** readySteps,
+  );
+  if (!input.documentHidden) return foregroundDelay;
+  if (readySteps >= 3) return SIDECAR_STATUS_HIDDEN_MAX_POLL_MS;
+  return Math.min(SIDECAR_STATUS_HIDDEN_MAX_POLL_MS, foregroundDelay * 2);
 }
 
 export function isDesktopWindowFullscreen(state: WindowState): boolean {
@@ -3135,8 +3153,10 @@ export function App({
     let cancelled = false;
     let pollTimer: ReturnType<typeof setTimeout> | null = null;
     let clearRecoveredTimer: ReturnType<typeof setTimeout> | null = null;
+    let consecutiveReadyPolls = 0;
 
     async function pollStatus(): Promise<void> {
+      let nextDelayMs = SIDECAR_STATUS_POLL_MS;
       try {
         const status = await getSidecarStatus();
         if (cancelled) return;
@@ -3152,11 +3172,22 @@ export function App({
           }
           return next;
         });
+        nextDelayMs = nextSidecarStatusPollDelayMs({
+          status,
+          consecutiveReadyPolls,
+          documentHidden:
+            typeof document !== "undefined" &&
+            document.visibilityState === "hidden",
+        });
+        consecutiveReadyPolls =
+          status.phase === "ready" ? consecutiveReadyPolls + 1 : 0;
+      } catch {
+        consecutiveReadyPolls = 0;
       } finally {
         if (!cancelled) {
           pollTimer = setTimeout(() => {
             void pollStatus();
-          }, SIDECAR_STATUS_POLL_MS);
+          }, nextDelayMs);
         }
       }
     }

@@ -1,4 +1,8 @@
 import type { LyricPayload, LyricLine } from "@mineradio/shared";
+import {
+  getLyricIndex,
+  selectLyricLineAtPosition,
+} from "../lyrics/lyric-index";
 
 export interface DesktopLyricSnapshot {
   text: string;
@@ -6,18 +10,14 @@ export interface DesktopLyricSnapshot {
   progressSpan: number;
 }
 
-interface SortedLyricLine {
-  line: LyricLine;
-  index: number;
-}
-
 export function buildDesktopLyricSnapshot(
   payload: LyricPayload | null,
   positionMs: number,
   fallbackText: string,
 ): DesktopLyricSnapshot {
-  const sorted = sortedLyricLines(payload);
-  const current = selectDesktopLyricLine(sorted, positionMs);
+  const index = getLyricIndex(payload);
+  const sorted = index.lines;
+  const current = selectLyricLineAtPosition(index, positionMs, { leadMs: 50 });
   if (!current) {
     return fallbackSnapshot(fallbackText);
   }
@@ -34,28 +34,6 @@ export function buildDesktopLyricSnapshot(
 
 export function normalizeDesktopLyricText(text: string): string {
   return String(text || "").replace(/\s+/g, " ").trim();
-}
-
-function sortedLyricLines(payload: LyricPayload | null): SortedLyricLine[] {
-  if (!payload || !Array.isArray(payload.lines)) return [];
-  return payload.lines
-    .map((line) => ({ line }))
-    .filter(({ line }) => Number.isFinite(line.timeMs))
-    .sort((a, b) => a.line.timeMs - b.line.timeMs)
-    .map((entry, index) => ({ ...entry, index }));
-}
-
-function selectDesktopLyricLine(
-  sorted: SortedLyricLine[],
-  positionMs: number,
-): SortedLyricLine | null {
-  let selected: SortedLyricLine | null = null;
-  const now = Number.isFinite(positionMs) ? positionMs : 0;
-  for (const entry of sorted) {
-    if (entry.line.timeMs <= now + 50) selected = entry;
-    else break;
-  }
-  return selected;
 }
 
 function currentLineSpanSeconds(

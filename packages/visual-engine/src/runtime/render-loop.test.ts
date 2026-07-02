@@ -130,6 +130,29 @@ test("render loop clamps dt to 0.05 even when wall gap is large", () => {
 	loop.dispose();
 });
 
+test("adaptive FPS policy skips frames until the configured frame gap elapses", () => {
+	let now = 1000;
+	const { loop, renderer } = makeLoop({
+		now: () => now,
+		getAdaptiveFps: () => 24,
+	});
+	let stepsCalled = 0;
+	loop.registerStep(RenderStepSlot.Ripples, () => { stepsCalled += 1; });
+	now = 1000;
+	loop.stepOnce();
+	now = 1000 + 20;
+	loop.stepOnce();
+	expect(stepsCalled).toBe(0);
+	expect(renderer.renderCount).toBe(0);
+	expect(loop.getPerfState().skipped).toBe(2);
+	now = 1000 + 42;
+	loop.stepOnce();
+	expect(stepsCalled).toBe(1);
+	expect(renderer.renderCount).toBe(1);
+	expect(loop.getPerfState().mode).toBe("24fps");
+	loop.dispose();
+});
+
 test("splash path renders every 520ms and skips step registry", () => {
 	let now = 0;
 	let splashActive = true;

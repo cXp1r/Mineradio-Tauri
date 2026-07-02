@@ -10,6 +10,7 @@ import {
 	deriveSidecarRecoveryNoticeState,
 	desktopLyricsBeatMapKey,
 	isHomeBlankDismissElement,
+	nextSidecarStatusPollDelayMs,
 	shouldUseSecondaryLeftDisplaySeamGuard,
 	shouldShowEmptyHome,
 } from "./App";
@@ -773,6 +774,39 @@ test("deriveSidecarRecoveryNoticeState only marks ready as recovered after an un
 
 	const restartedWhileReady = deriveSidecarRecoveryNoticeState(sidecarStatus({ phase: "ready", restarts: 2 }), firstReady);
 	expect(restartedWhileReady.recovered).toBe(true);
+});
+
+test("nextSidecarStatusPollDelayMs backs off only during stable ready polling", () => {
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "ready" }),
+		consecutiveReadyPolls: 0,
+		documentHidden: false,
+	})).toBe(1500);
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "ready" }),
+		consecutiveReadyPolls: 1,
+		documentHidden: false,
+	})).toBe(3000);
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "ready" }),
+		consecutiveReadyPolls: 3,
+		documentHidden: false,
+	})).toBe(12000);
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "ready" }),
+		consecutiveReadyPolls: 4,
+		documentHidden: true,
+	})).toBe(60000);
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "recovering" }),
+		consecutiveReadyPolls: 4,
+		documentHidden: true,
+	})).toBe(1500);
+	expect(nextSidecarStatusPollDelayMs({
+		status: sidecarStatus({ phase: "error" }),
+		consecutiveReadyPolls: 4,
+		documentHidden: false,
+	})).toBe(1500);
 });
 
 test("applyDesktopWindowShellState mirrors baseline desktop shell classes", async () => {

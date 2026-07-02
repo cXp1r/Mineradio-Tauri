@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
 import type { ProviderId, PodcastProgram, PodcastRadio, Track } from "@mineradio/shared";
 import { SidecarClient } from "../../api/sidecar-client";
 import { isPlayable, playSearchResult } from "../search/play-search-result";
 import { useSearchStore } from "../../stores/search-store";
+import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list";
 
 export type SearchMode = "song" | "netease" | "qq" | "podcast";
 
@@ -28,6 +29,9 @@ const HISTORY_CHIPS: Array<{ label: string; mode?: SearchMode; keyword: string }
 	{ label: "周杰伦", keyword: "周杰伦" },
 	{ label: "播客", mode: "podcast", keyword: "播客" },
 ];
+const SEARCH_RESULT_ROW_HEIGHT = 58;
+const SEARCH_RESULT_VIEWPORT_HEIGHT = 348;
+const SEARCH_RESULT_VIRTUAL_THRESHOLD = 80;
 
 function isPodcastTrack(track: Track): boolean {
 	const candidate = track as Track & { type?: string; programId?: string; radioId?: string };
@@ -46,6 +50,17 @@ function providerFromMode(mode: SearchMode): ProviderId {
 
 function trackArtists(track: Track): string {
 	return track.artists.length > 0 ? track.artists.join(" / ") : "未知艺人";
+}
+
+function virtualListStyle(window: VirtualListWindow): CSSProperties | undefined {
+	return window.virtualized
+		? {
+			maxHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
+			overflowY: "auto",
+			paddingTop: window.paddingTop,
+			paddingBottom: window.paddingBottom,
+		}
+		: undefined;
 }
 
 export async function searchTracksForMode(
@@ -125,6 +140,9 @@ export function SearchShell({
 	const [podcastResults, setPodcastResults] = useState<PodcastRadio[]>([]);
 	const [podcastPrograms, setPodcastPrograms] = useState<PodcastProgram[]>([]);
 	const [podcastCurrentRadio, setPodcastCurrentRadio] = useState<PodcastRadio | null>(null);
+	const [songResultScrollTop, setSongResultScrollTop] = useState(0);
+	const [podcastResultScrollTop, setPodcastResultScrollTop] = useState(0);
+	const [podcastProgramScrollTop, setPodcastProgramScrollTop] = useState(0);
 
 	const runSearch = useCallback(
 		async (nextKeyword: string, nextMode: SearchMode = modeRef.current) => {
@@ -133,6 +151,9 @@ export function SearchShell({
 			modeRef.current = nextMode;
 			setProvider(providerFromMode(nextMode));
 			if (nextMode === "podcast") {
+				setSongResultScrollTop(0);
+				setPodcastResultScrollTop(0);
+				setPodcastProgramScrollTop(0);
 				setResults([]);
 				setPodcastPrograms([]);
 				setPodcastCurrentRadio(null);
@@ -165,6 +186,9 @@ export function SearchShell({
 			setPodcastResults([]);
 			setPodcastPrograms([]);
 			setPodcastCurrentRadio(null);
+			setSongResultScrollTop(0);
+			setPodcastResultScrollTop(0);
+			setPodcastProgramScrollTop(0);
 			if (!trimmed) {
 				setResults([]);
 				setError(null);
@@ -181,7 +205,10 @@ export function SearchShell({
 			setError(null);
 			try {
 				const tracks = await searchTracksForMode(client, nextMode, trimmed, 30);
-				if (searchSeqRef.current === seq) setResults(tracks);
+				if (searchSeqRef.current === seq) {
+					setSongResultScrollTop(0);
+					setResults(tracks);
+				}
 			} catch (e) {
 				if (searchSeqRef.current !== seq) return;
 				const message = e instanceof Error ? e.message : "搜索失败";
@@ -230,6 +257,9 @@ export function SearchShell({
 		setPodcastResults([]);
 		setPodcastPrograms([]);
 		setPodcastCurrentRadio(null);
+		setSongResultScrollTop(0);
+		setPodcastResultScrollTop(0);
+		setPodcastProgramScrollTop(0);
 		setError(null);
 		if (mode === "podcast") {
 			void runSearch(keyword.trim() ? keyword : "", mode);
@@ -274,12 +304,14 @@ export function SearchShell({
 		searchSeqRef.current = seq;
 		setPodcastCurrentRadio(radio);
 		setPodcastPrograms([]);
+		setPodcastProgramScrollTop(0);
 		setLoading(true);
 		setError(null);
 		try {
 			const detail = await (client as Pick<SidecarClient, "podcastPrograms">).podcastPrograms(id, 36, 0);
 			if (searchSeqRef.current !== seq || modeRef.current !== "podcast") return;
 			setPodcastCurrentRadio({ ...radio, ...detail.radio, id, rid: radio.rid || id });
+			setPodcastProgramScrollTop(0);
 			setPodcastPrograms(detail.programs);
 			setLoading(false);
 		} catch (e) {
@@ -321,6 +353,30 @@ export function SearchShell({
 		effectivePeek ? "peek" : "",
 		showResults ? "has-results" : "",
 	].filter(Boolean).join(" ");
+	const songResultWindow = resolveVirtualListWindow({
+		itemCount: results.length,
+		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
+		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
+		scrollTop: songResultScrollTop,
+		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
+	});
+	const visibleSongResults = results.slice(songResultWindow.startIndex, songResultWindow.endIndex);
+	const podcastResultWindow = resolveVirtualListWindow({
+		itemCount: podcastResults.length,
+		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
+		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
+		scrollTop: podcastResultScrollTop,
+		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
+	});
+	const visiblePodcastResults = podcastResults.slice(podcastResultWindow.startIndex, podcastResultWindow.endIndex);
+	const podcastProgramWindow = resolveVirtualListWindow({
+		itemCount: podcastPrograms.length,
+		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
+		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
+		scrollTop: podcastProgramScrollTop,
+		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
+	});
+	const visiblePodcastPrograms = podcastPrograms.slice(podcastProgramWindow.startIndex, podcastProgramWindow.endIndex);
 
 	return (
 		<div id="search-area" className={searchAreaClassName} data-shell="home-search">
@@ -388,9 +444,14 @@ export function SearchShell({
 						</div>
 					) : null}
 					{podcastPrograms.length > 0 ? (
-						<ul className="search-shell-list search-shell-podcast-program-list">
-							{podcastPrograms.map((program, index) => (
-								<li key={`${program.provider}-${program.id}-${program.programId}-${index}`} className="search-shell-row">
+						<ul
+							className="search-shell-list search-shell-podcast-program-list"
+							data-virtualized={podcastProgramWindow.virtualized ? "true" : undefined}
+							onScroll={(event) => setPodcastProgramScrollTop(event.currentTarget.scrollTop)}
+							style={virtualListStyle(podcastProgramWindow)}
+						>
+							{visiblePodcastPrograms.map((program, localIndex) => (
+								<li key={`${program.provider}-${program.id}-${program.programId}-${podcastProgramWindow.startIndex + localIndex}`} className="search-shell-row">
 									<button
 										type="button"
 										className="search-shell-row-btn"
@@ -422,8 +483,13 @@ export function SearchShell({
 						</ul>
 					) : null}
 					{podcastResults.length > 0 && !podcastCurrentRadio ? (
-						<ul className="search-shell-list search-shell-podcast-list">
-							{podcastResults.map((radio) => (
+						<ul
+							className="search-shell-list search-shell-podcast-list"
+							data-virtualized={podcastResultWindow.virtualized ? "true" : undefined}
+							onScroll={(event) => setPodcastResultScrollTop(event.currentTarget.scrollTop)}
+							style={virtualListStyle(podcastResultWindow)}
+						>
+							{visiblePodcastResults.map((radio) => (
 								<li key={radio.id || radio.rid}>
 									<button
 										type="button"
@@ -444,8 +510,14 @@ export function SearchShell({
 						</ul>
 					) : null}
 					{results.length > 0 ? (
-						<ul className="search-shell-list">
-							{results.map((track, index) => {
+						<ul
+							className="search-shell-list"
+							data-virtualized={songResultWindow.virtualized ? "true" : undefined}
+							onScroll={(event) => setSongResultScrollTop(event.currentTarget.scrollTop)}
+							style={virtualListStyle(songResultWindow)}
+						>
+							{visibleSongResults.map((track, localIndex) => {
+								const index = songResultWindow.startIndex + localIndex;
 								const disabled = !isPlayable(track.playableState);
 								const liked = isResultLiked?.(track) === true;
 								const likeBusy = isResultLikeBusy?.(track) === true;

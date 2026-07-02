@@ -106,6 +106,66 @@ test("buildEdgeAndDepthCanvas outputs baseline 256x256 RGBA depth/edge/fg/lumina
 	expect(output.imageData!.data[centerRight + 1]).toBeGreaterThan(0);
 });
 
+test("buildEdgeAndDepthCanvas reuses large Float32 scratch buffers across sequential builds", () => {
+	const srcData = new Uint8ClampedArray(256 * 256 * 4);
+	const source = makeSourceCanvas(256, 256, srcData);
+	const realFloat32Array = globalThis.Float32Array;
+	let largeAllocations = 0;
+	(globalThis as unknown as { Float32Array: Float32ArrayConstructor }).Float32Array = new Proxy(realFloat32Array, {
+		construct(target, args) {
+			if (args[0] === 256 * 256) largeAllocations += 1;
+			return Reflect.construct(target, args);
+		},
+	}) as Float32ArrayConstructor;
+	try {
+		for (let i = 0; i < 2; i++) {
+			const normalized = makeOutputCanvas();
+			normalized.sourceData = srcData;
+			const output = makeOutputCanvas();
+			buildEdgeAndDepthCanvas(source as never, {
+				createCanvas: (width, height) => {
+					const canvas = normalized.width === 0 ? normalized : output;
+					canvas.width = width;
+					canvas.height = height;
+					return canvas as never;
+				},
+			});
+		}
+	} finally {
+		(globalThis as unknown as { Float32Array: Float32ArrayConstructor }).Float32Array = realFloat32Array;
+	}
+	expect(largeAllocations).toBeLessThanOrEqual(3);
+});
+
+test("buildEdgeAndDepthCanvas avoids redundant large Float32 scratch buffers", () => {
+	const srcData = new Uint8ClampedArray(256 * 256 * 4);
+	const source = makeSourceCanvas(256, 256, srcData);
+	const normalized = makeOutputCanvas();
+	normalized.sourceData = srcData;
+	const output = makeOutputCanvas();
+	const realFloat32Array = globalThis.Float32Array;
+	let largeAllocations = 0;
+	(globalThis as unknown as { Float32Array: Float32ArrayConstructor }).Float32Array = new Proxy(realFloat32Array, {
+		construct(target, args) {
+			if (args[0] === 256 * 256) largeAllocations += 1;
+			return Reflect.construct(target, args);
+		},
+	}) as Float32ArrayConstructor;
+	try {
+		buildEdgeAndDepthCanvas(source as never, {
+			createCanvas: (width, height) => {
+				const canvas = normalized.width === 0 ? normalized : output;
+				canvas.width = width;
+				canvas.height = height;
+				return canvas as never;
+			},
+		});
+	} finally {
+		(globalThis as unknown as { Float32Array: Float32ArrayConstructor }).Float32Array = realFloat32Array;
+	}
+	expect(largeAllocations).toBeLessThanOrEqual(3);
+});
+
 test("createCoverDepthTween advances uHasDepth and uAiBoost with baseline smoothstep", () => {
 	const uniforms = {
 		uHasDepth: { value: 0 },

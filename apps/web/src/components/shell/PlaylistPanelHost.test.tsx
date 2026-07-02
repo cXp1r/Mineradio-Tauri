@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import React from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import type { PlaylistDetail, PlaylistSummary, Track } from "@mineradio/shared";
+import type { PlaylistDetail, PlaylistSummary, PodcastCollection, Track } from "@mineradio/shared";
 import { PlaylistPanelHost } from "./PlaylistPanelHost";
 
 function makeTrack(id: string): Track {
@@ -17,6 +17,17 @@ function makeTrack(id: string): Track {
 		durationMs: 1000,
 		qualityHints: [],
 		playableState: "playable",
+	};
+}
+
+function makePodcastCollection(index: number): PodcastCollection {
+	return {
+		key: `podcast-${index}`,
+		title: `播客集合 ${index}`,
+		sub: "Radio",
+		itemType: "radio",
+		count: index,
+		coverUrl: "",
 	};
 }
 
@@ -82,6 +93,36 @@ test("PlaylistPanelHost renders baseline panel ids tabs and queue actions", asyn
 	unmount();
 });
 
+test("PlaylistPanelHost virtualizes large queue panes without changing visible row actions", async () => {
+	const calls: string[] = [];
+	const tracks = Array.from({ length: 240 }, (_, index) => makeTrack(String(index)));
+	const { container, unmount } = await renderPanel(
+		<PlaylistPanelHost
+			open
+			tab="queue"
+			queue={tracks}
+			currentTrack={tracks[0] ?? null}
+			mode="loop"
+			playlists={[]}
+			podcastCollections={[]}
+			onTabChange={() => undefined}
+			onPlayQueueIndex={(index) => calls.push(`play:${index}`)}
+			onInsertQueueNext={(index) => calls.push(`next:${index}`)}
+			onRemoveQueueIndex={(index) => calls.push(`remove:${index}`)}
+		/>,
+	);
+
+	expect(container.querySelector("#queue-list")?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".queue-item").length).toBeLessThan(60);
+	expect(container.querySelector("#queue-list")?.textContent).toContain("Song 0");
+	container.querySelectorAll(".queue-item")[1]?.dispatchEvent(new window.MouseEvent("click", { bubbles: true }));
+	(container.querySelector(".queue-next") as HTMLButtonElement).click();
+	(container.querySelector(".qi-act button:last-child") as HTMLButtonElement).click();
+
+	expect(calls).toEqual(["play:1", "next:0", "remove:0"]);
+	unmount();
+});
+
 test("PlaylistPanelHost expands playlist detail and plays detail tracks", async () => {
 	const playlist: PlaylistSummary = {
 		provider: "netease",
@@ -126,6 +167,45 @@ test("PlaylistPanelHost expands playlist detail and plays detail tracks", async 
 	unmount();
 });
 
+test("PlaylistPanelHost virtualizes large playlist detail panes", async () => {
+	const playlist: PlaylistSummary = {
+		provider: "netease",
+		id: "pl-big",
+		name: "超大歌单",
+		coverUrl: "",
+		trackCount: 600,
+		trackIds: [],
+		subscribed: false,
+	};
+	const tracks = Array.from({ length: 600 }, (_, index) => makeTrack(String(index)));
+	const calls: string[] = [];
+	const { container, unmount } = await renderPanel(
+		<PlaylistPanelHost
+			open
+			tab="playlists"
+			queue={[]}
+			currentTrack={null}
+			mode="loop"
+			playlists={[playlist]}
+			podcastCollections={[]}
+			onTabChange={() => undefined}
+			onLoadPlaylistDetail={async (): Promise<PlaylistDetail> => ({ ...playlist, tracks })}
+			onPlayTracks={(items, index) => calls.push(`${index}:${items.length}`)}
+		/>,
+	);
+
+	(container.querySelector(".pl-card") as HTMLDivElement).click();
+	for (let i = 0; i < 8 && !container.querySelector("[data-pl-detail]"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(container.querySelector(".pl-detail-list")?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".pl-detail-row").length).toBeLessThan(70);
+	(container.querySelector("[data-pl-detail-row=\"1\"]") as HTMLDivElement).click();
+	expect(calls).toEqual(["1:600"]);
+	unmount();
+});
+
 test("PlaylistPanelHost renders baseline podcast tab and opens collections", async () => {
 	const calls: string[] = [];
 	const { container, unmount } = await renderPanel(
@@ -146,5 +226,31 @@ test("PlaylistPanelHost renders baseline podcast tab and opens collections", asy
 	expect(container.querySelector("#podcast-list")?.textContent).toContain("创建的播客");
 	(container.querySelector("[data-podcast-key=\"created\"]") as HTMLDivElement).click();
 	expect(calls).toEqual(["created"]);
+	unmount();
+});
+
+test("PlaylistPanelHost virtualizes large podcast collection panes without changing collection actions", async () => {
+	const calls: string[] = [];
+	const collections = Array.from({ length: 180 }, (_, index) => makePodcastCollection(index));
+	const { container, unmount } = await renderPanel(
+		<PlaylistPanelHost
+			open
+			tab="podcasts"
+			queue={[]}
+			currentTrack={null}
+			mode="loop"
+			playlists={[]}
+			podcastCollections={collections}
+			onTabChange={() => undefined}
+			onPodcastCollectionOpen={(collection) => calls.push(collection.key)}
+		/>,
+	);
+
+	expect(container.querySelector("#podcast-list")?.getAttribute("data-virtualized")).toBe("true");
+	expect(container.querySelectorAll(".podcast-card").length).toBeLessThan(60);
+	expect(container.querySelector("#podcast-list")?.textContent).toContain("播客集合 0");
+	expect(container.querySelector("#podcast-list")?.textContent).not.toContain("播客集合 179");
+	(container.querySelector("[data-podcast-key=\"podcast-1\"]") as HTMLDivElement).click();
+	expect(calls).toEqual(["podcast-1"]);
 	unmount();
 });

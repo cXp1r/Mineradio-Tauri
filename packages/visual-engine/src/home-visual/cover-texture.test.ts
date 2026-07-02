@@ -1,5 +1,5 @@
-import { expect, test } from "bun:test";
-import { createHomeCoverTextureController, coverTextureSizeForResolution, prepareSquareCoverCanvas } from "./cover-texture";
+import { beforeEach, expect, test } from "bun:test";
+import { createHomeCoverTextureController, coverTextureSizeForResolution, prepareSquareCoverCanvas, resetHomeCoverTextureCacheForTests } from "./cover-texture";
 
 function makeTexture(label: string) {
 	return {
@@ -25,6 +25,10 @@ function makeUniforms() {
 		uAiBoost: { value: 0 },
 	};
 }
+
+beforeEach(() => {
+	resetHomeCoverTextureCacheForTests();
+});
 
 test("setCoverUrl('') clears baseline cover-state uniforms without changing texture objects", () => {
 	const uniforms = makeUniforms();
@@ -382,11 +386,33 @@ test("setCoverUrl(url) keeps the heuristic depth target when aiDepth is enabled 
 	expect(uniforms.uAiBoost.value).toBe(0.55);
 });
 
-test("setAiDepthEnabled(true) immediately reruns the current cover through the AI depth path", async () => {
+test("setCoverUrl(url) keeps the heuristic depth target when AI depth merge returns null", async () => {
+	const uniforms = makeUniforms();
+	const heuristicCanvas = { width: 256, height: 256, label: "heuristic" };
+	const aiCanvas = { width: 256, height: 256, label: "ai-depth" };
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async () => ({ width: 64, height: 64 }),
+		buildEdgeDepth: () => heuristicCanvas as never,
+		aiDepthEnabled: true,
+		estimateAiDepth: async () => aiCanvas as never,
+		mergeAiDepth: () => null,
+	});
+
+	ctl.setCoverUrl("https://img.example/a.jpg");
+	await ctl.whenIdle();
+
+	expect(uniforms.uEdgeTex.value.image).toBe(heuristicCanvas);
+	ctl.advanceDepth(0.18);
+	expect(uniforms.uAiBoost.value).toBe(0.55);
+});
+
+test("setAiDepthEnabled(true) reuses the prepared cover and heuristic depth while running AI depth", async () => {
 	const uniforms = makeUniforms();
 	const heuristicCanvas = { width: 256, height: 256, label: "heuristic" };
 	const aiCanvas = { width: 256, height: 256, label: "ai-depth" };
 	const loaded: string[] = [];
+	let depthBuilds = 0;
 	let aiRuns = 0;
 	const ctl = createHomeCoverTextureController({
 		uniforms: uniforms as never,
@@ -394,7 +420,10 @@ test("setAiDepthEnabled(true) immediately reruns the current cover through the A
 			loaded.push(url);
 			return { width: 64, height: 64, src: url };
 		},
-		buildEdgeDepth: () => heuristicCanvas as never,
+		buildEdgeDepth: () => {
+			depthBuilds += 1;
+			return heuristicCanvas as never;
+		},
 		aiDepthEnabled: false,
 		estimateAiDepth: async () => {
 			aiRuns += 1;
@@ -409,24 +438,29 @@ test("setAiDepthEnabled(true) immediately reruns the current cover through the A
 	ctl.setAiDepthEnabled(true);
 	await ctl.whenIdle();
 
-	expect(loaded).toEqual(["https://img.example/a.jpg", "https://img.example/a.jpg"]);
+	expect(loaded).toEqual(["https://img.example/a.jpg"]);
+	expect(depthBuilds).toBe(1);
 	expect(aiRuns).toBe(1);
 	expect(uniforms.uEdgeTex.value.image).toBe(aiCanvas);
 });
 
-test("setAiDepthEnabled(false) reruns the current cover and ignores stale in-flight AI depth", async () => {
+test("setAiDepthEnabled(false) reuses heuristic depth and ignores stale in-flight AI depth", async () => {
 	const uniforms = makeUniforms();
 	const heuristicCanvas = { width: 256, height: 256, label: "heuristic" };
 	const aiCanvas = { width: 256, height: 256, label: "ai-depth" };
 	const aiResolver: { current?: (value: typeof aiCanvas) => void } = {};
 	const loaded: string[] = [];
+	let depthBuilds = 0;
 	const ctl = createHomeCoverTextureController({
 		uniforms: uniforms as never,
 		loadImage: async (url) => {
 			loaded.push(url);
 			return { width: 64, height: 64, src: url };
 		},
-		buildEdgeDepth: () => heuristicCanvas as never,
+		buildEdgeDepth: () => {
+			depthBuilds += 1;
+			return heuristicCanvas as never;
+		},
 		aiDepthEnabled: true,
 		estimateAiDepth: async () => new Promise<typeof aiCanvas>((resolve) => {
 			aiResolver.current = resolve;
@@ -444,11 +478,102 @@ test("setAiDepthEnabled(false) reruns the current cover and ignores stale in-fli
 	await Promise.resolve();
 	await ctl.whenIdle();
 
-	expect(loaded).toEqual(["https://img.example/a.jpg", "https://img.example/a.jpg"]);
+	expect(loaded).toEqual(["https://img.example/a.jpg"]);
+	expect(depthBuilds).toBe(1);
 	expect(uniforms.uEdgeTex.value.image).toBe(heuristicCanvas);
 	expect(uniforms.uAiBoost.value).toBe(0);
 	ctl.advanceDepth(0.18);
 	expect(uniforms.uAiBoost.value).toBe(0.55);
+});
+
+test("setAiDepthEnabled(true) reuses cached AI depth after the current cover was already enhanced", async () => {
+	const uniforms = makeUniforms();
+	const heuristicCanvas = { width: 256, height: 256, label: "heuristic" };
+	const aiCanvas = { width: 256, height: 256, label: "ai-depth" };
+	const mergedAiCanvas = { width: 256, height: 256, label: "merged-ai-depth" };
+	const loaded: string[] = [];
+	let depthBuilds = 0;
+	let aiRuns = 0;
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async (url) => {
+			loaded.push(url);
+			return { width: 64, height: 64, src: url };
+		},
+		buildEdgeDepth: () => {
+			depthBuilds += 1;
+			return heuristicCanvas as never;
+		},
+		aiDepthEnabled: true,
+		estimateAiDepth: async () => {
+			aiRuns += 1;
+			return aiCanvas as never;
+		},
+		mergeAiDepth: () => mergedAiCanvas as never,
+	});
+	ctl.setCoverUrl("https://img.example/a.jpg");
+	await ctl.whenIdle();
+	expect(uniforms.uEdgeTex.value.image).toBe(mergedAiCanvas);
+
+	ctl.setAiDepthEnabled(false);
+	await ctl.whenIdle();
+	expect(uniforms.uEdgeTex.value.image).toBe(heuristicCanvas);
+
+	ctl.setAiDepthEnabled(true);
+	await ctl.whenIdle();
+
+	expect(loaded).toEqual(["https://img.example/a.jpg"]);
+	expect(depthBuilds).toBe(1);
+	expect(aiRuns).toBe(1);
+	expect(uniforms.uEdgeTex.value.image).toBe(mergedAiCanvas);
+});
+
+test("setCoverUrl(url) reuses prepared cover heuristic and AI depth across controllers", async () => {
+	resetHomeCoverTextureCacheForTests();
+	const heuristicCanvas = { width: 256, height: 256, label: "heuristic" };
+	const aiCanvas = { width: 256, height: 256, label: "ai-depth" };
+	const mergedAiCanvas = { width: 256, height: 256, label: "merged-ai-depth" };
+	let loadCount = 0;
+	let depthBuilds = 0;
+	let aiRuns = 0;
+	let mergeCount = 0;
+	const makeController = (uniforms: ReturnType<typeof makeUniforms>) => createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async (url) => {
+			loadCount += 1;
+			return { width: 64, height: 64, src: url };
+		},
+		buildEdgeDepth: () => {
+			depthBuilds += 1;
+			return heuristicCanvas as never;
+		},
+		aiDepthEnabled: true,
+		estimateAiDepth: async () => {
+			aiRuns += 1;
+			return aiCanvas as never;
+		},
+		mergeAiDepth: () => {
+			mergeCount += 1;
+			return mergedAiCanvas as never;
+		},
+	});
+	const firstUniforms = makeUniforms();
+	const first = makeController(firstUniforms);
+	first.setCoverUrl("https://img.example/shared-depth.jpg");
+	await first.whenIdle();
+	expect(firstUniforms.uEdgeTex.value.image).toBe(mergedAiCanvas);
+
+	const secondUniforms = makeUniforms();
+	const second = makeController(secondUniforms);
+	second.setCoverUrl("https://img.example/shared-depth.jpg");
+	await second.whenIdle();
+
+	expect(loadCount).toBe(1);
+	expect(depthBuilds).toBe(1);
+	expect(aiRuns).toBe(1);
+	expect(mergeCount).toBe(1);
+	expect(secondUniforms.uCoverTex.value.image).toEqual({ width: 64, height: 64, src: "https://img.example/shared-depth.jpg" });
+	expect(secondUniforms.uEdgeTex.value.image).toBe(mergedAiCanvas);
 });
 
 test("coverTextureSizeForResolution preserves baseline 256/384/512 thresholds", () => {

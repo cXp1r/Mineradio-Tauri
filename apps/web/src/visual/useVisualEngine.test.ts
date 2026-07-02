@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { RENDER_STEP_ORDER, RenderStepSlot } from "@mineradio/visual-engine";
-import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode } from "./useVisualEngine";
+import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode } from "./useVisualEngine";
 
 test("useVisualEngine wires the dedicated lyric particle render slot between shelf and home visual", async () => {
 	const source = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
@@ -14,12 +14,93 @@ test("useVisualEngine wires the dedicated lyric particle render slot between she
 	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.LyricParticles)).toBeLessThan(RENDER_STEP_ORDER.indexOf(RenderStepSlot.HomeVisual));
 });
 
+test("useVisualEngine routes adaptive FPS through the runtime visual performance policy", async () => {
+	const source = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
+	expect(source).toContain("getAdaptiveFps: () => readVisualPerformancePolicy().adaptiveFps");
+	expect(source).toContain("readRuntimeVisualPerformanceFx()");
+	expect(source).toContain("width: policy.renderWidth ?? opts?.width");
+	expect(source).toContain("height: policy.renderHeight ?? opts?.height");
+	expect(source).not.toContain("getAdaptiveFps: () => 0");
+});
+
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
 	expect(isRuntimeShelfPreviewActive("auto", 0.17)).toBe(true);
 	expect(isRuntimeShelfPreviewActive("auto", 0.16)).toBe(false);
 	expect(isRuntimeShelfPreviewActive("auto", 0)).toBe(false);
 	expect(isRuntimeShelfPreviewActive("always", 0.9)).toBe(false);
 	expect(isRuntimeShelfPreviewActive(undefined, 0.9)).toBe(false);
+});
+
+test("resolveRuntimeVisualPerformancePolicy maps quality and background state to FPS DPR and expensive effects", () => {
+	expect(resolveRuntimeVisualPerformancePolicy({
+		fx: { performanceQuality: "eco", performanceBackground: "auto", bloom: true, aiDepth: true, backCover: true },
+		devicePixelRatio: 2,
+		documentHidden: false,
+		windowFocused: true,
+		prefersReducedMotion: false,
+	})).toEqual({
+		adaptiveFps: 30,
+		pixelRatio: 0.85,
+		bloom: false,
+		aiDepth: false,
+		backCover: false,
+	});
+	expect(resolveRuntimeVisualPerformancePolicy({
+		fx: { performanceQuality: "high", performanceBackground: "auto", bloom: true, aiDepth: true, backCover: true },
+		devicePixelRatio: 2,
+		documentHidden: true,
+		windowFocused: false,
+		prefersReducedMotion: false,
+	})).toEqual({
+		adaptiveFps: 1,
+		pixelRatio: 0.3,
+		renderWidth: 4,
+		renderHeight: 4,
+		bloom: false,
+		aiDepth: false,
+		backCover: false,
+	});
+	expect(resolveRuntimeVisualPerformancePolicy({
+		fx: { performanceQuality: "high", performanceBackground: "auto", bloom: true, aiDepth: true, backCover: true },
+		devicePixelRatio: 2,
+		documentHidden: false,
+		windowFocused: false,
+		prefersReducedMotion: false,
+	})).toEqual({
+		adaptiveFps: 24,
+		pixelRatio: 0.9,
+		bloom: false,
+		aiDepth: false,
+		backCover: false,
+	});
+	expect(resolveRuntimeVisualPerformancePolicy({
+		fx: { performanceQuality: "ultra", performanceBackground: "keep", bloom: true, aiDepth: true, backCover: true },
+		devicePixelRatio: 2,
+		documentHidden: true,
+		windowFocused: false,
+		prefersReducedMotion: false,
+	})).toEqual({
+		adaptiveFps: 0,
+		pixelRatio: 1.35,
+		bloom: true,
+		aiDepth: true,
+		backCover: true,
+	});
+	expect(resolveRuntimeVisualPerformancePolicy({
+		fx: { performanceQuality: "balanced", performanceBackground: "release", bloom: true, aiDepth: true, backCover: true },
+		devicePixelRatio: 2,
+		documentHidden: true,
+		windowFocused: false,
+		prefersReducedMotion: true,
+	})).toEqual({
+		adaptiveFps: 1,
+		pixelRatio: 0.3,
+		renderWidth: 4,
+		renderHeight: 4,
+		bloom: false,
+		aiDepth: false,
+		backCover: false,
+	});
 });
 
 test("resolveSkullShelfCompositionActive follows baseline side shelf composition conditions", () => {

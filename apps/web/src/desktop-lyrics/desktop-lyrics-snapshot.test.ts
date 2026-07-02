@@ -61,3 +61,28 @@ test("buildDesktopLyricSnapshot falls back to current track label", () => {
     progressSpan: 4.8,
   });
 });
+
+test("buildDesktopLyricSnapshot reuses one normalized lyric index across playback ticks", () => {
+  const p = payload([
+    { timeMs: 5000, text: "cached next" },
+    { timeMs: 1000, text: "cached first", durationMs: 3200 },
+    { timeMs: 3000, text: "cached middle", durationMs: 1800 },
+  ]);
+  const originalSort = Array.prototype.sort;
+  let sortCalls = 0;
+  Array.prototype.sort = function patchedSort<T>(
+    this: T[],
+    compareFn?: (a: T, b: T) => number,
+  ): T[] {
+    sortCalls += 1;
+    return originalSort.call(this, compareFn) as T[];
+  };
+  try {
+    expect(buildDesktopLyricSnapshot(p, 1500, "fallback").text).toBe("cached first");
+    expect(buildDesktopLyricSnapshot(p, 3500, "fallback").text).toBe("cached middle");
+    expect(buildDesktopLyricSnapshot(p, 6000, "fallback").text).toBe("cached next");
+    expect(sortCalls).toBe(1);
+  } finally {
+    Array.prototype.sort = originalSort;
+  }
+});

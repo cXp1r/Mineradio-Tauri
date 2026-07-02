@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { beforeEach, expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import type { ThreeFactory } from "../runtime/renderer-setup";
 import type { AudioSnapshot } from "../audio/audio-snapshot";
@@ -7,6 +7,11 @@ import { createHomeVisual } from "./home-visual";
 import { cloneFxState } from "./fx-defaults";
 import { SKULL_PRESET_INDEX } from "./preset-state";
 import { skullBreathOffset } from "./skull-particles";
+import { resetHomeCoverTextureCacheForTests } from "./cover-texture";
+
+beforeEach(() => {
+	resetHomeCoverTextureCacheForTests();
+});
 
 function makeFakeThree(): ThreeFactory {
 	const Points = function (geo: unknown, mat: unknown) {

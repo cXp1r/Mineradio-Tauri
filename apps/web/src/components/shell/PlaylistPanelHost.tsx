@@ -6,8 +6,15 @@ import type {
 	PodcastCollection,
 	Track,
 } from "@mineradio/shared";
+import { resolveVirtualListWindow } from "./virtual-list";
 
 export type PlaylistPanelTab = "queue" | "playlists" | "podcasts";
+const QUEUE_ROW_HEIGHT = 62;
+const QUEUE_VIEWPORT_HEIGHT = 420;
+const DETAIL_ROW_HEIGHT = 54;
+const DETAIL_VIEWPORT_HEIGHT = 460;
+const PODCAST_COLLECTION_ROW_HEIGHT = 62;
+const PODCAST_COLLECTION_VIEWPORT_HEIGHT = 420;
 
 export interface PlaylistPanelHostProps {
 	open: boolean;
@@ -59,6 +66,9 @@ function detailKey(playlist: PlaylistSummary): string {
 }
 
 export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
+	const [queueScrollTop, setQueueScrollTop] = useState(0);
+	const [detailScrollTop, setDetailScrollTop] = useState(0);
+	const [podcastScrollTop, setPodcastScrollTop] = useState(0);
 	const [detail, setDetail] = useState<{
 		key: string;
 		playlist: PlaylistSummary;
@@ -72,6 +82,7 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 			setDetail(null);
 			return;
 		}
+		setDetailScrollTop(0);
 		setDetail({ key, playlist, loading: true, tracks: [] });
 		try {
 			const loaded = await props.onLoadPlaylistDetail?.(playlist);
@@ -87,8 +98,24 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 		}
 	}, [detail, props]);
 
-	const renderQueue = () => (
-		<div id="queue-pane">
+	const renderQueue = () => {
+		const window = resolveVirtualListWindow({
+			itemCount: props.queue.length,
+			rowHeight: QUEUE_ROW_HEIGHT,
+			viewportHeight: QUEUE_VIEWPORT_HEIGHT,
+			scrollTop: queueScrollTop,
+		});
+		const visibleQueue = props.queue.slice(window.startIndex, window.endIndex);
+		const virtualStyle = window.virtualized
+			? {
+				maxHeight: QUEUE_VIEWPORT_HEIGHT,
+				overflowY: "auto" as const,
+				paddingTop: window.paddingTop,
+				paddingBottom: window.paddingBottom,
+			}
+			: undefined;
+		return (
+			<div id="queue-pane">
 			<div className="queue-toolbar">
 				<div id="play-mode-chip" className="queue-chip">{modeLabel(props.mode)}</div>
 				<div className="queue-toolbar-actions">
@@ -96,10 +123,17 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 					<button className="fx-mini-btn ghost" type="button" onClick={props.onClearQueue}>清空</button>
 				</div>
 			</div>
-			<div id="queue-list" className="queue-list">
+			<div
+				id="queue-list"
+				className="queue-list"
+				data-virtualized={window.virtualized ? "true" : undefined}
+				onScroll={(event) => setQueueScrollTop(event.currentTarget.scrollTop)}
+				style={virtualStyle}
+			>
 				{props.queue.length === 0 ? (
 					<div className="playlist-empty">队列为空，搜索后点 + 设为下一首</div>
-				) : props.queue.map((track, index) => {
+				) : visibleQueue.map((track, localIndex) => {
+					const index = window.startIndex + localIndex;
 					const now = trackKey(track) === trackKey(props.currentTrack);
 					const artist = track.artists.join(" / ") || "未知歌手";
 					return (
@@ -125,11 +159,27 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 				})}
 			</div>
 		</div>
-	);
+		);
+	};
 
 	const renderPlaylistDetail = (playlist: PlaylistSummary) => {
 		if (!detail || detail.key !== detailKey(playlist)) return null;
 		const tracks = detail.tracks;
+		const window = resolveVirtualListWindow({
+			itemCount: tracks.length,
+			rowHeight: DETAIL_ROW_HEIGHT,
+			viewportHeight: DETAIL_VIEWPORT_HEIGHT,
+			scrollTop: detailScrollTop,
+		});
+		const visibleTracks = tracks.slice(window.startIndex, window.endIndex);
+		const virtualStyle = window.virtualized
+			? {
+				maxHeight: DETAIL_VIEWPORT_HEIGHT,
+				overflowY: "auto" as const,
+				paddingTop: window.paddingTop,
+				paddingBottom: window.paddingBottom,
+			}
+			: undefined;
 		return (
 			<div className="pl-inline-detail" data-pl-detail={detail.key}>
 				<div className="pl-detail-sticky">
@@ -147,12 +197,19 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 						</button>
 					</div>
 				</div>
-				<div className="pl-detail-list">
+				<div
+					className="pl-detail-list"
+					data-virtualized={window.virtualized ? "true" : undefined}
+					onScroll={(event) => setDetailScrollTop(event.currentTarget.scrollTop)}
+					style={virtualStyle}
+				>
 					{detail.loading ? (
 						<div className="pl-detail-row"><div className="pl-detail-row-title">正在载入歌单</div></div>
 					) : tracks.length === 0 ? (
 						<div className="playlist-empty">歌单暂无可播放歌曲</div>
-					) : tracks.map((track, index) => (
+					) : visibleTracks.map((track, localIndex) => {
+						const index = window.startIndex + localIndex;
+						return (
 						<div className="pl-detail-row" data-pl-detail-row={index} key={`${track.provider}:${track.id}:${index}`} onClick={() => props.onPlayTracks?.(tracks, index, detail.playlist.name)}>
 							{coverNode(track.coverUrl, "pl-detail-row-cover")}
 							<div className="pl-detail-row-main">
@@ -163,7 +220,8 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 								}}>{track.artists.join(" / ") || "未知歌手"}</button>
 							</div>
 						</div>
-					))}
+					);
+					})}
 				</div>
 			</div>
 		);
@@ -206,27 +264,49 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 		);
 	};
 
-	const renderPodcasts = () => (
-		<div id="podcast-pane">
-			<div className="queue-toolbar">
-				<div className="queue-chip">收藏 / 创建 / 喜欢</div>
-				<button className="fx-mini-btn ghost" type="button" onClick={props.onRefresh}>刷新</button>
-			</div>
-			<div id="podcast-list">
-				{props.podcastCollections.length === 0 ? (
-					<div className="playlist-empty">登录后显示我的播客</div>
-				) : props.podcastCollections.map((collection) => (
-					<div key={collection.key} className="pl-card podcast-card" data-podcast-key={collection.key} onClick={() => props.onPodcastCollectionOpen?.(collection)}>
-						{coverNode(collection.coverUrl)}
-						<div className="pl-card-main">
-							<div className="pl-name">{collection.title}</div>
-							<div className="pl-sub">{collection.count || 0} 项 · {collection.sub || (collection.itemType === "voice" ? "声音" : "播客")}</div>
+	const renderPodcasts = () => {
+		const window = resolveVirtualListWindow({
+			itemCount: props.podcastCollections.length,
+			rowHeight: PODCAST_COLLECTION_ROW_HEIGHT,
+			viewportHeight: PODCAST_COLLECTION_VIEWPORT_HEIGHT,
+			scrollTop: podcastScrollTop,
+		});
+		const visibleCollections = props.podcastCollections.slice(window.startIndex, window.endIndex);
+		const virtualStyle = window.virtualized
+			? {
+				maxHeight: PODCAST_COLLECTION_VIEWPORT_HEIGHT,
+				overflowY: "auto" as const,
+				paddingTop: window.paddingTop,
+				paddingBottom: window.paddingBottom,
+			}
+			: undefined;
+		return (
+			<div id="podcast-pane">
+				<div className="queue-toolbar">
+					<div className="queue-chip">收藏 / 创建 / 喜欢</div>
+					<button className="fx-mini-btn ghost" type="button" onClick={props.onRefresh}>刷新</button>
+				</div>
+				<div
+					id="podcast-list"
+					data-virtualized={window.virtualized ? "true" : undefined}
+					onScroll={(event) => setPodcastScrollTop(event.currentTarget.scrollTop)}
+					style={virtualStyle}
+				>
+					{props.podcastCollections.length === 0 ? (
+						<div className="playlist-empty">登录后显示我的播客</div>
+					) : visibleCollections.map((collection) => (
+						<div key={collection.key} className="pl-card podcast-card" data-podcast-key={collection.key} onClick={() => props.onPodcastCollectionOpen?.(collection)}>
+							{coverNode(collection.coverUrl)}
+							<div className="pl-card-main">
+								<div className="pl-name">{collection.title}</div>
+								<div className="pl-sub">{collection.count || 0} 项 · {collection.sub || (collection.itemType === "voice" ? "声音" : "播客")}</div>
+							</div>
 						</div>
-					</div>
-				))}
+					))}
+				</div>
 			</div>
-		</div>
-	);
+		);
+	};
 
 	return (
 		<div id="playlist-panel" className={`${props.open ? "show" : ""}${props.pinned ? " pinned" : ""}`.trim()}>

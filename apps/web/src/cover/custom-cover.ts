@@ -2,6 +2,8 @@ import type { Track } from "@mineradio/shared";
 import { trackCustomLyricKey } from "../lyrics/custom-lyrics";
 
 export const CUSTOM_COVER_STORE_KEY = "mineradio-custom-covers";
+export const CUSTOM_COVER_MAX_DATA_URL_CHARS = 900_000;
+export const CUSTOM_COVER_STORE_MAX_CHARS = 2_000_000;
 
 type RuntimeCoverTrack = Track & {
 	customCover?: string;
@@ -20,12 +22,39 @@ function readCustomCoverStore(): Record<string, string> {
 		const parsed = JSON.parse(s.getItem(CUSTOM_COVER_STORE_KEY) || "{}") as Record<string, unknown>;
 		const out: Record<string, string> = {};
 		for (const [key, value] of Object.entries(parsed)) {
-			if (typeof value === "string" && value.startsWith("data:image/")) out[key] = value;
+			if (isPersistableCustomCover(value)) out[key] = value;
 		}
 		return out;
 	} catch {
 		return {};
 	}
+}
+
+function isCustomCoverDataUrl(value: unknown): value is string {
+	return typeof value === "string" && value.startsWith("data:image/");
+}
+
+function isPersistableCustomCover(value: unknown): value is string {
+	return isCustomCoverDataUrl(value) && value.length <= CUSTOM_COVER_MAX_DATA_URL_CHARS;
+}
+
+function customCoverStoreEntrySize(key: string, value: string, hasPrevious: boolean): number {
+	return JSON.stringify(key).length + 1 + JSON.stringify(value).length + (hasPrevious ? 1 : 0);
+}
+
+function pruneCustomCoverStore(store: Record<string, string>): Record<string, string> {
+	const entries = Object.entries(store).filter(([, value]) => isPersistableCustomCover(value));
+	const kept: Array<[string, string]> = [];
+	let remaining = CUSTOM_COVER_STORE_MAX_CHARS - 2;
+	for (let i = entries.length - 1; i >= 0; i -= 1) {
+		const [key, value] = entries[i];
+		const size = customCoverStoreEntrySize(key, value, kept.length > 0);
+		if (size > remaining) continue;
+		kept.push([key, value]);
+		remaining -= size;
+	}
+	kept.reverse();
+	return Object.fromEntries(kept);
 }
 
 function writeCustomCoverStore(store: Record<string, string>): boolean {
@@ -50,7 +79,7 @@ export function customCoverKeyForTrack(track: Track | null | undefined): string 
 export function getCustomCoverForTrack(track: Track | null | undefined): string {
 	if (!track) return "";
 	const runtime = track as RuntimeCoverTrack;
-	if (runtime.customCover?.startsWith("data:image/")) return runtime.customCover;
+	if (isCustomCoverDataUrl(runtime.customCover)) return runtime.customCover;
 	const key = customCoverKeyForTrack(track);
 	return key ? readCustomCoverStore()[key] ?? "" : "";
 }
@@ -75,10 +104,12 @@ export function saveCustomCoverForTrack(track: Track, dataUrl: string): { track:
 	const key = customCoverKeyForTrack(track);
 	const runtime = track as RuntimeCoverTrack;
 	let saved = false;
-	if (key && dataUrl.startsWith("data:image/")) {
+	if (key && isPersistableCustomCover(dataUrl)) {
 		const store = readCustomCoverStore();
+		delete store[key];
 		store[key] = dataUrl;
-		saved = writeCustomCoverStore(store);
+		const pruned = pruneCustomCoverStore(store);
+		saved = pruned[key] === dataUrl && writeCustomCoverStore(pruned);
 	}
 	return {
 		saved,

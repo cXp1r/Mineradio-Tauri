@@ -1,8 +1,10 @@
 import { create } from "zustand";
 import type { LyricPayload } from "@mineradio/shared";
+import { getLyricIndex, type NormalizedLyricIndex } from "../lyrics/lyric-index";
 
 export interface LyricsState {
 	payload: LyricPayload | null;
+	index: NormalizedLyricIndex;
 	loading: boolean;
 	error: string | null;
 	currentIndex: number;
@@ -15,12 +17,14 @@ export interface LyricsState {
 
 export const useLyricsStore = create<LyricsState>()((set) => ({
 	payload: null,
+	index: getLyricIndex(null),
 	loading: false,
 	error: null,
 	currentIndex: -1,
 	setPayload: (payload) =>
 		set({
 			payload,
+			index: getLyricIndex(payload),
 			loading: false,
 			error: null,
 			currentIndex: -1,
@@ -28,5 +32,12 @@ export const useLyricsStore = create<LyricsState>()((set) => ({
 	setLoading: (loading) => set({ loading }),
 	setError: (error) => set({ error, loading: false }),
 	setCurrentIndex: (index) => set({ currentIndex: index }),
-	reset: () => set({ payload: null, loading: false, error: null, currentIndex: -1 }),
+	reset: () =>
+		set({
+			payload: null,
+			index: getLyricIndex(null),
+			loading: false,
+			error: null,
+			currentIndex: -1,
+		}),
 }));

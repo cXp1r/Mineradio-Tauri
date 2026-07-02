@@ -1,24 +1,27 @@
-import { memo, useMemo, type ReactElement } from "react";
+import { memo, useMemo, useState, type CSSProperties, type ReactElement } from "react";
 import type { LyricPayload } from "@mineradio/shared";
-import { selectCurrentIndex } from "../../lyrics/select-current-index";
+import { getLyricIndex, selectLyricIndexAtPosition } from "../../lyrics/lyric-index";
+import { resolveVirtualListWindow } from "../shell/virtual-list";
 
 export interface LyricViewProps {
 	payload: LyricPayload | null;
 	positionMs: number;
 }
 
+const LYRIC_ROW_HEIGHT = 34;
+const LYRIC_VIEWPORT_HEIGHT = 360;
+const LYRIC_VIRTUAL_THRESHOLD = 80;
+
 function LyricViewImpl({ payload, positionMs }: LyricViewProps): ReactElement {
-	const sortedLines = useMemo(() => {
-		if (!payload || payload.lines.length === 0) return null;
-		return [...payload.lines].sort((a, b) => a.timeMs - b.timeMs);
-	}, [payload]);
+	const [scrollTop, setScrollTop] = useState(0);
+	const lyricIndex = useMemo(() => getLyricIndex(payload), [payload]);
 
 	const currentIndex = useMemo(
-		() => selectCurrentIndex(positionMs, payload),
-		[positionMs, payload],
+		() => selectLyricIndexAtPosition(lyricIndex, positionMs),
+		[positionMs, lyricIndex],
 	);
 
-	if (!sortedLines || sortedLines.length === 0) {
+	if (lyricIndex.lines.length === 0) {
 		return (
 			<div className="lyric-view" data-empty="true">
 				<p className="lyric-empty">no lyrics</p>
@@ -26,10 +29,34 @@ function LyricViewImpl({ payload, positionMs }: LyricViewProps): ReactElement {
 		);
 	}
 
+	const window = resolveVirtualListWindow({
+		itemCount: lyricIndex.lines.length,
+		rowHeight: LYRIC_ROW_HEIGHT,
+		viewportHeight: LYRIC_VIEWPORT_HEIGHT,
+		scrollTop,
+		threshold: LYRIC_VIRTUAL_THRESHOLD,
+	});
+	const visibleLines = lyricIndex.lines.slice(window.startIndex, window.endIndex);
+	const virtualStyle: CSSProperties | undefined = window.virtualized
+		? {
+			maxHeight: LYRIC_VIEWPORT_HEIGHT,
+			overflowY: "auto",
+			paddingTop: window.paddingTop,
+			paddingBottom: window.paddingBottom,
+		}
+		: undefined;
+
 	return (
 		<div className="lyric-view">
-			<ul className="lyric-lines">
-				{sortedLines.map((line, index) => (
+			<ul
+				className="lyric-lines"
+				data-virtualized={window.virtualized ? "true" : undefined}
+				onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+				style={virtualStyle}
+			>
+				{visibleLines.map(({ line }, localIndex) => {
+					const index = window.startIndex + localIndex;
+					return (
 					<li
 						key={`${index}-${line.timeMs}`}
 						className={index === currentIndex ? "lyric-line lyric-current" : "lyric-line"}
@@ -37,7 +64,8 @@ function LyricViewImpl({ payload, positionMs }: LyricViewProps): ReactElement {
 					>
 						{line.text || ""}
 					</li>
-				))}
+				);
+				})}
 			</ul>
 		</div>
 	);

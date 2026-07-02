@@ -106,8 +106,33 @@ test("createSidecarLogger is a no-op without log file and writes sanitized event
   const path = await tempLogPath();
   const logger = createSidecarLogger({ filePath: path, now: () => "2026-06-29T00:00:00.000Z" });
   await logger.log({ event: "request", path: "/providers/qq/session-cookie", cookie: "qqmusic_key=secret" });
+  await logger.flush?.();
   const text = await readFile(path, "utf8");
   expect(text).toContain("/providers/qq/session-cookie");
   expect(text).not.toContain("qqmusic_key");
   expect(text).not.toContain("secret");
+});
+
+test("createSidecarLogger batches entries off the request path until flushed", async () => {
+  const path = await tempLogPath();
+  const logger = createSidecarLogger({
+    filePath: path,
+    flushDelayMs: 1000,
+    now: () => "2026-06-29T00:00:00.000Z"
+  });
+
+  await logger.log({ event: "request", index: 1 });
+  await logger.log({ event: "request", index: 2 });
+  let existsBeforeFlush = true;
+  try {
+    await readFile(path, "utf8");
+  } catch {
+    existsBeforeFlush = false;
+  }
+  expect(existsBeforeFlush).toBe(false);
+
+  await logger.flush?.();
+
+  const lines = await readLines(path);
+  expect(lines.map((line) => line.index)).toEqual([1, 2]);
 });
