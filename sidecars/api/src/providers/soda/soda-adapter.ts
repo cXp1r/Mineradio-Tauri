@@ -14,6 +14,7 @@ import {
   type SongUrlOptions,
   type SongUrlResult
 } from "../provider-adapter";
+import { getProviderCookie } from "../../services/auth-session";
 import { createSodaClient, type SodaClient, type SodaClientDeps } from "./soda-client";
 import { mapSodaLyricToPayload, mapSodaPlaylistDetailToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, normalizeProviderImageUrl, type SodaPlaylistBody, type SodaPlaylistDetailBody, type SodaSong } from "./map";
 
@@ -383,6 +384,6 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
 
 export const sodaAdapter: ProviderAdapter = createSodaAdapter({
   getConfig() {
-    return {};
+    return { cookie: getProviderCookie("soda") };
   }
 });

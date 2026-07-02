@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { clearRuntimeProviderCookie, getProviderCookie, setRuntimeProviderCookie } from "../../services/auth-session";
 import { ProviderNotImplementedError } from "../provider-adapter";
 import { createSodaAdapter } from "./soda-adapter";
 import { createSodaClient } from "./soda-client";
@@ -544,6 +545,41 @@ test("soda adapter maps loginStatus from client response", async () => {
     vipLabel: "svip",
     vipLevelName: "svip"
   });
+});
+
+test("soda adapter loginStatus can use runtime session cookie config", async () => {
+  clearRuntimeProviderCookie("soda");
+  setRuntimeProviderCookie("soda", "soda_session=abc123");
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: getProviderCookie("soda") };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({
+        status_code: 0,
+        my_info: {
+          id: "user-runtime",
+          nickname: "Runtime Soda"
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  try {
+    const status = await adapter.loginStatus();
+
+    expect(status.loggedIn).toBe(true);
+    expect(status.userId).toBe("user-runtime");
+    expect(calls.length).toBe(1);
+    expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+  } finally {
+    clearRuntimeProviderCookie("soda");
+  }
 });
 
 test("soda adapter checkSongLikes uses track_v2 state.is_collected", async () => {
