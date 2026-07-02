@@ -71,6 +71,22 @@ function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
   return player;
 }
 
+function readSodaCollectedState(resp: unknown): boolean | undefined {
+  const root = asObj(resp);
+  if (!root) return undefined;
+  const data = asObj(root.data) ?? root;
+  const state = asObj(data.state) ?? asObj(root.state);
+  const value = state?.is_collected;
+  if (typeof value === "boolean") return value;
+  if (typeof value === "number") return value > 0;
+  if (typeof value === "string") {
+    const text = value.trim().toLowerCase();
+    if (text === "1" || text === "true" || text === "yes" || text === "y") return true;
+    if (text === "0" || text === "false" || text === "no" || text === "n" || text === "") return false;
+  }
+  return undefined;
+}
+
 function readSodaSearchList(body: unknown): unknown[] {
   const root = asObj(body);
   if (!root) return [];
@@ -313,8 +329,43 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
         code: resp.status
       };
     },
-    async checkSongLikes(_: string[]): Promise<SongLikeCheckAck> {
-      return fail("checkSongLikes");
+    async checkSongLikes(ids: string[]): Promise<SongLikeCheckAck> {
+      const cfg = deps.getConfig();
+      if (!cfg.cookie) {
+        throw new ProviderError(SODA_PROVIDER_ID, "LOGIN_REQUIRED", "soda like-check requires login", {
+          retryable: true,
+          action: "login"
+        });
+      }
+      const cleanIds = ids.map(String).map((id) => id.trim()).filter(Boolean);
+      if (cleanIds.length === 0) {
+        return { provider: SODA_PROVIDER_ID, ids: [], liked: {} };
+      }
+
+      const settled = await Promise.allSettled(
+        cleanIds.map(async (id) => {
+          const resp = await client.trackDetail(id);
+          const collected = readSodaCollectedState(resp.body);
+          return [id, collected === true] as const;
+        })
+      );
+
+      const liked: Record<string, boolean> = {};
+      for (const result of settled) {
+        if (result.status === "fulfilled") {
+          const [id, collected] = result.value;
+          liked[id] = collected;
+          continue;
+        }
+        const msg = result.reason instanceof Error ? result.reason.message : String(result.reason);
+        throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda like-check failed: ${msg}`);
+      }
+
+      return {
+        provider: SODA_PROVIDER_ID,
+        ids: cleanIds,
+        liked
+      };
     },
     async loginStatus(): Promise<ProviderLoginStatus> {
       const resp = await client.loginStatus();

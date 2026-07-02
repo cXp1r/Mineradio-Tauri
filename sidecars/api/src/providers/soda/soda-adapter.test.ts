@@ -517,6 +517,48 @@ test("soda adapter maps loginStatus from client response", async () => {
   });
 });
 
+test("soda adapter checkSongLikes uses track_v2 state.is_collected", async () => {
+  const calls: string[] = [];
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async (trackId) => {
+        calls.push(trackId);
+        return {
+          body: {
+            data: {
+              state: {
+                is_collected: trackId === "t-1"
+              }
+            }
+          }
+        };
+      },
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const ack = await adapter.checkSongLikes!(["t-1", "t-2"]);
+  expect(ack).toEqual({
+    provider: "soda",
+    ids: ["t-1", "t-2"],
+    liked: {
+      "t-1": true,
+      "t-2": false
+    }
+  });
+  expect(calls).toEqual(["t-1", "t-2"]);
+});
+
 test("soda adapter maps lyric payload from client detail response", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
