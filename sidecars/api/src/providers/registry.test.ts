@@ -21,6 +21,15 @@ test("capability matrix: netease, qq, and soda are registered", () => {
   expect(qq?.available).toBe(true);
   expect(qq?.capabilities.length).toBeGreaterThan(0);
   expect(soda).toBeDefined();
-  expect(soda?.available).toBe(false);
-  expect(soda?.capabilities).toEqual([]);
+  expect(soda?.available).toBe(true);
+  expect(soda?.capabilities).toEqual([
+    "search",
+    "songUrl",
+    "lyric",
+    "playlistList",
+    "playlistDetail",
+    "loginStatus",
+    "logout",
+    "like"
+  ]);
 });

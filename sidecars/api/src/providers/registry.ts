@@ -38,7 +38,16 @@ const QQ_CAPABILITIES: ProviderCapability[] = [
   "logout"
 ];
 
-const SODA_CAPABILITIES: ProviderCapability[] = [];
+const SODA_CAPABILITIES: ProviderCapability[] = [
+  "search",
+  "songUrl",
+  "lyric",
+  "playlistList",
+  "playlistDetail",
+  "loginStatus",
+  "logout",
+  "like"
+];
 
 export function buildCapabilityMatrix(): CapabilityMatrix {
   const entries: ProviderStatusEntry[] = [
@@ -56,9 +65,9 @@ export function buildCapabilityMatrix(): CapabilityMatrix {
     },
     {
       providerId: "soda",
-      available: false,
+      available: true,
       capabilities: SODA_CAPABILITIES,
-      message: "scaffold"
+      message: "online"
     }
   ];
   return { version: "0.1.0", providers: entries };

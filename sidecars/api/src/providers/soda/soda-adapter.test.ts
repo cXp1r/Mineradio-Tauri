@@ -85,6 +85,35 @@ test("soda client lyric requests qishui track detail with track id", async () =>
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client songUrl delegates to qishui track detail with track id", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({
+        data: {
+          track_player: {
+            url_player_info: "https://api.qishui.com/mock/url-player-info"
+          }
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.songUrl("track-1");
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/track_v2");
+  expect(url.searchParams.get("track_id")).toBe("track-1");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda adapter songUrl resolves track_v2 url_player_info and returns main play url", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
