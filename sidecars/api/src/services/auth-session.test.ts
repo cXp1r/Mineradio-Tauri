@@ -33,9 +33,17 @@ test("getProviderCookie prefers runtime cookie over env fallback", () => {
   });
 });
 
+test("getProviderCookie supports soda env fallback", () => {
+  withEnv("MINERADIO_SODA_COOKIE", "soda_session=env", () => {
+    clearRuntimeProviderCookie("soda");
+    expect(getProviderCookie("soda")).toBe("soda_session=env");
+  });
+});
+
 test("runtime session rejects blank cookie and clear removes provider only", () => {
   clearRuntimeProviderCookie("netease");
   clearRuntimeProviderCookie("qq");
+  clearRuntimeProviderCookie("soda");
   setRuntimeProviderCookie("qq", "uin=123; qqmusic_key=runtime");
 
   expect(() => setRuntimeProviderCookie("netease", "   ")).toThrow("EMPTY_COOKIE");

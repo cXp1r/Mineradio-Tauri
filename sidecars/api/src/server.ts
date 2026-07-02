@@ -60,6 +60,7 @@ import {
 } from "./services/auth-session";
 import { neteaseQrLogin, type NeteaseQrLoginService } from "./services/netease-qr-login";
 import { qqQrLogin, type QqQrLoginService } from "./services/qq-qr-login";
+import { sodaQrLogin, type SodaQrLoginService } from "./services/soda-qr-login";
 
 export type RouteHandlerDeps = {
   crossSourceResolver?: CrossSourceResolver;
@@ -71,6 +72,7 @@ export type RouteHandlerDeps = {
   discoverRequester?: DiscoverRequester;
   neteaseQrLogin?: NeteaseQrLoginService;
   qqQrLogin?: QqQrLoginService;
+  sodaQrLogin?: SodaQrLoginService;
   logger?: SidecarLogger;
   now?: () => number;
 };
@@ -82,9 +84,11 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const providerAdapters = deps.providerAdapters ?? providers;
   const weatherRadioService = deps.weatherRadio ?? weatherRadio;
   const podcast = { ...podcastService, ...(deps.podcast ?? {}) };
-  const qrLoginByProvider: Record<ProviderId, NeteaseQrLoginService | QqQrLoginService> = {
+  type AnyQrLoginService = NeteaseQrLoginService | QqQrLoginService | SodaQrLoginService;
+  const qrLoginByProvider: Record<ProviderId, AnyQrLoginService> = {
     netease: deps.neteaseQrLogin ?? neteaseQrLogin,
-    qq: deps.qqQrLogin ?? qqQrLogin
+    qq: deps.qqQrLogin ?? qqQrLogin,
+    soda: deps.sodaQrLogin ?? sodaQrLogin
   };
   const logger = deps.logger ?? createSidecarLogger();
 

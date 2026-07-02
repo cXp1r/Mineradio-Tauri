@@ -33,8 +33,8 @@ test("GET /health returns 200 with both providers", async () => {
   expect(r.headers.get("access-control-allow-origin")).toBe("*");
   const b = await body(r);
   expect(b.ok).toBe(true);
-  expect(b.providers).toEqual(["netease", "qq"]);
-  expect(b.providerStatus.providers.map((p: { providerId: string }) => p.providerId)).toEqual(["netease", "qq"]);
+  expect(b.providers).toEqual(["netease", "qq", "soda"]);
+  expect(b.providerStatus.providers.map((p: { providerId: string }) => p.providerId)).toEqual(["netease", "qq", "soda"]);
   expect(b.providerStatus.providers[0].capabilities).toContain("search");
 });
 
@@ -438,6 +438,42 @@ test("QQ QR login routes return key image and poll status without exposing cooki
   });
   expect(JSON.stringify(checked)).not.toContain("qqmusic_key");
   expect(JSON.stringify(checked)).not.toContain("cookie");
+});
+
+test("Soda QR login routes return key image and poll status without exposing cookies", async () => {
+  const handler = createRouteHandler({
+    sodaQrLogin: {
+      createKey: async () => ({ provider: "soda", key: "soda-qr-key-1" }),
+      createImage: async (key: string) => ({
+        provider: "soda",
+        key,
+        img: "data:image/png;base64,soda"
+      }),
+      check: async (key: string) => ({
+        provider: "soda",
+        key,
+        code: 803,
+        message: "login success",
+        loggedIn: true,
+        stored: true
+      })
+    }
+  });
+
+  const key = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-key")));
+  expect(key).toEqual({ ok: true, data: { provider: "soda", key: "soda-qr-key-1" } });
+
+  const image = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-create?key=soda-qr-key-1")));
+  expect(image.data.img).toBe("data:image/png;base64,soda");
+
+  const checked = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-check?key=soda-qr-key-1")));
+  expect(checked.data).toMatchObject({
+    provider: "soda",
+    key: "soda-qr-key-1",
+    code: 803,
+    loggedIn: true,
+    stored: true
+  });
 });
 
 test("POST /providers/qq/session-cookie stores runtime cookie without echoing secrets", async () => {
@@ -1349,16 +1385,18 @@ test("POST /providers/netease/login-status (method mismatch) returns 404", async
   expect(r.status).toBe(404);
 });
 
-test("GET /providers/capabilities returns 200 matrix with both netease and qq online (post-A6)", async () => {
+test("GET /providers/capabilities returns 200 matrix with netease, qq, and soda", async () => {
   const r = await call("/providers/capabilities");
   expect(r.status).toBe(200);
   const b = await body(r);
   expect(b.ok).toBe(true);
-  expect(b.data.providers.length).toBe(2);
+  expect(b.data.providers.length).toBe(3);
   const netease = b.data.providers.find((e: { providerId: string }) => e.providerId === "netease");
   const qq = b.data.providers.find((e: { providerId: string }) => e.providerId === "qq");
+  const soda = b.data.providers.find((e: { providerId: string }) => e.providerId === "soda");
   expect(netease.available).toBe(true);
   expect(qq.available).toBe(true);
+  expect(soda.available).toBe(false);
 });
 
 test("GET /diagnostics returns 200 and contains none of the forbidden cookie/auth keys", async () => {
