@@ -248,6 +248,29 @@ test("soda client playlistDetail requests qishui playlist detail with playlist i
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda client loginStatus requests qishui me endpoint with cookie", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      return new Response(JSON.stringify({ status_code: 0, my_info: {}, my_stats: {} }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  await client.loginStatus();
+  const url = new URL(calls[0]?.input ?? "");
+  expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/me");
+  expect(url.searchParams.get("aid")).toBe("386088");
+  expect(calls[0]?.init?.method).toBe("GET");
+  expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
 test("soda client collectionMedia posts collection body to favorite and delete endpoints", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
@@ -442,6 +465,55 @@ test("soda adapter maps playlistDetail from client response", async () => {
         playableState: "unknown"
       }
     ]
+  });
+});
+
+test("soda adapter maps loginStatus from client response", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({
+        body: {
+          status_code: 0,
+          my_info: {
+            id: "user-1",
+            nickname: "Soda User",
+            medium_avatar_url: { urls: ["//cdn.example.com/avatar-md.jpg"], uri: "" },
+            larger_avatar_url: { urls: ["//cdn.example.com/avatar-lg.jpg"], uri: "" },
+            is_vip: true,
+            vip_stage: "svip"
+          },
+          my_stats: {
+            count_all_liked: 99
+          }
+        }
+      }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const status = await adapter.loginStatus();
+  expect(status).toEqual({
+    provider: "soda",
+    loggedIn: true,
+    nickname: "Soda User",
+    avatarUrl: "https://cdn.example.com/avatar-md.jpg",
+    userId: "user-1",
+    vipType: 11,
+    vipLevel: "svip",
+    isVip: true,
+    isSvip: true,
+    vipLabel: "svip",
+    vipLevelName: "svip"
   });
 });
 

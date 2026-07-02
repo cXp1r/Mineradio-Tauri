@@ -15,7 +15,7 @@ import {
   type SongUrlResult
 } from "../provider-adapter";
 import { createSodaClient, type SodaClient, type SodaClientDeps } from "./soda-client";
-import { mapSodaLyricToPayload, mapSodaPlaylistDetailToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, type SodaPlaylistBody, type SodaPlaylistDetailBody, type SodaSong } from "./map";
+import { mapSodaLyricToPayload, mapSodaPlaylistDetailToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, normalizeProviderImageUrl, type SodaPlaylistBody, type SodaPlaylistDetailBody, type SodaSong } from "./map";
 
 const SODA_PROVIDER_ID = "soda";
 
@@ -153,6 +153,50 @@ function readSodaPlaylistDetail(body: unknown): SodaPlaylistDetailBody | null {
   return null;
 }
 
+function readSodaAvatarUrl(value: unknown): string {
+  const obj = asObj(value);
+  if (!obj) return "";
+  const urls = Array.isArray(obj.urls) ? obj.urls : [];
+  return firstString(urls[0], obj.uri);
+}
+
+function readSodaLoginStatus(body: unknown): ProviderLoginStatus {
+  const root = asObj(body);
+  const data = asObj(root?.data) ?? root;
+  const statusCodeRaw = root?.status_code ?? data?.status_code;
+  const statusCode = typeof statusCodeRaw === "number" ? statusCodeRaw : Number(statusCodeRaw);
+  const info = asObj(root?.my_info) ?? asObj(data?.my_info);
+  const userId = firstString(info?.id, info?.douyin_id);
+  const nickname = firstString(info?.nickname, info?.public_name);
+  const mediumAvatar = readSodaAvatarUrl(info?.medium_avatar_url);
+  const largerAvatar = readSodaAvatarUrl(info?.larger_avatar_url);
+  const avatarUrl = normalizeProviderImageUrl(firstString(mediumAvatar, largerAvatar));
+  const vipStage = firstString(info?.vip_stage);
+  const isVip = info?.is_vip === true;
+  const isSvip = /svip|super/i.test(vipStage);
+  const vipLevel = isSvip ? "svip" : isVip ? "vip" : "none";
+  const vipType = vipLevel === "svip" ? 11 : vipLevel === "vip" ? 1 : 0;
+  const vipLabel = vipStage || (vipLevel === "svip" ? "SVIP" : vipLevel === "vip" ? "VIP" : "");
+  const vipLevelName = vipStage || undefined;
+  const loggedIn = statusCode === 0 ? !!userId || info != null : !!info && !!userId;
+  const status: ProviderLoginStatus = {
+    provider: SODA_PROVIDER_ID,
+    loggedIn
+  };
+  if (loggedIn) {
+    if (nickname) status.nickname = nickname;
+    if (avatarUrl) status.avatarUrl = avatarUrl;
+    if (userId) status.userId = userId;
+    if (Number.isFinite(vipType)) status.vipType = vipType;
+    status.vipLevel = vipLevel;
+    status.isVip = isVip || isSvip;
+    status.isSvip = isSvip;
+    if (vipLabel) status.vipLabel = vipLabel;
+    if (vipLevelName) status.vipLevelName = vipLevelName;
+  }
+  return status;
+}
+
 export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
   const client = deps.client ?? createSodaClient(deps);
 
@@ -273,7 +317,8 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       return fail("checkSongLikes");
     },
     async loginStatus(): Promise<ProviderLoginStatus> {
-      return fail("loginStatus");
+      const resp = await client.loginStatus();
+      return readSodaLoginStatus(resp.body);
     },
     async logout(): Promise<void> {
       const cfg = deps.getConfig();

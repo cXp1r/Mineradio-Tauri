@@ -6,6 +6,7 @@ const SODA_SEARCH_URL =
 const SODA_LYRIC_URL = "https://api.qishui.com/luna/pc/track_v2?track_id=&media_type=track&queue_type=&aid=386088&iid=114514";
 const SODA_PLAYLIST_LIST_URL = "https://api.qishui.com/luna/pc/me/playlist?aid=386088";
 const SODA_PLAYLIST_DETAIL_URL = "https://api.qishui.com/luna/pc/playlist/detail?aid=386088";
+const SODA_ME_URL = "https://api.qishui.com/luna/pc/me?aid=386088";
 const SODA_COLLECTION_MEDIA_URL = "https://api.qishui.com/luna/pc/me/collection/media?aid=386088";
 const SODA_COLLECTION_MEDIA_DELETE_URL = "https://api.qishui.com/luna/pc/me/collection/media/delete?aid=386088";
 const SODA_LOGOUT_URL = "https://api.qishui.com/passport/web/logout/";
@@ -61,6 +62,10 @@ function withPlaylistDetailUrl(playlistId: string): string {
   const url = new URL(SODA_PLAYLIST_DETAIL_URL);
   url.searchParams.set("playlist_id", playlistId);
   return url.toString();
+}
+
+function withMeUrl(): string {
+  return SODA_ME_URL;
 }
 
 function withCollectionMediaUrl(liked: boolean): string {
@@ -138,7 +143,13 @@ export function createSodaClient(deps: SodaClientDeps): SodaClient {
       const resp = await fetcher(withPlaylistDetailUrl(id), { method: "GET", headers });
       return readJsonBody(resp, "playlist-detail");
     },
-    async loginStatus() { return notImplemented("loginStatus"); },
+    async loginStatus() {
+      const cfg = deps.getConfig();
+      const headers: HeadersInit = {};
+      if (cfg.cookie) headers.cookie = cfg.cookie;
+      const resp = await fetcher(withMeUrl(), { method: "GET", headers });
+      return readJsonBody(resp, "login-status");
+    },
     async logout() {
       const cfg = deps.getConfig();
       const headers: HeadersInit = {};
