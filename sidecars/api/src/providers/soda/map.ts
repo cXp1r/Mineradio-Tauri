@@ -10,7 +10,13 @@ export interface SodaSong {
   name?: string;
   artist?: string;
   artists?: Array<{ id?: number | string; name?: string } | string | null | undefined>;
-  album?: string | { id?: number | string; name?: string; coverUrl?: string; picUrl?: string };
+  album?: string | {
+    id?: number | string;
+    name?: string;
+    coverUrl?: string;
+    picUrl?: string;
+    url_cover?: { uri?: string; urls?: string[]; template_prefix?: string } | string;
+  };
   albumName?: string;
   coverUrl?: string;
   durationMs?: number;
@@ -102,10 +108,18 @@ function albumName(raw: SodaSong): string {
   return String(raw.albumName ?? "").trim();
 }
 
+function sodaSizedCoverUrl(cover: { uri?: string; template_prefix?: string } | string | undefined): string {
+  if (typeof cover === "string") return cover;
+  const uri = String(cover?.uri ?? "").trim();
+  if (!uri) return "";
+  const templatePrefix = String(cover?.template_prefix ?? "").trim() || "tplv-b829550vbb";
+  return `https://p3-luna.douyinpic.com/img/${uri}~${templatePrefix}-crop-center:256:256.webp`;
+}
+
 function albumCoverUrl(raw: SodaSong): string {
   if (raw.coverUrl) return raw.coverUrl;
   if (raw.album && typeof raw.album === "object") {
-    return raw.album.coverUrl ?? raw.album.picUrl ?? "";
+    return raw.album.coverUrl ?? raw.album.picUrl ?? sodaSizedCoverUrl(raw.album.url_cover);
   }
   return "";
 }

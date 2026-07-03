@@ -352,7 +352,18 @@ test("soda adapter maps search results from client", async () => {
                       id: "soda-1",
                       name: "Hectopascal",
                       artists: [{ id: "artist-1", name: "Yui" }],
-                      album: { id: "album-1", name: "Bloom" },
+                      album: {
+                        id: "album-1",
+                        name: "Bloom",
+                        url_cover: {
+                          uri: "tos-cn-v-2774c002/oQBkC1s9PiDAIteAEliB5WfWEAH4gqawBQ3wLZ",
+                          urls: [
+                            "https://p3-luna.douyinpic.com/img/",
+                            "https://p6-luna.douyinpic.com/img/"
+                          ],
+                          template_prefix: "tplv-b829550vbb"
+                        }
+                      },
                       duration: 180000,
                       preview: { start: 30000, duration: 60000 }
                     }
@@ -383,7 +394,7 @@ test("soda adapter maps search results from client", async () => {
     title: "Hectopascal",
     artists: ["Yui"],
     album: "Bloom",
-    coverUrl: "",
+    coverUrl: "https://p3-luna.douyinpic.com/img/tos-cn-v-2774c002/oQBkC1s9PiDAIteAEliB5WfWEAH4gqawBQ3wLZ~tplv-b829550vbb-crop-center:256:256.webp",
     durationMs: 180000,
     qualityHints: ["standard"],
     playableState: "trial_only"
