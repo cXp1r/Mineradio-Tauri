@@ -33,6 +33,7 @@ import {
 import { normalizeError } from "./services/fallback";
 import { buildDiagnostics } from "./services/diagnostics";
 import { resolveAudioProxy, type AudioProxy } from "./services/audio-proxy";
+import { resolveSodaAudioProxy, type SodaAudioProxy } from "./services/soda-audio-proxy";
 import { resolveImageProxy, type ImageProxy } from "./services/image-proxy";
 import {
   createSidecarLogger,
@@ -65,6 +66,7 @@ import { sodaQrLogin, type SodaQrLoginService } from "./services/soda-qr-login";
 export type RouteHandlerDeps = {
   crossSourceResolver?: CrossSourceResolver;
   audioProxy?: AudioProxy;
+  sodaAudioProxy?: SodaAudioProxy;
   imageProxy?: ImageProxy;
   providerAdapters?: Record<ProviderId, ProviderAdapter>;
   weatherRadio?: WeatherRadioService;
@@ -80,6 +82,7 @@ export type RouteHandlerDeps = {
 export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const resolver = deps.crossSourceResolver ?? crossSourceResolver;
   const audioProxy = deps.audioProxy ?? resolveAudioProxy;
+  const sodaAudioProxy = deps.sodaAudioProxy ?? resolveSodaAudioProxy;
   const imageProxy = deps.imageProxy ?? resolveImageProxy;
   const providerAdapters = deps.providerAdapters ?? providers;
   const weatherRadioService = deps.weatherRadio ?? weatherRadio;
@@ -138,6 +141,13 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
       const target = url.searchParams.get("url") ?? "";
       response = await audioProxy({ target, request });
       await logRequest(logger, { method, path, status: response.status, startedAt });
+      return response;
+    }
+
+    if (path === "/providers/soda/audio-proxy" && method === "GET") {
+      const target = url.searchParams.get("url") ?? "";
+      response = await sodaAudioProxy({ target, request });
+      await logRequest(logger, { method, path, status: response.status, startedAt, provider: "soda", action: "audio-proxy" });
       return response;
     }
 

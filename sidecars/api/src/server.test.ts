@@ -1395,7 +1395,7 @@ test("GET /providers/capabilities returns 200 matrix with netease, qq, and soda"
   const soda = b.data.providers.find((e: { providerId: string }) => e.providerId === "soda");
   expect(netease.available).toBe(true);
   expect(qq.available).toBe(true);
-  expect(soda.available).toBe(false);
+  expect(soda.available).toBe(true);
 });
 
 test("GET /diagnostics returns 200 and contains none of the forbidden cookie/auth keys", async () => {
@@ -1443,6 +1443,31 @@ test("GET /audio-proxy returns injected proxy response directly", async () => {
   expect(r.headers.get("content-type")).toBe("audio/mpeg");
   expect(r.headers.get("access-control-allow-origin")).toBe("*");
   expect(await r.text()).toBe("song");
+});
+
+test("GET /providers/soda/audio-proxy returns injected soda proxy response directly", async () => {
+  const handler = createRouteHandler({
+    sodaAudioProxy: async ({ target, request }) => {
+      expect(target).toBe("https://media.example.test/soda.m4a");
+      expect(request.method).toBe("GET");
+      return new Response("soda-song", {
+        status: 200,
+        headers: {
+          "content-type": "audio/mp4",
+          "access-control-allow-origin": "*"
+        }
+      });
+    }
+  });
+
+  const r = await handler(
+    new Request("http://127.0.0.1/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a")
+  );
+
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("audio/mp4");
+  expect(r.headers.get("access-control-allow-origin")).toBe("*");
+  expect(await r.text()).toBe("soda-song");
 });
 
 test("GET /image-proxy returns injected proxy response directly", async () => {

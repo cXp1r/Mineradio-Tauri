@@ -148,7 +148,7 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
             {
               Quality: "m4a",
               Duration: 180000,
-              PlayAuth: "",
+              PlayAuth: "play-auth-1",
               PlayAuthID: "",
               MainPlayUrl: "https://cdn.example.com/main.m4a",
               BackupPlayUrl: "https://cdn.example.com/backup.m4a",
@@ -197,8 +197,8 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
   });
 
   expect(result).toMatchObject({
-    url: "https://cdn.example.com/main.m4a",
-    proxied: false,
+    url: "/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fmain.m4a",
+    proxied: true,
     provider: "soda",
     trial: false,
     playable: true,
