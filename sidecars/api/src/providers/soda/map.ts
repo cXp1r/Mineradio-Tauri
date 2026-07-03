@@ -175,12 +175,117 @@ export function parseLrc(text: string): LyricLine[] {
   return out;
 }
 
+function finalizeLyricLineDurations(lines: LyricLine[]): LyricLine[] {
+  lines.sort((a, b) => a.timeMs - b.timeMs);
+  for (let i = 0; i < lines.length; i++) {
+    const current = lines[i];
+    if (!current) continue;
+    const next = lines[i + 1];
+    const inferred = next && next.timeMs > current.timeMs ? next.timeMs - current.timeMs : 4800;
+    const duration = typeof current.durationMs === "number" && Number.isFinite(current.durationMs) && current.durationMs > 0
+      ? current.durationMs
+      : inferred;
+    current.durationMs = Math.max(450, Math.min(12000, duration));
+    current.charCount = Math.max(1, current.charCount ?? String(current.text ?? "").length);
+  }
+  return lines;
+}
+
+export function parseSodaLyricText(text: string): LyricLine[] {
+  const lines: LyricLine[] = [];
+  const raw = String(text ?? "");
+  if (!raw.trim()) return lines;
+
+  for (const rawLine of raw.split(/\r\n|\r|\n/)) {
+    const lineMatch = rawLine.match(/^\[(\d+),(\d+)\](.*)$/);
+    if (!lineMatch) continue;
+
+    const lineStartMs = Math.max(0, parseInt(lineMatch[1], 10) || 0);
+    const lineDurationMs = Math.max(0, parseInt(lineMatch[2], 10) || 0);
+    const body = String(lineMatch[3] ?? "");
+    const words: NonNullable<LyricLine["words"]> = [];
+    let fullText = "";
+    let pos = 0;
+
+    while (pos < body.length) {
+      const open = body.indexOf("<", pos);
+      if (open < 0) break;
+      const afterOpen = open + 1;
+      if (afterOpen >= body.length || !/\d/.test(body[afterOpen] ?? "")) {
+        pos = afterOpen;
+        continue;
+      }
+
+      const comma1 = body.indexOf(",", afterOpen);
+      if (comma1 < 0) break;
+      const startRaw = body.slice(afterOpen, comma1);
+      const wordStartMs = parseInt(startRaw, 10);
+      if (!Number.isFinite(wordStartMs)) {
+        pos = afterOpen;
+        continue;
+      }
+
+      const durStart = comma1 + 1;
+      const close = body.indexOf(">", durStart);
+      const comma2 = body.indexOf(",", durStart);
+      const durEnd = close < 0 ? body.length : close;
+      const durationSliceEnd = comma2 >= 0 && comma2 < durEnd ? comma2 : durEnd;
+      const wordDurationMs = parseInt(body.slice(durStart, durationSliceEnd), 10);
+      if (!Number.isFinite(wordDurationMs)) {
+        pos = afterOpen;
+        continue;
+      }
+
+      const textStart = close >= 0 ? close + 1 : body.length;
+      const nextOpen = body.indexOf("<", textStart);
+      const text = body.slice(textStart, nextOpen < 0 ? body.length : nextOpen);
+      const c0 = fullText.length;
+      fullText += text;
+      if (text) {
+        words.push({
+          text,
+          timeMs: Math.max(0, wordStartMs),
+          durationMs: Math.max(0, wordDurationMs),
+          c0,
+          c1: fullText.length
+        });
+      }
+      pos = nextOpen < 0 ? body.length : nextOpen;
+    }
+
+    if (words.length > 0) {
+      lines.push({
+        timeMs: lineStartMs,
+        durationMs: lineDurationMs,
+        text: fullText,
+        words,
+        source: "soda-word",
+        charCount: Math.max(1, fullText.length)
+      });
+      continue;
+    }
+
+    const plainText = body.replace(/<\d+,\d+(?:,\d+)?>/g, "").trim();
+    if (!plainText) continue;
+    lines.push({
+      timeMs: lineStartMs,
+      durationMs: lineDurationMs,
+      text: plainText,
+      source: "soda-line",
+      charCount: Math.max(1, plainText.length)
+    });
+  }
+
+  return finalizeLyricLineDurations(lines);
+}
+
 export function mapSodaLyricToPayload(opts: {
   trackId: string;
   lyric?: string;
   trans?: string;
 }): LyricPayload {
-  const baseLines = parseLrc(opts.lyric ?? "");
+  const sodaLines = parseSodaLyricText(opts.lyric ?? "");
+  const baseLines = sodaLines.length > 0 ? sodaLines : parseLrc(opts.lyric ?? "");
   const transLines = parseLrc(opts.trans ?? "");
   const transMap = new Map<number, string>();
   for (const line of transLines) transMap.set(line.timeMs, line.text);
@@ -192,7 +297,7 @@ export function mapSodaLyricToPayload(opts: {
       return translation ? { ...line, translation } : line;
     }),
     hasTranslation: transLines.length > 0,
-    isWordByWord: false
+    isWordByWord: baseLines.some((line) => Array.isArray(line.words) && line.words.length > 0)
   };
 }
 

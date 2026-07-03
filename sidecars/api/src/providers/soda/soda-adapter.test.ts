@@ -3,7 +3,7 @@ import { clearRuntimeProviderCookie, getProviderCookie, setRuntimeProviderCookie
 import { ProviderNotImplementedError } from "../provider-adapter";
 import { createSodaAdapter } from "./soda-adapter";
 import { createSodaClient } from "./soda-client";
-import { mapSodaSongToTrack, mapSodaPlaylistToSummary } from "./map";
+import { mapSodaSongToTrack, mapSodaPlaylistToSummary, parseSodaLyricText, mapSodaLyricToPayload } from "./map";
 
 test("soda mapping helpers produce provider-shaped objects", () => {
   const track = mapSodaSongToTrack({
@@ -698,6 +698,44 @@ test("soda adapter maps lyric payload from client detail response", async () => 
     hasTranslation: true,
     isWordByWord: false
   });
+});
+
+test("parseSodaLyricText parses baseline soda word-by-word lyrics", () => {
+  const lines = parseSodaLyricText("[2000,3000]<2000,400> Hello<2400,600>world");
+
+  expect(lines.length).toBe(1);
+  expect(lines[0].timeMs).toBe(2000);
+  expect(lines[0].durationMs).toBe(3000);
+  expect(lines[0].text).toBe(" Helloworld");
+  expect(lines[0].source).toBe("soda-word");
+  expect(lines[0].words).toEqual([
+    {
+      text: " Hello",
+      timeMs: 2000,
+      durationMs: 400,
+      c0: 0,
+      c1: 6
+    },
+    {
+      text: "world",
+      timeMs: 2400,
+      durationMs: 600,
+      c0: 6,
+      c1: 11
+    }
+  ]);
+});
+
+test("mapSodaLyricToPayload marks soda word lyrics as word-by-word", () => {
+  const payload = mapSodaLyricToPayload({
+    trackId: "soda-1",
+    lyric: "[2000,3000]<2000,400> Hello<2400,600>world",
+    trans: "[00:02.00]你好"
+  });
+
+  expect(payload.isWordByWord).toBe(true);
+  expect(payload.hasTranslation).toBe(true);
+  expect(payload.lines[0].translation).toBe("你好");
 });
 
 test("soda adapter logout requires a cookie and delegates to client logout", async () => {

@@ -73,6 +73,27 @@ function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
   return player;
 }
 
+function readSodaLyricTranslation(value: unknown): string {
+  if (typeof value === "string") return value;
+  const obj = asObj(value);
+  if (!obj) return "";
+  const direct = firstString(obj.content, obj.text, obj.lyric);
+  if (direct) return direct;
+  const nested = asObj(obj.cn) ?? asObj(obj.zh) ?? asObj(obj.translation) ?? asObj(obj.trans);
+  if (nested) {
+    const fromNested = firstString(nested.content, nested.text, nested.lyric);
+    if (fromNested) return fromNested;
+  }
+  const translations = asObj(obj.translations) ?? asObj(obj.lang_translations);
+  if (translations) {
+    for (const item of Object.values(translations)) {
+      const nestedText = readSodaLyricTranslation(item);
+      if (nestedText) return nestedText;
+    }
+  }
+  return "";
+}
+
 function readSodaCollectedState(resp: unknown): boolean | undefined {
   const root = asObj(resp);
   if (!root) return undefined;
@@ -286,8 +307,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       const root = asObj(resp.body);
       const data = asObj(root?.data) ?? root;
       const lyric = asObj(data?.lyric);
-      const trans1 = asObj(lyric?.translations);
-      const trans = readString(trans1?.cn);
+      const trans = readSodaLyricTranslation(lyric?.translations) || readSodaLyricTranslation(lyric?.lang_translations);
       return mapSodaLyricToPayload({
         trackId: track.sourceId,
         lyric: readString(lyric?.content),
