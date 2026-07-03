@@ -30,6 +30,21 @@ test("mapQqSongToTrack preserves QQ file media_mid for vkey filename generation"
   expect(track.mediaMid).toBe("media-mid");
 });
 
+test("mapQqSongToTrack maps official playlist song fields", () => {
+  const track = mapQqSongToTrack({
+    mid: "001hRqO33rprdA",
+    title: "家的方向",
+    singer: [{ name: "李卿" }],
+    album: { mid: "0029EuuF18FxcG", title: "家的方向" },
+    interval: 192
+  });
+
+  expect(track.id).toBe("001hRqO33rprdA");
+  expect(track.title).toBe("家的方向");
+  expect(track.album).toBe("家的方向");
+  expect(track.coverUrl).toContain("0029EuuF18FxcG");
+});
+
 test("QQ map normalizes protocol-relative and http cover URLs for WebGL consumers", () => {
   expect(normalizeProviderImageUrl("//y.gtimg.cn/music/photo_new/a.jpg")).toBe("https://y.gtimg.cn/music/photo_new/a.jpg");
   expect(normalizeProviderImageUrl("http://y.gtimg.cn/music/photo_new/a.jpg")).toBe("https://y.gtimg.cn/music/photo_new/a.jpg");
@@ -610,6 +625,33 @@ test("playlistDetail with empty cdlist throws ProviderError UNAVAILABLE", async 
   const e = err as ProviderError;
   expect(e.code).toBe("UNAVAILABLE");
   expect(e.provider).toBe("qq");
+});
+
+test("playlistDetail falls back to official public playlist detail when legacy cdlist is empty", async () => {
+  const deps = noopDeps({
+    playlistDetail: async () => ({ body: { cdlist: [] } }),
+    officialPlaylistDetail: async (id) => ({
+      disstid: id,
+      title: "Public QQ",
+      picurl: "https://qpic.y.qq.com/cover/600",
+      total_song_num: 1,
+      songlist: [{
+        mid: "001hRqO33rprdA",
+        title: "家的方向",
+        singer: [{ name: "李卿" }],
+        album: { mid: "0029EuuF18FxcG", title: "家的方向" },
+        interval: 192
+      }]
+    })
+  });
+  const adapter = createQqAdapter(deps);
+
+  const out = await adapter.playlistDetail("7167576049");
+
+  expect(out.id).toBe("7167576049");
+  expect(out.name).toBe("Public QQ");
+  expect(out.tracks.length).toBe(1);
+  expect(out.tracks[0].id).toBe("001hRqO33rprdA");
 });
 
 test("addSongToPlaylist requires cookie and calls qq songlist add with mid and dirid", async () => {

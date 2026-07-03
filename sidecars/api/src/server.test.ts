@@ -148,6 +148,57 @@ test("GET /search uses injected cross-source resolver", async () => {
   expect(b.data[0].provider).toBe("qq");
 });
 
+test("POST /shared-playlist/import loads qq playlist detail through provider adapter", async () => {
+  const qqAdapter: ProviderAdapter = {
+    ...providers.qq,
+    async playlistDetail(id) {
+      expect(id).toBe("7167576049");
+      return {
+        provider: "qq",
+        id,
+        name: "QQ Share",
+        coverUrl: "https://y.qq.com/cover.jpg",
+        trackCount: 1,
+        trackIds: ["q1"],
+        subscribed: false,
+        tracks: [{ ...routeTrack, provider: "qq", id: "q1", sourceId: "q1" }]
+      };
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, qq: qqAdapter }
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/shared-playlist/import", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      text: "https://i2.y.qq.com/n3/other/pages/details/playlist.html?id=7167576049&hosteuin="
+    })
+  }));
+
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b.ok).toBe(true);
+  expect(b.data.provider).toBe("qq");
+  expect(b.data.playlist.id).toBe("7167576049");
+  expect(b.data.loadedCount).toBe(1);
+});
+
+test("POST /shared-playlist/import rejects unsupported links", async () => {
+  const handler = createRouteHandler();
+  const r = await handler(new Request("http://127.0.0.1/shared-playlist/import", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ text: "https://example.com/playlist/1" })
+  }));
+
+  expect(r.status).toBe(400);
+  const b = await body(r);
+  expect(b.ok).toBe(false);
+  expect(b.error.code).toBe("UNSUPPORTED_LINK");
+});
+
 test("GET /weather/radio returns weather radio success envelope", async () => {
   const handler = createRouteHandler({
     weatherRadio: {

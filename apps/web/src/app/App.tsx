@@ -30,6 +30,12 @@ import {
   saveCustomLyricForTrack,
   setCustomLyricPreferenceForTrack,
 } from "../lyrics/custom-lyrics";
+import {
+  importedPlaylistFromResult,
+  readImportedPlaylistsFromStorage,
+  saveImportedPlaylistsToStorage,
+  upsertImportedPlaylist,
+} from "../shared-playlist/imported-playlists";
 import { selectCurrentIndex } from "../lyrics/select-current-index";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
@@ -1006,6 +1012,9 @@ export function App({
     useState<ProviderLoginStatus | null>(null);
   const [qqStatus, setQqStatus] = useState<ProviderLoginStatus | null>(null);
   const [shelfPlaylists, setShelfPlaylists] = useState<PlaylistSummary[]>([]);
+  const [importedPlaylists, setImportedPlaylists] = useState(
+    readImportedPlaylistsFromStorage,
+  );
   const [shelfPodcastCollections, setShelfPodcastCollections] = useState<
     PodcastCollection[]
   >([]);
@@ -2571,6 +2580,51 @@ export function App({
     showToast("队列已清空");
   }, [clearQueue, showToast]);
 
+  const importSharedPlaylistFromText = useCallback(
+    async (text: string) => {
+      if (!sidecarClient) {
+        const message = "sidecar 尚未就绪，稍后再试";
+        setSearchError(message);
+        showToast(message);
+        throw new Error(message);
+      }
+      try {
+        const result = await sidecarClient.importSharedPlaylist({ text });
+        setImportedPlaylists((previous) => {
+          const key = `${result.provider}:${result.playlist.id}`;
+          const oldRecord = previous.find((item) => item.key === key);
+          const record = importedPlaylistFromResult(result, Date.now(), oldRecord);
+          const next = upsertImportedPlaylist(previous, record);
+          saveImportedPlaylistsToStorage(next);
+          return next;
+        });
+        useSearchStore.getState().reset();
+        setPlaylistPanelTab("playlists");
+        setPlaylistPanelOpen(true);
+        const total = result.trackCount || result.tracks.length;
+        showToast(`已导入「${result.playlist.name}」 · ${result.loadedCount}/${total} 首`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "歌单导入失败";
+        setSearchError(message);
+        showToast(message);
+        throw e;
+      }
+    },
+    [setSearchError, showToast, sidecarClient],
+  );
+
+  const deleteImportedPlaylist = useCallback(
+    (key: string) => {
+      setImportedPlaylists((previous) => {
+        const next = previous.filter((item) => item.key !== key);
+        saveImportedPlaylistsToStorage(next);
+        return next;
+      });
+      showToast("已删除导入歌单");
+    },
+    [showToast],
+  );
+
   const loadPlaylistPanelDetail = useCallback(
     async (playlist: PlaylistSummary): Promise<PlaylistDetail> => {
       if (!sidecarClient) return { ...playlist, tracks: [] };
@@ -3739,6 +3793,7 @@ export function App({
         onResultNext={insertSearchResultNext}
         onResultLike={(track) => void toggleLikeTrack(track)}
         onResultCollect={openCollectPicker}
+        onSharedPlaylistImport={importSharedPlaylistFromText}
         onArtistSearch={searchArtistFromResult}
         isResultLiked={(track) => {
           const key = trackLikeKey(track);
@@ -3856,6 +3911,7 @@ export function App({
         currentTrack={currentTrack}
         mode={playbackMode}
         playlists={shelfPlaylists}
+        importedPlaylists={importedPlaylists}
         podcastCollections={shelfPodcastCollections}
         onTabChange={openPlaylistPanelTab}
         onPinToggle={togglePlaylistPanelPinned}
@@ -3871,6 +3927,7 @@ export function App({
         onRemoveQueueIndex={removeQueueAt}
         onLoadPlaylistDetail={loadPlaylistPanelDetail}
         onPlayTracks={playPlaylistPanelTracks}
+        onDeleteImportedPlaylist={deleteImportedPlaylist}
         onPodcastCollectionOpen={(collection) => void openPlaylistPanelPodcastCollection(collection)}
       />
       <BottomControlsHost
