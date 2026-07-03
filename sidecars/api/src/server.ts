@@ -146,7 +146,8 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
 
     if (path === "/providers/soda/audio-proxy" && method === "GET") {
       const target = url.searchParams.get("url") ?? "";
-      response = await sodaAudioProxy({ target, request });
+      const playAuth = url.searchParams.get("playAuth") ?? "";
+      response = await sodaAudioProxy({ target, playAuth, request });
       await logRequest(logger, { method, path, status: response.status, startedAt, provider: "soda", action: "audio-proxy" });
       return response;
     }

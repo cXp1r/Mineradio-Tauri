@@ -2,6 +2,7 @@ import { fail, json } from "../http/envelope";
 
 export type SodaAudioProxyRequest = {
   target: string;
+  playAuth?: string;
   request: Request;
 };
 
@@ -17,18 +18,9 @@ type Mp4Box = {
   data: Uint8Array;
 };
 
-const audioAuthByUrl = new Map<string, string>();
 const ENCA_BYTES = new TextEncoder().encode("enca");
 const MP4A_BYTES = new TextEncoder().encode("mp4a");
 const SPADE_PREFIX = new Uint8Array([0xfa, 0x55]);
-
-export function registerSodaAudioAuth(url: string, playAuth: string): void {
-  const parsed = parseTargetUrl(url);
-  const target = parsed.ok ? parsed.url : url.trim();
-  const auth = playAuth.trim();
-  if (!target || !auth) return;
-  audioAuthByUrl.set(target, auth);
-}
 
 export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioProxy {
   const fetcher = deps.fetch ?? fetch;
@@ -37,8 +29,8 @@ export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioPr
     const parsed = parseTargetUrl(input.target);
     if (!parsed.ok) return badRequest(parsed.message);
 
-    const playAuth = audioAuthByUrl.get(parsed.url);
-    if (!playAuth) return upstreamFailure("soda audio auth missing");
+    const playAuth = String(input.playAuth ?? "").trim();
+    if (!playAuth) return badRequest("playAuth required");
 
     let upstream: Response;
     try {

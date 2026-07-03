@@ -1447,8 +1447,9 @@ test("GET /audio-proxy returns injected proxy response directly", async () => {
 
 test("GET /providers/soda/audio-proxy returns injected soda proxy response directly", async () => {
   const handler = createRouteHandler({
-    sodaAudioProxy: async ({ target, request }) => {
+    sodaAudioProxy: async ({ target, playAuth, request }) => {
       expect(target).toBe("https://media.example.test/soda.m4a");
+      expect(playAuth).toBe("play-auth-1");
       expect(request.method).toBe("GET");
       return new Response("soda-song", {
         status: 200,
@@ -1461,7 +1462,7 @@ test("GET /providers/soda/audio-proxy returns injected soda proxy response direc
   });
 
   const r = await handler(
-    new Request("http://127.0.0.1/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a")
+    new Request("http://127.0.0.1/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a&playAuth=play-auth-1")
   );
 
   expect(r.status).toBe(200);

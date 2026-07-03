@@ -15,7 +15,6 @@ import {
   type SongUrlResult
 } from "../provider-adapter";
 import { getProviderCookie } from "../../services/auth-session";
-import { registerSodaAudioAuth } from "../../services/soda-audio-proxy";
 import { createSodaClient, type SodaClient, type SodaClientDeps } from "./soda-client";
 import { mapSodaLyricToPayload, mapSodaPlaylistDetailToDetail, mapSodaPlaylistToSummary, mapSodaSongToTrack, normalizeProviderImageUrl, type SodaPlaylistBody, type SodaPlaylistDetailBody, type SodaSong } from "./map";
 
@@ -287,11 +286,10 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       if (!playAuth) {
         throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play auth`);
       }
-      registerSodaAudioAuth(url, playAuth);
       const quality = firstString(playInfo.Quality);
       const filename = firstString(playInfo.FileID);
       const result: SongUrlResult = {
-        url: `/providers/soda/audio-proxy?url=${encodeURIComponent(url)}`,
+        url: `/providers/soda/audio-proxy?url=${encodeURIComponent(url)}&playAuth=${encodeURIComponent(playAuth)}`,
         proxied: true,
         provider: SODA_PROVIDER_ID,
         trial: false,

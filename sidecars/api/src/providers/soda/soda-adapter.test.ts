@@ -197,7 +197,7 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
   });
 
   expect(result).toMatchObject({
-    url: "/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fmain.m4a",
+    url: "/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fmain.m4a&playAuth=play-auth-1",
     proxied: true,
     provider: "soda",
     trial: false,
