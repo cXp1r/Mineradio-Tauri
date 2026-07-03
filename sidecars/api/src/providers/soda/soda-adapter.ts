@@ -286,18 +286,12 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       const root = asObj(resp.body);
       const data = asObj(root?.data) ?? root;
       const lyric = asObj(data?.lyric);
-      const transMap = asObj(lyric?.lang_translations);
-      const trans = transMap
-        ? Object.values(transMap)
-            .map(value => asObj(value)?.content)
-            .map(readString)
-            .filter(Boolean)
-            .join("\n")
-        : "";
+      const trans1 = asObj(lyric?.translations);
+      const trans = readString(trans1?.cn);
       return mapSodaLyricToPayload({
         trackId: track.sourceId,
         lyric: readString(lyric?.content),
-        trans
+        trans,
       });
     },
     async playlistList(): Promise<PlaylistSummary[]> {
