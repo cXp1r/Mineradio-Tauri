@@ -286,6 +286,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       if (!playAuth) {
         throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play auth`);
       }
+      // playAuth is publicly returned by url_player_info, so we intentionally pass it along with the playback URL.
       const quality = firstString(playInfo.Quality);
       const filename = firstString(playInfo.FileID);
       const result: SongUrlResult = {

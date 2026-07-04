@@ -10,6 +10,7 @@ export type SodaAudioProxy = (input: SodaAudioProxyRequest) => Promise<Response>
 
 export type SodaAudioProxyDeps = {
   fetch?: (request: Request) => Promise<Response>;
+  decrypt?: (fileData: Uint8Array, playAuth: string) => Promise<DecryptDataResult>;
 };
 
 type Mp4Box = {
@@ -18,12 +19,24 @@ type Mp4Box = {
   data: Uint8Array;
 };
 
+type CachedSodaAudio = {
+  bytes: Uint8Array;
+  contentType: string;
+};
+
+type RangeSelection =
+  | { kind: "none" }
+  | { kind: "invalid" }
+  | { kind: "slice"; start: number; end: number };
+
 const ENCA_BYTES = new TextEncoder().encode("enca");
 const MP4A_BYTES = new TextEncoder().encode("mp4a");
 const SPADE_PREFIX = new Uint8Array([0xfa, 0x55]);
 
 export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioProxy {
   const fetcher = deps.fetch ?? fetch;
+  const decrypt = deps.decrypt ?? decryptSodaAudioData;
+  const sodaAudioCache = new Map<string, Promise<CachedSodaAudio>>();
 
   return async function proxySodaAudio(input: SodaAudioProxyRequest): Promise<Response> {
     const parsed = parseTargetUrl(input.target);
@@ -32,35 +45,58 @@ export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioPr
     const playAuth = String(input.playAuth ?? "").trim();
     if (!playAuth) return badRequest("playAuth required");
 
-    let upstream: Response;
     try {
-      upstream = await fetcher(new Request(parsed.url, { method: "GET" }));
-    } catch {
-      return upstreamFailure("soda audio request failed");
-    }
-    if (!upstream.ok) {
-      return upstreamFailure(`soda audio request returned ${upstream.status}`);
-    }
-
-    let decrypted: DecryptDataResult;
-    try {
-      decrypted = await decryptSodaAudioData(new Uint8Array(await upstream.arrayBuffer()), playAuth);
-    } catch {
-      return upstreamFailure("soda audio decrypt failed");
-    }
-    if (!decrypted.decrypted) return upstreamFailure(`soda audio decrypt failed: ${decrypted.reason}`);
-
-    const body = toArrayBuffer(decrypted.data);
-    return new Response(body, {
-      status: 200,
-      headers: {
-        "access-control-allow-origin": "*",
-        "content-type": upstream.headers.get("content-type") ?? "audio/mp4",
-        "content-length": String(body.byteLength),
-        "cache-control": "no-store",
-        "x-soda-audio-decrypted": "1"
+      const cached = await getOrCreateCachedAudio(sodaAudioCache, fetcher, decrypt, parsed.url, playAuth);
+      const range = parseRange(input.request.headers.get("range"), cached.bytes.length);
+      const contentType = cached.contentType || "audio/mp4";
+      if (range.kind === "invalid") {
+        return new Response(new Uint8Array(0), {
+          status: 416,
+          headers: {
+            "access-control-allow-origin": "*",
+            "content-type": contentType,
+            "content-length": "0",
+            "accept-ranges": "bytes",
+            "content-range": `bytes */${cached.bytes.length}`,
+            "cache-control": "no-store",
+            "x-soda-audio-decrypted": "1",
+            "x-soda-audio-cache": "hit"
+          }
+        });
       }
-    });
+      if (range.kind === "slice") {
+        const body = cached.bytes.slice(range.start, range.end + 1);
+        return new Response(body, {
+          status: 206,
+          headers: {
+            "access-control-allow-origin": "*",
+            "content-type": contentType,
+            "content-length": String(body.byteLength),
+            "accept-ranges": "bytes",
+            "content-range": `bytes ${range.start}-${range.end}/${cached.bytes.length}`,
+            "cache-control": "no-store",
+            "x-soda-audio-decrypted": "1",
+            "x-soda-audio-cache": "hit"
+          }
+        });
+      }
+
+      return new Response(toArrayBuffer(cached.bytes), {
+        status: 200,
+        headers: {
+          "access-control-allow-origin": "*",
+          "content-type": contentType,
+          "content-length": String(cached.bytes.byteLength),
+          "accept-ranges": "bytes",
+          "cache-control": "no-store",
+          "x-soda-audio-decrypted": "1",
+          "x-soda-audio-cache": "hit"
+        }
+      });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return upstreamFailure(message || "soda audio proxy failed");
+    }
   };
 }
 
@@ -91,6 +127,91 @@ function badRequest(message: string): Response {
 
 function upstreamFailure(message: string): Response {
   return json(fail({ code: "SODA_AUDIO_PROXY", message, retryable: true }), 502);
+}
+
+async function getOrCreateCachedAudio(
+  cache: Map<string, Promise<CachedSodaAudio>>,
+  fetcher: (request: Request) => Promise<Response>,
+  decrypt: (fileData: Uint8Array, playAuth: string) => Promise<DecryptDataResult>,
+  target: string,
+  playAuth: string
+): Promise<CachedSodaAudio> {
+  const cacheKey = `${target}\n${playAuth}`;
+  const existing = cache.get(cacheKey);
+  if (existing) return await existing;
+
+  const pending = (async () => {
+    const upstream = await fetcher(new Request(target, { method: "GET" }));
+    if (!upstream.ok) {
+      throw new Error(`soda audio request returned ${upstream.status}`);
+    }
+
+    let decrypted: DecryptDataResult;
+    try {
+      decrypted = await decrypt(new Uint8Array(await upstream.arrayBuffer()), playAuth);
+    } catch {
+      throw new Error("soda audio decrypt failed");
+    }
+    if (!decrypted.decrypted) {
+      throw new Error(`soda audio decrypt failed: ${decrypted.reason}`);
+    }
+
+    return {
+      bytes: decrypted.data,
+      contentType: upstream.headers.get("content-type") ?? "audio/mp4"
+    };
+  })();
+
+  cache.set(cacheKey, pending);
+  try {
+    return await pending;
+  } catch (err) {
+    cache.delete(cacheKey);
+    throw err;
+  }
+}
+
+function parseRange(rangeHeader: string | null, totalLength: number): RangeSelection {
+  if (!rangeHeader) return { kind: "none" };
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(rangeHeader.trim());
+  if (!match) {
+    return { kind: "invalid" };
+  }
+
+  const startRaw = match[1];
+  const endRaw = match[2];
+  let start = startRaw ? Number(startRaw) : NaN;
+  let end = endRaw ? Number(endRaw) : NaN;
+
+  if (startRaw === "" && endRaw === "") {
+    return { kind: "invalid" };
+  }
+
+  if (startRaw === "") {
+    const suffixLength = Number(endRaw);
+    if (!Number.isFinite(suffixLength) || suffixLength <= 0) {
+      return { kind: "invalid" };
+    }
+    const startIndex = Math.max(0, totalLength - Math.floor(suffixLength));
+    if (startIndex >= totalLength) {
+      return { kind: "invalid" };
+    }
+    return { kind: "slice", start: startIndex, end: totalLength - 1 };
+  }
+
+  if (!Number.isFinite(start) || start < 0) {
+    return { kind: "invalid" };
+  }
+
+  if (!Number.isFinite(end) || end >= totalLength) {
+    end = totalLength - 1;
+  }
+
+  if (start >= totalLength || end < start) {
+    return { kind: "invalid" };
+  }
+
+  return { kind: "slice", start, end };
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
