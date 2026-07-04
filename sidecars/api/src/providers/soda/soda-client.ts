@@ -52,9 +52,11 @@ function withPlaylistListUrl(): string {
   return SODA_PLAYLIST_LIST_URL;
 }
 
-function withPlaylistDetailUrl(playlistId: string): string {
+function withPlaylistDetailUrl(playlistId: string, cursor = 0, count = 20): string {
   const url = new URL(SODA_PLAYLIST_DETAIL_URL);
   url.searchParams.set("playlist_id", playlistId);
+  url.searchParams.set("cursor", String(cursor));
+  url.searchParams.set("cnt", String(count));
   return url.toString();
 }
 
@@ -83,6 +85,48 @@ async function readJsonBody(resp: Response, action: string): Promise<{ body: unk
     throw new Error(`SODA_${action.toUpperCase()}_HTTP_${resp.status}`);
   }
   return { body: await resp.json() };
+}
+
+function asObj(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function readMediaResources(body: unknown): unknown[] {
+  const root = asObj(body);
+  const data = asObj(root?.data);
+  const list = root?.media_resources ?? data?.media_resources ?? root?.mediaResources ?? data?.mediaResources;
+  return Array.isArray(list) ? list : [];
+}
+
+function readPlaylistTrackCount(body: unknown): number {
+  const root = asObj(body);
+  const data = asObj(root?.data);
+  const playlist = asObj(root?.playlist) ?? asObj(data?.playlist);
+  const raw = playlist?.count_tracks ?? playlist?.countTracks ?? playlist?.trackCount;
+  const count = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+}
+
+function mergePlaylistDetailPages(firstBody: unknown, mediaResources: unknown[]): unknown {
+  const firstRoot = asObj(firstBody);
+  if (!firstRoot) return { media_resources: mediaResources };
+  const data = asObj(firstRoot.data);
+  if (data && !Array.isArray(firstRoot.data)) {
+    return {
+      ...firstRoot,
+      data: {
+        ...data,
+        media_resources: mediaResources
+      },
+      media_resources: mediaResources
+    };
+  }
+  return {
+    ...firstRoot,
+    media_resources: mediaResources
+  };
 }
 
 export function createSodaClient(deps: SodaClientDeps): SodaClient {
@@ -136,8 +180,21 @@ export function createSodaClient(deps: SodaClientDeps): SodaClient {
       const cfg = deps.getConfig();
       const headers: HeadersInit = {};
       if (cfg.cookie) headers.cookie = cfg.cookie;
-      const resp = await fetcher(withPlaylistDetailUrl(id), { method: "GET", headers });
-      return readJsonBody(resp, "playlist-detail");
+      const pageSize = 20;
+      const firstResp = await fetcher(withPlaylistDetailUrl(id, 0, pageSize), { method: "GET", headers });
+      const first = await readJsonBody(firstResp, "playlist-detail");
+      const totalCount = readPlaylistTrackCount(first.body);
+      const mediaResources = [...readMediaResources(first.body)];
+      let cursor = mediaResources.length;
+      while (totalCount > 0 && cursor < totalCount) {
+        const resp = await fetcher(withPlaylistDetailUrl(id, cursor, pageSize), { method: "GET", headers });
+        const page = await readJsonBody(resp, "playlist-detail");
+        const pageResources = readMediaResources(page.body);
+        if (pageResources.length === 0) break;
+        mediaResources.push(...pageResources);
+        cursor += pageResources.length;
+      }
+      return { body: mergePlaylistDetailPages(first.body, mediaResources) };
     },
     async loginStatus() {
       const cfg = deps.getConfig();

@@ -117,6 +117,7 @@ import {
   type PlaylistDetail,
   type PlaylistSummary,
   type PodcastCollection,
+  type PodcastMyResponse,
   type ProviderId,
   type ProviderLoginStatus,
   type ProviderVipIcon,
@@ -280,7 +281,7 @@ interface LoginQrStatusState {
 
 type LoginModalMode = "full" | "add-account" | "single-provider";
 
-const LOGIN_PROVIDERS = ["netease", "qq"] as const satisfies readonly ProviderId[];
+const LOGIN_PROVIDERS = ["netease", "qq", "soda"] as const satisfies readonly ProviderId[];
 
 const INITIAL_NETEASE_QR_STATUS: LoginQrStatusState = {
   text: "正在生成二维码...",
@@ -292,20 +293,57 @@ const INITIAL_QQ_QR_STATUS: LoginQrStatusState = {
   tone: "idle",
 };
 
+const INITIAL_SODA_QR_STATUS: LoginQrStatusState = {
+  text: "正在生成二维码...",
+  tone: "idle",
+};
+
 function initialQrStatusForProvider(provider: ProviderId): LoginQrStatusState {
-  return provider === "qq" ? INITIAL_QQ_QR_STATUS : INITIAL_NETEASE_QR_STATUS;
+  if (provider === "qq") return INITIAL_QQ_QR_STATUS;
+  if (provider === "soda") return INITIAL_SODA_QR_STATUS;
+  return INITIAL_NETEASE_QR_STATUS;
+}
+
+function providerLabelText(provider: ProviderId): string {
+  if (provider === "netease") return "网易云";
+  if (provider === "qq") return "QQ 音乐";
+  return "汽水音乐";
 }
 
 function qrInstructionForProvider(provider: ProviderId): string {
-  return provider === "qq"
-    ? "使用 QQ 音乐 App 扫码，然后在手机上确认登录"
-    : "使用网易云音乐 App 扫码，然后在手机上确认登录";
+  if (provider === "qq") return "使用 QQ 音乐 App 扫码，然后在手机上确认登录";
+  if (provider === "soda") return "使用汽水音乐 App 扫码，然后在手机上确认登录";
+  return "使用网易云音乐 App 扫码，然后在手机上确认登录";
 }
 
 function qrScannedTextForProvider(provider: ProviderId): string {
-  return provider === "qq"
-    ? "已扫码，请在 QQ 音乐 App 上确认登录"
-    : "已扫码，请在手机上确认登录";
+  if (provider === "qq") return "已扫码，请在 QQ 音乐 App 上确认登录";
+  if (provider === "soda") return "已扫码，请在汽水音乐 App 上确认登录";
+  return "已扫码，请在手机上确认登录";
+}
+
+function loginTitleForProvider(provider: ProviderId): string {
+  if (provider === "netease") return "扫码登录网易云音乐";
+  if (provider === "qq") return "扫码登录 QQ 音乐";
+  return "扫码登录汽水音乐";
+}
+
+function loginDescriptionForProvider(provider: ProviderId): string {
+  if (provider === "netease") return "使用网易云音乐 App 扫码，可同步歌单、红心与播客。";
+  if (provider === "qq") return "使用 QQ 音乐 App 扫码，可同步歌单和播放授权。";
+  return "使用汽水音乐 App 扫码，可同步歌单、收藏与播放授权。";
+}
+
+function qrLoadingMarkForProvider(provider: ProviderId): string {
+  if (provider === "netease") return "NE";
+  if (provider === "qq") return "QQ";
+  return "SD";
+}
+
+function cookiePlaceholderForProvider(provider: ProviderId): string {
+  if (provider === "netease") return "MUSIC_U=...; __csrf=...";
+  if (provider === "qq") return "uin=...; qm_keyst=...; qqmusic_key=...";
+  return "sid_tt=...; sessionid=...";
 }
 
 interface HomeListenHistoryRecord extends HomeListenRecord {
@@ -1001,10 +1039,15 @@ export function App({
   const [qqQrStatus, setQqQrStatus] = useState<LoginQrStatusState>(
     INITIAL_QQ_QR_STATUS,
   );
+  const [sodaQr, setSodaQr] = useState<LoginQrState | null>(null);
+  const [sodaQrStatus, setSodaQrStatus] = useState<LoginQrStatusState>(
+    INITIAL_SODA_QR_STATUS,
+  );
   const [qqManualCookieOpen, setQqManualCookieOpen] = useState(false);
   const [neteaseStatus, setNeteaseStatus] =
     useState<ProviderLoginStatus | null>(null);
   const [qqStatus, setQqStatus] = useState<ProviderLoginStatus | null>(null);
+  const [sodaStatus, setSodaStatus] = useState<ProviderLoginStatus | null>(null);
   const [shelfPlaylists, setShelfPlaylists] = useState<PlaylistSummary[]>([]);
   const [shelfPodcastCollections, setShelfPodcastCollections] = useState<
     PodcastCollection[]
@@ -1150,6 +1193,7 @@ export function App({
   const loginQrRequestSeqRef = useRef(0);
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const customLyricInputRef = useRef<HTMLTextAreaElement | null>(null);
   const shelfContentListRef = useRef<ShelfDetailContentListController | null>(
     null,
@@ -1631,11 +1675,12 @@ export function App({
 
   const setProviderStatus = useCallback((status: ProviderLoginStatus) => {
     if (status.provider === "netease") setNeteaseStatus(status);
-    else setQqStatus(status);
+    else if (status.provider === "qq") setQqStatus(status);
+    else setSodaStatus(status);
   }, []);
 
   const providerLabel = useCallback(
-    (provider: ProviderId) => (provider === "netease" ? "网易云" : "QQ 音乐"),
+    (provider: ProviderId) => providerLabelText(provider),
     [],
   );
 
@@ -1657,25 +1702,28 @@ export function App({
       const podcastMy = (client as { podcastMy?: SidecarClient["podcastMy"] })
         .podcastMy;
       const results = await Promise.allSettled([
-        client.playlistList("netease"),
-        client.playlistList("qq"),
+        ...LOGIN_PROVIDERS.map((provider) => client.playlistList(provider)),
         typeof podcastMy === "function"
           ? podcastMy.call(client)
           : Promise.resolve(null),
       ]);
       setShelfPlaylists(
         results
-          .slice(0, 2)
+          .slice(0, LOGIN_PROVIDERS.length)
           .flatMap((result) =>
             result.status === "fulfilled"
               ? (result.value as PlaylistSummary[])
               : [],
           ),
       );
-      const podcastResult = results[2];
+      const podcastResult = results[LOGIN_PROVIDERS.length];
+      const podcastValue =
+        podcastResult?.status === "fulfilled"
+          ? (podcastResult.value as PodcastMyResponse | null)
+          : null;
       setShelfPodcastCollections(
-        podcastResult?.status === "fulfilled" && podcastResult.value?.loggedIn
-          ? podcastResult.value.collections
+        podcastValue?.loggedIn
+          ? podcastValue.collections
           : [],
       );
     },
@@ -1716,8 +1764,13 @@ export function App({
   const refreshProviderLoginQr = useCallback(async (provider: ProviderId) => {
     const client = sidecarClient;
     const seq = ++loginQrRequestSeqRef.current;
-    const setQr = provider === "qq" ? setQqQr : setNeteaseQr;
-    const setQrStatus = provider === "qq" ? setQqQrStatus : setNeteaseQrStatus;
+    const setQr = provider === "qq" ? setQqQr : provider === "soda" ? setSodaQr : setNeteaseQr;
+    const setQrStatus =
+      provider === "qq"
+        ? setQqQrStatus
+        : provider === "soda"
+          ? setSodaQrStatus
+          : setNeteaseQrStatus;
     setQr(null);
     setQrStatus(initialQrStatusForProvider(provider));
     if (!client) {
@@ -1744,31 +1797,39 @@ export function App({
     loginQrRequestSeqRef.current += 1;
     setNeteaseQr(null);
     setQqQr(null);
+    setSodaQr(null);
     setNeteaseQrStatus(INITIAL_NETEASE_QR_STATUS);
     setQqQrStatus(INITIAL_QQ_QR_STATUS);
+    setSodaQrStatus(INITIAL_SODA_QR_STATUS);
   }, []);
 
   const openLoginModal = useCallback(() => {
-    const loggedProviderCount =
-      (neteaseStatus?.loggedIn ? 1 : 0) + (qqStatus?.loggedIn ? 1 : 0);
+    const statusByProvider: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
+      netease: neteaseStatus,
+      qq: qqStatus,
+      soda: sodaStatus,
+    };
+    const loggedProviderCount = LOGIN_PROVIDERS.filter(
+      (provider) => statusByProvider[provider]?.loggedIn,
+    ).length;
+    const firstMissingProvider =
+      LOGIN_PROVIDERS.find((provider) => !statusByProvider[provider]?.loggedIn) ?? "netease";
     setAccountDropdownOpen(false);
     resetProviderLoginQr();
     setLoginModalOpen(true);
     if (loggedProviderCount > 0) {
       setLoginModalMode("add-account");
-      setLoginProvider(
-        !neteaseStatus?.loggedIn ? "netease" : !qqStatus?.loggedIn ? "qq" : "netease",
-      );
+      setLoginProvider(firstMissingProvider);
     } else {
       setLoginModalMode("full");
       setLoginProvider("netease");
     }
     setQqManualCookieOpen(false);
-    void refreshProviderStatus("netease");
-    void refreshProviderStatus("qq");
+    for (const provider of LOGIN_PROVIDERS) void refreshProviderStatus(provider);
   }, [
     neteaseStatus?.loggedIn,
     qqStatus?.loggedIn,
+    sodaStatus?.loggedIn,
     refreshProviderStatus,
     resetProviderLoginQr,
   ]);
@@ -1783,17 +1844,17 @@ export function App({
   }, [resetProviderLoginQr]);
 
   const handleAccountButtonClick = useCallback(() => {
-    if (neteaseStatus?.loggedIn || qqStatus?.loggedIn) {
+    if (neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) {
       setAccountDropdownOpen((open) => !open);
       return;
     }
     openLoginModal();
-  }, [neteaseStatus?.loggedIn, openLoginModal, qqStatus?.loggedIn]);
+  }, [neteaseStatus?.loggedIn, openLoginModal, qqStatus?.loggedIn, sodaStatus?.loggedIn]);
 
   useEffect(() => {
-    if (neteaseStatus?.loggedIn || qqStatus?.loggedIn) return;
+    if (neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) return;
     setAccountDropdownOpen(false);
-  }, [neteaseStatus?.loggedIn, qqStatus?.loggedIn]);
+  }, [neteaseStatus?.loggedIn, qqStatus?.loggedIn, sodaStatus?.loggedIn]);
 
   useEffect(() => {
     if (!accountDropdownOpen) return;
@@ -1817,7 +1878,8 @@ export function App({
   }, [loginModalMode, loginModalOpen, loginProvider, refreshProviderLoginQr]);
 
   useEffect(() => {
-    const activeQr = loginProvider === "qq" ? qqQr : neteaseQr;
+    const activeQr =
+      loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
     if (
       !loginModalOpen ||
       loginModalMode === "add-account" ||
@@ -1831,8 +1893,13 @@ export function App({
     let cancelled = false;
     let checkInFlight = false;
     const provider = loginProvider;
-    const setQr = provider === "qq" ? setQqQr : setNeteaseQr;
-    const setQrStatus = provider === "qq" ? setQqQrStatus : setNeteaseQrStatus;
+    const setQr = provider === "qq" ? setQqQr : provider === "soda" ? setSodaQr : setNeteaseQr;
+    const setQrStatus =
+      provider === "qq"
+        ? setQqQrStatus
+        : provider === "soda"
+          ? setSodaQrStatus
+          : setNeteaseQrStatus;
     const check = async () => {
       if (checkInFlight) return;
       checkInFlight = true;
@@ -1903,6 +1970,8 @@ export function App({
     providerLabel,
     qqQr?.completed,
     qqQr?.key,
+    sodaQr?.completed,
+    sodaQr?.key,
     refreshShelfPlaylists,
     setProviderStatus,
     showToast,
@@ -1977,6 +2046,7 @@ export function App({
   }, [
     neteaseStatus?.loggedIn,
     qqStatus?.loggedIn,
+    sodaStatus?.loggedIn,
     refreshHomeDiscover,
     refreshHomeWeatherRadio,
     sidecarClient,
@@ -2040,7 +2110,7 @@ export function App({
   }, [playlistPanelPinned, setPlaylistPanelPinned, showToast]);
 
   const openHomeLibrary = useCallback(() => {
-    if (homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn) {
+    if (homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) {
       if (sidecarClient) void refreshShelfPlaylists(sidecarClient);
       setHomeForcedOpen(false);
       setHomeSuppressed(true);
@@ -2060,6 +2130,7 @@ export function App({
     closeShelf,
     openPlaylistPanelTab,
     qqStatus?.loggedIn,
+    sodaStatus?.loggedIn,
     refreshShelfPlaylists,
     selectShelfPlaylist,
     setConsole,
@@ -2069,8 +2140,8 @@ export function App({
   ]);
 
   const homeHasLogin = useCallback(
-    () => !!(homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn),
-    [homeDiscover?.loggedIn, neteaseStatus?.loggedIn, qqStatus?.loggedIn],
+    () => !!(homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn),
+    [homeDiscover?.loggedIn, neteaseStatus?.loggedIn, qqStatus?.loggedIn, sodaStatus?.loggedIn],
   );
 
   const playHomeDiscoverSongs = useCallback(
@@ -2440,6 +2511,7 @@ export function App({
     resetProviderLoginQr();
     if (neteaseCookieInputRef.current) neteaseCookieInputRef.current.value = "";
     if (qqCookieInputRef.current) qqCookieInputRef.current.value = "";
+    if (sodaCookieInputRef.current) sodaCookieInputRef.current.value = "";
   }, [resetProviderLoginQr]);
 
   const importProviderCookie = useCallback(
@@ -2448,7 +2520,9 @@ export function App({
       const input =
         provider === "netease"
           ? neteaseCookieInputRef.current
-          : qqCookieInputRef.current;
+          : provider === "soda"
+            ? sodaCookieInputRef.current
+            : qqCookieInputRef.current;
       const cookie = input?.value.trim() ?? "";
       const label = providerLabel(provider);
       if (!client) {
@@ -3250,8 +3324,7 @@ export function App({
             // 能力矩阵仅用于运行期同步，失败不阻断视觉宿主。
           }
           const statusResults = await Promise.allSettled([
-            client.loginStatus("netease"),
-            client.loginStatus("qq"),
+            ...LOGIN_PROVIDERS.map((provider) => client.loginStatus(provider)),
           ]);
           if (cancelledRef.current) return;
           for (const result of statusResults) {
@@ -3465,8 +3538,9 @@ export function App({
         if (!result.url) {
           throw new Error(result.message || "播放地址不可用");
         }
+        const proxiedUrl = (client as { proxiedUrl?: (url: string) => string }).proxiedUrl;
         const audioUrl = result.proxied
-          ? result.url
+          ? (proxiedUrl ? proxiedUrl.call(client, result.url) : result.url)
           : client.audioProxyUrl(result.url);
         if (result.trial) {
           setTrialBanner({
@@ -3558,16 +3632,21 @@ export function App({
     lyricsReset,
   ]);
 
-  const missingLoginProviders = LOGIN_PROVIDERS.filter((provider) =>
-    provider === "netease" ? !neteaseStatus?.loggedIn : !qqStatus?.loggedIn,
+  const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
+    netease: neteaseStatus,
+    qq: qqStatus,
+    soda: sodaStatus,
+  };
+  const missingLoginProviders = LOGIN_PROVIDERS.filter(
+    (provider) => !providerStatuses[provider]?.loggedIn,
   );
   const loggedProviderStatuses = LOGIN_PROVIDERS
     .map((provider) => {
-      const status = provider === "netease" ? neteaseStatus : qqStatus;
+      const status = providerStatuses[provider];
       return { provider, status };
     })
     .filter(
-      (entry): entry is { provider: ProviderId; status: ProviderLoginStatus } =>
+      (entry): entry is { provider: (typeof LOGIN_PROVIDERS)[number]; status: ProviderLoginStatus } =>
         entry.status?.loggedIn === true,
     );
   const loggedAccountSummaries = loggedProviderStatuses.map(
@@ -3578,8 +3657,25 @@ export function App({
     ? neteaseStatus
     : qqStatus?.loggedIn
       ? qqStatus
-      : null;
+      : sodaStatus?.loggedIn
+        ? sodaStatus
+        : null;
   const topVipBadge = accountVipBadge(topAccountStatus);
+  const activeLoginQr =
+    loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
+  const activeLoginQrStatus =
+    loginProvider === "qq"
+      ? qqQrStatus
+      : loginProvider === "soda"
+        ? sodaQrStatus
+        : neteaseQrStatus;
+  const activeLoginStatus = providerStatuses[loginProvider] ?? null;
+  const activeCookieInputRef =
+    loginProvider === "netease"
+      ? neteaseCookieInputRef
+      : loginProvider === "soda"
+        ? sodaCookieInputRef
+        : qqCookieInputRef;
 
   return (
     <div id="desktop-window-shell">
@@ -4107,30 +4203,21 @@ export function App({
           >
             {loginModalMode === "full" ? (
               <div className="login-platform-tabs" id="login-platform-tabs">
-                <button
-                  id="login-provider-netease"
-                  className={`netease${loginProvider === "netease" ? " active" : ""}`}
-                  type="button"
-                  onClick={() => {
-                    setLoginProvider("netease");
-                    setQqManualCookieOpen(false);
-                  }}
-                  aria-selected={loginProvider === "netease"}
-                >
-                  网易云
-                </button>
-                <button
-                  id="login-provider-qq"
-                  className={`qq${loginProvider === "qq" ? " active" : ""}`}
-                  type="button"
-                  onClick={() => {
-                    setLoginProvider("qq");
-                    setQqManualCookieOpen(false);
-                  }}
-                  aria-selected={loginProvider === "qq"}
-                >
-                  QQ 音乐
-                </button>
+                {LOGIN_PROVIDERS.map((provider) => (
+                  <button
+                    key={provider}
+                    id={`login-provider-${provider}`}
+                    className={`${provider}${loginProvider === provider ? " active" : ""}`}
+                    type="button"
+                    onClick={() => {
+                      setLoginProvider(provider);
+                      setQqManualCookieOpen(false);
+                    }}
+                    aria-selected={loginProvider === provider}
+                  >
+                    {providerLabel(provider)}
+                  </button>
+                ))}
               </div>
             ) : null}
             <div className="login-intro">
@@ -4207,73 +4294,40 @@ export function App({
             ) : (
               <>
                 <h2 id="login-modal-title">
-                  {loginProvider === "netease" ? "扫码登录网易云音乐" : "扫码登录 QQ 音乐"}
+                  {loginTitleForProvider(loginProvider)}
                 </h2>
                 <div id="login-modal-desc" className="desc">
-                  {loginProvider === "netease"
-                    ? "使用网易云音乐 App 扫码，可同步歌单、红心与播客。"
-                    : "使用 QQ 音乐 App 扫码，可同步歌单和播放授权。"}
+                  {loginDescriptionForProvider(loginProvider)}
                 </div>
-                {loginProvider === "netease" ? (
-                  <>
-                    <div id="qr-shell" className="qr-shell">
-                      {neteaseQr?.img ? (
-                        <img id="qr-img" src={neteaseQr.img} alt="网易云音乐登录二维码" />
-                      ) : (
-                        <div className="qr-loading-mark" aria-hidden="true">NE</div>
-                      )}
+                <div id="qr-shell" className="qr-shell">
+                  {activeLoginQr?.img ? (
+                    <img id="qr-img" src={activeLoginQr.img} alt={`${providerLabel(loginProvider)}登录二维码`} />
+                  ) : (
+                    <div className="qr-loading-mark" aria-hidden="true">
+                      {qrLoadingMarkForProvider(loginProvider)}
                     </div>
-                    <div id="qr-status" className={neteaseQrStatus.tone}>
-                      {neteaseQrStatus.text}
-                    </div>
-                    <div className="account-status-line">
-                      {neteaseStatus?.loggedIn
-                        ? `已登录 ${neteaseStatus.nickname ?? neteaseStatus.userId ?? ""}`
-                        : "未确认登录"}
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <div id="qr-shell" className="qr-shell">
-                      {qqQr?.img ? (
-                        <img id="qr-img" src={qqQr.img} alt="QQ 音乐登录二维码" />
-                      ) : (
-                        <div className="qr-loading-mark" aria-hidden="true">QQ</div>
-                      )}
-                    </div>
-                    <div id="qr-status" className={qqQrStatus.tone}>
-                      {qqQrStatus.text}
-                    </div>
-                    <div className="account-status-line">
-                      {qqStatus?.loggedIn
-                        ? `已登录 ${qqStatus.nickname ?? qqStatus.userId ?? ""}`
-                        : "未确认登录"}
-                    </div>
-                  </>
-                )}
+                  )}
+                </div>
+                <div id="qr-status" className={activeLoginQrStatus.tone}>
+                  {activeLoginQrStatus.text}
+                </div>
+                <div className="account-status-line">
+                  {activeLoginStatus?.loggedIn
+                    ? `已登录 ${activeLoginStatus.nickname ?? activeLoginStatus.userId ?? ""}`
+                    : "未确认登录"}
+                </div>
                 <div
                   id="qq-cookie-panel"
                   className={`qq-cookie-panel${qqManualCookieOpen ? " show" : ""}`}
                 >
-                  {loginProvider === "netease" ? (
-                    <textarea
-                      ref={neteaseCookieInputRef}
-                      id="netease-cookie-input"
-                      className="qq-cookie-input"
-                      spellCheck={false}
-                      autoComplete="off"
-                      placeholder="MUSIC_U=...; __csrf=..."
-                    />
-                  ) : (
-                    <textarea
-                      ref={qqCookieInputRef}
-                      id="qq-cookie-input"
-                      className="qq-cookie-input"
-                      spellCheck={false}
-                      autoComplete="off"
-                      placeholder="uin=...; qm_keyst=...; qqmusic_key=..."
-                    />
-                  )}
+                  <textarea
+                    ref={activeCookieInputRef}
+                    id={`${loginProvider}-cookie-input`}
+                    className="qq-cookie-input"
+                    spellCheck={false}
+                    autoComplete="off"
+                    placeholder={cookiePlaceholderForProvider(loginProvider)}
+                  />
                   <div className="qq-cookie-actions">
                     <div className="qq-cookie-note">
                       手动导入只会写入本机 sidecar 会话。

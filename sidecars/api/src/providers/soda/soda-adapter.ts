@@ -49,11 +49,17 @@ function firstString(...values: unknown[]): string {
 function mapSodaPlaybackQuality(value: string): SongUrlResult["level"] | undefined {
   const text = value.toLowerCase();
   if (text.includes("master") || text.includes("jymaster")) return "jymaster";
-  if (text.includes("hires") || text.includes("hi-res") || text.includes("high")) return "hires";
+  if (text.includes("320") || text.includes("exhigh")) return "exhigh";
+  if (text.includes("hires") || text.includes("hi-res")) return "hires";
   if (text.includes("flac") || text.includes("lossless") || text.includes("sq")) return "lossless";
-  if (text.includes("320") || text.includes("exhigh") || text.includes("high")) return "exhigh";
+  if (text.includes("high")) return "exhigh";
   if (text.includes("128") || text.includes("standard") || text.includes("normal")) return "standard";
   return undefined;
+}
+
+function readNumber(value: unknown): number {
+  const num = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+  return Number.isFinite(num) ? num : 0;
 }
 
 function readPlayInfoList(body: unknown): Record<string, unknown>[] {
@@ -63,6 +69,18 @@ function readPlayInfoList(body: unknown): Record<string, unknown>[] {
   const data = asObj(result?.Data) ?? asObj(result?.data) ?? asObj(root.Data) ?? asObj(root.data);
   const list = data?.PlayInfoList ?? data?.playInfoList ?? [];
   return Array.isArray(list) ? list.map((item) => asObj(item)).filter(Boolean) as Record<string, unknown>[] : [];
+}
+
+function sodaPlayInfoScore(playInfo: Record<string, unknown>): number {
+  const size = readNumber(playInfo.Size ?? playInfo.size ?? playInfo.FileSize ?? playInfo.fileSize);
+  const bitrate = readNumber(playInfo.Bitrate ?? playInfo.bitrate ?? playInfo.BitRate ?? playInfo.bitRate);
+  return size * 1_000_000 + bitrate;
+}
+
+function playableSodaPlayInfoList(list: Record<string, unknown>[]): Record<string, unknown>[] {
+  return list
+    .filter((playInfo) => firstString(playInfo.MainPlayUrl, playInfo.BackupPlayUrl) && firstString(playInfo.PlayAuth))
+    .sort((a, b) => sodaPlayInfoScore(b) - sodaPlayInfoScore(a));
 }
 
 function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
@@ -273,7 +291,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
         );
       }
       const infoBody = await infoResp.json();
-      const playInfoList = readPlayInfoList(infoBody);
+      const playInfoList = playableSodaPlayInfoList(readPlayInfoList(infoBody));
       const playInfo = playInfoList[0];
       if (!playInfo) {
         throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play info`);

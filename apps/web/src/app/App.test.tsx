@@ -96,6 +96,26 @@ function installAppStubAudio(): () => void {
 	};
 }
 
+function playbackSidecarClientStubs() {
+	return {
+		async resolveSongUrl(track: Track) {
+			return { url: `https://example.com/${track.id}.mp3`, quality: "standard", proxied: false };
+		},
+		audioProxyUrl(url: string) {
+			return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+		},
+		async lyric(track: Track) {
+			return {
+				provider: track.provider,
+				trackId: track.id,
+				lines: [],
+				hasTranslation: false,
+				isWordByWord: false,
+			};
+		},
+	};
+}
+
 test("App keeps the empty-home music page mounted behind the splash gate", () => {
 	const html = renderToStaticMarkup(React.createElement(App));
 	const visualGuideButtonCount = html.match(/id="visual-guide-btn"/g)?.length ?? 0;
@@ -148,7 +168,7 @@ test("App default sidecar client factory stays stable and does not storm health 
 				appVersion: "0.0.0-test",
 				apiVersion: "0.1.0",
 				schemaVersion: "0.1.0",
-				providers: ["netease", "qq"],
+				providers: ["netease", "qq", "soda"],
 			}), { headers: { "content-type": "application/json" } });
 		}
 		if (url.endsWith("/providers/capabilities")) {
@@ -158,7 +178,7 @@ test("App default sidecar client factory stays stable and does not storm health 
 			}), { headers: { "content-type": "application/json" } });
 		}
 		if (url.includes("/providers/") && url.endsWith("/login-status")) {
-			const provider = url.includes("/providers/qq/") ? "qq" : "netease";
+			const provider = url.match(/\/providers\/([^/]+)\//)?.[1] ?? "netease";
 			return new Response(JSON.stringify({
 				ok: true,
 				data: { provider, loggedIn: false },
@@ -204,8 +224,8 @@ test("App default sidecar client factory stays stable and does not storm health 
 		const healthCalls = seen.filter((url) => url.endsWith("/health")).length;
 		const loginStatusCalls = seen.filter((url) => url.endsWith("/login-status")).length;
 		expect(healthCalls).toBeLessThanOrEqual(1);
-		expect(loginStatusCalls).toBeLessThanOrEqual(2);
-		expect(seen.length).toBeLessThanOrEqual(12);
+		expect(loginStatusCalls).toBeLessThanOrEqual(3);
+		expect(seen.length).toBeLessThanOrEqual(13);
 	} finally {
 		root.unmount();
 		host.remove();
@@ -1238,6 +1258,79 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 	}
 });
 
+test("App resolves Soda relative proxied URLs against the sidecar before loading audio", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		const relativeProxyUrl = "/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a&playAuth=play-auth-1";
+		const sidecarProxyUrl = `http://127.0.0.1:39999${relativeProxyUrl}`;
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "soda",
+			id: "soda-audio-1",
+			sourceId: "soda-audio-1",
+			title: "Soda Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		const fakeClient = {
+			async resolveSongUrl() {
+				return { url: relativeProxyUrl, quality: "m4a", proxied: true, provider: "soda" };
+			},
+			proxiedUrl(url: string) {
+				expect(url).toBe(relativeProxyUrl);
+				return sidecarProxyUrl;
+			},
+			audioProxyUrl(url: string) {
+				throw new Error(`raw proxy should not be used for Soda proxied URL: ${url}`);
+			},
+			async lyric() {
+				return {
+					provider: "soda",
+					trackId: "soda-audio-1",
+					lines: [],
+					hasTranslation: false,
+					isWordByWord: false,
+				};
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: "http://127.0.0.1:39999",
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== sidecarProxyUrl; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(appStubAudioInstances[0]?.src).toBe(sidecarProxyUrl);
+		expect(appStubAudioInstances[0]?.loadCalled).toBeGreaterThan(0);
+	} finally {
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
 test("App shows the baseline trial banner when provider returns a trial-only URL", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
@@ -1435,6 +1528,71 @@ test("App renders direct QQ QR login inside the login modal", async () => {
 	expect(host.querySelector("#qr-img")?.getAttribute("src")).toBe("data:image/png;base64,qq-img");
 	expect(host.querySelector("#qq-web-login-card")).toBeNull();
 	expect(host.querySelector("#qr-status")?.textContent).toContain("QQ 音乐 App");
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
+	restoreAudio();
+});
+
+test("App renders Soda QR login as a first-class provider in the login modal", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+
+	const fakeClient = {
+		async loginStatus(provider: string) {
+			return { provider, loggedIn: false };
+		},
+		async createProviderLoginQrKey(provider: string) {
+			return { provider, key: `${provider}-qr-key-1` };
+		},
+		async createProviderLoginQrImage(provider: string, key: string) {
+			return { provider, key, img: `data:image/png;base64,${provider}-img` };
+		},
+		async checkProviderLoginQr(provider: string, key: string) {
+			return { provider, key, code: 801, loggedIn: false };
+		},
+		async playlistList() {
+			return [];
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	(host.querySelector("#user-btn") as HTMLButtonElement).click();
+	for (let i = 0; i < 12 && !host.querySelector("#login-modal"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	expect(host.querySelector("#login-provider-soda")).not.toBeNull();
+	(host.querySelector("#login-provider-soda") as HTMLButtonElement).click();
+	for (let i = 0; i < 12 && host.querySelector("#qr-img")?.getAttribute("src") !== "data:image/png;base64,soda-img"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(host.querySelector("#login-provider-soda")?.className).toContain("active");
+	expect(host.querySelector("#login-modal-title")?.textContent).toContain("扫码登录汽水音乐");
+	expect(host.querySelector("#login-modal-desc")?.textContent).toContain("汽水音乐 App");
+	expect(host.querySelector("#qr-img")?.getAttribute("src")).toBe("data:image/png;base64,soda-img");
+	expect(host.querySelector("#qr-status")?.textContent).toContain("汽水音乐 App");
 
 	root.unmount();
 	host.remove();
@@ -2144,6 +2302,7 @@ test("App derives baseline Home recent and profile actions from playback history
 		},
 	];
 	const fakeClient = {
+		...playbackSidecarClientStubs(),
 		async playlistList() {
 			return [];
 		},
@@ -2217,8 +2376,10 @@ test("App starts baseline Home weather radio from a weather rail song", async ()
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
 	localStorage.clear();
 	usePlaybackStore.getState().clearQueue();
+	const restoreAudio = installAppStubAudio();
 
 	const fakeClient = {
+		...playbackSidecarClientStubs(),
 		async playlistList() {
 			return [];
 		},
@@ -2317,22 +2478,25 @@ test("App starts baseline Home weather radio from a weather rail song", async ()
 	document.body.appendChild(host);
 	const root = createRoot(host);
 
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	await new Promise((resolve) => setTimeout(resolve, 0));
-	const weatherTile = Array.from(host.querySelectorAll(".home-tile"))
-		.find((button) => button.textContent?.includes("Rain Two")) as HTMLButtonElement;
-	weatherTile.click();
-	await new Promise((resolve) => setTimeout(resolve, 0));
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const weatherTile = Array.from(host.querySelectorAll(".home-tile"))
+			.find((button) => button.textContent?.includes("Rain Two")) as HTMLButtonElement;
+		weatherTile.click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
 
-	expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["rain-1", "rain-2"]);
-	expect(usePlaybackStore.getState().currentTrack?.id).toBe("rain-2");
-	expect(host.querySelector("#toast.show")?.textContent).toContain("雨天电台 · 2 首");
-
-	root.unmount();
-	host.remove();
-	usePlaybackStore.getState().clearQueue();
-	localStorage.clear();
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["rain-1", "rain-2"]);
+		expect(usePlaybackStore.getState().currentTrack?.id).toBe("rain-2");
+		expect(host.querySelector("#toast.show")?.textContent).toContain("雨天电台 · 2 首");
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		localStorage.clear();
+		restoreAudio();
+	}
 });
 
 test("App imports a local audio file from the baseline Home import tile", async () => {

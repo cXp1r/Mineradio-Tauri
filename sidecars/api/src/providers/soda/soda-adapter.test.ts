@@ -211,6 +211,83 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
   expect(calls[1]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
+test("soda adapter songUrl chooses the best playable entry from PlayInfoList", async () => {
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/luna/pc/track_v2")) {
+      return new Response(JSON.stringify({
+        data: {
+          track_player: {
+            url_player_info: "https://api.qishui.com/mock/url-player-info"
+          }
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    expect(init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+    return new Response(JSON.stringify({
+      Result: {
+        Data: {
+          PlayInfoList: [
+            {
+              Quality: "standard",
+              Bitrate: 128000,
+              Size: 1000,
+              PlayAuth: "play-auth-low",
+              MainPlayUrl: "https://cdn.example.com/low.m4a",
+              FileID: "low-file"
+            },
+            {
+              Quality: "exhigh",
+              Bitrate: 320000,
+              Size: 4000,
+              PlayAuth: "play-auth-high",
+              BackupPlayUrl: "https://cdn.example.com/high.m4a",
+              FileID: "high-file"
+            }
+          ]
+        }
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher
+  });
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher,
+    client
+  });
+
+  const result = await adapter.songUrl({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "unknown"
+  });
+
+  expect(result.url).toBe("/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhigh.m4a&playAuth=play-auth-high");
+  expect(result.quality).toBe("exhigh");
+  expect(result.level).toBe("exhigh");
+  expect(result.filename).toBe("high-file");
+});
+
 test("soda client logout requests qishui logout with cookie", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
@@ -276,6 +353,44 @@ test("soda client playlistDetail requests qishui playlist detail with playlist i
   expect(url.searchParams.get("playlist_id")).toBe("7590144593510006847");
   expect(calls[0]?.init?.method).toBe("GET");
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+});
+
+test("soda client playlistDetail follows cursor pages until count_tracks is reached", async () => {
+  const calls: Array<{ input: string; init?: RequestInit }> = [];
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: async (input, init) => {
+      calls.push({ input: String(input), init });
+      const url = new URL(String(input));
+      const cursor = url.searchParams.get("cursor") ?? "0";
+      const body = cursor === "0"
+        ? {
+            playlist: { id: "pl-1", title: "Paged", count_tracks: 3 },
+            media_resources: [
+              { id: "r-1", entity: { track_wrapper: { track: { id: "t-1", name: "One" } } } },
+              { id: "r-2", entity: { track_wrapper: { track: { id: "t-2", name: "Two" } } } }
+            ]
+          }
+        : {
+            playlist: { id: "pl-1", title: "Paged", count_tracks: 3 },
+            media_resources: [
+              { id: "r-3", entity: { track_wrapper: { track: { id: "t-3", name: "Three" } } } }
+            ]
+          };
+      return new Response(JSON.stringify(body), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  const detail = await client.playlistDetail("pl-1");
+
+  expect(calls.map(({ input }) => new URL(input).searchParams.get("cursor") ?? "0")).toEqual(["0", "2"]);
+  expect(calls.map(({ input }) => new URL(input).searchParams.get("cnt") ?? "")).toEqual(["20", "20"]);
+  expect((detail.body as { media_resources?: unknown[] }).media_resources?.length).toBe(3);
 });
 
 test("soda client loginStatus requests qishui me endpoint with cookie", async () => {

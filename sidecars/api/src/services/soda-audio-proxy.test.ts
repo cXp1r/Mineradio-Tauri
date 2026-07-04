@@ -111,3 +111,32 @@ test("soda audio proxy serves range requests from the cached decrypted bytes", a
   expect(ranged.headers.get("x-soda-audio-cache")).toBe("hit");
   expect(fetchCalls).toEqual([target]);
 });
+
+test("soda audio proxy evicts old decrypted entries when cache entry limit is reached", async () => {
+  const fetchCalls: string[] = [];
+  const service = createSodaAudioProxy({
+    maxCacheEntries: 1,
+    fetch: async (request) => {
+      fetchCalls.push(request.url);
+      return new Response(`upstream:${request.url}`, {
+        status: 200,
+        headers: { "content-type": "audio/mp4" }
+      });
+    },
+    decrypt: async (bytes) => ({
+      data: bytes,
+      decrypted: true,
+      reason: "decrypted"
+    })
+  });
+
+  const firstTarget = "https://media.example.test/first.m4a";
+  const secondTarget = "https://media.example.test/second.m4a";
+  const request = new Request("http://127.0.0.1/providers/soda/audio-proxy");
+
+  expect((await service({ target: firstTarget, playAuth: "auth-1", request })).status).toBe(200);
+  expect((await service({ target: secondTarget, playAuth: "auth-2", request })).status).toBe(200);
+  expect((await service({ target: firstTarget, playAuth: "auth-1", request })).status).toBe(200);
+
+  expect(fetchCalls).toEqual([firstTarget, secondTarget, firstTarget]);
+});

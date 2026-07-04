@@ -11,6 +11,7 @@ export type SodaAudioProxy = (input: SodaAudioProxyRequest) => Promise<Response>
 export type SodaAudioProxyDeps = {
   fetch?: (request: Request) => Promise<Response>;
   decrypt?: (fileData: Uint8Array, playAuth: string) => Promise<DecryptDataResult>;
+  maxCacheEntries?: number;
 };
 
 type Mp4Box = {
@@ -32,11 +33,16 @@ type RangeSelection =
 const ENCA_BYTES = new TextEncoder().encode("enca");
 const MP4A_BYTES = new TextEncoder().encode("mp4a");
 const SPADE_PREFIX = new Uint8Array([0xfa, 0x55]);
+const DEFAULT_MAX_CACHE_ENTRIES = 12;
 
 export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioProxy {
   const fetcher = deps.fetch ?? fetch;
   const decrypt = deps.decrypt ?? decryptSodaAudioData;
   const sodaAudioCache = new Map<string, Promise<CachedSodaAudio>>();
+  const maxCacheEntries =
+    typeof deps.maxCacheEntries === "number" && Number.isFinite(deps.maxCacheEntries)
+      ? Math.max(0, Math.floor(deps.maxCacheEntries))
+      : DEFAULT_MAX_CACHE_ENTRIES;
 
   return async function proxySodaAudio(input: SodaAudioProxyRequest): Promise<Response> {
     const parsed = parseTargetUrl(input.target);
@@ -46,7 +52,7 @@ export function createSodaAudioProxy(deps: SodaAudioProxyDeps = {}): SodaAudioPr
     if (!playAuth) return badRequest("playAuth required");
 
     try {
-      const cached = await getOrCreateCachedAudio(sodaAudioCache, fetcher, decrypt, parsed.url, playAuth);
+      const cached = await getOrCreateCachedAudio(sodaAudioCache, fetcher, decrypt, parsed.url, playAuth, maxCacheEntries);
       const range = parseRange(input.request.headers.get("range"), cached.bytes.length);
       const contentType = cached.contentType || "audio/mp4";
       if (range.kind === "invalid") {
@@ -134,11 +140,16 @@ async function getOrCreateCachedAudio(
   fetcher: (request: Request) => Promise<Response>,
   decrypt: (fileData: Uint8Array, playAuth: string) => Promise<DecryptDataResult>,
   target: string,
-  playAuth: string
+  playAuth: string,
+  maxCacheEntries: number
 ): Promise<CachedSodaAudio> {
   const cacheKey = `${target}\n${playAuth}`;
   const existing = cache.get(cacheKey);
-  if (existing) return await existing;
+  if (existing) {
+    cache.delete(cacheKey);
+    cache.set(cacheKey, existing);
+    return await existing;
+  }
 
   const pending = (async () => {
     const upstream = await fetcher(new Request(target, { method: "GET" }));
@@ -162,7 +173,14 @@ async function getOrCreateCachedAudio(
     };
   })();
 
-  cache.set(cacheKey, pending);
+  if (maxCacheEntries > 0) {
+    cache.set(cacheKey, pending);
+    while (cache.size > maxCacheEntries) {
+      const oldest = cache.keys().next().value;
+      if (oldest === undefined) break;
+      cache.delete(oldest);
+    }
+  }
   try {
     return await pending;
   } catch (err) {

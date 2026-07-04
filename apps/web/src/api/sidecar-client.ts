@@ -366,6 +366,12 @@ export class SidecarClient {
 		return `${this.baseUrl}/audio-proxy?${params.toString()}`;
 	}
 
+	proxiedUrl(url: string): string {
+		if (/^https?:\/\//i.test(url)) return url;
+		if (url.startsWith("/")) return `${this.baseUrl}${url}`;
+		return new URL(url, `${this.baseUrl}/`).toString();
+	}
+
 	imageProxyUrl(url: string, cacheBust = false, now = Date.now()): string {
 		if (!url) return "";
 		if (/^data:image\//i.test(url) || /^blob:/i.test(url)) return url;
