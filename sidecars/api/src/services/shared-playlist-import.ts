@@ -50,9 +50,9 @@ export async function importSharedPlaylist(
     throw new SharedPlaylistImportError("UNSUPPORTED_LINK", "暂不支持这个歌单链接");
   }
 
-  if (candidate.provider === "apple-music") return importAppleMusicPlaylist(candidate, input);
-  if (candidate.provider === "qishui") return importQishuiPlaylist(candidate, input);
-  if (candidate.provider === "kugou") return importKugouPlaylist(candidate, input);
+  if (candidate.provider === "apple-music") return importAppleMusicPlaylist(candidate);
+  if (candidate.provider === "qishui") return importQishuiPlaylist(candidate);
+  if (candidate.provider === "kugou") return importKugouPlaylist(candidate);
 
   const adapter = deps.providerAdapters[candidate.provider];
   if (!adapter) {
@@ -61,19 +61,22 @@ export async function importSharedPlaylist(
 
   const detail = await adapter.playlistDetail(candidate.id);
   const tracks = detail.tracks ?? [];
+  const total = Math.max(Number(detail.trackCount ?? 0) || 0, tracks.length);
+  const partial = total > tracks.length;
   return SharedPlaylistImportResultSchema.parse({
     provider: candidate.provider,
     playlist: {
       ...detail,
       id: detail.id || candidate.id,
       provider: candidate.provider,
+      trackCount: total,
       sourceUrl: candidate.sourceUrl
     },
     tracks,
-    trackCount: detail.trackCount ?? tracks.length,
+    trackCount: total,
     loadedCount: tracks.length,
-    partial: false,
-    partialReason: ""
+    partial,
+    partialReason: partial ? "分享歌单只导入了部分曲目" : ""
   });
 }
 
@@ -233,9 +236,8 @@ function normalizeDurationMs(value: unknown): number | undefined {
   return Math.round(n > 1000 ? n : n * 1000);
 }
 
-async function importAppleMusicPlaylist(candidate: SharedPlaylistCandidate, input: SharedPlaylistImportRequest): Promise<SharedPlaylistImportResult> {
-  const directUrl = firstHttpUrlFromValues([input.url, input.text, candidate.sourceUrl]);
-  const target = directUrl || `${APPLE_MUSIC_ORIGIN}/cn/playlist/${encodeURIComponent(candidate.id)}`;
+async function importAppleMusicPlaylist(candidate: SharedPlaylistCandidate): Promise<SharedPlaylistImportResult> {
+  const target = candidate.sourceUrl || `${APPLE_MUSIC_ORIGIN}/cn/playlist/${encodeURIComponent(candidate.id)}`;
   const html = await fetchText(target, {
     headers: {
       Referer: `${APPLE_MUSIC_ORIGIN}/`,
@@ -380,8 +382,8 @@ function appleTrackIdFromUrl(value: string): string {
   return match ? match[1] : "";
 }
 
-async function importQishuiPlaylist(candidate: SharedPlaylistCandidate, input: SharedPlaylistImportRequest): Promise<SharedPlaylistImportResult> {
-  const target = firstHttpUrlFromValues([input.url, input.text, candidate.sourceUrl]) || qishuiPlaylistUrlFromInput(candidate.id);
+async function importQishuiPlaylist(candidate: SharedPlaylistCandidate): Promise<SharedPlaylistImportResult> {
+  const target = candidate.sourceUrl || qishuiPlaylistUrlFromInput(candidate.id);
   if (!target) throw new SharedPlaylistImportError("QISHUI_MISSING_URL", "缺少汽水音乐歌单链接");
   const fetched = await fetchText(target, {
     redirect: "follow",
@@ -547,9 +549,9 @@ function normalizeQishuiTrack(name: string, meta: string, cover: string, index: 
   };
 }
 
-async function importKugouPlaylist(candidate: SharedPlaylistCandidate, input: SharedPlaylistImportRequest): Promise<SharedPlaylistImportResult> {
-  const source = firstHttpUrlFromValues([input.url, input.text, candidate.sourceUrl]) || candidate.sourceUrl;
-  const info = parseKugouShareInput(source || input.text || input.url || "");
+async function importKugouPlaylist(candidate: SharedPlaylistCandidate): Promise<SharedPlaylistImportResult> {
+  const source = candidate.sourceUrl;
+  const info = parseKugouShareInput(source);
   if (!info.gcid && !info.globalCollectionId) {
     throw new SharedPlaylistImportError("KUGOU_MISSING_ID", "缺少酷狗歌单 ID");
   }
@@ -1125,14 +1127,6 @@ function externalUrlFromInput(value: string): string {
   const raw = String(value || "").trim();
   const match = raw.match(/https?:\/\/[^\s"'<>]+/i);
   return cleanCandidate(match ? match[0] : raw);
-}
-
-function firstHttpUrlFromValues(values: Array<string | undefined>): string {
-  for (const value of values) {
-    const match = String(value || "").match(/https?:\/\/[^\s"'<>]+/i);
-    if (match) return cleanCandidate(match[0]);
-  }
-  return "";
 }
 
 function parseIsoDurationMs(value: string): number {

@@ -102,6 +102,59 @@ test("detectSharedPlaylist supports Kugou gcid links", () => {
   expect(candidate?.id).toBe("3z106tadezl7z03a");
 });
 
+test("importSharedPlaylist fetches the detected Apple Music link when share text has multiple URLs", async () => {
+  const originalFetch = globalThis.fetch;
+  const requested: string[] = [];
+  const trap = "https://example.invalid/not-a-playlist";
+  const apple = "https://music.apple.com/cn/playlist/demo/pl.abc123";
+  const playlistHtml = `<script id="schema:music-playlist" type="application/ld+json">${JSON.stringify({
+    name: "Apple Demo",
+    numTracks: 1,
+    image: "https://img.example/cover.jpg",
+    track: [{
+      name: "Song",
+      byArtist: { name: "Artist" },
+      url: "https://music.apple.com/cn/song/song/123456789",
+      duration: "PT3M"
+    }]
+  })}</script>`;
+
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const url = String(input);
+    requested.push(url);
+    if (url.startsWith("https://music.apple.com/")) {
+      return new Response(playlistHtml, { status: 200 });
+    }
+    if (url.startsWith("https://itunes.apple.com/")) {
+      return Response.json({
+        results: [{
+          wrapperType: "track",
+          trackId: 123456789,
+          trackName: "Song",
+          artistName: "Artist",
+          collectionName: "Album",
+          trackTimeMillis: 180000
+        }]
+      });
+    }
+    return new Response("wrong url", { status: 500 });
+  }) as typeof fetch;
+
+  try {
+    const result = await importSharedPlaylist(
+      { text: `${trap} ${apple}` },
+      { providerAdapters: {} as Record<ProviderId, ProviderAdapter> }
+    );
+
+    expect(result.provider).toBe("apple-music");
+    expect(result.loadedCount).toBe(1);
+    expect(requested.some((url) => url.startsWith(trap))).toBe(false);
+    expect(requested[0]).toBe(apple);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test("importSharedPlaylist maps adapter playlist detail into import result", async () => {
   const result = await importSharedPlaylist(
     { url: "https://y.qq.com/n/ryqq/playlist/7697196542" },
@@ -112,4 +165,36 @@ test("importSharedPlaylist maps adapter playlist detail into import result", asy
   expect(result.playlist.id).toBe("7697196542");
   expect(result.loadedCount).toBe(1);
   expect(result.tracks[0]?.provider).toBe("qq");
+});
+
+test("importSharedPlaylist marks adapter playlist imports partial when fewer tracks are loaded than declared", async () => {
+  const qq = adapter("qq");
+  const result = await importSharedPlaylist(
+    { url: "https://y.qq.com/n/ryqq/playlist/7697196542" },
+    {
+      providerAdapters: {
+        netease: adapter("netease"),
+        qq: {
+          ...qq,
+          async playlistDetail(id) {
+            return {
+              provider: "qq",
+              id,
+              name: "Large QQ Share",
+              coverUrl: "",
+              trackCount: 3,
+              trackIds: ["song-1"],
+              subscribed: false,
+              tracks: [{ ...track, provider: "qq" }]
+            };
+          }
+        }
+      }
+    }
+  );
+
+  expect(result.trackCount).toBe(3);
+  expect(result.loadedCount).toBe(1);
+  expect(result.partial).toBe(true);
+  expect(result.partialReason.length > 0).toBe(true);
 });
