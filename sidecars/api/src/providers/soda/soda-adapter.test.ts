@@ -8,17 +8,25 @@ import { mapSodaSongToTrack, mapSodaPlaylistToSummary, parseSodaLyricText, mapSo
 
 test("soda mapping helpers produce provider-shaped objects", () => {
   const track = mapSodaSongToTrack({
-    id: 123,
-    title: "Demo Song",
-    artist: "Alice / Bob",
-    albumName: "Demo Album",
-    coverUrl: "//cdn.example.com/cover.jpg",
-    durationMs: 215000
+    id: "123",
+    name: "Demo Song",
+    artists: [{ id: "artist-1", name: "Alice" }, { id: "artist-2", name: "Bob" }],
+    album: {
+      id: "album-1",
+      name: "Demo Album",
+      url_cover: {
+        uri: "demo-cover",
+        urls: ["https://cdn.example.com/"],
+        template_prefix: "tplv-b829550vbb"
+      }
+    },
+    duration: 215000
   });
   expect(track.provider).toBe("soda");
   expect(track.id).toBe("123");
   expect(track.artists).toEqual(["Alice", "Bob"]);
-  expect(track.coverUrl).toBe("https://cdn.example.com/cover.jpg");
+  expect(track.album).toBe("Demo Album");
+  expect(track.coverUrl).toBe("https://cdn.example.com/demo-cover~tplv-b829550vbb-crop-center:256:256.webp");
   expect(track.qualityHints).toEqual(["standard"]);
 
   const playlist = mapSodaPlaylistToSummary({
@@ -677,7 +685,7 @@ test("soda adapter maps playlistList from client response", async () => {
             {
               id: "pl-1",
               name: "Favorites",
-              coverUrl: "//cdn.example.com/pl.jpg",
+              url_cover: { urls: ["//cdn.example.com/pl.jpg"], uri: "" },
               trackCount: 2,
               trackIds: ["1", 2],
               subscribed: true
@@ -754,10 +762,18 @@ test("soda adapter maps playlistDetail from client response", async () => {
             tracks: [
               {
                 id: "t-1",
-                title: "Track 1",
-                artist: "Alice",
-                albumName: "Album",
-                durationMs: 120000
+                name: "Track 1",
+                artists: [{ id: "artist-1", name: "Alice" }],
+                album: {
+                  id: "album-1",
+                  name: "Album",
+                  url_cover: {
+                    uri: "track-cover",
+                    urls: ["https://cdn.example.com/"],
+                    template_prefix: "tplv-b829550vbb"
+                  }
+                },
+                duration: 120000
               }
             ]
           }
@@ -782,11 +798,10 @@ test("soda adapter maps playlistDetail from client response", async () => {
         provider: "soda",
         id: "t-1",
         sourceId: "t-1",
-        mediaMid: undefined,
         title: "Track 1",
         artists: ["Alice"],
         album: "Album",
-        coverUrl: "",
+        coverUrl: "https://cdn.example.com/track-cover~tplv-b829550vbb-crop-center:256:256.webp",
         durationMs: 120000,
         qualityHints: ["standard"],
         playableState: "unknown"

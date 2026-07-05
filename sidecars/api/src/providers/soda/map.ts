@@ -3,25 +3,15 @@ import type { Track, PlaylistSummary, PlaylistDetail, LyricLine, LyricPayload, P
 const SODA_PROVIDER_ID = "soda";
 
 export interface SodaSong {
-  id?: number | string;
-  songId?: number | string;
-  sourceId?: number | string;
-  title?: string;
+  id?: string;
   name?: string;
-  artist?: string;
-  artists?: Array<{ id?: number | string; name?: string } | string | null | undefined>;
-  album?: string | {
-    id?: number | string;
+  artists?: Array<{ id?: string; name?: string }>;
+  album?: {
+    id?: string;
     name?: string;
-    coverUrl?: string;
-    picUrl?: string;
-    url_cover?: { uri?: string; urls?: string[]; template_prefix?: string } | string;
+    url_cover?: { uri?: string; urls?: string[]; template_prefix?: string };
   };
-  albumName?: string;
-  coverUrl?: string;
   duration?: number;
-  durationMs?: number;
-  mediaMid?: string;
   preview?: {
     start?: number;
     duration?: number;
@@ -38,7 +28,6 @@ export interface SodaPlaylistBody {
   playlistId?: number | string;
   title?: string;
   name?: string;
-  coverUrl?: string;
   url_cover?: { uri?: string; urls?: string[]; template_prefix?: string } | string;
   trackCount?: number;
   count_tracks?: number;
@@ -79,7 +68,7 @@ function playlistCoverUrl(raw: SodaPlaylistBody): string {
     if (Array.isArray(cover.urls) && cover.urls[0]) return cover.urls[0];
     if (cover.uri) return cover.uri;
   }
-  return raw.coverUrl ?? "";
+  return "";
 }
 
 export function normalizeProviderImageUrl(url: string | null | undefined): string {
@@ -93,28 +82,22 @@ function toArtists(raw: SodaSong): string[] {
   const artists: string[] = [];
   if (Array.isArray(raw.artists)) {
     for (const item of raw.artists) {
-      if (typeof item === "string" && item.trim()) artists.push(item.trim());
-      else if (item && typeof item === "object" && typeof item.name === "string" && item.name.trim()) {
+      if (item && typeof item.name === "string" && item.name.trim()) {
         artists.push(item.name.trim());
       }
     }
-  }
-  if (artists.length === 0 && typeof raw.artist === "string" && raw.artist.trim()) {
-    artists.push(...raw.artist.split(/[\/,、]/).map(s => s.trim()).filter(Boolean));
   }
   return artists;
 }
 
 function albumName(raw: SodaSong): string {
-  if (typeof raw.album === "string") return raw.album.trim();
   if (raw.album && typeof raw.album === "object" && typeof raw.album.name === "string") {
     return raw.album.name.trim();
   }
-  return String(raw.albumName ?? "").trim();
+  return "";
 }
 
-function sodaSizedCoverUrl(cover: { uri?: string; urls?: string[]; template_prefix?: string } | string | null | undefined): string {
-  if (typeof cover === "string") return cover;
+function sodaSizedCoverUrl(cover: { uri?: string; urls?: string[]; template_prefix?: string } | null | undefined): string {
   const uri = String(cover?.uri ?? "").trim();
   if (!uri) return "";
   const cdn = (cover?.urls || [])[0] ?? "https://p3-luna.douyinpic.com/img/";
@@ -123,11 +106,7 @@ function sodaSizedCoverUrl(cover: { uri?: string; urls?: string[]; template_pref
 }
 
 function albumCoverUrl(raw: SodaSong): string {
-  if (raw.coverUrl) return raw.coverUrl;
-  if (raw.album && typeof raw.album === "object") {
-    return raw.album.coverUrl ?? raw.album.picUrl ?? sodaSizedCoverUrl(raw.album.url_cover);
-  }
-  return "";
+  return sodaSizedCoverUrl(raw.album?.url_cover);
 }
 
 function qualityHints(raw: SodaSong): string[] {
@@ -144,19 +123,13 @@ function playableState(raw: SodaSong): PlayableState {
 }
 
 export function mapSodaSongToTrack(raw: SodaSong): Track {
-  const id = String(raw.id ?? raw.songId ?? raw.sourceId ?? "").trim();
-  const durationMs =
-    typeof raw.durationMs === "number"
-      ? raw.durationMs
-      : typeof raw.duration === "number"
-        ? raw.duration
-        : undefined;
+  const id = String(raw.id ?? "").trim();
+  const durationMs = typeof raw.duration === "number" ? raw.duration : undefined;
   return {
     provider: SODA_PROVIDER_ID,
     id,
     sourceId: id,
-    mediaMid: raw.mediaMid ? String(raw.mediaMid) : undefined,
-    title: String(raw.title ?? raw.name ?? "").trim(),
+    title: String(raw.name ?? "").trim(),
     artists: toArtists(raw),
     album: albumName(raw),
     coverUrl: normalizeProviderImageUrl(albumCoverUrl(raw)),
