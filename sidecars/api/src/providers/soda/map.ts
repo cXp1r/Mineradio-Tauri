@@ -45,15 +45,6 @@ export interface SodaPlaylistDetailBody {
   } | null>;
 }
 
-function playlistCoverUrl(raw: SodaPlaylistBody): string {
-  const cover = raw.url_cover;
-  if (cover && typeof cover === "object") {
-    if (Array.isArray(cover.urls) && cover.urls[0]) return cover.urls[0];
-    if (cover.uri) return cover.uri;
-  }
-  return "";
-}
-
 export function normalizeProviderImageUrl(url: string | null | undefined): string {
   const value = String(url ?? "").trim();
   if (!value) return "";
@@ -279,7 +270,7 @@ export function mapSodaPlaylistToSummary(raw: SodaPlaylistBody, idHint?: string)
     provider: SODA_PROVIDER_ID,
     id,
     name: String(raw.title ?? raw.public_title ?? "").trim(),
-    coverUrl: normalizeProviderImageUrl(playlistCoverUrl(raw)),
+    coverUrl: normalizeProviderImageUrl(sodaSizedCoverUrl(raw.url_cover)),
     trackCount,
     trackIds: [],
     subscribed: raw.is_private === false

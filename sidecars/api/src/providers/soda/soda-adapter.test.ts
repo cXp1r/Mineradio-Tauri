@@ -54,10 +54,16 @@ test("soda mapping helpers produce provider-shaped objects", () => {
     id: "pl-1",
     title: "Favorites",
     public_title: "Favorites",
+    url_cover: {
+      uri: "playlist-cover",
+      urls: ["https://cdn.example.com/"],
+      template_prefix: "tplv-b829550vbb"
+    },
     count_tracks: 12,
     is_private: false
   });
   expect(playlist.provider).toBe("soda");
+  expect(playlist.coverUrl).toBe("https://cdn.example.com/playlist-cover~tplv-b829550vbb-crop-center:256:256.webp");
   expect(playlist.trackCount).toBe(12);
   expect(playlist.trackIds).toEqual([]);
   expect(playlist.subscribed).toBe(true);
@@ -673,8 +679,8 @@ test("soda adapter maps playlistList from client response", async () => {
               title: "Favorites",
               public_title: "Favorites",
               url_cover: {
-                uri: "",
-                urls: ["//cdn.example.com/pl.jpg"],
+                uri: "pl-cover",
+                urls: ["https://cdn.example.com/"],
                 template_prefix: "tplv-b829550vbb"
               },
               count_tracks: 2,
@@ -695,7 +701,7 @@ test("soda adapter maps playlistList from client response", async () => {
       provider: "soda",
       id: "pl-1",
       name: "Favorites",
-      coverUrl: "https://cdn.example.com/pl.jpg",
+      coverUrl: "https://cdn.example.com/pl-cover~tplv-b829550vbb-crop-center:256:256.webp",
       trackCount: 2,
       trackIds: [],
       subscribed: true
@@ -747,7 +753,11 @@ test("soda adapter maps playlistDetail from client response", async () => {
           playlist: {
             id: "7590144593510006847",
             title: "My Playlist",
-            url_cover: { urls: ["//cdn.example.com/detail.jpg"], uri: "" },
+            url_cover: {
+              uri: "detail-cover",
+              urls: ["https://cdn.example.com/"],
+              template_prefix: "tplv-b829550vbb"
+            },
             count_tracks: 3
           },
           media_resources: [
@@ -787,7 +797,7 @@ test("soda adapter maps playlistDetail from client response", async () => {
     provider: "soda",
     id: "7590144593510006847",
     name: "My Playlist",
-    coverUrl: "https://cdn.example.com/detail.jpg",
+    coverUrl: "https://cdn.example.com/detail-cover~tplv-b829550vbb-crop-center:256:256.webp",
     trackCount: 3,
     trackIds: [],
     subscribed: false,
