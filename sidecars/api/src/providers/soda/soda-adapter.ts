@@ -410,6 +410,8 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       };
     },
     async loginStatus(): Promise<ProviderLoginStatus> {
+      const cfg = deps.getConfig();
+      if (!cfg.cookie) return { provider: SODA_PROVIDER_ID, loggedIn: false };
       const resp = await client.loginStatus();
       return readSodaLoginStatus(resp.body);
     },

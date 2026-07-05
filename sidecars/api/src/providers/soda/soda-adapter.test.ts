@@ -628,7 +628,7 @@ test("soda adapter maps playlistDetail from client response", async () => {
 test("soda adapter maps loginStatus from client response", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
-      return {};
+      return { cookie: "soda_session=abc123" };
     },
     client: {
       search: async () => ({ body: { result_groups: [] } }),
@@ -707,6 +707,36 @@ test("soda adapter loginStatus can use runtime session cookie config", async () 
   } finally {
     clearRuntimeProviderCookie("soda");
   }
+});
+
+test("soda adapter loginStatus without cookie returns loggedIn:false without calling client", async () => {
+  let called = false;
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => {
+        called = true;
+        return { body: { status_code: 0, my_info: {}, my_stats: {} } };
+      },
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const status = await adapter.loginStatus();
+  expect(status).toEqual({
+    provider: "soda",
+    loggedIn: false
+  });
+  expect(called).toBe(false);
 });
 
 test("soda adapter checkSongLikes uses track_v2 state.is_collected", async () => {
