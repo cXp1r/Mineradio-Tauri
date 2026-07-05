@@ -4,7 +4,7 @@ const SODA_SEARCH_URL =
 const SODA_LYRIC_URL = "https://api.qishui.com/luna/pc/track_v2?track_id=&media_type=track&queue_type=&aid=386088&iid=114514";
 const SODA_PLAYLIST_LIST_URL = "https://api.qishui.com/luna/pc/me/playlist?aid=386088";
 const SODA_PLAYLIST_DETAIL_URL = "https://api.qishui.com/luna/pc/playlist/detail?aid=386088";
-const SODA_ME_URL = "https://api.qishui.com/luna/pc/me?aid=386088";
+const SODA_ME_URL = "https://api.qishui.com/luna/pc/me?aid=386088&version_code=30050100";
 const SODA_COLLECTION_MEDIA_URL = "https://api.qishui.com/luna/pc/me/collection/media?aid=386088";
 const SODA_COLLECTION_MEDIA_DELETE_URL = "https://api.qishui.com/luna/pc/me/collection/media/delete?aid=386088";
 const SODA_LOGOUT_URL = "https://api.qishui.com/passport/web/logout/";
