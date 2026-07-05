@@ -167,6 +167,37 @@ test("PlaylistPanelHost expands playlist detail and plays detail tracks", async 
 	unmount();
 });
 
+test("PlaylistPanelHost keeps Soda playlists in their own provider section", async () => {
+	const playlists: PlaylistSummary[] = [
+		{ provider: "netease", id: "ne-1", name: "Netease List", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false },
+		{ provider: "qq", id: "qq-1", name: "QQ List", coverUrl: "", trackCount: 2, trackIds: [], subscribed: false },
+		{ provider: "soda", id: "soda-1", name: "Soda List", coverUrl: "", trackCount: 3, trackIds: [], subscribed: false },
+	];
+	const { container, unmount } = await renderPanel(
+		<PlaylistPanelHost
+			open
+			tab="playlists"
+			queue={[]}
+			currentTrack={null}
+			mode="loop"
+			playlists={playlists}
+			podcastCollections={[]}
+			onTabChange={() => undefined}
+		/>,
+	);
+
+	const sections = Array.from(container.querySelectorAll(".pl-section"));
+	expect(sections.length).toBe(3);
+	expect(sections[0]?.textContent).toContain("网易云歌单");
+	expect(sections[0]?.querySelector("[data-playlist-provider=\"netease\"]")?.textContent).toContain("NE");
+	expect(sections[0]?.querySelector("[data-playlist-provider=\"soda\"]")).toBeNull();
+	expect(sections[1]?.textContent).toContain("QQ 音乐歌单");
+	expect(sections[1]?.querySelector("[data-playlist-provider=\"qq\"]")?.textContent).toContain("QQ");
+	expect(sections[2]?.textContent).toContain("汽水音乐歌单");
+	expect(sections[2]?.querySelector("[data-playlist-provider=\"soda\"]")?.textContent).toContain("SODA");
+	unmount();
+});
+
 test("PlaylistPanelHost virtualizes large playlist detail panes", async () => {
 	const playlist: PlaylistSummary = {
 		provider: "netease",

@@ -47,7 +47,9 @@ function trackKey(track: Track | null): string {
 }
 
 function providerLabel(provider: string): string {
-	return provider === "qq" ? "QQ" : "NE";
+	if (provider === "qq") return "QQ";
+	if (provider === "soda") return "SODA";
+	return "NE";
 }
 
 function modeLabel(mode: PlaybackMode): string {
@@ -229,8 +231,9 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 
 	const renderPlaylists = () => {
 		const groups = [
-			{ key: "netease", label: "网易云歌单", items: props.playlists.filter((playlist) => playlist.provider !== "qq") },
+			{ key: "netease", label: "网易云歌单", items: props.playlists.filter((playlist) => playlist.provider === "netease") },
 			{ key: "qq", label: "QQ 音乐歌单", items: props.playlists.filter((playlist) => playlist.provider === "qq") },
+			{ key: "soda", label: "汽水音乐歌单", items: props.playlists.filter((playlist) => playlist.provider === "soda") },
 		];
 		return (
 			<div id="pl-pane">

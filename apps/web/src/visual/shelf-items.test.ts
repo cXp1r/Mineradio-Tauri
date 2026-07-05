@@ -146,6 +146,22 @@ test("mapPlaylistsToShelfItems uses baseline provider abbreviations and mine/fav
 	]);
 });
 
+test("mapPlaylistsToShelfItems uses the Soda provider abbreviation", () => {
+	const playlists: PlaylistSummary[] = [
+		{
+			provider: "soda",
+			id: "soda",
+			name: "Soda List",
+			coverUrl: "soda-cover",
+			trackCount: 5,
+			trackIds: [],
+			subscribed: false,
+		},
+	];
+
+	expect(mapPlaylistsToShelfItems(playlists)[0]?.sub).toContain("SODA");
+});
+
 test("mapPodcastCollectionsToShelfItems mirrors baseline podcast collection cards", () => {
 	const collections: PodcastCollection[] = [
 		{
