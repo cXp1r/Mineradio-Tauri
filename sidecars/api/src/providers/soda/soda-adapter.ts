@@ -1,4 +1,4 @@
-import type {
+﻿import type {
   LyricPayload,
   PlaylistDetail,
   PlaylistSummary,
@@ -352,14 +352,18 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       const cleanId = id.trim();
       const resp = await client.collectionMedia(cleanId, liked);
       const body = asObj(resp.body) ?? {};
-      const message = typeof body.message === "string" ? body.message : "";
-      if (resp.status < 200 || resp.status >= 300) {
+      
+      const info = liked ? asObj(body.collected_media) : asObj(body.deleted_media);
+      if (!info) {
+        const status_info = asObj(body.status_info) ?? {};
+        const status_msg = readString(status_info.status_msg) ?? "";
         throw new ProviderError(
           SODA_PROVIDER_ID,
           "UNAVAILABLE",
-          message || `soda like-song failed with status ${resp.status}`
+          status_msg || `soda like-song failed with status ${resp.status}`
         );
       }
+      
       return {
         provider: SODA_PROVIDER_ID,
         id: cleanId,

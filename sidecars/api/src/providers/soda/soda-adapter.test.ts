@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { clearRuntimeProviderCookie, getProviderCookie, setRuntimeProviderCookie } from "../../services/auth-session";
+import { ProviderError } from "../provider-adapter";
 import { ProviderNotImplementedError } from "../provider-adapter";
 import { createSodaAdapter } from "./soda-adapter";
 import { createSodaClient } from "./soda-client";
@@ -892,7 +893,13 @@ test("soda adapter likeSong calls collection endpoint with liked flag", async ()
       trackDetail: async () => ({ body: {} }),
       collectionMedia: async (trackId, liked) => {
         calls.push({ id: trackId, liked });
-        return { body: { message: "success" }, status: 200 };
+        return {
+          body: {
+            message: "success",
+            collected_media: liked ? { id: trackId } : undefined
+          },
+          status: 200
+        };
       },
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
@@ -924,7 +931,13 @@ test("soda adapter unlikeSong calls delete collection endpoint", async () => {
       trackDetail: async () => ({ body: {} }),
       collectionMedia: async (trackId, liked) => {
         calls.push({ id: trackId, liked });
-        return { body: { message: "success" }, status: 200 };
+        return {
+          body: {
+            message: "success",
+            deleted_media: liked ? undefined : { id: trackId }
+          },
+          status: 200
+        };
       },
       playlistList: async () => ({ body: {} }),
       playlistDetail: async () => ({ body: {} }),
@@ -941,6 +954,46 @@ test("soda adapter unlikeSong calls delete collection endpoint", async () => {
     code: 200
   });
   expect(calls).toEqual([{ id: "6941309256906622978", liked: false }]);
+});
+
+test("soda adapter likeSong rejects JSON-level collection errors even on 200", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({
+        body: {
+          "status_code": 1000016,
+          "status_info": {
+            "log_id": "202607051551321EB5DBFEB19719D64BB0",
+            "now": 1783237892,
+            "status_msg": "登录状态已失效，请重新登录",
+            "now_ts_ms": 1783237892261
+          }
+        },
+        status: 200
+      }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: { message: "success" } })
+    }
+  });
+
+  try {
+    await adapter.likeSong!("6941309256906622978", true);
+    throw new Error("expected likeSong to throw");
+  } catch (err) {
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).provider).toBe("soda");
+    expect((err as ProviderError).code).toBe("UNAVAILABLE");
+    expect((err as Error).message).toContain("登录状态已失效");
+  }
 });
 
 test("soda adapter logout without cookie throws ProviderNotImplementedError no-session", async () => {
