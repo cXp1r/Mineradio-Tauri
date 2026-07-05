@@ -948,7 +948,7 @@ test("soda adapter checkSongLikes uses track_v2 state.is_collected", async () =>
         calls.push(trackId);
         return {
           body: {
-            data: {
+            track: {
               state: {
                 is_collected: trackId === "t-1"
               }
@@ -1074,7 +1074,7 @@ test("soda adapter maps lyric payload from client detail response", async () => 
 });
 
 test("parseSodaLyricText parses baseline soda word-by-word lyrics", () => {
-  const lines = parseSodaLyricText("[2000,3000]<2000,400> Hello<2400,600>world");
+  const lines = parseSodaLyricText("[2000,3000]<0,400> Hello<400,600>world");
 
   expect(lines.length).toBe(1);
   expect(lines[0].timeMs).toBe(2000);
