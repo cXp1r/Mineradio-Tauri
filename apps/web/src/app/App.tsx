@@ -421,7 +421,12 @@ function trackArtist(track: Track | null | undefined): string {
 }
 
 function trackLikeKey(track: Track | null | undefined): string {
-  return track?.provider && track.id ? `${track.provider}:${track.id}` : "";
+  const id = track?.sourceId || track?.id || "";
+  return track?.provider && id ? `${track.provider}:${id}` : "";
+}
+
+function trackProviderLikeId(track: Track | null | undefined): string {
+  return String(track?.sourceId || track?.id || "").trim();
 }
 
 function updateHomeListenHistory(
@@ -554,13 +559,14 @@ function buildHomeListenSummary(history: HomeListenHistoryRecord[]): HomeListenS
   };
 }
 
-function isNeteaseLikeSupported(track: Track | null | undefined): track is Track {
-  if (!track?.id) return false;
+function isProviderLikeSupported(track: Track | null | undefined): track is Track {
+  const id = trackProviderLikeId(track);
+  if (!track || !id) return false;
   const record = track as unknown as Record<string, unknown>;
-  if (track.id.startsWith("local:")) return false;
+  if (id.startsWith("local:")) return false;
   if (record.type === "local" || record.source === "local") return false;
   if (record.type === "podcast" || record.source === "podcast") return false;
-  return track.provider === "netease";
+  return track.provider === "netease" || track.provider === "soda";
 }
 
 function likeUnsupportedMessage(track: Track | null | undefined): string {
@@ -573,6 +579,7 @@ function likeUnsupportedMessage(track: Track | null | undefined): string {
   ) {
     return "QQ 音乐红心同步待登录接口接入";
   }
+  if (track?.provider === "soda") return "汽水音乐红心同步暂不可用";
   return "本地文件暂不支持红心同步";
 }
 
@@ -2461,12 +2468,13 @@ export function App({
   );
 
   const toggleLikeTrack = useCallback(async (track: Track | null | undefined) => {
-    if (!isNeteaseLikeSupported(track)) {
+    if (!isProviderLikeSupported(track)) {
       showToast(likeUnsupportedMessage(track));
       return;
     }
     const client = sidecarClient;
     const key = trackLikeKey(track);
+    const trackId = trackProviderLikeId(track);
     if (!client || !key || likeBusyMapRef.current[key]) {
       if (!client) showToast("红心操作失败");
       return;
@@ -2477,7 +2485,7 @@ export function App({
     setLikeBusyMap((map) => ({ ...map, [key]: true }));
     setLikedSongMap((map) => ({ ...map, [key]: next }));
     try {
-      const ack = await client.likeSong(track.provider, track.id, next);
+      const ack = await client.likeSong(track.provider, trackId, next);
       setLikedSongMap((map) => ({
         ...map,
         [key]: ack.liked === true,
@@ -2486,7 +2494,7 @@ export function App({
     } catch (e) {
       setLikedSongMap((map) => ({ ...map, [key]: previous }));
       if (isLoginRequiredError(e)) {
-        showToast("登录后可同步到网易云");
+        showToast(`登录后可同步到${providerLabelText(track.provider)}`);
         setLoginModalOpen(true);
       } else {
         showToast("红心操作失败");
@@ -3456,17 +3464,18 @@ export function App({
   useEffect(() => {
     const track = currentTrack;
     const client = sidecarClient;
-    if (!client || !isNeteaseLikeSupported(track)) return;
+    if (!client || !isProviderLikeSupported(track)) return;
     const checkSongLikes = (client as { checkSongLikes?: SidecarClient["checkSongLikes"] }).checkSongLikes;
     if (typeof checkSongLikes !== "function") return;
     const key = trackLikeKey(track);
+    const trackId = trackProviderLikeId(track);
     if (!key) return;
     const token = ++likeStatusRequestSeqRef.current;
-    void checkSongLikes.call(client, track.provider, [track.id]).then((ack) => {
+    void checkSongLikes.call(client, track.provider, [trackId]).then((ack) => {
       if (token !== likeStatusRequestSeqRef.current) return;
       setLikedSongMap((map) => ({
         ...map,
-        [key]: ack.liked[track.id] === true,
+        [key]: ack.liked[trackId] === true,
       }));
     }).catch(() => {
       // 红心状态只影响按钮高亮，失败不能阻断播放 UI。

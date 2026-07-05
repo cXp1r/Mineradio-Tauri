@@ -332,6 +332,34 @@ test("handleShelfDetailRowAction routes Netease like action through provider mut
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });
 
+test("handleShelfDetailRowAction routes Soda like action through provider mutation", async () => {
+	resetPlaybackStore();
+	const sodaDetail: PlaylistDetail = {
+		...makeDetail(),
+		provider: "soda",
+		tracks: makeDetail().tracks.map((track) => ({ ...track, provider: "soda" })),
+	};
+	const row = mapPlaylistDetailToShelfRows(sodaDetail, "soda")[0]!;
+	const calls: unknown[] = [];
+
+	expect(await handleShelfDetailRowAction({
+		row,
+		index: 0,
+		action: "like",
+		client: {
+			async likeSong(provider, id, liked) {
+				calls.push({ provider, id, liked });
+				return { provider, id, liked, code: 200 };
+			},
+		},
+		isLiked: () => false,
+	})).toBe(true);
+
+	expect(calls).toEqual([{ provider: "soda", id: "song-1", liked: true }]);
+	expect(usePlaybackStore.getState().queue).toEqual([]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+});
+
 test("handleShelfDetailRowAction allows baseline like action on hard non-playable cloud rows", async () => {
 	resetPlaybackStore();
 	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[1]!;

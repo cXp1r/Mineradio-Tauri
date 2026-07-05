@@ -3203,6 +3203,86 @@ test("App shows QQ unsupported notice for bottom heart without calling like muta
 	restoreAudio();
 });
 
+test("App checks current Soda like state and wires bottom heart mutations through sidecar", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	usePlaybackStore.getState().setCurrentTrack({
+		provider: "soda",
+		id: "ui-row-id",
+		sourceId: "soda-track-1",
+		title: "Soda Like Song",
+		artists: ["Alice"],
+		album: "",
+		coverUrl: "",
+		durationMs: 10000,
+		qualityHints: [],
+		playableState: "playable",
+	});
+
+	const checked: Array<{ provider: string; ids: string[] }> = [];
+	const likedCalls: Array<{ provider: string; id: string; liked: boolean }> = [];
+	const fakeClient = {
+		async checkSongLikes(provider: string, ids: string[]) {
+			checked.push({ provider, ids });
+			return { provider, ids, liked: { "soda-track-1": true } };
+		},
+		async likeSong(provider: string, id: string, liked: boolean) {
+			likedCalls.push({ provider, id, liked });
+			return { provider, id, liked, code: 200 };
+		},
+		async resolveSongUrl() {
+			return { url: "https://example.com/audio.mp3", quality: "standard", proxied: true };
+		},
+		audioProxyUrl(url: string) {
+			return url;
+		},
+		async lyric() {
+			throw new Error("lyric api failed");
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+	for (let i = 0; i < 8 && checked.length === 0; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	expect(checked).toEqual([{ provider: "soda", ids: ["soda-track-1"] }]);
+	for (let i = 0; i < 8 && !host.querySelector("#heart-btn")?.className.includes("liked"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	const heart = host.querySelector("#heart-btn") as HTMLButtonElement;
+	expect(heart.className).toContain("liked");
+	expect(heart.getAttribute("aria-pressed")).toBe("true");
+
+	heart.click();
+	for (let i = 0; i < 8 && likedCalls.length === 0; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(likedCalls).toEqual([{ provider: "soda", id: "soda-track-1", liked: false }]);
+	expect(host.querySelector("#toast.show")?.textContent).not.toContain("本地文件暂不支持红心同步");
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
+	restoreAudio();
+});
+
 test("App rolls back bottom heart state and shows baseline failure copy when Netease like fails", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
