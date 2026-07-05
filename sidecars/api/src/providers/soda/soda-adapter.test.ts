@@ -6,6 +6,27 @@ import { createSodaAdapter } from "./soda-adapter";
 import { createSodaClient } from "./soda-client";
 import { mapSodaSongToTrack, mapSodaPlaylistToSummary, parseSodaLyricText, mapSodaLyricToPayload } from "./map";
 
+function sodaPlayInfo(overrides: Record<string, unknown>): Record<string, unknown> {
+  return {
+    Quality: "",
+    PlayAuth: "",
+    MainPlayUrl: "",
+    BackupPlayUrl: "",
+    FileID: "",
+    ...overrides
+  };
+}
+
+function sodaPlayInfoBody(playInfoList: Record<string, unknown>[]): Record<string, unknown> {
+  return {
+    Result: {
+      Data: {
+        PlayInfoList: playInfoList
+      }
+    }
+  };
+}
+
 test("soda mapping helpers produce provider-shaped objects", () => {
   const track = mapSodaSongToTrack({
     id: "123",
@@ -141,39 +162,17 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
         headers: { "content-type": "application/json" }
       });
     }
-    return new Response(JSON.stringify({
-      ResponseMetadata: {
-        RequestId: "req-1",
-        Action: "GetPlayInfo",
-        Version: "2024-01-01",
-        Service: "qishui",
-        Region: "cn"
-      },
-      Result: {
-        EncryptKey: "",
-        CipherText: "",
-        Data: {
-          PlayInfoList: [
-            {
-              Quality: "m4a",
-              Duration: 180000,
-              PlayAuth: "play-auth-1",
-              PlayAuthID: "",
-              MainPlayUrl: "https://cdn.example.com/main.m4a",
-              BackupPlayUrl: "https://cdn.example.com/backup.m4a",
-              UrlExpire: 3600,
-              FileID: "file-1",
-              P2pVerifyURL: "",
-              PreloadInterval: 0,
-              PreloadMaxStep: 0,
-              PreloadMinStep: 0,
-              PreloadSize: 0,
-              CheckInfo: ""
-            }
-          ]
-        }
-      }
-    }), {
+    return new Response(JSON.stringify(sodaPlayInfoBody([
+      sodaPlayInfo({
+        Quality: "m4a",
+        Duration: 180000,
+        PlayAuth: "play-auth-1",
+        MainPlayUrl: "https://cdn.example.com/main.m4a",
+        BackupPlayUrl: "https://cdn.example.com/backup.m4a",
+        UrlExpire: 3600,
+        FileID: "file-1"
+      })
+    ])), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
@@ -236,30 +235,24 @@ test("soda adapter songUrl falls back to the first PlayInfoList entry when reque
       });
     }
     expect(init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
-    return new Response(JSON.stringify({
-      Result: {
-        Data: {
-          PlayInfoList: [
-            {
-              Quality: "standard",
-              Bitrate: 128000,
-              Size: 1000,
-              PlayAuth: "play-auth-low",
-              MainPlayUrl: "https://cdn.example.com/low.m4a",
-              FileID: "low-file"
-            },
-            {
-              Quality: "exhigh",
-              Bitrate: 320000,
-              Size: 4000,
-              PlayAuth: "play-auth-high",
-              BackupPlayUrl: "https://cdn.example.com/high.m4a",
-              FileID: "high-file"
-            }
-          ]
-        }
-      }
-    }), {
+    return new Response(JSON.stringify(sodaPlayInfoBody([
+      sodaPlayInfo({
+        Quality: "standard",
+        Bitrate: 128000,
+        Size: 1000,
+        PlayAuth: "play-auth-low",
+        MainPlayUrl: "https://cdn.example.com/low.m4a",
+        FileID: "low-file"
+      }),
+      sodaPlayInfo({
+        Quality: "exhigh",
+        Bitrate: 320000,
+        Size: 4000,
+        PlayAuth: "play-auth-high",
+        BackupPlayUrl: "https://cdn.example.com/high.m4a",
+        FileID: "high-file"
+      })
+    ])), {
       status: 200,
       headers: { "content-type": "application/json" }
     });
@@ -313,30 +306,24 @@ test("soda adapter songUrl maps requested PlaybackQuality onto soda quality tier
       });
     }
     expect(init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
-    return new Response(JSON.stringify({
-      Result: {
-        Data: {
-          PlayInfoList: [
-            {
-              Quality: "medium",
-              Bitrate: 128000,
-              Size: 1000,
-              PlayAuth: "play-auth-medium",
-              MainPlayUrl: "https://cdn.example.com/medium.m4a",
-              FileID: "medium-file"
-            },
-            {
-              Quality: "higher",
-              Bitrate: 320000,
-              Size: 4000,
-              PlayAuth: "play-auth-higher",
-              MainPlayUrl: "https://cdn.example.com/higher.m4a",
-              FileID: "higher-file"
-            }
-          ]
-        }
-      }
-    }), {
+    return new Response(JSON.stringify(sodaPlayInfoBody([
+      sodaPlayInfo({
+        Quality: "medium",
+        Bitrate: 128000,
+        Size: 1000,
+        PlayAuth: "play-auth-medium",
+        MainPlayUrl: "https://cdn.example.com/medium.m4a",
+        FileID: "medium-file"
+      }),
+      sodaPlayInfo({
+        Quality: "higher",
+        Bitrate: 320000,
+        Size: 4000,
+        PlayAuth: "play-auth-higher",
+        MainPlayUrl: "https://cdn.example.com/higher.m4a",
+        FileID: "higher-file"
+      })
+    ])), {
       status: 200,
       headers: { "content-type": "application/json" }
     });

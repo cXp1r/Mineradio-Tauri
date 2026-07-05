@@ -100,9 +100,9 @@ function readNumber(value: unknown): number {
 function readPlayInfoList(body: unknown): Record<string, unknown>[] {
   const root = asObj(body);
   if (!root) return [];
-  const result = asObj(root.Result) ?? asObj(root.result);
-  const data = asObj(result?.Data) ?? asObj(result?.data) ?? asObj(root.Data) ?? asObj(root.data);
-  const list = data?.PlayInfoList ?? data?.playInfoList ?? [];
+  const result = asObj(root.Result);
+  const data = asObj(result?.Data);
+  const list = data?.PlayInfoList ?? [];
   return Array.isArray(list) ? list.map((item) => asObj(item)).filter(Boolean) as Record<string, unknown>[] : [];
 }
 
