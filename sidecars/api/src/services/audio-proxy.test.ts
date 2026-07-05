@@ -107,12 +107,16 @@ test("audio proxy converts network failure to retryable 502 envelope", async () 
 });
 
 test("audio proxy converts upstream non-ok status to retryable 502 envelope", async () => {
+  const logs: Record<string, unknown>[] = [];
   const service = createAudioProxy({
-    fetch: async () => new Response("not playable", { status: 403 })
+    fetch: async () => new Response("not playable", { status: 403 }),
+    log: async (entry) => {
+      logs.push(entry);
+    }
   });
 
   const response = await service({
-    target: "https://media.example.test/song.mp3",
+    target: "https://media.example.test/song.mp3?token=secret-token",
     request: new Request("http://127.0.0.1/audio-proxy")
   });
 
@@ -121,4 +125,9 @@ test("audio proxy converts upstream non-ok status to retryable 502 envelope", as
   expect(body.error.code).toBe("UPSTREAM_AUDIO_PROXY");
   expect(body.error.retryable).toBe(true);
   expect(body.error.message).toContain("403");
+  expect(logs).toEqual([{
+    event: "audio-proxy-upstream-failure",
+    upstreamStatus: 403
+  }]);
+  expect(JSON.stringify(logs)).not.toContain("secret-token");
 });

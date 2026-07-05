@@ -32,7 +32,7 @@ import {
 } from "./providers/provider-adapter";
 import { normalizeError } from "./services/fallback";
 import { buildDiagnostics } from "./services/diagnostics";
-import { resolveAudioProxy, type AudioProxy } from "./services/audio-proxy";
+import { createAudioProxy, type AudioProxy } from "./services/audio-proxy";
 import { resolveImageProxy, type ImageProxy } from "./services/image-proxy";
 import {
   createSidecarLogger,
@@ -77,7 +77,10 @@ export type RouteHandlerDeps = {
 
 export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const resolver = deps.crossSourceResolver ?? crossSourceResolver;
-  const audioProxy = deps.audioProxy ?? resolveAudioProxy;
+  const logger = deps.logger ?? createSidecarLogger();
+  const audioProxy = deps.audioProxy ?? createAudioProxy({
+    log: (entry) => logger.log(entry)
+  });
   const imageProxy = deps.imageProxy ?? resolveImageProxy;
   const providerAdapters = deps.providerAdapters ?? providers;
   const weatherRadioService = deps.weatherRadio ?? weatherRadio;
@@ -86,7 +89,6 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
     netease: deps.neteaseQrLogin ?? neteaseQrLogin,
     qq: deps.qqQrLogin ?? qqQrLogin
   };
-  const logger = deps.logger ?? createSidecarLogger();
 
   return async function handleRoute(request: Request): Promise<Response> {
     const startedAt = performance.now();
