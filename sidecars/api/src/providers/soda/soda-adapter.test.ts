@@ -281,7 +281,7 @@ test("soda adapter songUrl falls back to the first PlayInfoList entry when reque
     durationMs: 180000,
     qualityHints: ["standard"],
     playableState: "unknown"
-  });
+  }, { quality: "jymaster" });
 
   expect(result.url).toBe("/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Flow.m4a&playAuth=play-auth-low");
   expect(result.quality).toBe("标准音质");
@@ -404,11 +404,11 @@ test("soda adapter songUrl without cookie throws LOGIN_REQUIRED before calling c
       title: "Hectopascal",
       artists: ["Yui"],
       album: "Bloom",
-      coverUrl: "",
-      durationMs: 180000,
-      qualityHints: ["standard"],
-      playableState: "unknown"
-    });
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "unknown"
+  }, { quality: "jymaster" });
     throw new Error("expected songUrl to throw");
   } catch (err) {
     expect(err).toBeInstanceOf(ProviderError);
