@@ -1,13 +1,13 @@
 const SODA_PROVIDER_ID = "soda";
 const SODA_SEARCH_URL =
   "https://api.qishui.com/luna/pc/search/track?q=&aid=386088&app_name=&region=&geo_region=&os_region=&sim_region=&device_id=&cdid=&iid=&version_name=&version_code=&channel=&build_mode=&network_carrier=&ac=&tz_name=&resolution=&device_platform=&device_type=&os_version=&fp=&cursor=&search_id=&search_method=input&debug_params=&from_search_id=&search_scene=";
-const SODA_LYRIC_URL = "https://api.qishui.com/luna/pc/track_v2?track_id=&media_type=track&queue_type=&aid=386088&iid=114514";
+const SODA_LYRIC_URL = "https://api.qishui.com/luna/pc/track_v2?track_id=&media_type=track&queue_type=&aid=386088&iid=27960026095955";
 const SODA_PLAYLIST_LIST_URL = "https://api.qishui.com/luna/pc/me/playlist?aid=386088";
 const SODA_PLAYLIST_DETAIL_URL = "https://api.qishui.com/luna/pc/playlist/detail?aid=386088";
 const SODA_ME_URL = "https://api.qishui.com/luna/pc/me?aid=386088&version_code=30050100";
 const SODA_COLLECTION_MEDIA_URL = "https://api.qishui.com/luna/pc/me/collection/media?aid=386088";
 const SODA_COLLECTION_MEDIA_DELETE_URL = "https://api.qishui.com/luna/pc/me/collection/media/delete?aid=386088";
-const SODA_LOGOUT_URL = "https://api.qishui.com/passport/web/logout/";
+const SODA_LOGOUT_URL = "https://api.qishui.com/passport/web/logout/?need_redirect=0&iid=27960026095955&device_platform=PC&version_code=3.5.1&aid=386088";
 
 type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<Response>;
 
