@@ -52,11 +52,11 @@ function withPlaylistListUrl(): string {
   return SODA_PLAYLIST_LIST_URL;
 }
 
-function withPlaylistDetailUrl(playlistId: string, cursor = 0, count = 20): string {
+function withPlaylistDetailUrl(playlistId: string, cursor = 1, count = 20): string {
   const url = new URL(SODA_PLAYLIST_DETAIL_URL);
   url.searchParams.set("playlist_id", playlistId);
   url.searchParams.set("cursor", String(cursor));
-  url.searchParams.set("cnt", String(count));
+  url.searchParams.set("count", String(count));
   return url.toString();
 }
 
@@ -95,34 +95,18 @@ function asObj(value: unknown): Record<string, unknown> | null {
 
 function readMediaResources(body: unknown): unknown[] {
   const root = asObj(body);
-  const data = asObj(root?.data);
-  const list = root?.media_resources ?? data?.media_resources ?? root?.mediaResources ?? data?.mediaResources;
-  return Array.isArray(list) ? list : [];
+  return Array.isArray(root?.media_resources) ? root.media_resources : [];
 }
 
-function readPlaylistTrackCount(body: unknown): number {
+function readPlaylistNextCursor(body: unknown): string {
   const root = asObj(body);
-  const data = asObj(root?.data);
-  const playlist = asObj(root?.playlist) ?? asObj(data?.playlist);
-  const raw = playlist?.count_tracks ?? playlist?.countTracks ?? playlist?.trackCount;
-  const count = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
-  return Number.isFinite(count) ? Math.max(0, Math.floor(count)) : 0;
+  if (root?.has_more !== true) return "";
+  return typeof root.next_cursor === "string" ? root.next_cursor.trim() : "";
 }
 
 function mergePlaylistDetailPages(firstBody: unknown, mediaResources: unknown[]): unknown {
   const firstRoot = asObj(firstBody);
   if (!firstRoot) return { media_resources: mediaResources };
-  const data = asObj(firstRoot.data);
-  if (data && !Array.isArray(firstRoot.data)) {
-    return {
-      ...firstRoot,
-      data: {
-        ...data,
-        media_resources: mediaResources
-      },
-      media_resources: mediaResources
-    };
-  }
   return {
     ...firstRoot,
     media_resources: mediaResources
@@ -181,18 +165,16 @@ export function createSodaClient(deps: SodaClientDeps): SodaClient {
       const headers: HeadersInit = {};
       if (cfg.cookie) headers.cookie = cfg.cookie;
       const pageSize = 20;
-      const firstResp = await fetcher(withPlaylistDetailUrl(id, 0, pageSize), { method: "GET", headers });
+      const firstResp = await fetcher(withPlaylistDetailUrl(id, 1, pageSize), { method: "GET", headers });
       const first = await readJsonBody(firstResp, "playlist-detail");
-      const totalCount = readPlaylistTrackCount(first.body);
       const mediaResources = [...readMediaResources(first.body)];
-      let cursor = mediaResources.length;
-      while (totalCount > 0 && cursor < totalCount) {
+      let cursor = readPlaylistNextCursor(first.body);
+      while (cursor) {
         const resp = await fetcher(withPlaylistDetailUrl(id, cursor, pageSize), { method: "GET", headers });
         const page = await readJsonBody(resp, "playlist-detail");
         const pageResources = readMediaResources(page.body);
-        if (pageResources.length === 0) break;
         mediaResources.push(...pageResources);
-        cursor += pageResources.length;
+        cursor = readPlaylistNextCursor(page.body);
       }
       return { body: mergePlaylistDetailPages(first.body, mediaResources) };
     },

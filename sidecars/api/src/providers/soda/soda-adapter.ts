@@ -210,26 +210,13 @@ function readSodaPlaylistList(body: unknown): unknown[] {
 function readSodaPlaylistDetail(body: unknown): SodaPlaylistDetailBody | null {
   const root = asObj(body);
   if (!root) return null;
-  const data = asObj(root.data);
-  const playlist = asObj(root.playlist) ?? asObj(data?.playlist);
-  const mediaResources =
-    (Array.isArray(root.media_resources) ? root.media_resources : undefined) ??
-    (Array.isArray(data?.media_resources) ? data?.media_resources : undefined) ??
-    (Array.isArray(root.mediaResources) ? root.mediaResources : undefined) ??
-    (Array.isArray(data?.mediaResources) ? data?.mediaResources : undefined) ??
-    [];
+  const playlist = asObj(root.playlist);
+  const mediaResources = Array.isArray(root.media_resources) ? root.media_resources : [];
   if (playlist || mediaResources.length > 0) {
     return {
       playlist: (playlist ?? undefined) as SodaPlaylistBody | undefined,
       media_resources: mediaResources as NonNullable<SodaPlaylistDetailBody["media_resources"]>
     };
-  }
-  const fromList = readSodaPlaylistList(root);
-  if (fromList.length > 0) {
-    const first = asObj(fromList[0]);
-    if (first) {
-      return { playlist: first as SodaPlaylistBody };
-    }
   }
   return null;
 }

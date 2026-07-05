@@ -28,7 +28,6 @@ export interface SodaPlaylistBody {
   title?: string;
   url_cover?: { uri?: string; urls?: string[]; template_prefix?: string };
   count_tracks?: number;
-  tracks?: SodaSong[];
   is_private?: boolean;
   public_title?: string;
 }
@@ -36,15 +35,6 @@ export interface SodaPlaylistBody {
 export interface SodaPlaylistDetailBody {
   playlist?: SodaPlaylistBody | null;
   media_resources?: Array<{
-    id?: string;
-    type?: string;
-    entity?: {
-      track_wrapper?: {
-        track?: SodaSong | null;
-      } | null;
-    } | null;
-  } | null>;
-  mediaResources?: Array<{
     id?: string;
     type?: string;
     entity?: {
@@ -312,7 +302,7 @@ export function mapSodaPlaylistToDetail(raw: SodaPlaylistBody | null | undefined
   const summary = mapSodaPlaylistToSummary(raw, idHint);
   return {
     ...summary,
-    tracks: Array.isArray(raw.tracks) ? raw.tracks.map(mapSodaSongToTrack) : []
+    tracks: []
   };
 }
 
@@ -321,9 +311,7 @@ export function mapSodaPlaylistDetailToDetail(
   idHint?: string
 ): PlaylistDetail {
   const playlist = raw?.playlist ?? null;
-  const resources = raw
-    ? (Array.isArray(raw.media_resources) ? raw.media_resources : Array.isArray(raw.mediaResources) ? raw.mediaResources : [])
-    : [];
+  const resources = raw && Array.isArray(raw.media_resources) ? raw.media_resources : [];
   const tracks = resources
     .map((item) => item?.entity?.track_wrapper?.track ?? null)
     .filter(Boolean)
@@ -331,10 +319,6 @@ export function mapSodaPlaylistDetailToDetail(
   const summary = mapSodaPlaylistToSummary(playlist ?? {}, idHint);
   return {
     ...summary,
-    tracks: tracks.length > 0
-      ? tracks
-      : Array.isArray((playlist as SodaPlaylistBody | null | undefined)?.tracks)
-        ? ((playlist as SodaPlaylistBody).tracks ?? []).map(mapSodaSongToTrack)
-        : []
+    tracks
   };
 }

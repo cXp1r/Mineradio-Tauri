@@ -468,7 +468,7 @@ test("soda client playlistDetail requests qishui playlist detail with playlist i
     },
     fetch: async (input, init) => {
       calls.push({ input: String(input), init });
-      return new Response(JSON.stringify({ data: {} }), {
+      return new Response(JSON.stringify({ playlist: { id: "7590144593510006847", title: "Empty" }, media_resources: [] }), {
         status: 200,
         headers: { "content-type": "application/json" }
       });
@@ -479,11 +479,13 @@ test("soda client playlistDetail requests qishui playlist detail with playlist i
   const url = new URL(calls[0]?.input ?? "");
   expect(url.origin + url.pathname).toBe("https://api.qishui.com/luna/pc/playlist/detail");
   expect(url.searchParams.get("playlist_id")).toBe("7590144593510006847");
+  expect(url.searchParams.get("cursor")).toBe("1");
+  expect(url.searchParams.get("count")).toBe("20");
   expect(calls[0]?.init?.method).toBe("GET");
   expect(calls[0]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
-test("soda client playlistDetail follows cursor pages until count_tracks is reached", async () => {
+test("soda client playlistDetail follows next_cursor while has_more is true", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
     getConfig() {
@@ -492,10 +494,12 @@ test("soda client playlistDetail follows cursor pages until count_tracks is reac
     fetch: async (input, init) => {
       calls.push({ input: String(input), init });
       const url = new URL(String(input));
-      const cursor = url.searchParams.get("cursor") ?? "0";
-      const body = cursor === "0"
+      const cursor = url.searchParams.get("cursor") ?? "1";
+      const body = cursor === "1"
         ? {
             playlist: { id: "pl-1", title: "Paged", count_tracks: 3 },
+            has_more: true,
+            next_cursor: "3",
             media_resources: [
               { id: "r-1", entity: { track_wrapper: { track: { id: "t-1", name: "One" } } } },
               { id: "r-2", entity: { track_wrapper: { track: { id: "t-2", name: "Two" } } } }
@@ -516,8 +520,8 @@ test("soda client playlistDetail follows cursor pages until count_tracks is reac
 
   const detail = await client.playlistDetail("pl-1");
 
-  expect(calls.map(({ input }) => new URL(input).searchParams.get("cursor") ?? "0")).toEqual(["0", "2"]);
-  expect(calls.map(({ input }) => new URL(input).searchParams.get("cnt") ?? "")).toEqual(["20", "20"]);
+  expect(calls.map(({ input }) => new URL(input).searchParams.get("cursor") ?? "1")).toEqual(["1", "3"]);
+  expect(calls.map(({ input }) => new URL(input).searchParams.get("count") ?? "")).toEqual(["20", "20"]);
   expect((detail.body as { media_resources?: unknown[] }).media_resources?.length).toBe(3);
 });
 
@@ -752,25 +756,33 @@ test("soda adapter maps playlistDetail from client response", async () => {
             id: "7590144593510006847",
             title: "My Playlist",
             url_cover: { urls: ["//cdn.example.com/detail.jpg"], uri: "" },
-            count_tracks: 3,
-            tracks: [
-              {
-                id: "t-1",
-                name: "Track 1",
-                artists: [{ id: "artist-1", name: "Alice" }],
-                album: {
-                  id: "album-1",
-                  name: "Album",
-                  url_cover: {
-                    uri: "track-cover",
-                    urls: ["https://cdn.example.com/"],
-                    template_prefix: "tplv-b829550vbb"
+            count_tracks: 3
+          },
+          media_resources: [
+            {
+              id: "r-1",
+              type: "track",
+              entity: {
+                track_wrapper: {
+                  track: {
+                    id: "t-1",
+                    name: "Track 1",
+                    artists: [{ id: "artist-1", name: "Alice" }],
+                    album: {
+                      id: "album-1",
+                      name: "Album",
+                      url_cover: {
+                        uri: "track-cover",
+                        urls: ["https://cdn.example.com/"],
+                        template_prefix: "tplv-b829550vbb"
+                      }
+                    },
+                    duration: 120000
                   }
-                },
-                duration: 120000
+                }
               }
-            ]
-          }
+            }
+          ]
         }
       }),
       loginStatus: async () => ({ body: {} }),
