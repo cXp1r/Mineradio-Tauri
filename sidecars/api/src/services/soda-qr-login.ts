@@ -20,7 +20,7 @@ type SodaApiCall = (
 ) => Promise<SodaApiResponse>;
 
 export type SodaQrLoginService = {
-  createImage(): Promise<ProviderLoginQrImage>;
+  createImage(key?: string): Promise<ProviderLoginQrImage>;
   check(key: string): Promise<ProviderLoginQrCheck>;
 };
 
@@ -158,20 +158,32 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
   const qrCheckUrl = deps.qrCheckUrl ?? SODA_QR_CHECK_URL;
   const qrCheckReferer = deps.qrCheckReferer ?? SODA_QR_CHECK_REFERER;
   const qrCheckUserAgent = deps.qrCheckUserAgent ?? SODA_QR_CHECK_USER_AGENT;
+  const imageCache = new Map<string, ProviderLoginQrImage>();
 
-  async function loadQrImage(): Promise<ProviderLoginQrImage> {
+  function cacheQrImage(image: ProviderLoginQrImage): ProviderLoginQrImage {
+    imageCache.set(image.key, image);
+    return image;
+  }
+
+  async function loadQrImage(key?: string): Promise<ProviderLoginQrImage> {
+    const normalizedKey = key?.trim() ?? "";
+    if (normalizedKey) {
+      const cached = imageCache.get(normalizedKey);
+      if (!cached) throw new Error("SODA_QR_IMAGE_MISSING");
+      return cached;
+    }
     if (qrCreate) {
       const resp = await qrCreate({ timestamp: now() });
       const token = readQrToken(resp);
       const img = readQrImage(resp);
       if (!token) throw new Error("SODA_QR_TOKEN_MISSING");
       if (!img) throw new Error("SODA_QR_IMAGE_MISSING");
-      return ProviderLoginQrImageSchema.parse({
+      return cacheQrImage(ProviderLoginQrImageSchema.parse({
         provider: SODA_PROVIDER,
         key: token,
         img,
         url: readQrUrl(resp)
-      });
+      }));
     }
 
     const url = ensureConfiguredUrl(qrCodeUrl, "SODA_QR_CODE_URL");
@@ -180,16 +192,16 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
       throw new Error(`SODA_QR_CODE_HTTP_${resp.status}`);
     }
     const payload = readSodaQrCodeBody(await resp.json());
-    return ProviderLoginQrImageSchema.parse({
+    return cacheQrImage(ProviderLoginQrImageSchema.parse({
       provider: SODA_PROVIDER,
       key: payload.token,
       img: payload.qrcode
-    });
+    }));
   }
 
   return {
-    async createImage() {
-      return loadQrImage();
+    async createImage(key?: string) {
+      return loadQrImage(key);
     },
 
     async check(key: string) {

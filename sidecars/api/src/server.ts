@@ -347,7 +347,18 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
           const qrLogin = qrLoginByProvider[providerId];
           if (providerId === "soda") {
             const sodaQrLogin = qrLogin as SodaQrLoginService;
-            response = json(ok(ProviderLoginQrImageSchema.parse(await sodaQrLogin.createImage())));
+            const key = url.searchParams.get("key")?.trim() ?? "";
+            if (!key) {
+              response = json(fail({
+                code: "BAD_REQUEST",
+                message: "QR key required",
+                provider: providerId,
+                retryable: false
+              }), 400);
+              await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+              return response;
+            }
+            response = json(ok(ProviderLoginQrImageSchema.parse(await sodaQrLogin.createImage(key))));
           } else {
             const key = url.searchParams.get("key")?.trim() ?? "";
             if (!key) {

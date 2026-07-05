@@ -46,6 +46,7 @@ test("soda QR login service creates key image and stores cookie on successful ch
     key: "soda-qr-key-1",
     img: "data:image/png;base64,soda"
   });
+  expect(await service.createImage(image.key)).toEqual(image);
 
   const checked = await service.check(image.key);
   expect(checked.provider).toBe("soda");
