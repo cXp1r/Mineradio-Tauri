@@ -52,12 +52,15 @@ test("soda mapping helpers produce provider-shaped objects", () => {
 
   const playlist = mapSodaPlaylistToSummary({
     id: "pl-1",
-    name: "Favorites",
-    trackCount: 12,
-    trackIds: ["1", 2, 3]
+    title: "Favorites",
+    public_title: "Favorites",
+    count_tracks: 12,
+    is_private: false
   });
   expect(playlist.provider).toBe("soda");
-  expect(playlist.trackIds).toEqual(["1", "2", "3"]);
+  expect(playlist.trackCount).toBe(12);
+  expect(playlist.trackIds).toEqual([]);
+  expect(playlist.subscribed).toBe(true);
 });
 
 test("soda client search requests qishui track search with keyword", async () => {
@@ -668,14 +671,18 @@ test("soda adapter maps playlistList from client response", async () => {
       collectionMedia: async () => ({ body: {}, status: 200 }),
       playlistList: async () => ({
         body: {
-          data: [
+          playlists: [
             {
               id: "pl-1",
-              name: "Favorites",
-              url_cover: { urls: ["//cdn.example.com/pl.jpg"], uri: "" },
-              trackCount: 2,
-              trackIds: ["1", 2],
-              subscribed: true
+              title: "Favorites",
+              public_title: "Favorites",
+              url_cover: {
+                uri: "",
+                urls: ["//cdn.example.com/pl.jpg"],
+                template_prefix: "tplv-b829550vbb"
+              },
+              count_tracks: 2,
+              is_private: false
             }
           ]
         }
@@ -694,7 +701,7 @@ test("soda adapter maps playlistList from client response", async () => {
       name: "Favorites",
       coverUrl: "https://cdn.example.com/pl.jpg",
       trackCount: 2,
-      trackIds: ["1", "2"],
+      trackIds: [],
       subscribed: true
     }
   ]);
@@ -714,7 +721,7 @@ test("soda adapter playlistList without cookie returns empty list without callin
       collectionMedia: async () => ({ body: {}, status: 200 }),
       playlistList: async () => {
         calls += 1;
-        return { body: { data: [] } };
+        return { body: { playlists: [] } };
       },
       playlistDetail: async () => ({ body: {} }),
       loginStatus: async () => ({ body: {} }),

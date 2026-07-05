@@ -24,19 +24,13 @@ export interface SodaSong {
 }
 
 export interface SodaPlaylistBody {
-  id?: number | string;
-  playlistId?: number | string;
+  id?: string;
   title?: string;
-  name?: string;
-  url_cover?: { uri?: string; urls?: string[]; template_prefix?: string } | string;
-  trackCount?: number;
+  url_cover?: { uri?: string; urls?: string[]; template_prefix?: string };
   count_tracks?: number;
-  trackIds?: Array<number | string>;
   tracks?: SodaSong[];
-  subscribed?: boolean;
   is_private?: boolean;
   public_title?: string;
-  countTracks?: number;
 }
 
 export interface SodaPlaylistDetailBody {
@@ -63,7 +57,6 @@ export interface SodaPlaylistDetailBody {
 
 function playlistCoverUrl(raw: SodaPlaylistBody): string {
   const cover = raw.url_cover;
-  if (typeof cover === "string") return cover;
   if (cover && typeof cover === "object") {
     if (Array.isArray(cover.urls) && cover.urls[0]) return cover.urls[0];
     if (cover.uri) return cover.uri;
@@ -290,20 +283,16 @@ export function mapSodaLyricToPayload(opts: {
 }
 
 export function mapSodaPlaylistToSummary(raw: SodaPlaylistBody, idHint?: string): PlaylistSummary {
-  const id = String(raw.id ?? raw.playlistId ?? idHint ?? "").trim();
-  const trackCount =
-    typeof raw.trackCount === "number" ? raw.trackCount :
-    typeof raw.count_tracks === "number" ? raw.count_tracks :
-    typeof raw.countTracks === "number" ? raw.countTracks :
-    undefined;
+  const id = String(raw.id ?? idHint ?? "").trim();
+  const trackCount = typeof raw.count_tracks === "number" ? raw.count_tracks : undefined;
   return {
     provider: SODA_PROVIDER_ID,
     id,
-    name: String(raw.title ?? raw.name ?? raw.public_title ?? "").trim(),
+    name: String(raw.title ?? raw.public_title ?? "").trim(),
     coverUrl: normalizeProviderImageUrl(playlistCoverUrl(raw)),
     trackCount,
-    trackIds: Array.isArray(raw.trackIds) ? raw.trackIds.map(String).filter(Boolean) : [],
-    subscribed: raw.subscribed === true || raw.is_private === false
+    trackIds: [],
+    subscribed: raw.is_private === false
   };
 }
 

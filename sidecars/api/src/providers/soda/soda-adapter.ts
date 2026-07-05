@@ -204,19 +204,7 @@ function readSodaSearchList(body: unknown): unknown[] {
 function readSodaPlaylistList(body: unknown): unknown[] {
   const root = asObj(body);
   if (!root) return [];
-  if (Array.isArray(root.list)) return root.list;
-  if (Array.isArray(root.items)) return root.items;
-  if (Array.isArray(root.playlists)) return root.playlists;
-  if (Array.isArray(root.data)) return root.data;
-
-  const data = asObj(root.data);
-  if (!data) return [];
-  if (Array.isArray(data.list)) return data.list;
-  if (Array.isArray(data.items)) return data.items;
-  if (Array.isArray(data.playlists)) return data.playlists;
-  if (Array.isArray(data.playlist)) return data.playlist;
-  if (Array.isArray(data.collection)) return data.collection;
-  return [];
+  return Array.isArray(root.playlists) ? root.playlists : [];
 }
 
 function readSodaPlaylistDetail(body: unknown): SodaPlaylistDetailBody | null {
