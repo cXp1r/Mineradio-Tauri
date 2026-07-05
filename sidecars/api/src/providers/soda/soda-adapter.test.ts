@@ -1099,10 +1099,22 @@ test("parseSodaLyricText parses baseline soda word-by-word lyrics", () => {
   ]);
 });
 
+test("parseSodaLyricText offsets every soda word by its line start time", () => {
+  const lines = parseSodaLyricText([
+    "[5080,2750]<0,240,0>知<340,240,0>り",
+    "[8040,2470]<0,190,0>こ<190,200,0>の"
+  ].join("\n"));
+
+  expect(lines.length).toBe(2);
+  expect(lines[0].words?.map((word) => word.timeMs)).toEqual([5080, 5420]);
+  expect(lines[1].words?.map((word) => word.timeMs)).toEqual([8040, 8230]);
+  expect(lines.every((line) => line.source === "soda-word")).toBe(true);
+});
+
 test("mapSodaLyricToPayload marks soda word lyrics as word-by-word", () => {
   const payload = mapSodaLyricToPayload({
     trackId: "soda-1",
-    lyric: "[2000,3000]<2000,400> Hello<2400,600>world",
+    lyric: "[2000,3000]<0,400> Hello<400,600>world",
     trans: "[00:02.00]你好"
   });
 

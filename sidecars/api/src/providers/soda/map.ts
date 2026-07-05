@@ -206,7 +206,7 @@ export function parseSodaLyricText(text: string): LyricLine[] {
       if (text) {
         words.push({
           text,
-          timeMs: Math.max(0, wordStartMs),
+          timeMs: Math.max(0, lineStartMs + wordStartMs),
           durationMs: Math.max(0, wordDurationMs),
           c0,
           c1: fullText.length
