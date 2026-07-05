@@ -332,6 +332,8 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       });
     },
     async playlistList(): Promise<PlaylistSummary[]> {
+      const cfg = deps.getConfig();
+      if (!cfg.cookie) return [];
       const resp = await client.playlistList();
       return readSodaPlaylistList(resp.body)
         .map(item => mapSodaPlaylistToSummary(item as SodaPlaylistBody));

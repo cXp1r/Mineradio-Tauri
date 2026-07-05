@@ -520,7 +520,7 @@ test("soda adapter maps search results from client", async () => {
 test("soda adapter maps playlistList from client response", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
-      return {};
+      return { cookie: "soda_session=abc123" };
     },
     client: {
       search: async () => ({ body: { result_groups: [] } }),
@@ -560,6 +560,33 @@ test("soda adapter maps playlistList from client response", async () => {
       subscribed: true
     }
   ]);
+});
+
+test("soda adapter playlistList without cookie returns empty list without calling client", async () => {
+  let calls = 0;
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => {
+        calls += 1;
+        return { body: { data: [] } };
+      },
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const playlists = await adapter.playlistList();
+  expect(playlists).toEqual([]);
+  expect(calls).toBe(0);
 });
 
 test("soda adapter maps playlistDetail from client response", async () => {
