@@ -1,8 +1,45 @@
 import { expect, test } from "bun:test";
-import { createSodaAudioProxy } from "./soda-audio-proxy";
+import { decryptSodaAudioData, createSodaAudioProxy } from "./soda-audio-proxy";
 
 async function jsonBody(response: Response): Promise<any> {
   return await response.json();
+}
+
+function bytes(...values: number[]): Uint8Array {
+  return new Uint8Array(values);
+}
+
+function u32(value: number): Uint8Array {
+  return bytes(
+    (value >>> 24) & 0xff,
+    (value >>> 16) & 0xff,
+    (value >>> 8) & 0xff,
+    value & 0xff
+  );
+}
+
+function u16(value: number): Uint8Array {
+  return bytes((value >>> 8) & 0xff, value & 0xff);
+}
+
+function ascii(text: string): Uint8Array {
+  return new TextEncoder().encode(text);
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const size = parts.reduce((sum, part) => sum + part.length, 0);
+  const out = new Uint8Array(size);
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+function mp4Box(type: string, ...payload: Uint8Array[]): Uint8Array {
+  const data = concat(...payload);
+  return concat(u32(data.length + 8), ascii(type), data);
 }
 
 test("soda audio proxy rejects missing playAuth", async () => {
@@ -20,6 +57,32 @@ test("soda audio proxy rejects missing playAuth", async () => {
   const body = await jsonBody(response);
   expect(body.error.code).toBe("BAD_REQUEST");
   expect(body.error.message).toBe("playAuth required");
+});
+
+test("decryptSodaAudioData rejects subsample-encrypted samples instead of decrypting them as full samples", async () => {
+  const playAuth = "AHBg";
+  const senc = mp4Box(
+    "senc",
+    u32(0x00000002),
+    u32(1),
+    bytes(0, 1, 2, 3, 4, 5, 6, 7),
+    u16(1),
+    u16(0),
+    u32(4)
+  );
+  const stsz = mp4Box("stsz", u32(0), u32(1), u32(4));
+  const stbl = mp4Box("stbl", stsz);
+  const minf = mp4Box("minf", stbl);
+  const mdia = mp4Box("mdia", minf);
+  const trak = mp4Box("trak", mdia);
+  const moov = mp4Box("moov", senc, trak);
+  const result = await decryptSodaAudioData(moov, playAuth);
+
+  expect(result).toEqual({
+    data: moov,
+    decrypted: false,
+    reason: "soda audio subsample encryption is not supported"
+  });
 });
 
 test("soda audio proxy caches the decrypted bytes after the first request", async () => {

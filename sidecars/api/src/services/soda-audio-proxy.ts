@@ -395,15 +395,18 @@ export async function decryptSodaAudioData(fileData: Uint8Array, playAuth: strin
   const sencData = senc.data;
   const sencFlags = readUInt32BE(sencData, 0) & 0x00ffffff;
   const sencSampleCount = readUInt32BE(sencData, 4);
+  if ((sencFlags & 0x02) !== 0) {
+    return {
+      data: fileData,
+      decrypted: false,
+      reason: "soda audio subsample encryption is not supported"
+    };
+  }
   const ivs: Uint8Array[] = [];
   let sencPtr = 8;
   for (let index = 0; index < sencSampleCount; index += 1) {
     ivs.push(concatBytes(sencData.subarray(sencPtr, sencPtr + 8), new Uint8Array(8)));
     sencPtr += 8;
-    if ((sencFlags & 0x02) !== 0) {
-      const subCount = readUInt16BE(sencData, sencPtr);
-      sencPtr += 2 + subCount * 6;
-    }
   }
 
   const mdat = findBox(fileData, "mdat");
