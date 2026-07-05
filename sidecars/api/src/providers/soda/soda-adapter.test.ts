@@ -128,10 +128,8 @@ test("soda client songUrl delegates to qishui track detail with track id", async
     fetch: async (input, init) => {
       calls.push({ input: String(input), init });
       return new Response(JSON.stringify({
-        data: {
-          track_player: {
-            url_player_info: "https://api.qishui.com/mock/url-player-info"
-          }
+        track_player: {
+          url_player_info: "https://api.qishui.com/mock/url-player-info"
         }
       }), {
         status: 200,
@@ -155,10 +153,8 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
     const url = String(input);
     if (url.includes("/luna/pc/track_v2")) {
       return new Response(JSON.stringify({
-        data: {
-          track_player: {
-            url_player_info: "https://api.qishui.com/mock/url-player-info"
-          }
+        track_player: {
+          url_player_info: "https://api.qishui.com/mock/url-player-info"
         }
       }), {
         status: 200,
@@ -227,10 +223,8 @@ test("soda adapter songUrl falls back to the first PlayInfoList entry when reque
     const url = String(input);
     if (url.includes("/luna/pc/track_v2")) {
       return new Response(JSON.stringify({
-        data: {
-          track_player: {
-            url_player_info: "https://api.qishui.com/mock/url-player-info"
-          }
+        track_player: {
+          url_player_info: "https://api.qishui.com/mock/url-player-info"
         }
       }), {
         status: 200,
@@ -298,10 +292,8 @@ test("soda adapter songUrl maps requested PlaybackQuality onto soda quality tier
     const url = String(input);
     if (url.includes("/luna/pc/track_v2")) {
       return new Response(JSON.stringify({
-        data: {
-          track_player: {
-            url_player_info: "https://api.qishui.com/mock/url-player-info"
-          }
+        track_player: {
+          url_player_info: "https://api.qishui.com/mock/url-player-info"
         }
       }), {
         status: 200,

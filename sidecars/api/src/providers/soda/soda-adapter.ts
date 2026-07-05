@@ -142,8 +142,7 @@ function pickSodaPlayInfoEntry(
 
 function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
   const root = asObj(resp);
-  const data = asObj(root?.data);
-  return asObj(data?.track_player);
+  return asObj(root?.track_player);
 }
 
 function readSodaLyricTranslation(value: unknown): string {
