@@ -421,16 +421,36 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
           return response;
         }
         if (sub === "logout" && method === "POST") {
-          const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
-          clearRuntimeProviderCookie(providerId);
-          try {
-            await adapter.logout();
-          } catch (err) {
-            if (
-              !hadRuntimeOrEnvSession ||
-              !(err instanceof ProviderNotImplementedError && err.action === "no-session")
-            ) {
-              throw err;
+          if (providerId === "soda") {
+            const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
+            let logoutError: unknown;
+            try {
+              await adapter.logout();
+            } catch (err) {
+              logoutError = err;
+            } finally {
+              clearRuntimeProviderCookie(providerId);
+            }
+            if (logoutError) {
+              if (
+                !hadRuntimeOrEnvSession ||
+                !(logoutError instanceof ProviderNotImplementedError && logoutError.action === "no-session")
+              ) {
+                throw logoutError;
+              }
+            }
+          } else {
+            const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
+            clearRuntimeProviderCookie(providerId);
+            try {
+              await adapter.logout();
+            } catch (err) {
+              if (
+                !hadRuntimeOrEnvSession ||
+                !(err instanceof ProviderNotImplementedError && err.action === "no-session")
+              ) {
+                throw err;
+              }
             }
           }
           response = json(ok({ provider: providerId, loggedOut: true }));

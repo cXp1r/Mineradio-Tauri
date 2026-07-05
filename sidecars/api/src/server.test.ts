@@ -578,6 +578,51 @@ test("POST /providers/qq/logout clears runtime cookie even when provider logout 
   }
 });
 
+test("POST /providers/soda/logout uses the saved cookie before clearing it", async () => {
+  const secret = "soda_session=runtime-secret";
+  try {
+    await call("/providers/soda/session-cookie", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookie: secret })
+    });
+    const fakeSoda: ProviderAdapter = {
+      ...providers.soda,
+      async loginStatus() {
+        return { provider: "soda", loggedIn: !!getProviderCookie("soda") };
+      },
+      async logout() {
+        const cookie = getProviderCookie("soda");
+        if (!cookie) {
+          throw new ProviderNotImplementedError("soda", "no-session");
+        }
+        expect(cookie).toBe(secret);
+      }
+    };
+    const handler = createRouteHandler({
+      providerAdapters: { ...providers, soda: fakeSoda }
+    });
+
+    const logout = await handler(new Request("http://127.0.0.1/providers/soda/logout", { method: "POST" }));
+    expect(logout.status).toBe(200);
+    const logoutBody = await body(logout);
+    expect(logoutBody).toEqual({ ok: true, data: { provider: "soda", loggedOut: true } });
+    expect(JSON.stringify(logoutBody)).not.toContain(secret);
+
+    const after = await body(await call("/providers/soda/login-status"));
+    expect(after.data.provider).toBe("soda");
+    expect(after.data.loggedIn).toBe(false);
+
+    const secondLogout = await handler(new Request("http://127.0.0.1/providers/soda/logout", { method: "POST" }));
+    expect(secondLogout.status).toBe(501);
+    const secondBody = await body(secondLogout);
+    expect(secondBody.error.action).toBe("no-session");
+    expect(JSON.stringify(secondBody)).not.toContain(secret);
+  } finally {
+    await call("/providers/soda/session-cookie", { method: "DELETE" });
+  }
+});
+
 test("provider route redacts sensitive raw error messages at response boundary", async () => {
   const sensitiveMessage = ["MUSIC_U", "=", "secret"].join("");
   const fakeNetease: ProviderAdapter = {
