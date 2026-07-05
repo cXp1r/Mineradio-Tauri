@@ -222,27 +222,30 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
       const data = asObj(asObj(parsed.body)?.data) ?? {};
       const status = readString(data.status) ?? "";
 
-      const loggedIn = status === "confirmed";
+      const confirmed = status === "confirmed";
       const scanned = status === "scanned";
       const expired = status === "expired";
 
-      const stored = loggedIn;
+      let stored = false;
 
       const code = data.error_code ?? 0;
       const message = scanned
         ? readString(asObj(data.scan_user_info)?.avatar_url) ?? ""
         : readString(data.qrcode) ?? "";
       const nextKey = expired ? readString(data.token) : undefined;
-      if (loggedIn) {
+      if (confirmed) {
         const cookie = cookieFromSetCookieHeaders(resp.headers);
-        if (cookie) setRuntimeProviderCookie("soda", cookie);
+        if (cookie) {
+          setRuntimeProviderCookie("soda", cookie);
+          stored = true;
+        }
       }
       return ProviderLoginQrCheckSchema.parse({
         provider: SODA_PROVIDER,
         key: nextKey ?? normalizedKey,
         code,
         message,
-        loggedIn,
+        loggedIn: stored,
         scanned,
         expired,
         stored

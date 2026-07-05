@@ -95,6 +95,31 @@ test("soda QR login service stores only cookie pairs from multiple set-cookie he
   clearRuntimeProviderCookie("soda");
 });
 
+test("soda QR login service keeps polling when confirmed response has no set-cookie header", async () => {
+  clearRuntimeProviderCookie("soda");
+  const service = createSodaQrLoginService({
+    fetch: async () => new Response(JSON.stringify({
+      message: "success",
+      data: {
+        error_code: 0,
+        status: "confirmed"
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    qrCheckUrl: "https://soda.example/qr-check"
+  });
+
+  const checked = await service.check("soda-qr-key-1");
+
+  expect(checked.loggedIn).toBe(false);
+  expect(checked.stored).toBe(false);
+  expect(getProviderCookie("soda")).toBe(undefined);
+
+  clearRuntimeProviderCookie("soda");
+});
+
 test("soda QR login service loads qrcode from the fetch endpoint when no qrCreate is injected", async () => {
   clearRuntimeProviderCookie("soda");
   const calls: Array<{ input: string; init?: RequestInit }> = [];
