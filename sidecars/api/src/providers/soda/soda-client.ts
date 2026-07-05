@@ -52,7 +52,7 @@ function withPlaylistListUrl(): string {
   return SODA_PLAYLIST_LIST_URL;
 }
 
-function withPlaylistDetailUrl(playlistId: string, cursor = 1, count = 20): string {
+function withPlaylistDetailUrl(playlistId: string, cursor: string | number = 1, count = 20): string {
   const url = new URL(SODA_PLAYLIST_DETAIL_URL);
   url.searchParams.set("playlist_id", playlistId);
   url.searchParams.set("cursor", String(cursor));
