@@ -836,7 +836,6 @@ test("soda adapter maps loginStatus from client response", async () => {
             id: "user-1",
             nickname: "Soda User",
             medium_avatar_url: { urls: ["//cdn.example.com/avatar-md.jpg"], uri: "" },
-            larger_avatar_url: { urls: ["//cdn.example.com/avatar-lg.jpg"], uri: "" },
             is_vip: true,
             vip_stage: "svip"
           },
@@ -879,7 +878,10 @@ test("soda adapter loginStatus can use runtime session cookie config", async () 
         status_code: 0,
         my_info: {
           id: "user-runtime",
-          nickname: "Runtime Soda"
+          nickname: "Runtime Soda",
+          medium_avatar_url: { urls: ["//cdn.example.com/runtime-avatar.jpg"], uri: "" },
+          is_vip: false,
+          vip_stage: "free"
         }
       }), {
         status: 200,

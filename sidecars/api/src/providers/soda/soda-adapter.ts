@@ -223,23 +223,19 @@ function readSodaAvatarUrl(value: unknown): string {
 
 function readSodaLoginStatus(body: unknown): ProviderLoginStatus {
   const root = asObj(body);
-  const data = asObj(root?.data) ?? root;
-  const statusCodeRaw = root?.status_code ?? data?.status_code;
-  const statusCode = typeof statusCodeRaw === "number" ? statusCodeRaw : Number(statusCodeRaw);
-  const info = asObj(root?.my_info) ?? asObj(data?.my_info);
-  const userId = firstString(info?.id, info?.douyin_id);
-  const nickname = firstString(info?.nickname, info?.public_name);
+  const statusCode = typeof root?.status_code === "number" ? root.status_code : NaN;
+  const info = asObj(root?.my_info);
+  const userId = firstString(info?.id);
+  const nickname = firstString(info?.nickname);
   const mediumAvatar = readSodaAvatarUrl(info?.medium_avatar_url);
-  const largerAvatar = readSodaAvatarUrl(info?.larger_avatar_url);
-  const avatarUrl = normalizeProviderImageUrl(firstString(mediumAvatar, largerAvatar));
+  const avatarUrl = normalizeProviderImageUrl(mediumAvatar);
   const vipStage = firstString(info?.vip_stage);
   const isVip = info?.is_vip === true;
-  const isSvip = /svip|super/i.test(vipStage);
-  const vipLevel = isSvip ? "svip" : isVip ? "vip" : "none";
+  const isSvip = isVip && vipStage === "svip";
+  const vipLevel = isVip ? (isSvip ? "svip" : "vip") : "none";
   const vipType = vipLevel === "svip" ? 11 : vipLevel === "vip" ? 1 : 0;
-  const vipLabel = vipStage || (vipLevel === "svip" ? "SVIP" : vipLevel === "vip" ? "VIP" : "");
-  const vipLevelName = vipStage || undefined;
-  const loggedIn = statusCode === 0 ? !!userId || info != null : !!info && !!userId;
+  const vipLabel = isVip ? vipStage : "";
+  const loggedIn = statusCode === 0 && !!userId;
   const status: ProviderLoginStatus = {
     provider: SODA_PROVIDER_ID,
     loggedIn
@@ -253,7 +249,7 @@ function readSodaLoginStatus(body: unknown): ProviderLoginStatus {
     status.isVip = isVip || isSvip;
     status.isSvip = isSvip;
     if (vipLabel) status.vipLabel = vipLabel;
-    if (vipLevelName) status.vipLevelName = vipLevelName;
+    if (vipStage) status.vipLevelName = vipStage;
   }
   return status;
 }
