@@ -1902,6 +1902,7 @@ test("App opens account dropdown from a single logged-in account and launches on
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("网易账号");
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("黑胶SVIP·陆");
 	expect(host.querySelector("#account-add-provider-qq")).not.toBeNull();
+	expect(host.querySelector("#account-add-provider-qq")?.textContent).toContain("登录已失效");
 	expect(host.querySelector("#account-add-provider-netease")).toBeNull();
 	expect(host.querySelector("#login-modal")).toBeNull();
 	expect(host.querySelector("#qr-img")).toBeNull();

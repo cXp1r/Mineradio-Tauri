@@ -3784,6 +3784,10 @@ export function App({
     ({ provider, status }) =>
       `${providerLabel(provider)} ${status.nickname ?? status.userId ?? "已登录"}`,
   );
+  const providerLoginHint = (provider: ProviderId, fallback: string) => {
+    const status = provider === "netease" ? neteaseStatus : qqStatus;
+    return status?.loggedIn === false ? "登录已失效" : fallback;
+  };
   const topAccountStatus = neteaseStatus?.loggedIn
     ? neteaseStatus
     : qqStatus?.loggedIn
@@ -4047,7 +4051,7 @@ export function App({
                 onClick={() => openSingleProviderLogin(provider)}
               >
                 <span>添加 {providerLabel(provider)}</span>
-                <span>扫码登录</span>
+                <span>{providerLoginHint(provider, "扫码登录")}</span>
               </button>
             ))}
           </div>
@@ -4400,7 +4404,7 @@ export function App({
                       onClick={() => openSingleProviderLogin(provider)}
                     >
                       <span className="login-add-provider-name">{providerLabel(provider)}</span>
-                      <span className="login-add-provider-meta">扫码添加这个账号</span>
+                      <span className="login-add-provider-meta">{providerLoginHint(provider, "扫码添加这个账号")}</span>
                     </button>
                   ))}
                 </div>

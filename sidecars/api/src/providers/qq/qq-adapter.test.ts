@@ -898,6 +898,48 @@ test("loginStatus lets QQ official badge icon override ambiguous super member fl
   });
 });
 
+test("loginStatus still maps QQ nick and avatar when user detail rejects but musicu succeeds", async () => {
+  await withEnv("MINERADIO_QQ_COOKIE", "uin=1095181037; qqmusic_key=abc", async () => {
+    const calls: string[] = [];
+    const deps = noopDeps({
+      getConfig: () => ({ cookie: "uin=1095181037; qqmusic_key=abc" }),
+      loginStatus: async () => {
+        calls.push("profile");
+        throw new Error("未登陆");
+      },
+      vipInfo: async (query, config) => {
+        calls.push("vip");
+        expect(query).toEqual({ id: "1095181037" });
+        expect(config).toEqual({ cookie: "uin=1095181037; qqmusic_key=abc" });
+        return {
+          body: {
+            getNickHead: {
+              code: 0,
+              data: {
+                map_userinfo: {
+                  "1095181037": {
+                    nick: "QQ昵称",
+                    headurl: "http://q.qlogo.cn/head.jpg"
+                  }
+                }
+              }
+            }
+          }
+        };
+      }
+    } as Partial<QqClientDeps>);
+    const adapter = createQqAdapter(deps);
+    const r = await adapter.loginStatus();
+
+    expect(calls).toEqual(["profile", "vip"]);
+    expect(r.provider).toBe("qq");
+    expect(r.loggedIn).toBe(true);
+    expect(r.nickname).toBe("QQ昵称");
+    expect(r.avatarUrl).toBe("https://q.qlogo.cn/head.jpg");
+    expect(r.userId).toBe("1095181037");
+  });
+});
+
 test("loginStatus with cookie falls back to cookie userId when qq user detail fails", async () => {
   await withEnv("MINERADIO_QQ_COOKIE", "uin=o00123; qqmusic_key=abc", async () => {
     const deps = noopDeps({

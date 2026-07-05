@@ -881,17 +881,23 @@ export function createQqAdapter(
       if (!cfg.cookie) return { provider: "qq", loggedIn: false };
       const userId = qqUserIdFromCookie(cfg.cookie);
       if (!userId) return { provider: "qq", loggedIn: true };
+      const readVipBody = async (): Promise<unknown | null> => {
+        if (!deps.vipInfo) return null;
+        try {
+          return (await deps.vipInfo({ id: userId }, { cookie: cfg.cookie })).body;
+        } catch {
+          return null;
+        }
+      };
       try {
         const resp = await deps.loginStatus({ id: userId }, { cookie: cfg.cookie });
         const bodies: unknown[] = [resp.body];
-        if (deps.vipInfo) {
-          try {
-            bodies.push((await deps.vipInfo({ id: userId }, { cookie: cfg.cookie })).body);
-          } catch {
-          }
-        }
+        const vipBody = await readVipBody();
+        if (vipBody) bodies.push(vipBody);
         return mapQqLoginStatus(bodies, userId);
       } catch {
+        const vipBody = await readVipBody();
+        if (vipBody) return mapQqLoginStatus([vipBody], userId);
         return { provider: "qq", loggedIn: true, userId };
       }
     },
