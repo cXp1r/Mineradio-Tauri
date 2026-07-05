@@ -121,7 +121,7 @@ test("soda QR login service keeps polling when confirmed response has no set-coo
   clearRuntimeProviderCookie("soda");
 });
 
-test("soda QR login service loads qrcode from the fetch endpoint when no qrCreate is injected", async () => {
+test("soda QR login service loads qrcode from the get_qrcode endpoint", async () => {
   clearRuntimeProviderCookie("soda");
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const service = createSodaQrLoginService({
@@ -221,6 +221,46 @@ test("soda QR login service marks scanned status before cookie login success", a
     loggedIn: false,
     scanned: true,
     expired: false,
+    stored: false
+  });
+  expect(getProviderCookie("soda")).toBe(undefined);
+});
+
+test("soda QR login service returns the refreshed token when qrcode expires", async () => {
+  clearRuntimeProviderCookie("soda");
+  const service = createSodaQrLoginService({
+    fetch: async () => new Response(JSON.stringify({
+      data: {
+        app_name: "soda",
+        captcha: "",
+        desc_url: "",
+        description: "",
+        error_code: 0,
+        expire_time: 60,
+        is_frontier: true,
+        qrcode: "data:image/png;base64,next-soda",
+        qrcode_index_url: "",
+        status: "expired",
+        token: "soda-qr-key-2",
+        web_name: "soda"
+      },
+      message: "success"
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }),
+    qrCheckUrl: "https://soda.example/qr-check"
+  });
+
+  const checked = await service.check("soda-qr-key-1");
+  expect(checked).toMatchObject({
+    provider: "soda",
+    key: "soda-qr-key-2",
+    code: 0,
+    message: "data:image/png;base64,next-soda",
+    loggedIn: false,
+    scanned: false,
+    expired: true,
     stored: false
   });
   expect(getProviderCookie("soda")).toBe(undefined);

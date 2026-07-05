@@ -11,13 +11,7 @@ type FetchLike = (input: string | URL | Request, init?: RequestInit) => Promise<
 
 type SodaApiResponse = {
   body?: unknown;
-  cookie?: unknown;
 };
-
-type SodaApiCall = (
-  query: Record<string, unknown>,
-  config?: { cookie?: string }
-) => Promise<SodaApiResponse>;
 
 export type SodaQrLoginService = {
   createImage(key?: string): Promise<ProviderLoginQrImage>;
@@ -26,8 +20,6 @@ export type SodaQrLoginService = {
 
 export type SodaQrLoginDeps = {
   fetch?: FetchLike;
-  qrCreate?: SodaApiCall;
-  now?: () => number;
   qrCodeUrl?: string;
   qrCheckUrl?: string;
   qrCheckReferer?: string;
@@ -50,49 +42,6 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function responseBody(resp: SodaApiResponse): Record<string, unknown> {
-  return asObj(resp.body) ?? {};
-}
-
-function responseData(resp: SodaApiResponse): Record<string, unknown> {
-  const body = responseBody(resp);
-  return asObj(body.data) ?? body;
-}
-
-function readQrToken(resp: SodaApiResponse): string | undefined {
-  const body = responseBody(resp);
-  const data = responseData(resp);
-  return (
-    readString(data.token) ??
-    readString(data.key) ??
-    readString(data.unikey) ??
-    readString(body.token) ??
-    readString(body.key) ??
-    readString(body.unikey)
-  );
-}
-
-function readQrImage(resp: SodaApiResponse): string | undefined {
-  const body = responseBody(resp);
-  const data = responseData(resp);
-  return (
-    readString(data.qrcode) ??
-    readString(data.qrimg) ??
-    readString(data.img) ??
-    readString(data.image) ??
-    readString(body.qrcode) ??
-    readString(body.qrimg) ??
-    readString(body.img) ??
-    readString(body.image)
-  );
-}
-
-function readQrUrl(resp: SodaApiResponse): string | undefined {
-  const body = responseBody(resp);
-  const data = responseData(resp);
-  return readString(data.qrurl) ?? readString(data.url) ?? readString(body.qrurl) ?? readString(body.url);
-}
-
 function ensureConfiguredUrl(url: string, name: string): string {
   const normalized = url.trim();
   if (!normalized) {
@@ -103,8 +52,8 @@ function ensureConfiguredUrl(url: string, name: string): string {
 
 function readSodaQrCodeBody(body: unknown): { qrcode: string; token: string } {
   const root = asObj(body);
-  const data = asObj(root?.data) ?? root;
-  const message = readString(root?.message) ?? readString(data?.message) ?? "";
+  const data = asObj(root?.data);
+  const message = readString(root?.message) ?? "";
   if (message !== "success") {
     throw new Error("SODA_QR_CODE_REQUEST_FAILED");
   }
@@ -114,6 +63,31 @@ function readSodaQrCodeBody(body: unknown): { qrcode: string; token: string } {
     throw new Error("SODA_QR_CODE_DATA_MISSING");
   }
   return { qrcode, token };
+}
+
+function readSodaQrCheckBody(body: unknown): {
+  status: string;
+  code: number;
+  scannedAvatarUrl: string;
+  expiredToken: string;
+  expiredQrcode: string;
+} {
+  const root = asObj(body);
+  const data = asObj(root?.data);
+  const message = readString(root?.message) ?? "";
+  if (message !== "success") {
+    throw new Error("SODA_QR_CHECK_REQUEST_FAILED");
+  }
+  const status = readString(data?.status) ?? "";
+  const code = typeof data?.error_code === "number" ? data.error_code : 0;
+  const scanUserInfo = asObj(data?.scan_user_info);
+  return {
+    status,
+    code,
+    scannedAvatarUrl: readString(scanUserInfo?.avatar_url) ?? "",
+    expiredToken: readString(data?.token) ?? "",
+    expiredQrcode: readString(data?.qrcode) ?? ""
+  };
 }
 
 function splitCombinedSetCookieHeader(header: string): string[] {
@@ -151,9 +125,7 @@ async function parseFetchJson(resp: Response): Promise<SodaApiResponse> {
 }
 
 export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLoginService {
-  const now = deps.now ?? Date.now;
   const fetcher = deps.fetch ?? fetch;
-  const qrCreate = deps.qrCreate;
   const qrCodeUrl = deps.qrCodeUrl ?? SODA_QR_CODE_URL;
   const qrCheckUrl = deps.qrCheckUrl ?? SODA_QR_CHECK_URL;
   const qrCheckReferer = deps.qrCheckReferer ?? SODA_QR_CHECK_REFERER;
@@ -172,20 +144,6 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
       if (!cached) throw new Error("SODA_QR_IMAGE_MISSING");
       return cached;
     }
-    if (qrCreate) {
-      const resp = await qrCreate({ timestamp: now() });
-      const token = readQrToken(resp);
-      const img = readQrImage(resp);
-      if (!token) throw new Error("SODA_QR_TOKEN_MISSING");
-      if (!img) throw new Error("SODA_QR_IMAGE_MISSING");
-      return cacheQrImage(ProviderLoginQrImageSchema.parse({
-        provider: SODA_PROVIDER,
-        key: token,
-        img,
-        url: readQrUrl(resp)
-      }));
-    }
-
     const url = ensureConfiguredUrl(qrCodeUrl, "SODA_QR_CODE_URL");
     const resp = await fetcher(url, { method: "GET" });
     if (!resp.ok) {
@@ -231,8 +189,8 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
       }
 
       const parsed = await parseFetchJson(resp);
-      const data = asObj(asObj(parsed.body)?.data) ?? {};
-      const status = readString(data.status) ?? "";
+      const payload = readSodaQrCheckBody(parsed.body);
+      const status = payload.status;
 
       const confirmed = status === "confirmed";
       const scanned = status === "scanned";
@@ -240,11 +198,13 @@ export function createSodaQrLoginService(deps: SodaQrLoginDeps = {}): SodaQrLogi
 
       let stored = false;
 
-      const code = data.error_code ?? 0;
+      const code = payload.code;
       const message = scanned
-        ? readString(asObj(data.scan_user_info)?.avatar_url) ?? ""
-        : readString(data.qrcode) ?? "";
-      const nextKey = expired ? readString(data.token) : undefined;
+        ? payload.scannedAvatarUrl
+        : expired
+          ? payload.expiredQrcode
+          : "";
+      const nextKey = expired ? payload.expiredToken : undefined;
       if (confirmed) {
         const cookie = cookieFromSetCookieHeaders(resp.headers);
         if (cookie) {
