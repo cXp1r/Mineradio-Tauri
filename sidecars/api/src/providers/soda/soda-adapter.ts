@@ -169,8 +169,8 @@ function readSodaLyricTranslation(value: unknown): string {
 function readSodaCollectedState(resp: unknown): boolean | undefined {
   const root = asObj(resp);
   if (!root) return undefined;
-  const data = asObj(root.data);
-  const state = asObj(data?.state);
+  const track = asObj(root.track);
+  const state = asObj(track?.state);
   const value = state?.is_collected;
   if (typeof value === "boolean") return value;
   return undefined;
@@ -351,7 +351,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       const resp = await client.collectionMedia(cleanId, liked);
       const body = asObj(resp.body) ?? {};
       
-      const info = liked ? asObj(body.collected_media) : asObj(body.deleted_media);
+      const info = liked ? body.collected_media : body.deleted_media;
       if (!info) {
         const status_info = asObj(body.status_info) ?? {};
         const status_msg = readString(status_info.status_msg) ?? "";
