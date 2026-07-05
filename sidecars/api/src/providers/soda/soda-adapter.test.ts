@@ -289,6 +289,58 @@ test("soda adapter songUrl chooses the best playable entry from PlayInfoList", a
   expect(result.filename).toBe("high-file");
 });
 
+test("soda adapter songUrl without cookie throws LOGIN_REQUIRED before calling client", async () => {
+  let trackDetailCalls = 0;
+  let infoCalls = 0;
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => {
+        trackDetailCalls += 1;
+        return { body: {} };
+      },
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    },
+    fetch: async () => {
+      infoCalls += 1;
+      return new Response(JSON.stringify({}), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+  });
+
+  try {
+    await adapter.songUrl({
+      provider: "soda",
+      id: "soda-1",
+      sourceId: "soda-1",
+      title: "Hectopascal",
+      artists: ["Yui"],
+      album: "Bloom",
+      coverUrl: "",
+      durationMs: 180000,
+      qualityHints: ["standard"],
+      playableState: "unknown"
+    });
+    throw new Error("expected songUrl to throw");
+  } catch (err) {
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).code).toBe("LOGIN_REQUIRED");
+  }
+  expect(trackDetailCalls).toBe(0);
+  expect(infoCalls).toBe(0);
+});
+
 test("soda client logout requests qishui logout with cookie", async () => {
   const calls: Array<{ input: string; init?: RequestInit }> = [];
   const client = createSodaClient({
@@ -808,6 +860,38 @@ test("soda adapter checkSongLikes uses track_v2 state.is_collected", async () =>
   expect(calls).toEqual(["t-1", "t-2"]);
 });
 
+test("soda adapter checkSongLikes without cookie throws LOGIN_REQUIRED before calling client", async () => {
+  let calls = 0;
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => {
+        calls += 1;
+        return { body: {} };
+      },
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  try {
+    await adapter.checkSongLikes!(["t-1", "t-2"]);
+    throw new Error("expected checkSongLikes to throw");
+  } catch (err) {
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).code).toBe("LOGIN_REQUIRED");
+  }
+  expect(calls).toBe(0);
+});
+
 test("soda adapter maps lyric payload from client detail response", async () => {
   const adapter = createSodaAdapter({
     getConfig() {
@@ -973,6 +1057,38 @@ test("soda adapter likeSong calls collection endpoint with liked flag", async ()
     code: 200
   });
   expect(calls).toEqual([{ id: "6941309256906622978", liked: true }]);
+});
+
+test("soda adapter likeSong without cookie throws LOGIN_REQUIRED before calling client", async () => {
+  let calls = 0;
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({ body: {} }),
+      collectionMedia: async () => {
+        calls += 1;
+        return { body: {}, status: 200 };
+      },
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: { message: "success" } })
+    }
+  });
+
+  try {
+    await adapter.likeSong!("6941309256906622978", true);
+    throw new Error("expected likeSong to throw");
+  } catch (err) {
+    expect(err).toBeInstanceOf(ProviderError);
+    expect((err as ProviderError).code).toBe("LOGIN_REQUIRED");
+  }
+  expect(calls).toBe(0);
 });
 
 test("soda adapter unlikeSong calls delete collection endpoint", async () => {
