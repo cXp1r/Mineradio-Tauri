@@ -142,9 +142,8 @@ function pickSodaPlayInfoEntry(
 
 function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
   const root = asObj(resp);
-  const data = asObj(root?.data) ?? root;
-  const player = asObj(data?.track_player) ?? asObj(root?.track_player);
-  return player;
+  const data = asObj(root?.data);
+  return asObj(data?.track_player);
 }
 
 function readSodaLyricTranslation(value: unknown): string {
@@ -171,16 +170,10 @@ function readSodaLyricTranslation(value: unknown): string {
 function readSodaCollectedState(resp: unknown): boolean | undefined {
   const root = asObj(resp);
   if (!root) return undefined;
-  const data = asObj(root.data) ?? root;
-  const state = asObj(data.state) ?? asObj(root.state);
+  const data = asObj(root.data);
+  const state = asObj(data?.state);
   const value = state?.is_collected;
   if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value > 0;
-  if (typeof value === "string") {
-    const text = value.trim().toLowerCase();
-    if (text === "1" || text === "true" || text === "yes" || text === "y") return true;
-    if (text === "0" || text === "false" || text === "no" || text === "n" || text === "") return false;
-  }
   return undefined;
 }
 
