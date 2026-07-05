@@ -11,6 +11,10 @@ const DEFAULT_THREE_FACTORY: ThreeFactory = async () => await import("three");
 export interface BackCoverLayerUniforms {
 	uTime: { value: number };
 	uBass: { value: number };
+	uMid: { value: number };
+	uTreble: { value: number };
+	uBeat: { value: number };
+	uEnergy: { value: number };
 	uPixel: { value: number };
 	uDotTex: { value: THREE.Texture };
 	uAlpha: { value: number };
@@ -62,6 +66,10 @@ export async function createBackCoverLayer(opts: BackCoverLayerOptions): Promise
 		uniforms: {
 			uTime: opts.uniforms.uTime,
 			uBass: opts.uniforms.uBass,
+			uMid: opts.uniforms.uMid,
+			uTreble: opts.uniforms.uTreble,
+			uBeat: opts.uniforms.uBeat,
+			uEnergy: opts.uniforms.uEnergy,
 			uPixel: opts.uniforms.uPixel,
 			uDotTex: opts.uniforms.uDotTex,
 			uAlpha: opts.uniforms.uAlpha,
@@ -105,7 +113,7 @@ export async function createBackCoverLayer(opts: BackCoverLayerOptions): Promise
 
 export const BACK_COVER_VERTEX_SHADER = `
 	    precision highp float;
-	    uniform float uTime, uBass, uPixel, uAlpha;
+	    uniform float uTime, uBass, uMid, uTreble, uBeat, uEnergy, uPixel, uAlpha;
 	    attribute vec3 aColor;
 	    attribute vec2 aUv;
 	    attribute float aRand;
@@ -113,15 +121,18 @@ export const BACK_COVER_VERTEX_SHADER = `
 	    varying float vA;
 	    void main(){
 	      vec3 pos = position;
-	      // 缓慢呼吸
-	      pos.x += sin(uTime * 0.20 + aRand * 8.0) * 0.20;
-	      pos.y += cos(uTime * 0.18 + aRand * 6.0) * 0.22;
-	      pos.z += sin(uTime * 0.12 + aRand * 5.0) * 0.18 + uBass * 0.12 * sin(aRand * 11.0);
+	      // 音频驱动呼吸，静音时只保留很轻的漂移。
+	      float audioDrive = clamp(uEnergy * 0.42 + uBass * 0.58 + uBeat * 0.85, 0.0, 1.45);
+	      float highFlicker = 0.5 + 0.5 * sin(uTime * (1.4 + uTreble * 1.2) + aRand * 9.0);
+	      pos.x += sin(uTime * 0.20 + aRand * 8.0) * (0.055 + uMid * 0.20 + uBeat * 0.090);
+	      pos.y += cos(uTime * 0.18 + aRand * 6.0) * (0.060 + uTreble * 0.18 + uBeat * 0.080);
+	      pos.z += sin(uTime * 0.12 + aRand * 5.0) * (0.055 + uEnergy * 0.070);
+	      pos.z += uBass * 0.18 * sin(aRand * 11.0) + uBeat * 0.16 * (0.65 + 0.35 * sin(aRand * 13.0));
 	      vC = aColor;
 	      vec4 mvPos = modelViewMatrix * vec4(pos, 1.0);
 	      float dist = -mvPos.z;
-	      vA = clamp(0.30 + 0.4 * sin(uTime * 0.6 + aRand * 5.0), 0.10, 0.65);
-	      float sz = clamp(46.0 / max(0.5, dist), 1.4, 4.5);
+	      vA = clamp(0.18 + audioDrive * 0.24 + highFlicker * (0.055 + audioDrive * 0.18) + uBeat * 0.20, 0.10, 0.78);
+	      float sz = clamp((46.0 / max(0.5, dist)) * (1.0 + uBeat * 0.22 + uBass * 0.10 + uTreble * 0.06 * highFlicker), 1.4, 4.9);
 	      gl_PointSize = sz * uPixel;
 	      gl_Position = projectionMatrix * mvPos;
 	    }

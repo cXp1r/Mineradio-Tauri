@@ -1,5 +1,6 @@
 export const HOME_VISUAL_VERTEX_SHADER = `precision highp float;
 uniform float uTime, uBass, uMid, uTreble, uBeat, uEnergy, uBurstAmt;
+uniform float uAudioBands[32];
 uniform float uPreset, uIntensity, uDepth, uPointScale, uSpeed, uTwist;
 uniform float uVinylSpin;
 uniform float uColorBoost, uScatter, uCoverRes, uBgFade;

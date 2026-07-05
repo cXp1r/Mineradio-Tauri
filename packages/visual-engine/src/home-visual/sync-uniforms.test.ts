@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import { cloneFxState } from "./fx-defaults";
 import { syncFxUniforms, lerp, type UniformContainer } from "./sync-uniforms";
-import type { AudioSnapshot } from "../audio/audio-snapshot";
+import { AUDIO_SPECTRUM_BAND_COUNT, type AudioSnapshot } from "../audio/audio-snapshot";
 
 function makeSnapshot(over: Partial<AudioSnapshot> = {}): AudioSnapshot {
 	return {
@@ -34,6 +34,7 @@ function makeUniforms(): UniformContainer {
 		uVinylSpin: { value: 0 },
 		uParticleDim: { value: 1 },
 		uBurstAmt: { value: 0 },
+		uAudioBands: { value: new Float32Array(AUDIO_SPECTRUM_BAND_COUNT) },
 	};
 }
 
@@ -70,7 +71,7 @@ test("mouse: uMouseActive reflects fx.mouseActive; uMouseXY copied via .set when
 	expect(xy.y).toBeCloseTo(-0.2, 6);
 });
 
-test("uBurstAmt decays by 0.90 per call (baseline * 0.90 per frame)", () => {
+test("uBurstAmt decays by 0.90 per call without synthesizing a default-wall shove", () => {
 	const fx = cloneFxState();
 	const u = makeUniforms();
 	(u.uBurstAmt as { value: number }).value = 1.0;
@@ -78,6 +79,53 @@ test("uBurstAmt decays by 0.90 per call (baseline * 0.90 per frame)", () => {
 	expect(u.uBurstAmt?.value).toBeCloseTo(0.90, 6);
 	syncFxUniforms(fx, makeSnapshot(), u, { dt: 1 / 60 });
 	expect(u.uBurstAmt?.value).toBeCloseTo(0.81, 6);
+});
+
+test("default cover wall does not raise uBurstAmt from live audio bands", () => {
+	const fx = cloneFxState();
+	fx.preset = 0;
+	const u = makeUniforms();
+	(u.uBass as { value: number }).value = 0.12;
+	(u.uMid as { value: number }).value = 0.10;
+	(u.uTreble as { value: number }).value = 0.08;
+	syncFxUniforms(fx, makeSnapshot({
+		bass: 0.42,
+		mid: 0.34,
+		treble: 0.22,
+		beatPulse: 0.18,
+		energy: 0.44,
+	}), u, { dt: 1 / 60 });
+	expect(u.uBurstAmt?.value as number).toBe(0);
+});
+
+test("default cover wall does not raise uBurstAmt from scheduled beats", () => {
+	const fx = cloneFxState();
+	fx.preset = 0;
+	const u = makeUniforms();
+	syncFxUniforms(fx, makeSnapshot({
+		bass: 0.2,
+		mid: 0.14,
+		treble: 0.1,
+		beatPulse: 0.12,
+		energy: 0.22,
+		scheduledBeatPulse: 0.78,
+		beatOnsetFlag: true,
+	}), u, { dt: 1 / 60 });
+	expect(u.uBurstAmt?.value as number).toBe(0);
+});
+
+test("default cover wall copies smoothed audio frequency bands into uAudioBands", () => {
+	const fx = cloneFxState();
+	fx.preset = 0;
+	const u = makeUniforms();
+	const bands = new Float32Array(AUDIO_SPECTRUM_BAND_COUNT);
+	bands[4] = 0.42;
+	bands[18] = 0.21;
+	syncFxUniforms(fx, makeSnapshot({ frequencyBands: bands }), u, { dt: 1 / 60 });
+	const out = u.uAudioBands?.value as Float32Array;
+	expect(out).toBeInstanceOf(Float32Array);
+	expect(out[4]).toBeCloseTo(0.42, 5);
+	expect(out[18]).toBeCloseTo(0.21, 5);
 });
 
 test("uVinylSpin advances by dt * (0.40 + smoothBass*0.09) * fx.speed and wraps at 2*PI", () => {

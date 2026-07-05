@@ -1,7 +1,7 @@
 import type * as THREE from "three";
 import type { ThreeFactory } from "../runtime/renderer-setup";
 import type { FxState } from "./fx-defaults";
-import type { AudioSnapshot } from "../audio/audio-snapshot";
+import { AUDIO_SPECTRUM_BAND_COUNT, type AudioSnapshot } from "../audio/audio-snapshot";
 import type { UniformContainer } from "./sync-uniforms";
 import {
 	HOME_VISUAL_VERTEX_SHADER,
@@ -157,6 +157,7 @@ function makeUniformsRecord(THREE: ThreeModule, coverRes: number): Record<string
 		uBeat: { value: 0 },
 		uEnergy: { value: 0 },
 		uBurstAmt: { value: 0 },
+		uAudioBands: { value: new Float32Array(AUDIO_SPECTRUM_BAND_COUNT) },
 		uVinylSpin: { value: 0 },
 		uPreset: { value: 0 },
 		uIntensity: { value: 0.85 },

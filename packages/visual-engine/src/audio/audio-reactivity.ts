@@ -1,4 +1,5 @@
 import {
+	AUDIO_SPECTRUM_BAND_COUNT,
 	type AudioSnapshot,
 	type AudioReactivityOptions,
 	type AudioReactivityEngine,
@@ -12,6 +13,7 @@ import {
 } from "./peak-followers";
 import {
 	analyzeBeatFrame,
+	analyzeLogSpectrumBands,
 	analyzeMainFrame,
 	DEFAULT_BIN_RANGES,
 	DEFAULT_BEAT_BAND_HZ,
@@ -58,6 +60,9 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let smoothTreb = 0;
 	let smoothEnergy = 0;
 	let prevEnergy = 0;
+	let prevBeatLow = 0;
+	let prevBeatBody = 0;
+	let prevBeatSnap = 0;
 	let beatPulse = 0;
 	let lyricSunEnergy = 0;
 	let lyricSunTarget = 0;
@@ -75,6 +80,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let rm = 0;
 	let rt = 0;
 	let re = 0;
+	const frequencyBands = new Float32Array(AUDIO_SPECTRUM_BAND_COUNT);
 
 	const beatSubscribers = new Set<BeatHandler>();
 
@@ -95,17 +101,21 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	}
 
 	function decayIdle(dt: number) {
-		void dt;
+		const bandDecay = Math.pow(0.86, dt * ENV_ATTACK_PER_FRAME);
 		smoothBass *= 0.91;
 		smoothMid *= 0.91;
 		smoothTreb *= 0.91;
 		smoothEnergy *= 0.91;
+		for (let i = 0; i < frequencyBands.length; i += 1) frequencyBands[i] *= bandDecay;
 		beatPulse *= 0.82;
 		lyricSunTarget = 0;
 		lyricSunHold *= 0.90;
 		lyricSunEnergy *= 0.92;
 		lyricSunAvg *= 0.995;
 		lyricSunPeak = Math.max(0.48, lyricSunPeak * 0.997);
+		prevBeatLow *= 0.86;
+		prevBeatBody *= 0.86;
+		prevBeatSnap *= 0.86;
 	}
 
 	function resetLyricSunEnergy(): void {
@@ -155,6 +165,9 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			scheduledBeatPulse = 0;
 			scheduledBeatFlag = false;
 			prevEnergy = 0;
+			prevBeatLow = 0;
+			prevBeatBody = 0;
+			prevBeatSnap = 0;
 			audioEnergy = 0;
 			bass = 0;
 			mid = 0;
@@ -163,6 +176,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			rm = 0;
 			rt = 0;
 			re = 0;
+			frequencyBands.fill(0);
 			return;
 		}
 
@@ -187,6 +201,15 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			frame.beatFftSize,
 			DEFAULT_BEAT_BAND_HZ,
 		);
+		const rawFrequencyBands = analyzeLogSpectrumBands(
+			frame.mainFreqData,
+			frame.mainSampleRate,
+			frame.mainFftSize,
+			AUDIO_SPECTRUM_BAND_COUNT,
+		);
+		for (let i = 0; i < frequencyBands.length; i += 1) {
+			frequencyBands[i] = env(frequencyBands[i], rawFrequencyBands[i] ?? 0, 0.28, 0.075, dtSec);
+		}
 
 		bassPeak.update(main.kick, dtSec * 1000);
 		midPeak.update(main.mid, dtSec * 1000);
@@ -205,6 +228,9 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 
 		const bassOnset = Math.max(0, rb - smoothBass);
 		const energyOnset = Math.max(0, re - prevEnergy);
+		const beatLowOnset = Math.max(0, beat.low - prevBeatLow);
+		const beatBodyOnset = Math.max(0, beat.body - prevBeatBody);
+		const beatSnapOnset = Math.max(0, beat.snap - prevBeatSnap);
 		prevEnergy = prevEnergy * 0.88 + re * 0.12;
 
 		if (!prefersReducedMotionValue) {
@@ -243,6 +269,17 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			} else if (bassOnset > 0.075 && rb > 0.32 && energyOnset > 0.020) {
 				beatPulse = Math.max(beatPulse, Math.min(0.12, bassOnset * 0.18));
 			}
+			// 视觉层只补一个轻量瞬态脉冲；不通知 camera beat，避免镜头和粒子一起乱跳。
+			const visualPresence = clamp01(beat.low * 0.42 + beat.body * 0.12 + beat.snap * 0.06 + beat.rms * 1.35);
+			const visualTransient = Math.max(
+				bassOnset * 0.58 + energyOnset * 0.82,
+				beatLowOnset * 0.62 + beatBodyOnset * 0.26 + beatSnapOnset * 0.16,
+			);
+			if (visualPresence > 0.24 && visualTransient > 0.060) {
+				const transientN = smoothstep01((visualTransient - 0.055) / 0.62);
+				const visualPulse = Math.min(0.14, transientN * (0.045 + visualPresence * 0.14));
+				beatPulse = Math.max(beatPulse, visualPulse);
+			}
 			beatPulse *= Math.pow(0.36, dtSec);
 			if (scheduledBeatFlag) {
 				beatOnsetFlag = true;
@@ -262,6 +299,9 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		smoothTreb = env(smoothTreb, Math.min(0.56, rt * 0.54), 0.18, 0.055, dtSec);
 		smoothEnergy = env(smoothEnergy, Math.min(0.72, re), 0.16, 0.055, dtSec);
 		updateLyricSunEnergy(main.vocal);
+		prevBeatLow = prevBeatLow * 0.28 + beat.low * 0.72;
+		prevBeatBody = prevBeatBody * 0.34 + beat.body * 0.66;
+		prevBeatSnap = prevBeatSnap * 0.38 + beat.snap * 0.62;
 
 		applySnapshotPostBlock(dtSec);
 	}
@@ -280,6 +320,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			lyricSunEnergy,
 			scheduledBeatPulse,
 			beatOnsetFlag,
+			frequencyBands,
 		};
 	}
 
@@ -338,9 +379,13 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		scheduledBeatFlag = false;
 		smoothBass = smoothMid = smoothTreb = smoothEnergy = 0;
 		prevEnergy = 0;
+		prevBeatLow = 0;
+		prevBeatBody = 0;
+		prevBeatSnap = 0;
 		beatPulse = 0;
 		resetLyricSunEnergy();
 		scheduledBeatPulse = 0;
+		frequencyBands.fill(0);
 		bassPeak.reset();
 		midPeak.reset();
 		treblePeak.reset();

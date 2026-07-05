@@ -131,7 +131,7 @@ test("material setup matches baseline: main transparent/depthWrite=false/NormalB
 	expect(bloom.blending).toBe(2);
 	const uniforms = field.materialUniforms;
 	const baselineUniformNames = [
-		"uTime", "uBass", "uMid", "uTreble", "uBeat", "uEnergy", "uBurstAmt", "uVinylSpin",
+		"uTime", "uBass", "uMid", "uTreble", "uBeat", "uEnergy", "uBurstAmt", "uAudioBands", "uVinylSpin",
 		"uPreset", "uIntensity", "uDepth", "uPointScale", "uSpeed", "uTwist",
 		"uColorBoost", "uScatter", "uCoverRes", "uBgFade", "uBloomStrength", "uBloomSize",
 		"uTintColor", "uTintStrength", "uCoverTex", "uPrevCoverTex", "uColorMixT",
@@ -144,6 +144,22 @@ test("material setup matches baseline: main transparent/depthWrite=false/NormalB
 		expect(Object.prototype.hasOwnProperty.call(uniforms, name)).toBe(true);
 	}
 	expect(Object.keys(uniforms).length).toBe(baselineUniformNames.length);
+	expect(uniforms.uAudioBands.value).toBeInstanceOf(Float32Array);
+	expect((uniforms.uAudioBands.value as Float32Array).length).toBe(32);
+});
+
+test("default lyric-stage cover wall shader keeps the stable baseline motion instead of sampling audio bands", async () => {
+	const scene = makeFakeScene();
+	const field = await createHomeParticleField(scene as never, { threeFactory: makeFakeThree() });
+	const vertexShader = (field.material as unknown as { vertexShader: string }).vertexShader;
+	expect(vertexShader).toContain("uniform float uAudioBands[32]");
+	expect(vertexShader).not.toContain("float spectralDetail =");
+	expect(vertexShader).not.toContain("float spectralZ =");
+	expect(vertexShader).not.toContain("sampleAudioBand(");
+	expect(vertexShader).toContain("float midDisp = midN * uMid * 0.55 * midMask * K;");
+	expect(vertexShader).toContain("float trebleJ = snoise(vec3(pos.x*6.5, pos.y*6.5, t*3.5 + aRand*4.0)) * uTreble * 0.18 * K;");
+	expect(vertexShader).toContain("float bassBreath = snoise(vec3(pos.x*0.35, pos.y*0.35, t*0.4)) * uBass * 0.42 * K;");
+	expect(vertexShader).toContain("pos.z = rippleZ * 1.30 + midDisp + trebleJ + bassBreath + depthZ;");
 });
 
 test("ripple uniform is the baseline 1x12 RGBA Float DataTexture with nearest filtering", async () => {

@@ -63,6 +63,10 @@ function makeUniforms() {
 	return {
 		uTime: { value: 0 },
 		uBass: { value: 0 },
+		uMid: { value: 0 },
+		uTreble: { value: 0 },
+		uBeat: { value: 0 },
+		uEnergy: { value: 0 },
 		uPixel: { value: 1 },
 		uDotTex: { value: { label: "dot" } },
 		uAlpha: { value: 0.96 },
@@ -122,6 +126,24 @@ test("createBackCoverLayer builds the baseline 3000 point layer behind the cover
 	expect(points.geometry.attributes.aColor.array[0]).toBeCloseTo(0.7, 6);
 	expect(points.geometry.attributes.aColor.array[1]).toBeCloseTo(0.6, 6);
 	expect(points.geometry.attributes.aColor.array[2]).toBeCloseTo(0.8, 6);
+});
+
+test("createBackCoverLayer shares audio band and beat uniforms for audio-following rhythm", async () => {
+	const scene = makeScene();
+	const uniforms = makeUniforms();
+	const layer = await createBackCoverLayer({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		uniforms: uniforms as never,
+	});
+	const material = (layer.getPoints() as unknown as { material: { uniforms: Record<string, unknown>; vertexShader: string } }).material;
+	expect(material.uniforms.uBass).toBe(uniforms.uBass);
+	expect(material.uniforms.uMid).toBe(uniforms.uMid);
+	expect(material.uniforms.uTreble).toBe(uniforms.uTreble);
+	expect(material.uniforms.uBeat).toBe(uniforms.uBeat);
+	expect(material.uniforms.uEnergy).toBe(uniforms.uEnergy);
+	expect(material.vertexShader).toContain("uBeat");
+	expect(material.vertexShader).toContain("uEnergy");
 });
 
 test("refreshColorsFromCover mirrors baseline UV sampling, scales by 0.85, and marks aColor dirty", async () => {
