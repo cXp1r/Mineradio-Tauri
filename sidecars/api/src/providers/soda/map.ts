@@ -19,13 +19,18 @@ export interface SodaSong {
   };
   albumName?: string;
   coverUrl?: string;
-  durationMs?: number;
   duration?: number;
+  durationMs?: number;
   mediaMid?: string;
   preview?: {
     start?: number;
     duration?: number;
   } | null;
+  bit_rates?: Array<{
+    br?: number;
+    size?: number;
+    quality?: string;
+  } | null | undefined>;
 }
 
 export interface SodaPlaylistBody {
@@ -108,12 +113,13 @@ function albumName(raw: SodaSong): string {
   return String(raw.albumName ?? "").trim();
 }
 
-function sodaSizedCoverUrl(cover: { uri?: string; template_prefix?: string } | string | undefined): string {
+function sodaSizedCoverUrl(cover: { uri?: string; urls?: string[]; template_prefix?: string } | string | null | undefined): string {
   if (typeof cover === "string") return cover;
   const uri = String(cover?.uri ?? "").trim();
   if (!uri) return "";
+  const cdn = (cover?.urls || [])[0] ?? "https://p3-luna.douyinpic.com/img/";
   const templatePrefix = String(cover?.template_prefix ?? "").trim() || "tplv-b829550vbb";
-  return `https://p3-luna.douyinpic.com/img/${uri}~${templatePrefix}-crop-center:256:256.webp`;
+  return `${cdn}${uri}~${templatePrefix}-crop-center:256:256.webp`;
 }
 
 function albumCoverUrl(raw: SodaSong): string {
@@ -122,6 +128,15 @@ function albumCoverUrl(raw: SodaSong): string {
     return raw.album.coverUrl ?? raw.album.picUrl ?? sodaSizedCoverUrl(raw.album.url_cover);
   }
   return "";
+}
+
+function qualityHints(raw: SodaSong): string[] {
+  const qualities = Array.isArray(raw.bit_rates)
+    ? raw.bit_rates
+      .map(item => typeof item?.quality === "string" ? item.quality.trim() : "")
+      .filter(Boolean)
+    : [];
+  return qualities.length > 0 ? Array.from(new Set(qualities)) : ["standard"];
 }
 
 function playableState(raw: SodaSong): PlayableState {
@@ -146,7 +161,7 @@ export function mapSodaSongToTrack(raw: SodaSong): Track {
     album: albumName(raw),
     coverUrl: normalizeProviderImageUrl(albumCoverUrl(raw)),
     durationMs,
-    qualityHints: ["standard"],
+    qualityHints: qualityHints(raw),
     playableState: playableState(raw)
   };
 }

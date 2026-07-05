@@ -610,7 +610,21 @@ test("soda adapter maps search results from client", async () => {
                         }
                       },
                       duration: 180000,
-                      preview: { start: 30000, duration: 60000 }
+                      preview: { start: 30000, duration: 60000 },
+                      bit_rates: [
+                        { br: 885991, size: 19934895, quality: "highest" },
+                        { br: 320000, size: 7200000, quality: "higher" },
+                        { br: 128000, size: 2880000, quality: "medium" }
+                      ]
+                    }
+                  }
+                },
+                {
+                  meta: { item_type: "artist" },
+                  entity: {
+                    track: {
+                      id: "not-a-track",
+                      name: "Should Not Map"
                     }
                   }
                 }
@@ -641,7 +655,7 @@ test("soda adapter maps search results from client", async () => {
     album: "Bloom",
     coverUrl: "https://p3-luna.douyinpic.com/img/tos-cn-v-2774c002/oQBkC1s9PiDAIteAEliB5WfWEAH4gqawBQ3wLZ~tplv-b829550vbb-crop-center:256:256.webp",
     durationMs: 180000,
-    qualityHints: ["standard"],
+    qualityHints: ["highest", "higher", "medium"],
     playableState: "trial_only"
   });
 });
