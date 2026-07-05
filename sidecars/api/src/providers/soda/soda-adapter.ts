@@ -46,8 +46,43 @@ function firstString(...values: unknown[]): string {
   return "";
 }
 
+type SodaPlaybackQualityOption = {
+  level: SongUrlResult["level"];
+  sodaLevel: string;
+  label: string;
+  aliases: string[];
+};
+
+type SodaPlayInfoEntry = {
+  level?: SongUrlResult["level"];
+  quality: string;
+  playUrl: string;
+  playAuth: string;
+  filename?: string;
+  raw: Record<string, unknown>;
+};
+
+const SODA_PLAYBACK_QUALITY_OPTIONS: SodaPlaybackQualityOption[] = [
+  { level: "jymaster", sodaLevel: "spatial", label: "录音室", aliases: ["录音室音质", "spatial"] },
+  { level: "hires", sodaLevel: "hi_res", label: "超清全景声", aliases: ["hi_res", "hi-res", "surround", "全景声"] },
+  { level: "lossless", sodaLevel: "highest", label: "无损音质", aliases: ["highest", "无损"] },
+  { level: "exhigh", sodaLevel: "higher", label: "极高音质", aliases: ["higher", "极高"] },
+  { level: "standard", sodaLevel: "medium", label: "标准音质", aliases: ["medium", "标准"] }
+];
+
+function sodaQualityOptionForLevel(level: SongUrlResult["level"]): SodaPlaybackQualityOption {
+  return SODA_PLAYBACK_QUALITY_OPTIONS.find((option) => option.level === level) ?? SODA_PLAYBACK_QUALITY_OPTIONS[1];
+}
+
 function mapSodaPlaybackQuality(value: string): SongUrlResult["level"] | undefined {
-  const text = value.toLowerCase();
+  const text = value.trim().toLowerCase();
+  for (const option of SODA_PLAYBACK_QUALITY_OPTIONS) {
+    const raw = option.sodaLevel.toLowerCase();
+    if (text === raw || text.includes(raw)) return option.level;
+    if (option.aliases.some((alias) => text === alias.toLowerCase() || text.includes(alias.toLowerCase()))) {
+      return option.level;
+    }
+  }
   if (text.includes("master") || text.includes("jymaster")) return "jymaster";
   if (text.includes("320") || text.includes("exhigh")) return "exhigh";
   if (text.includes("hires") || text.includes("hi-res")) return "hires";
@@ -71,16 +106,38 @@ function readPlayInfoList(body: unknown): Record<string, unknown>[] {
   return Array.isArray(list) ? list.map((item) => asObj(item)).filter(Boolean) as Record<string, unknown>[] : [];
 }
 
-function sodaPlayInfoScore(playInfo: Record<string, unknown>): number {
-  const size = readNumber(playInfo.Size ?? playInfo.size ?? playInfo.FileSize ?? playInfo.fileSize);
-  const bitrate = readNumber(playInfo.Bitrate ?? playInfo.bitrate ?? playInfo.BitRate ?? playInfo.bitRate);
-  return size * 1_000_000 + bitrate;
+function readSodaPlayInfoTable(list: Record<string, unknown>[]): Record<string, SodaPlayInfoEntry> {
+  const table: Record<string, SodaPlayInfoEntry> = {};
+  for (const playInfo of list) {
+    const playUrl = firstString(playInfo.MainPlayUrl, playInfo.BackupPlayUrl);
+    const playAuth = firstString(playInfo.PlayAuth);
+    if (!playUrl || !playAuth) continue;
+    const rawQuality = firstString(playInfo.Quality).trim();
+    const level = mapSodaPlaybackQuality(rawQuality);
+    const key = level ?? rawQuality.toLowerCase();
+    if (!key || table[key]) continue;
+    table[key] = {
+      level,
+      quality: rawQuality,
+      playUrl,
+      playAuth,
+      filename: firstString(playInfo.FileID) || undefined,
+      raw: playInfo
+    };
+  }
+  return table;
 }
 
-function playableSodaPlayInfoList(list: Record<string, unknown>[]): Record<string, unknown>[] {
-  return list
-    .filter((playInfo) => firstString(playInfo.MainPlayUrl, playInfo.BackupPlayUrl) && firstString(playInfo.PlayAuth))
-    .sort((a, b) => sodaPlayInfoScore(b) - sodaPlayInfoScore(a));
+function pickSodaPlayInfoEntry(
+  table: Record<string, SodaPlayInfoEntry>,
+  requested: SongUrlResult["level"] | undefined
+): SodaPlayInfoEntry | null {
+  if (requested) {
+    const direct = table[requested];
+    if (direct) return direct;
+  }
+  const first = Object.values(table)[0];
+  return first ?? null;
 }
 
 function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
@@ -264,7 +321,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
         .slice(0, Math.max(0, limit))
         .map(item => mapSodaSongToTrack(item as SodaSong));
     },
-    async songUrl(track: Track, __?: SongUrlOptions): Promise<SongUrlResult> {
+    async songUrl(track: Track, opts?: SongUrlOptions): Promise<SongUrlResult> {
       const cfg = deps.getConfig();
       if (!cfg.cookie) {
         throw new ProviderError(SODA_PROVIDER_ID, "LOGIN_REQUIRED", "soda song-url requires login", {
@@ -272,6 +329,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
           action: "login"
         });
       }
+      const requested = opts?.quality ?? "exhigh";
 
       const detail = await client.trackDetail(track.sourceId);
       const player = readSodaTrackPlayer(detail.body);
@@ -291,31 +349,26 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
         );
       }
       const infoBody = await infoResp.json();
-      const playInfoList = playableSodaPlayInfoList(readPlayInfoList(infoBody));
-      const playInfo = playInfoList[0];
+      const playInfoTable = readSodaPlayInfoTable(readPlayInfoList(infoBody));
+      const playInfo = pickSodaPlayInfoEntry(playInfoTable, requested);
       if (!playInfo) {
         throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play info`);
       }
-      const url = firstString(playInfo.MainPlayUrl, playInfo.BackupPlayUrl);
-      if (!url) {
-        throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play url`);
-      }
-      const playAuth = firstString(playInfo.PlayAuth);
-      if (!playAuth) {
-        throw new ProviderError(SODA_PROVIDER_ID, "UNAVAILABLE", `soda track ${track.sourceId} missing play auth`);
-      }
       // playAuth is publicly returned by url_player_info, so we intentionally pass it along with the playback URL.
-      const quality = firstString(playInfo.Quality);
-      const filename = firstString(playInfo.FileID);
+      const mappedQuality = playInfo.level;
+      const quality = playInfo.quality;
+      const url = playInfo.playUrl;
+      const playAuth = playInfo.playAuth;
+      const qualityOption = mappedQuality ? sodaQualityOptionForLevel(mappedQuality) : undefined;
       const result: SongUrlResult = {
         url: `/providers/soda/audio-proxy?url=${encodeURIComponent(url)}&playAuth=${encodeURIComponent(playAuth)}`,
         proxied: true,
         provider: SODA_PROVIDER_ID,
         trial: false,
         playable: true,
-        level: mapSodaPlaybackQuality(quality),
-        quality: quality || undefined,
-        filename: filename || undefined
+        level: mappedQuality,
+        quality: qualityOption?.label || quality || undefined,
+        filename: playInfo.filename
       };
       return result;
     },

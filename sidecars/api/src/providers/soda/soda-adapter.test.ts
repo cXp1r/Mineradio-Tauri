@@ -212,7 +212,7 @@ test("soda adapter songUrl resolves track_v2 url_player_info and returns main pl
   expect(calls[1]?.init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
 });
 
-test("soda adapter songUrl chooses the best playable entry from PlayInfoList", async () => {
+test("soda adapter songUrl falls back to the first PlayInfoList entry when requested tier is absent", async () => {
   const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.includes("/luna/pc/track_v2")) {
@@ -283,10 +283,87 @@ test("soda adapter songUrl chooses the best playable entry from PlayInfoList", a
     playableState: "unknown"
   });
 
-  expect(result.url).toBe("/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fhigh.m4a&playAuth=play-auth-high");
-  expect(result.quality).toBe("exhigh");
-  expect(result.level).toBe("exhigh");
-  expect(result.filename).toBe("high-file");
+  expect(result.url).toBe("/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Flow.m4a&playAuth=play-auth-low");
+  expect(result.quality).toBe("标准音质");
+  expect(result.level).toBe("standard");
+  expect(result.filename).toBe("low-file");
+});
+
+test("soda adapter songUrl maps requested PlaybackQuality onto soda quality tiers from top to bottom", async () => {
+  const fetcher = async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/luna/pc/track_v2")) {
+      return new Response(JSON.stringify({
+        data: {
+          track_player: {
+            url_player_info: "https://api.qishui.com/mock/url-player-info"
+          }
+        }
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      });
+    }
+    expect(init?.headers).toMatchObject({ cookie: "soda_session=abc123" });
+    return new Response(JSON.stringify({
+      Result: {
+        Data: {
+          PlayInfoList: [
+            {
+              Quality: "medium",
+              Bitrate: 128000,
+              Size: 1000,
+              PlayAuth: "play-auth-medium",
+              MainPlayUrl: "https://cdn.example.com/medium.m4a",
+              FileID: "medium-file"
+            },
+            {
+              Quality: "higher",
+              Bitrate: 320000,
+              Size: 4000,
+              PlayAuth: "play-auth-higher",
+              MainPlayUrl: "https://cdn.example.com/higher.m4a",
+              FileID: "higher-file"
+            }
+          ]
+        }
+      }
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    });
+  };
+  const client = createSodaClient({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher
+  });
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return { cookie: "soda_session=abc123" };
+    },
+    fetch: fetcher,
+    client
+  });
+
+  const result = await adapter.songUrl({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["standard"],
+    playableState: "unknown"
+  }, { quality: "standard" });
+
+  expect(result.url).toBe("/providers/soda/audio-proxy?url=https%3A%2F%2Fcdn.example.com%2Fmedium.m4a&playAuth=play-auth-medium");
+  expect(result.level).toBe("standard");
+  expect(result.quality).toBe("标准音质");
+  expect(result.filename).toBe("medium-file");
 });
 
 test("soda adapter songUrl without cookie throws LOGIN_REQUIRED before calling client", async () => {
