@@ -4,7 +4,9 @@ import type {
   PlaylistSummary,
   SongLikeAck,
   SongLikeCheckAck,
-  Track
+  Track,
+  TrackQualityAvailability,
+  TrackQualityOption
 } from "@mineradio/shared";
 import {
   ProviderError,
@@ -176,6 +178,66 @@ function readSodaCollectedState(resp: unknown): boolean | undefined {
   return undefined;
 }
 
+function readSodaTrackObject(resp: unknown): Record<string, unknown> | null {
+  const root = asObj(resp);
+  const data = asObj(root?.data);
+  return asObj(root?.track) ?? asObj(data?.track);
+}
+
+function readSodaBitRates(track: Record<string, unknown> | null): Record<string, unknown>[] {
+  const bitRates = track?.bit_rates;
+  return Array.isArray(bitRates)
+    ? bitRates.map((item) => asObj(item)).filter(Boolean) as Record<string, unknown>[]
+    : [];
+}
+
+function readSodaQualityList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => firstString(item).trim().toLowerCase()).filter(Boolean)
+    : [];
+}
+
+function sodaQualityDetail(rawQuality: string, labelInfo: Record<string, unknown> | null): string {
+  const quality = rawQuality.trim().toLowerCase();
+  const vipPlayQualities = readSodaQualityList(labelInfo?.quality_only_vip_can_play);
+  const vipDownloadQualities = readSodaQualityList(labelInfo?.quality_only_vip_can_download);
+  const vipPlayable = labelInfo?.only_vip_playable === true || vipPlayQualities.includes(quality);
+  const vipDownload = labelInfo?.only_vip_download === true || vipDownloadQualities.includes(quality);
+  const parts = [vipPlayable ? "VIP 可播放" : "可播放"];
+  if (vipDownload) parts.push("VIP 可下载");
+  return parts.join(" · ");
+}
+
+function sodaQualityOptionFromBitRate(
+  bitRate: Record<string, unknown>,
+  labelInfo: Record<string, unknown> | null
+): TrackQualityOption | null {
+  const rawQuality = firstString(bitRate.quality).trim();
+  if (!rawQuality || rawQuality.toLowerCase() === "lossless") return null;
+  const level = mapSodaPlaybackQuality(rawQuality);
+  if (!level) return null;
+  const option = sodaQualityOptionForLevel(level);
+  const br = readNumber(bitRate.br);
+  const size = readNumber(bitRate.size);
+  return {
+    provider: SODA_PROVIDER_ID,
+    id: level,
+    label: option.label,
+    requestQuality: level,
+    level,
+    type: rawQuality,
+    detail: sodaQualityDetail(rawQuality, labelInfo),
+    ...(br > 0 ? { br } : {}),
+    ...(size > 0 ? { size } : {}),
+    source: "declared"
+  };
+}
+
+function sodaQualityRank(level: string | undefined): number {
+  const index = SODA_PLAYBACK_QUALITY_OPTIONS.findIndex((option) => option.level === level);
+  return index >= 0 ? index : SODA_PLAYBACK_QUALITY_OPTIONS.length;
+}
+
 function readSodaSearchList(body: unknown): unknown[] {
   const root = asObj(body);
   if (!root) return [];
@@ -314,6 +376,28 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
         filename: playInfo.filename
       };
       return result;
+    },
+    async trackQualities(track: Track): Promise<TrackQualityAvailability> {
+      const resp = await client.trackDetail(track.sourceId);
+      const sodaTrack = readSodaTrackObject(resp.body);
+      const labelInfo = asObj(sodaTrack?.label_info);
+      const byLevel = new Map<string, TrackQualityOption>();
+      for (const bitRate of readSodaBitRates(sodaTrack)) {
+        const option = sodaQualityOptionFromBitRate(bitRate, labelInfo);
+        if (!option || byLevel.has(option.id)) continue;
+        byLevel.set(option.id, option);
+      }
+      const qualities = [...byLevel.values()].sort((a, b) =>
+        sodaQualityRank(a.level ?? a.id) - sodaQualityRank(b.level ?? b.id)
+      );
+      return {
+        provider: SODA_PROVIDER_ID,
+        trackId: track.sourceId,
+        defaultQuality:
+          qualities.find((quality) => quality.requestQuality === "exhigh")?.requestQuality ??
+          qualities[0]?.requestQuality,
+        qualities
+      };
     },
     async lyric(track: Track): Promise<LyricPayload> {
       const resp = await client.trackDetail(track.sourceId);

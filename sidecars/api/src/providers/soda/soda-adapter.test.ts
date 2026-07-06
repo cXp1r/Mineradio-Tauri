@@ -362,6 +362,68 @@ test("soda adapter songUrl maps requested PlaybackQuality onto soda quality tier
   expect(result.filename).toBe("medium-file");
 });
 
+test("soda adapter trackQualities maps bit_rates and ignores the lossless shell tier", async () => {
+  const adapter = createSodaAdapter({
+    getConfig() {
+      return {};
+    },
+    client: {
+      search: async () => ({ body: { result_groups: [] } }),
+      songUrl: async () => ({ body: {} }),
+      lyric: async () => ({ body: {} }),
+      trackDetail: async () => ({
+        body: {
+          track: {
+            label_info: {
+              only_vip_download: false,
+              only_vip_playable: false,
+              quality_only_vip_can_download: ["spatial"],
+              quality_only_vip_can_play: ["highest"]
+            },
+            bit_rates: [
+              { br: 132163, size: 5965060, quality: "higher" },
+              { br: 324197, size: 14631348, quality: "spatial" },
+              { br: 0, size: 0, quality: "lossless" },
+              { br: 980000, size: 44100000, quality: "highest" }
+            ]
+          }
+        }
+      }),
+      collectionMedia: async () => ({ body: {}, status: 200 }),
+      playlistList: async () => ({ body: {} }),
+      playlistDetail: async () => ({ body: {} }),
+      loginStatus: async () => ({ body: {} }),
+      logout: async () => ({ body: {} })
+    }
+  });
+
+  const result = await adapter.trackQualities({
+    provider: "soda",
+    id: "soda-1",
+    sourceId: "soda-1",
+    title: "Hectopascal",
+    artists: ["Yui"],
+    album: "Bloom",
+    coverUrl: "",
+    durationMs: 180000,
+    qualityHints: ["higher", "spatial"],
+    playableState: "unknown"
+  });
+
+  expect(result.provider).toBe("soda");
+  expect(result.trackId).toBe("soda-1");
+  expect(result.defaultQuality).toBe("exhigh");
+  expect(result.qualities.map((quality) => quality.requestQuality)).toEqual(["jymaster", "lossless", "exhigh"]);
+  expect(result.qualities.map((quality) => quality.type)).toEqual(["spatial", "highest", "higher"]);
+  expect(result.qualities.find((quality) => quality.requestQuality === "exhigh")).toMatchObject({
+    br: 132163,
+    size: 5965060,
+    detail: "可播放"
+  });
+  expect(result.qualities.find((quality) => quality.requestQuality === "jymaster")?.detail).toBe("可播放 · VIP 可下载");
+  expect(result.qualities.find((quality) => quality.requestQuality === "lossless")?.detail).toBe("VIP 可播放");
+});
+
 test("soda adapter songUrl without cookie throws LOGIN_REQUIRED before calling client", async () => {
   let trackDetailCalls = 0;
   let infoCalls = 0;
