@@ -1174,6 +1174,7 @@ export function App({
   const pausedAtMsRef = useRef<number | null>(null);
   const mediaErrorRecoveryTrackKeyRef = useRef("");
   const playbackRequestSeqRef = useRef(0);
+  const lyricRequestSeqRef = useRef(0);
   const reloadCurrentTrackAndPlayRef = useRef<
     (options: PlaybackReloadOptions) => Promise<boolean>
   >(async () => false);
@@ -3590,8 +3591,7 @@ export function App({
       const selectedAvailable = qualities.some((quality) => quality.requestQuality === playbackQuality);
       const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
       if (!selectedAvailable && fallbackQuality) {
-        setPlaybackQualityState(fallbackQuality);
-        savePlaybackQualityPreference(fallbackQuality);
+        setPlaybackQuality(fallbackQuality);
       }
     }).catch(() => {
       if (!cancelled) setTrackQualityOptions([]);
@@ -3599,7 +3599,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [currentTrack, playbackQuality, sidecarClient]);
+  }, [currentTrack, playbackQuality, setPlaybackQuality, sidecarClient]);
 
   useEffect(() => {
     const track = currentTrack;
@@ -3631,6 +3631,7 @@ export function App({
       pausedAtMsRef.current = null;
       mediaErrorRecoveryTrackKeyRef.current = "";
       playbackRequestSeqRef.current += 1;
+      lyricRequestSeqRef.current += 1;
       setCurrentBeatMapState(null);
       setTrialBanner(null);
       controller.pause();
@@ -3643,8 +3644,10 @@ export function App({
     if (key === lastLoadedKeyRef.current) return;
     lastLoadedKeyRef.current = key;
     mediaErrorRecoveryTrackKeyRef.current = "";
-    const seq = playbackRequestSeqRef.current + 1;
-    playbackRequestSeqRef.current = seq;
+    const playbackSeq = playbackRequestSeqRef.current + 1;
+    playbackRequestSeqRef.current = playbackSeq;
+    const lyricSeq = lyricRequestSeqRef.current + 1;
+    lyricRequestSeqRef.current = lyricSeq;
     setCurrentBeatMapState(null);
     setTrialBanner(null);
     const fallbackLyric = buildTrackLyricFallback(currentTrack);
@@ -3672,12 +3675,12 @@ export function App({
           };
           if (positionRef.current > 0) controller.seek(positionRef.current);
           await controller.play();
-          if (playbackRequestSeqRef.current !== seq) return;
+          if (playbackRequestSeqRef.current !== playbackSeq) return;
           setLyricsLoading(false);
           setHomeForcedOpen(false);
           setHomeSuppressed(true);
         } catch (e) {
-          if (playbackRequestSeqRef.current !== seq) return;
+          if (playbackRequestSeqRef.current !== playbackSeq) return;
           const message = e instanceof Error ? e.message : "playback error";
           setPlaying(false);
           setSearchError(message);
@@ -3695,7 +3698,7 @@ export function App({
           currentTrack,
           playbackQuality,
         );
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         if (!result.url) {
           throw new Error(result.message || "播放地址不可用");
         }
@@ -3735,25 +3738,25 @@ export function App({
             ),
             0,
           ).then((beatmap) => {
-            if (playbackRequestSeqRef.current !== seq) return;
+            if (playbackRequestSeqRef.current !== playbackSeq) return;
             const map = toJsonValue(beatmap.map);
             setCurrentBeatMapState(map ? {
               key: desktopLyricsBeatMapKey(map, "dj"),
               map,
             } : null);
           }).catch(() => {
-            if (playbackRequestSeqRef.current === seq) {
+            if (playbackRequestSeqRef.current === playbackSeq) {
               setCurrentBeatMapState(null);
             }
           });
         }
         if (positionRef.current > 0) controller.seek(positionRef.current);
         await controller.play();
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         setHomeForcedOpen(false);
         setHomeSuppressed(true);
       } catch (e) {
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         const message = e instanceof Error ? e.message : "playback error";
         setTrialBanner(null);
         setPlaying(false);
@@ -3763,7 +3766,7 @@ export function App({
       try {
         setLyricsLoading(true);
         const lyric = ensureLyricFallbackPayload(await client.lyric(currentTrack), currentTrack);
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (lyricRequestSeqRef.current !== lyricSeq) return;
         originalLyricsPayloadRef.current = lyric;
         const resolvedLyric = resolveLyricsForTrack({
           track: currentTrack,
@@ -3773,7 +3776,7 @@ export function App({
         });
         setLyricsPayload(resolvedLyric.payload);
       } catch (e) {
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (lyricRequestSeqRef.current !== lyricSeq) return;
         const message = e instanceof Error ? e.message : "lyrics failed";
         const fallbackLyric = buildTrackLyricFallback(currentTrack);
         originalLyricsPayloadRef.current = fallbackLyric;

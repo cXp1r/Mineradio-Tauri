@@ -101,6 +101,53 @@ test("PlayerConsoleHost renders provider-reported quality options when supplied"
   expect(html).not.toContain('data-quality="standard"');
 });
 
+test("PlayerConsoleHost keeps generic quality controls when provider options are empty", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			playbackQuality: "lossless",
+			qualityOptions: [],
+		}),
+	);
+
+	expect(html).toContain('id="quality-btn"');
+	expect(html).not.toContain('id="quality-btn" class="ctrl-btn quality-pill" disabled=""');
+	expect(html).toContain('data-quality="lossless"');
+	expect(html).toContain('data-quality="standard"');
+});
+
+test("PlayerConsoleHost shows the selected quality when it is not in provider options", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			playbackQuality: "lossless",
+			qualityOptions: [
+				{
+					provider: "qq",
+					id: "flac",
+					label: "FLAC",
+					short: "FLAC",
+					detail: "42MB",
+					requestQuality: "flac",
+					source: "declared",
+				},
+				{
+					provider: "qq",
+					id: "320",
+					label: "320k MP3",
+					short: "320",
+					detail: "9MB",
+					requestQuality: "320",
+					source: "declared",
+				},
+			],
+		}),
+	);
+
+	expect(html).toContain('id="quality-btn-label">LOSSLESS<');
+	expect(html).not.toContain('id="quality-btn-label">FLAC<');
+	expect(html).toContain('data-quality="flac"');
+	expect(html).toContain('data-quality="320"');
+});
+
 test("PlayerConsoleHost renders baseline lyric source segment and opens custom lyric editor", async () => {
   await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
   let opened = 0;

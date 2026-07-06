@@ -36,7 +36,7 @@ type PlaybackQualityViewOption = {
 };
 
 function qualityViewOptions(options: TrackQualityOption[] | undefined): PlaybackQualityViewOption[] {
-	if (options === undefined) return PLAYBACK_QUALITY_OPTIONS;
+	if (options === undefined || options.length === 0) return PLAYBACK_QUALITY_OPTIONS;
 	return options.map((option) => ({
 		value: option.requestQuality,
 		label: option.label,
@@ -54,7 +54,10 @@ function fallbackQualityOption(value: PlaybackQualityRequest | undefined): Playb
 }
 
 function playbackQualityOption(value: PlaybackQualityRequest | undefined, options: PlaybackQualityViewOption[]) {
-	return options.find((option) => option.value === value) ?? options[0] ?? fallbackQualityOption(value);
+	const selected = value ? options.find((option) => option.value === value) : undefined;
+	if (selected) return selected;
+	if (value) return fallbackQualityOption(value);
+	return options[0] ?? fallbackQualityOption(value);
 }
 
 export interface PlayerConsoleHostProps {
@@ -433,7 +436,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 						</div>
 					</div>
 					<div id="quality-control" className="quality-control">
-						<button id="quality-btn" className={qualityOpen ? "ctrl-btn quality-pill active" : "ctrl-btn quality-pill"} ref={registerNormal("quality-btn")} type="button" title={`音质: ${quality.label}`} aria-label="音质" disabled={qualityOptions.length === 0} onClick={() => setQualityOpen((open) => !open)}>
+						<button id="quality-btn" className={qualityOpen ? "ctrl-btn quality-pill active" : "ctrl-btn quality-pill"} ref={registerNormal("quality-btn")} type="button" title={`音质: ${quality.label}`} aria-label="音质" onClick={() => setQualityOpen((open) => !open)}>
 							<span id="quality-btn-label">{quality.short}</span>
 						</button>
 						<div className={qualityOpen ? "quality-popover show" : "quality-popover"} onClick={(event) => event.stopPropagation()}>
