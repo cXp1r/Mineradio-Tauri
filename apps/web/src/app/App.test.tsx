@@ -9,7 +9,9 @@ import {
 	buildDesktopLyricsPayloadPatch,
 	deriveSidecarRecoveryNoticeState,
 	desktopLyricsBeatMapKey,
+	isCollectSupportedTrack,
 	isHomeBlankDismissElement,
+	isNeteaseLikeSupported,
 	nextSidecarStatusPollDelayMs,
 	shouldUseSecondaryLeftDisplaySeamGuard,
 	shouldShowEmptyHome,
@@ -126,6 +128,45 @@ test("App keeps hidden wallpaper capability placeholder copy out of the product 
 	const html = renderToStaticMarkup(React.createElement(App));
 	expect(html).not.toContain("壁纸模式开发中");
 	expect(html).not.toContain('id="t-wallpaperMode"');
+});
+
+test("App provider mutation guards reject import-only tracks", () => {
+	const importedById: Track = {
+		provider: "netease",
+		id: "import:apple-music:1",
+		sourceId: "import:apple-music:1",
+		title: "Imported Song",
+		artists: ["Alice"],
+		album: "",
+		coverUrl: "",
+		qualityHints: [],
+		playableState: "unknown",
+	};
+	const importedBySource: Track = {
+		...importedById,
+		id: "apple-shadow-1",
+		sourceId: "import:apple-music:1",
+	};
+	const neteaseTrack: Track = {
+		...importedById,
+		id: "song-1",
+		sourceId: "song-1",
+		playableState: "playable",
+	};
+	const qqTrack: Track = {
+		...neteaseTrack,
+		provider: "qq",
+		id: "qq-song-1",
+		sourceId: "qq-song-1",
+	};
+
+	expect(isNeteaseLikeSupported(importedById)).toBe(false);
+	expect(isNeteaseLikeSupported(importedBySource)).toBe(false);
+	expect(isCollectSupportedTrack(importedById)).toBe(false);
+	expect(isCollectSupportedTrack(importedBySource)).toBe(false);
+	expect(isNeteaseLikeSupported(neteaseTrack)).toBe(true);
+	expect(isCollectSupportedTrack(neteaseTrack)).toBe(true);
+	expect(isCollectSupportedTrack(qqTrack)).toBe(true);
 });
 
 test("App default sidecar client factory stays stable and does not storm health requests", async () => {

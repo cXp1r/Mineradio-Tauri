@@ -36,6 +36,7 @@ import {
   saveImportedPlaylistsToStorage,
   upsertImportedPlaylist,
 } from "../shared-playlist/imported-playlists";
+import { isImportOnlyTrack } from "../shared-playlist/import-only-track";
 import { selectCurrentIndex } from "../lyrics/select-current-index";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
@@ -522,17 +523,31 @@ function buildHomeListenSummary(history: HomeListenHistoryRecord[]): HomeListenS
   };
 }
 
-function isNeteaseLikeSupported(track: Track | null | undefined): track is Track {
+export function isNeteaseLikeSupported(track: Track | null | undefined): track is Track {
   if (!track?.id) return false;
   const record = track as unknown as Record<string, unknown>;
+  if (isImportOnlyTrack(track)) return false;
   if (track.id.startsWith("local:")) return false;
   if (record.type === "local" || record.source === "local") return false;
   if (record.type === "podcast" || record.source === "podcast") return false;
   return track.provider === "netease";
 }
 
+export function isCollectSupportedTrack(track: Track | null | undefined): track is Track {
+  if (!track?.id) return false;
+  const record = track as unknown as Record<string, unknown>;
+  if (isImportOnlyTrack(track)) return false;
+  if (track.id.startsWith("local:")) return false;
+  if (record.type === "local" || record.source === "local") return false;
+  if (record.type === "podcast" || record.source === "podcast") return false;
+  return track.provider === "netease" || track.provider === "qq";
+}
+
 function likeUnsupportedMessage(track: Track | null | undefined): string {
   const record = track as unknown as Record<string, unknown> | null | undefined;
+  if (isImportOnlyTrack(track)) {
+    return "导入曲目暂不支持红心同步";
+  }
   if (
     track?.provider === "qq" ||
     record?.provider === "qq" ||
@@ -542,6 +557,13 @@ function likeUnsupportedMessage(track: Track | null | undefined): string {
     return "QQ 音乐红心同步待登录接口接入";
   }
   return "本地文件暂不支持红心同步";
+}
+
+function collectUnsupportedMessage(track: Track | null | undefined): string {
+  if (isImportOnlyTrack(track)) {
+    return "导入曲目暂不支持收藏到歌单";
+  }
+  return "当前来源暂不支持收藏到歌单";
 }
 
 function isLoginRequiredError(error: unknown): boolean {
@@ -2336,8 +2358,8 @@ export function App({
 
   const openCollectPicker = useCallback(
     (track: Track) => {
-      if (track.provider !== "netease" && track.provider !== "qq") {
-        showToast("当前来源暂不支持收藏到歌单");
+      if (!isCollectSupportedTrack(track)) {
+        showToast(collectUnsupportedMessage(track));
         return;
       }
       if (!sidecarClient) {
@@ -2370,6 +2392,11 @@ export function App({
       const client = sidecarClient;
       const track = collectTarget;
       if (!client || !track || !playlistId || collectBusyPlaylistId) return;
+      if (!isCollectSupportedTrack(track)) {
+        showToast(collectUnsupportedMessage(track));
+        setCollectTarget(null);
+        return;
+      }
       setCollectBusyPlaylistId(playlistId);
       showToast("正在收藏到歌单...");
       try {

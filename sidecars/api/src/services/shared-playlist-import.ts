@@ -372,7 +372,7 @@ async function appleLookupTracks(ids: string[]): Promise<Record<string, Record<s
 
 function parseApplePlaylistId(value: string): string {
   const raw = String(value || "").trim();
-  const direct = raw.match(/\bpl\.[a-z0-9]+\b/i);
+  const direct = raw.match(/\bpl\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\b/i);
   return direct ? direct[0] : "";
 }
 

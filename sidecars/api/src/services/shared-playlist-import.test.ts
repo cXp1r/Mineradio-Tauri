@@ -84,6 +84,15 @@ test("detectSharedPlaylist supports Apple Music playlist URLs", () => {
   });
 });
 
+test("detectSharedPlaylist preserves hyphenated Apple Music playlist IDs", () => {
+  const candidate = detectSharedPlaylist({
+    url: "https://music.apple.com/us/playlist/demo/pl.u-6mo4lDVTJmK"
+  });
+
+  expect(candidate?.provider).toBe("apple-music");
+  expect(candidate?.id).toBe("pl.u-6mo4lDVTJmK");
+});
+
 test("detectSharedPlaylist supports Qishui short links", () => {
   const candidate = detectSharedPlaylist({
     text: "汽水音乐 https://qishui.douyin.com/s/iCdLprn7/"
