@@ -30,6 +30,13 @@ import {
   saveCustomLyricForTrack,
   setCustomLyricPreferenceForTrack,
 } from "../lyrics/custom-lyrics";
+import {
+  importedPlaylistFromResult,
+  readImportedPlaylistsFromStorage,
+  saveImportedPlaylistsToStorage,
+  upsertImportedPlaylist,
+} from "../shared-playlist/imported-playlists";
+import { isImportOnlyTrack } from "../shared-playlist/import-only-track";
 import { selectCurrentIndex } from "../lyrics/select-current-index";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
@@ -560,17 +567,34 @@ function buildHomeListenSummary(history: HomeListenHistoryRecord[]): HomeListenS
 }
 
 function isProviderLikeSupported(track: Track | null | undefined): track is Track {
-  const id = trackProviderLikeId(track);
-  if (!track || !id) return false;
+  if (!track || !trackProviderLikeId(track)) return false;
   const record = track as unknown as Record<string, unknown>;
-  if (id.startsWith("local:")) return false;
+  if (isImportOnlyTrack(track)) return false;
+  if (track.id.startsWith("local:")) return false;
   if (record.type === "local" || record.source === "local") return false;
   if (record.type === "podcast" || record.source === "podcast") return false;
   return track.provider === "netease" || track.provider === "soda";
 }
 
+export function isNeteaseLikeSupported(track: Track | null | undefined): track is Track {
+  return isProviderLikeSupported(track) && track.provider === "netease";
+}
+
+export function isCollectSupportedTrack(track: Track | null | undefined): track is Track {
+  if (!track?.id) return false;
+  const record = track as unknown as Record<string, unknown>;
+  if (isImportOnlyTrack(track)) return false;
+  if (track.id.startsWith("local:")) return false;
+  if (record.type === "local" || record.source === "local") return false;
+  if (record.type === "podcast" || record.source === "podcast") return false;
+  return track.provider === "netease" || track.provider === "qq";
+}
+
 function likeUnsupportedMessage(track: Track | null | undefined): string {
   const record = track as unknown as Record<string, unknown> | null | undefined;
+  if (isImportOnlyTrack(track)) {
+    return "导入曲目暂不支持红心同步";
+  }
   if (
     track?.provider === "qq" ||
     record?.provider === "qq" ||
@@ -581,6 +605,13 @@ function likeUnsupportedMessage(track: Track | null | undefined): string {
   }
   if (track?.provider === "soda") return "汽水音乐红心同步暂不可用";
   return "本地文件暂不支持红心同步";
+}
+
+function collectUnsupportedMessage(track: Track | null | undefined): string {
+  if (isImportOnlyTrack(track)) {
+    return "导入曲目暂不支持收藏到歌单";
+  }
+  return "当前来源暂不支持收藏到歌单";
 }
 
 function isLoginRequiredError(error: unknown): boolean {
@@ -1056,6 +1087,9 @@ export function App({
   const [qqStatus, setQqStatus] = useState<ProviderLoginStatus | null>(null);
   const [sodaStatus, setSodaStatus] = useState<ProviderLoginStatus | null>(null);
   const [shelfPlaylists, setShelfPlaylists] = useState<PlaylistSummary[]>([]);
+  const [importedPlaylists, setImportedPlaylists] = useState(
+    readImportedPlaylistsFromStorage,
+  );
   const [shelfPodcastCollections, setShelfPodcastCollections] = useState<
     PodcastCollection[]
   >([]);
@@ -2405,8 +2439,8 @@ export function App({
 
   const openCollectPicker = useCallback(
     (track: Track) => {
-      if (track.provider !== "netease" && track.provider !== "qq") {
-        showToast("当前来源暂不支持收藏到歌单");
+      if (!isCollectSupportedTrack(track)) {
+        showToast(collectUnsupportedMessage(track));
         return;
       }
       if (!sidecarClient) {
@@ -2439,6 +2473,11 @@ export function App({
       const client = sidecarClient;
       const track = collectTarget;
       if (!client || !track || !playlistId || collectBusyPlaylistId) return;
+      if (!isCollectSupportedTrack(track)) {
+        showToast(collectUnsupportedMessage(track));
+        setCollectTarget(null);
+        return;
+      }
       setCollectBusyPlaylistId(playlistId);
       showToast("正在收藏到歌单...");
       try {
@@ -2652,6 +2691,51 @@ export function App({
     clearQueue();
     showToast("队列已清空");
   }, [clearQueue, showToast]);
+
+  const importSharedPlaylistFromText = useCallback(
+    async (text: string) => {
+      if (!sidecarClient) {
+        const message = "sidecar 尚未就绪，稍后再试";
+        setSearchError(message);
+        showToast(message);
+        throw new Error(message);
+      }
+      try {
+        const result = await sidecarClient.importSharedPlaylist({ text });
+        setImportedPlaylists((previous) => {
+          const key = `${result.provider}:${result.playlist.id}`;
+          const oldRecord = previous.find((item) => item.key === key);
+          const record = importedPlaylistFromResult(result, Date.now(), oldRecord);
+          const next = upsertImportedPlaylist(previous, record);
+          saveImportedPlaylistsToStorage(next);
+          return next;
+        });
+        useSearchStore.getState().reset();
+        setPlaylistPanelTab("playlists");
+        setPlaylistPanelOpen(true);
+        const total = result.trackCount || result.tracks.length;
+        showToast(`已导入「${result.playlist.name}」 · ${result.loadedCount}/${total} 首`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "歌单导入失败";
+        setSearchError(message);
+        showToast(message);
+        throw e;
+      }
+    },
+    [setSearchError, showToast, sidecarClient],
+  );
+
+  const deleteImportedPlaylist = useCallback(
+    (key: string) => {
+      setImportedPlaylists((previous) => {
+        const next = previous.filter((item) => item.key !== key);
+        saveImportedPlaylistsToStorage(next);
+        return next;
+      });
+      showToast("已删除导入歌单");
+    },
+    [showToast],
+  );
 
   const loadPlaylistPanelDetail = useCallback(
     async (playlist: PlaylistSummary): Promise<PlaylistDetail> => {
@@ -3844,6 +3928,7 @@ export function App({
         onResultNext={insertSearchResultNext}
         onResultLike={(track) => void toggleLikeTrack(track)}
         onResultCollect={openCollectPicker}
+        onSharedPlaylistImport={importSharedPlaylistFromText}
         onArtistSearch={searchArtistFromResult}
         isResultLiked={(track) => {
           const key = trackLikeKey(track);
@@ -3961,6 +4046,7 @@ export function App({
         currentTrack={currentTrack}
         mode={playbackMode}
         playlists={shelfPlaylists}
+        importedPlaylists={importedPlaylists}
         podcastCollections={shelfPodcastCollections}
         onTabChange={openPlaylistPanelTab}
         onPinToggle={togglePlaylistPanelPinned}
@@ -3976,6 +4062,7 @@ export function App({
         onRemoveQueueIndex={removeQueueAt}
         onLoadPlaylistDetail={loadPlaylistPanelDetail}
         onPlayTracks={playPlaylistPanelTracks}
+        onDeleteImportedPlaylist={deleteImportedPlaylist}
         onPodcastCollectionOpen={(collection) => void openPlaylistPanelPodcastCollection(collection)}
       />
       <BottomControlsHost

@@ -360,6 +360,39 @@ test("handleShelfDetailRowAction routes Soda like action through provider mutati
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });
 
+test("handleShelfDetailRowAction blocks import-only like actions before provider mutation", async () => {
+	resetPlaybackStore();
+	const row = {
+		...mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!,
+		id: "import:apple-music:1",
+		sourceId: "import:apple-music:1",
+		name: "Imported Song",
+		title: "Imported Song",
+		playableState: "unknown",
+	};
+	const calls: unknown[] = [];
+	const messages: string[] = [];
+
+	expect(await handleShelfDetailRowAction({
+		row,
+		index: 0,
+		action: "like",
+		client: {
+			async likeSong(provider, id, liked) {
+				calls.push({ provider, id, liked });
+				return { provider, id, liked, code: 200 };
+			},
+		},
+		isLiked: () => false,
+		onResult: (message) => messages.push(message),
+	})).toBe(false);
+
+	expect(calls).toEqual([]);
+	expect(messages).toEqual(["导入曲目暂不支持红心同步"]);
+	expect(usePlaybackStore.getState().queue).toEqual([]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+});
+
 test("handleShelfDetailRowAction allows baseline like action on hard non-playable cloud rows", async () => {
 	resetPlaybackStore();
 	const row = mapPlaylistDetailToShelfRows(makeDetail(), "netease")[1]!;
@@ -400,6 +433,37 @@ test("handleShelfDetailRowAction opens the baseline collect picker without direc
 		},
 	})).toBe(true);
 	expect(opened).toEqual([mapShelfDetailRowToTrack(row)]);
+	expect(usePlaybackStore.getState().queue).toEqual([]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+});
+
+test("handleShelfDetailRowAction blocks import-only collect actions before opening picker", async () => {
+	resetPlaybackStore();
+	const row = {
+		...mapPlaylistDetailToShelfRows(makeDetail(), "netease")[0]!,
+		id: "import:apple-music:1",
+		sourceId: "import:apple-music:1",
+		name: "Imported Song",
+		title: "Imported Song",
+		playableState: "unknown",
+	};
+	const opened: unknown[] = [];
+	const messages: string[] = [];
+
+	expect(await handleShelfDetailRowAction({
+		row,
+		index: 0,
+		action: "collect",
+		onOpenCollect: (track) => opened.push(track),
+		onResult: (message) => messages.push(message),
+		client: {
+			async addSongToPlaylist() {
+				throw new Error("collect should wait for a playlist choice");
+			},
+		},
+	})).toBe(false);
+	expect(opened).toEqual([]);
+	expect(messages).toEqual(["导入曲目暂不支持收藏到歌单"]);
 	expect(usePlaybackStore.getState().queue).toEqual([]);
 	expect(usePlaybackStore.getState().currentTrack).toBeNull();
 });

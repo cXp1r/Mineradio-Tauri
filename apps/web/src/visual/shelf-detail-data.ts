@@ -15,6 +15,7 @@ import type {
 	ShelfContentRow,
 	ShelfOpenDetailContentPayload,
 } from "@mineradio/visual-engine";
+import { isImportOnlyTrack } from "../shared-playlist/import-only-track";
 import { usePlaybackStore } from "../stores/playback-store";
 import { isPlayable, playSearchResult } from "../components/search/play-search-result";
 import type { ShelfDetailRowClickPayload } from "./shelf-pointer-interactions";
@@ -227,13 +228,22 @@ export async function handleShelfDetailRowAction(payload: ShelfDetailRowActionPa
 	if (!track) return false;
 
 	if (action === "collect") {
+		if (isImportOnlyTrack(track)) {
+			payload.onResult?.("导入曲目暂不支持收藏到歌单", "fail");
+			return false;
+		}
 		if (!payload.onOpenCollect) return false;
 		payload.onOpenCollect(track);
 		return true;
 	}
 
 	if (action === "like") {
+		if (isImportOnlyTrack(track)) {
+			payload.onResult?.("导入曲目暂不支持红心同步", "fail");
+			return false;
+		}
 		if ((track.provider !== "netease" && track.provider !== "soda") || !payload.client?.likeSong) {
+
 			payload.onResult?.("当前来源暂不支持红心同步", "fail");
 			return false;
 		}

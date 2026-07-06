@@ -3,6 +3,7 @@ export * from "./provider";
 export * from "./track";
 export * from "./song-url";
 export * from "./playlist";
+export * from "./shared-playlist";
 export * from "./mutation";
 export * from "./lyric";
 export * from "./health";

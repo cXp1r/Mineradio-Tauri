@@ -18,14 +18,22 @@ export interface QqSong {
   };
   songname?: string;
   name?: string;
+  title?: string;
   singer?: Array<{ mid?: string; name?: string } | null | undefined>;
   singername?: string;
   singerName?: string;
   albumname?: string;
   albummid?: string;
+  album?: {
+    mid?: string;
+    pmid?: string;
+    name?: string;
+    title?: string;
+  };
   albumid?: number | string;
   interval?: number; // seconds
   songid?: number | string;
+  id?: number | string;
   pic?: string;
 }
 
@@ -58,7 +66,8 @@ export function normalizeProviderImageUrl(url: string | null | undefined): strin
 }
 
 export function mapQqSongToTrack(raw: QqSong): Track {
-  const idStr = raw && raw.songmid != null ? String(raw.songmid) : (raw?.mid != null ? String(raw.mid) : "");
+  const idRaw = raw?.songmid ?? raw?.mid ?? raw?.songid ?? raw?.id;
+  const idStr = idRaw != null ? String(idRaw) : "";
   const mediaMidRaw =
     raw?.file?.media_mid ??
     raw?.file?.strMediaMid ??
@@ -85,7 +94,14 @@ export function mapQqSongToTrack(raw: QqSong): Track {
   const durationMs = intervalSec != null ? intervalSec * 1000 : undefined;
   // QQ search returns `albummid`; jsososo album cover URL is derived client-side:
   //   https://y.gtimg.cn/music/photo_new/T002R300x300M000${albummid}.jpg
-  const albumMid = raw && typeof raw.albummid === "string" ? raw.albummid : "";
+  const albumMid = typeof raw?.albummid === "string"
+    ? raw.albummid
+    : typeof raw?.album?.mid === "string"
+      ? raw.album.mid
+      : typeof raw?.album?.pmid === "string"
+        ? raw.album.pmid.replace(/_\d+$/, "")
+        : "";
+  const albumName = raw?.albumname ?? raw?.album?.name ?? raw?.album?.title ?? "";
   const coverUrl = typeof raw?.pic === "string" && raw.pic.length > 0
     ? normalizeProviderImageUrl(raw.pic)
     : albumMid.length > 0
@@ -96,9 +112,9 @@ export function mapQqSongToTrack(raw: QqSong): Track {
     id: idStr,
     sourceId: idStr,
     mediaMid,
-    title: raw?.songname ?? raw?.name ?? "",
+    title: raw?.songname ?? raw?.name ?? raw?.title ?? "",
     artists,
-    album: raw?.albumname ?? "",
+    album: albumName,
     coverUrl,
     durationMs,
     qualityHints: ["standard"],
@@ -204,8 +220,9 @@ export function mapQqPlaylistToSummary(
   const trackIds: string[] = [];
   if (raw && Array.isArray(raw.songlist)) {
     for (const s of raw.songlist) {
-      if (s && typeof s === "object" && s.songmid != null) {
-        const sm = String(s.songmid);
+      const songId = s && typeof s === "object" ? (s.songmid ?? s.mid) : undefined;
+      if (songId != null) {
+        const sm = String(songId);
         if (sm.length > 0) trackIds.push(sm);
       }
     }

@@ -189,12 +189,12 @@ test("PlaylistPanelHost keeps Soda playlists in their own provider section", asy
 	const sections = Array.from(container.querySelectorAll(".pl-section"));
 	expect(sections.length).toBe(3);
 	expect(sections[0]?.textContent).toContain("网易云歌单");
-	expect(sections[0]?.querySelector("[data-playlist-provider=\"netease\"]")?.textContent).toContain("NE");
+	expect(sections[0]?.querySelector("[data-playlist-provider=\"netease\"]")?.textContent).toContain("Netease");
 	expect(sections[0]?.querySelector("[data-playlist-provider=\"soda\"]")).toBeNull();
 	expect(sections[1]?.textContent).toContain("QQ 音乐歌单");
 	expect(sections[1]?.querySelector("[data-playlist-provider=\"qq\"]")?.textContent).toContain("QQ");
 	expect(sections[2]?.textContent).toContain("汽水音乐歌单");
-	expect(sections[2]?.querySelector("[data-playlist-provider=\"soda\"]")?.textContent).toContain("SODA");
+	expect(sections[2]?.querySelector("[data-playlist-provider=\"soda\"]")?.textContent).toContain("Soda");
 	unmount();
 });
 

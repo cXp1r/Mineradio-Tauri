@@ -416,3 +416,39 @@ test("resolveSongUrl searches fallback provider by title and artists before call
   expect(result).toEqual({ url: "https://q.example/song.mp3", proxied: false });
   expect(calls).toEqual(["netease:songUrl:n-1", "qq:search:夜航 星野:5", "qq:songUrl:q-9"]);
 });
+
+test("resolveSongUrl searches import-only tracks instead of using their synthetic id directly", async () => {
+  const calls: Calls = [];
+  const neteaseCandidate: Track = { ...baseTrack, id: "n-match", sourceId: "n-match" };
+  const resolver = createCrossSourceResolver({
+    providers: {
+      netease: adapter(
+        "netease",
+        {
+          async search(query) {
+            calls.push(`netease:search:${query.keyword}:${query.limit}`);
+            return [neteaseCandidate];
+          },
+          async songUrl(track) {
+            calls.push(`netease:songUrl:${track.id}`);
+            return { url: "https://n.example/matched.mp3", proxied: false };
+          }
+        },
+        calls
+      ),
+      qq: adapter("qq", {}, calls)
+    },
+    providerOrder: ["netease", "qq"]
+  });
+
+  const result = await resolver.resolveSongUrl({
+    ...baseTrack,
+    id: "import:apple-music:1",
+    sourceId: "import:apple-music:1",
+    title: "夜航",
+    artists: ["星野"]
+  });
+
+  expect(result).toEqual({ url: "https://n.example/matched.mp3", proxied: false });
+  expect(calls).toEqual(["netease:search:夜航 星野:5", "netease:songUrl:n-match"]);
+});

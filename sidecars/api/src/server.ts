@@ -19,6 +19,7 @@ import {
   SongLikeCheckAckSchema,
   PlaylistAddSongAckSchema,
   DiscoverHomeResponseSchema,
+  SharedPlaylistImportRequestSchema,
   type CapabilityMatrix,
   type ProviderId,
   type Track
@@ -54,6 +55,11 @@ import {
   type PodcastService
 } from "./services/podcast";
 import { buildDiscoverHome, type DiscoverRequester } from "./services/discover-home";
+import {
+  detectSharedPlaylist,
+  importSharedPlaylist,
+  SharedPlaylistImportError
+} from "./services/shared-playlist-import";
 import {
   clearRuntimeProviderCookie,
   getProviderCookie,
@@ -238,6 +244,54 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
       }))));
       await logRequest(logger, { method, path, status: response.status, startedAt, action: "podcast-dj-beatmap" });
       return response;
+    }
+
+    if ((path === "/shared-playlist/import" || path === "/api/shared-playlist/import") && method === "POST") {
+      const body = await parseJsonBody(request);
+      const parsed = SharedPlaylistImportRequestSchema.safeParse(body);
+      if (!parsed.success || (!parsed.data.text.trim() && !parsed.data.url.trim())) {
+        response = json(
+          fail({
+            code: "BAD_REQUEST",
+            message: "请粘贴歌单分享链接",
+            retryable: false
+          }),
+          400
+        );
+        await logRequest(logger, { method, path, status: response.status, startedAt, action: "shared-playlist-import" });
+        return response;
+      }
+
+      const candidate = detectSharedPlaylist(parsed.data);
+      if (!candidate) {
+        response = json(
+          fail({
+            code: "UNSUPPORTED_LINK",
+            message: "暂不支持这个歌单链接",
+            retryable: false
+          }),
+          400
+        );
+        await logRequest(logger, { method, path, status: response.status, startedAt, action: "shared-playlist-import" });
+        return response;
+      }
+
+      try {
+        response = json(ok(await importSharedPlaylist(parsed.data, { providerAdapters })));
+        await logRequest(logger, { method, path, status: response.status, startedAt, provider: candidate.provider, action: "shared-playlist-import" });
+        return response;
+      } catch (err) {
+        response = err instanceof SharedPlaylistImportError
+          ? json(fail({
+              code: err.code,
+              message: err.message,
+              provider: candidate.provider,
+              retryable: err.retryable
+            }), err.code === "UNSUPPORTED_PROVIDER" ? 501 : 400)
+          : json(normalizeError(candidate.provider === "qq" || candidate.provider === "netease" ? candidate.provider : "netease", err), statusFromError(err));
+        await logRequest(logger, { method, path, status: response.status, startedAt, provider: candidate.provider, action: "shared-playlist-import", error: err });
+        return response;
+      }
     }
 
     if (path === "/search" && method === "GET") {

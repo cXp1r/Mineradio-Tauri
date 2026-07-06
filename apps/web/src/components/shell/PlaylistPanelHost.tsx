@@ -4,8 +4,10 @@ import type {
 	PlaylistDetail,
 	PlaylistSummary,
 	PodcastCollection,
+	SharedPlaylistInfo,
 	Track,
 } from "@mineradio/shared";
+import type { ImportedPlaylistRecord } from "../../shared-playlist/imported-playlists";
 import { resolveVirtualListWindow } from "./virtual-list";
 
 export type PlaylistPanelTab = "queue" | "playlists" | "podcasts";
@@ -15,6 +17,7 @@ const DETAIL_ROW_HEIGHT = 54;
 const DETAIL_VIEWPORT_HEIGHT = 460;
 const PODCAST_COLLECTION_ROW_HEIGHT = 62;
 const PODCAST_COLLECTION_VIEWPORT_HEIGHT = 420;
+type PlaylistDetailSummary = PlaylistSummary | SharedPlaylistInfo;
 
 export interface PlaylistPanelHostProps {
 	open: boolean;
@@ -24,6 +27,7 @@ export interface PlaylistPanelHostProps {
 	currentTrack: Track | null;
 	mode: PlaybackMode;
 	playlists: PlaylistSummary[];
+	importedPlaylists?: ImportedPlaylistRecord[];
 	podcastCollections: PodcastCollection[];
 	onTabChange: (tab: PlaylistPanelTab) => void;
 	onPinToggle?: () => void;
@@ -39,6 +43,7 @@ export interface PlaylistPanelHostProps {
 	onRemoveQueueIndex?: (index: number) => void;
 	onLoadPlaylistDetail?: (playlist: PlaylistSummary) => Promise<PlaylistDetail>;
 	onPlayTracks?: (tracks: Track[], index: number, title?: string) => void;
+	onDeleteImportedPlaylist?: (key: string) => void;
 	onPodcastCollectionOpen?: (collection: PodcastCollection) => void;
 }
 
@@ -47,9 +52,12 @@ function trackKey(track: Track | null): string {
 }
 
 function providerLabel(provider: string): string {
-	if (provider === "qq") return "QQ";
-	if (provider === "soda") return "SODA";
-	return "NE";
+	if (provider === "qq") return "QQ 音乐";
+	if (provider === "netease") return "网易云";
+	if (provider === "kugou") return "酷狗音乐";
+	if (provider === "qishui") return "汽水音乐";
+	if (provider === "apple-music") return "Apple Music";
+	return provider;
 }
 
 function modeLabel(mode: PlaybackMode): string {
@@ -63,8 +71,12 @@ function coverNode(url: string | undefined, className = ""): ReactElement {
 	return url ? <img className={className || undefined} src={url} alt="" loading="lazy" decoding="async" /> : <div className={className || undefined} style={{ width: 44, height: 44, borderRadius: 8, background: "rgba(255,255,255,.06)", flexShrink: 0 }} />;
 }
 
-function detailKey(playlist: PlaylistSummary): string {
+function detailKey(playlist: PlaylistDetailSummary): string {
 	return `${playlist.provider}:${playlist.id}`;
+}
+
+function importedDetailKey(record: ImportedPlaylistRecord): string {
+	return `imported:${record.key}`;
 }
 
 export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
@@ -73,9 +85,10 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 	const [podcastScrollTop, setPodcastScrollTop] = useState(0);
 	const [detail, setDetail] = useState<{
 		key: string;
-		playlist: PlaylistSummary;
+		playlist: PlaylistDetailSummary;
 		loading: boolean;
 		tracks: Track[];
+		partialReason?: string;
 	} | null>(null);
 
 	const openDetail = useCallback(async (playlist: PlaylistSummary) => {
@@ -99,6 +112,22 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 			);
 		}
 	}, [detail, props]);
+
+	const openImportedDetail = useCallback((record: ImportedPlaylistRecord) => {
+		const key = importedDetailKey(record);
+		if (detail?.key === key && !detail.loading) {
+			setDetail(null);
+			return;
+		}
+		setDetailScrollTop(0);
+		setDetail({
+			key,
+			playlist: record.playlist,
+			loading: false,
+			tracks: record.tracks,
+			partialReason: record.partial ? record.partialReason : undefined,
+		});
+	}, [detail]);
 
 	const renderQueue = () => {
 		const window = resolveVirtualListWindow({
@@ -164,8 +193,8 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 		);
 	};
 
-	const renderPlaylistDetail = (playlist: PlaylistSummary) => {
-		if (!detail || detail.key !== detailKey(playlist)) return null;
+	const renderPlaylistDetail = (playlist: PlaylistDetailSummary, keyOverride?: string) => {
+		if (!detail || detail.key !== (keyOverride ?? detailKey(playlist))) return null;
 		const tracks = detail.tracks;
 		const window = resolveVirtualListWindow({
 			itemCount: tracks.length,
@@ -193,6 +222,7 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 						</div>
 						<div className="pl-detail-count">{detail.loading ? "载入中" : `${tracks.length}/${tracks.length}`}</div>
 					</div>
+					{detail.partialReason ? <div className="pl-detail-partial">{detail.partialReason}</div> : null}
 					<div className="pl-detail-actions">
 						<button className="pl-detail-play" type="button" disabled={!tracks.length} onClick={() => props.onPlayTracks?.(tracks, 0, detail.playlist.name)}>
 							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14l11-7z" /></svg>播放歌单
@@ -208,7 +238,7 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 					{detail.loading ? (
 						<div className="pl-detail-row"><div className="pl-detail-row-title">正在载入歌单</div></div>
 					) : tracks.length === 0 ? (
-						<div className="playlist-empty">歌单暂无可播放歌曲</div>
+						<div className="playlist-empty">{detail.partialReason || "歌单暂无可播放歌曲"}</div>
 					) : visibleTracks.map((track, localIndex) => {
 						const index = window.startIndex + localIndex;
 						return (
@@ -230,6 +260,7 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 	};
 
 	const renderPlaylists = () => {
+		const imported = props.importedPlaylists ?? [];
 		const groups = [
 			{ key: "netease", label: "网易云歌单", items: props.playlists.filter((playlist) => playlist.provider === "netease") },
 			{ key: "qq", label: "QQ 音乐歌单", items: props.playlists.filter((playlist) => playlist.provider === "qq") },
@@ -242,7 +273,32 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 					<button className="fx-mini-btn ghost" type="button" onClick={props.onRefresh}>刷新</button>
 				</div>
 				<div id="pl-list">
-					{props.playlists.length === 0 ? <div className="playlist-empty">登录后显示个人歌单</div> : groups.map((group) => group.items.length ? (
+					{imported.length ? (
+						<div className="pl-section" key="imported">
+							<div className="pl-section-label">已导入歌单</div>
+							{imported.map((record) => {
+								const key = importedDetailKey(record);
+								const expanded = detail?.key === key;
+								return (
+									<div key={record.key}>
+										<div className={expanded ? "pl-card imported expanded" : "pl-card imported"} data-playlist-provider={record.provider} data-playlist-id={record.playlist.id} onClick={() => openImportedDetail(record)}>
+											{coverNode(record.playlist.coverUrl)}
+											<div className="pl-card-main">
+												<div className="pl-name">{record.playlist.name}<span className="tag-source imported">导入 · {providerLabel(record.provider)}</span></div>
+												<div className="pl-sub">{record.loadedCount || record.tracks.length}/{record.trackCount || record.tracks.length} 首</div>
+											</div>
+											<button className="pl-card-delete" type="button" aria-label="删除导入歌单" title="删除导入歌单" onClick={(event) => {
+												event.stopPropagation();
+												props.onDeleteImportedPlaylist?.(record.key);
+											}}>删除</button>
+										</div>
+										{renderPlaylistDetail(record.playlist, key)}
+									</div>
+								);
+							})}
+						</div>
+					) : null}
+					{props.playlists.length === 0 && imported.length === 0 ? <div className="playlist-empty">登录后显示个人歌单</div> : groups.map((group) => group.items.length ? (
 						<div className="pl-section" key={group.key}>
 							<div className="pl-section-label">{group.label}</div>
 							{group.items.map((playlist) => {
