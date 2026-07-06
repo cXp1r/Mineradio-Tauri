@@ -113,7 +113,7 @@ import {
   ensureLyricFallbackPayload,
   ProviderIdSchema,
   type DiscoverHomeResponse,
-  type PlaybackQuality,
+  type PlaybackQualityRequest,
   type PlaylistDetail,
   type PlaylistSummary,
   type PodcastCollection,
@@ -122,6 +122,7 @@ import {
   type ProviderVipIcon,
   type SongUrlResult,
   type Track,
+  type TrackQualityOption,
   type WeatherRadioResponse,
 } from "@mineradio/shared";
 import type { FxState, LyricPalette } from "@mineradio/visual-engine";
@@ -195,21 +196,20 @@ function buildTrackLyricFallback(track: Track) {
   }, track);
 }
 
-function readPlaybackQualityPreference(): PlaybackQuality {
-  if (typeof localStorage === "undefined") return "hires";
-  const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
-  if (
-    raw === "jymaster" ||
-    raw === "hires" ||
-    raw === "lossless" ||
-    raw === "exhigh" ||
-    raw === "standard"
-  )
-    return raw;
-  return "hires";
+function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
+  const text = value.trim();
+  if (!text) return "hires";
+  if (text.toLowerCase() === "hi-res") return "hires";
+  return text;
 }
 
-function savePlaybackQualityPreference(quality: PlaybackQuality): void {
+function readPlaybackQualityPreference(): PlaybackQualityRequest {
+  if (typeof localStorage === "undefined") return "hires";
+  const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
+  return raw ? normalizePlaybackQualityPreference(raw) : "hires";
+}
+
+function savePlaybackQualityPreference(quality: PlaybackQualityRequest): void {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(PLAYBACK_QUALITY_STORE_KEY, quality);
 }
@@ -275,7 +275,7 @@ type PlaybackReloadReason = "long-pause" | "url-age" | "media-error";
 
 interface LoadedPlaybackUrlState {
   trackKey: string;
-  quality: PlaybackQuality;
+  quality: PlaybackQualityRequest;
   resolvedAtMs: number;
   audioUrl: string;
   rawUrl: string;
@@ -1045,9 +1045,10 @@ export function App({
   const [shelfDetailOpen, setShelfDetailOpen] = useState(false);
   const [sidecarRecoveryState, setSidecarRecoveryState] =
     useState<SidecarRecoveryNoticeState | null>(null);
-  const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQuality>(
+  const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQualityRequest>(
     readPlaybackQualityPreference,
   );
+  const [trackQualityOptions, setTrackQualityOptions] = useState<TrackQualityOption[]>([]);
   const [userCapsuleAutoHide, setUserCapsuleAutoHide] = useState(() =>
     readBooleanPreference(USER_CAPSULE_AUTO_HIDE_STORE_KEY, false),
   );
@@ -3016,7 +3017,7 @@ export function App({
   }, [visualFx]);
 
   const setPlaybackQuality = useCallback(
-    (quality: PlaybackQuality) => {
+    (quality: PlaybackQualityRequest) => {
       setPlaybackQualityState(quality);
       savePlaybackQualityPreference(quality);
       if (!usePlaybackStore.getState().currentTrack) {
@@ -3567,6 +3568,38 @@ export function App({
     if (hydrated === currentTrack || hydrated.coverUrl === currentTrack.coverUrl) return;
     patchCustomCoverTrack(currentTrack, hydrated);
   }, [currentTrack, patchCustomCoverTrack]);
+
+  useEffect(() => {
+    const track = currentTrack;
+    const client = sidecarClient;
+    const key = playbackKeyForTrack(track);
+    if (!track || !client || !key || localAudioUrlsRef.current.has(key)) {
+      setTrackQualityOptions([]);
+      return;
+    }
+    const trackQualities = (client as { trackQualities?: SidecarClient["trackQualities"] }).trackQualities;
+    if (typeof trackQualities !== "function") {
+      setTrackQualityOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void trackQualities.call(client, track).then((availability) => {
+      if (cancelled) return;
+      const qualities = availability.qualities;
+      setTrackQualityOptions(qualities);
+      const selectedAvailable = qualities.some((quality) => quality.requestQuality === playbackQuality);
+      const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
+      if (!selectedAvailable && fallbackQuality) {
+        setPlaybackQualityState(fallbackQuality);
+        savePlaybackQualityPreference(fallbackQuality);
+      }
+    }).catch(() => {
+      if (!cancelled) setTrackQualityOptions([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack, playbackQuality, sidecarClient]);
 
   useEffect(() => {
     const track = currentTrack;
@@ -4145,6 +4178,7 @@ export function App({
         volume={volume}
         muted={muted}
         playbackQuality={playbackQuality}
+        qualityOptions={trackQualityOptions}
         shelfMode={shelfMode}
         shelfCameraMode={shelfCameraMode}
         shelfPresence={shelfPresence}

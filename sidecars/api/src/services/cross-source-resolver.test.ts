@@ -32,6 +32,9 @@ function adapter(
       calls.push(`${id}:songUrl:${track.id}`);
       throw new ProviderError(id, "NO_URL", `${id} no url`);
     },
+    async trackQualities(track) {
+      return { provider: id, trackId: track.sourceId, qualities: [] };
+    },
     async lyric() {
       throw new ProviderError(id, "NO_LYRIC", `${id} no lyric`);
     },

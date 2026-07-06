@@ -15,7 +15,9 @@ test("capability matrix: netease and qq both online after A6 jsososo integration
   expect(netease).toBeDefined();
   expect(netease?.available).toBe(true);
   expect(netease?.capabilities.length).toBeGreaterThan(0);
+  expect(netease?.capabilities).toContain("quality");
   expect(qq).toBeDefined();
   expect(qq?.available).toBe(true);
   expect(qq?.capabilities.length).toBeGreaterThan(0);
+  expect(qq?.capabilities).toContain("quality");
 });

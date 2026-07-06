@@ -17,6 +17,7 @@ import {
   ProviderLoginQrKeySchema,
   SongLikeAckSchema,
   SongLikeCheckAckSchema,
+  TrackQualityAvailabilitySchema,
   PlaylistAddSongAckSchema,
   DiscoverHomeResponseSchema,
   type CapabilityMatrix,
@@ -450,6 +451,26 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
             return response;
           }
           response = json(ok(await adapter.songUrl(parsedTrack.data, { quality: parsedRequest.success ? parsedRequest.data.quality : undefined })));
+          await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+          return response;
+        }
+        if (sub === "qualities" && method === "POST") {
+          const body = await parseJsonBody(request);
+          const parsedTrack = TrackSchema.safeParse(body);
+          if (!parsedTrack.success) {
+            response = json(
+              fail({
+                code: "BAD_REQUEST",
+                message: "invalid or missing Track body",
+                provider: providerId,
+                retryable: false
+              }),
+              400
+            );
+            await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+            return response;
+          }
+          response = json(ok(TrackQualityAvailabilitySchema.parse(await adapter.trackQualities(parsedTrack.data))));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }

@@ -1,4 +1,4 @@
-import type { PlaybackQuality, ProviderId, Track } from "@mineradio/shared";
+import type { ProviderId, Track } from "@mineradio/shared";
 import type { ProviderAdapter, SongUrlOptions, SongUrlResult } from "../providers/provider-adapter";
 import { ProviderError } from "../providers/provider-adapter";
 import { providers as defaultProviders, PROVIDER_IDS } from "../providers/registry";
@@ -103,7 +103,7 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
     });
   }
 
-  async function resolveSongUrl(track: Track, opts: { quality?: PlaybackQuality } = {}): Promise<SongUrlResult> {
+  async function resolveSongUrl(track: Track, opts: SongUrlOptions = {}): Promise<SongUrlResult> {
     const attempts = orderedProviders(track.provider);
     let firstError: unknown;
 

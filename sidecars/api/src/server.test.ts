@@ -1116,6 +1116,77 @@ test("POST /providers/netease/song-url valid body calls adapter (not 501 NOT_IMP
   });
 });
 
+test("POST /providers/netease/qualities valid body calls adapter and returns track quality availability", async () => {
+  const calls: unknown[] = [];
+  const fakeNetease: ProviderAdapter = {
+    ...providers.netease,
+    async trackQualities(track) {
+      calls.push(track);
+      return {
+        provider: "netease",
+        trackId: track.sourceId,
+        defaultQuality: "exhigh",
+        qualities: [{
+          provider: "netease",
+          id: "exhigh",
+          label: "极高",
+          short: "HQ",
+          requestQuality: "exhigh",
+          level: "exhigh",
+          br: 999000,
+          source: "resolved"
+        }]
+      };
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, netease: fakeNetease }
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/providers/netease/qualities", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      provider: "netease",
+      id: "1",
+      sourceId: "1",
+      title: "t",
+      artists: []
+    })
+  }));
+
+  expect(r.status).toBe(200);
+  expect(calls).toEqual([{
+    provider: "netease",
+    id: "1",
+    sourceId: "1",
+    title: "t",
+    artists: [],
+    album: "",
+    coverUrl: "",
+    qualityHints: [],
+    playableState: "unknown"
+  }]);
+  expect(await body(r)).toEqual({
+    ok: true,
+    data: {
+      provider: "netease",
+      trackId: "1",
+      defaultQuality: "exhigh",
+      qualities: [{
+        provider: "netease",
+        id: "exhigh",
+        label: "极高",
+        short: "HQ",
+        requestQuality: "exhigh",
+        level: "exhigh",
+        br: 999000,
+        source: "resolved"
+      }]
+    }
+  });
+});
+
 test("POST /providers/netease/lyric valid body returns lyric payload (not 501 NOT_IMPLEMENTED)", async () => {
   const calls: unknown[] = [];
   const fakeNetease: ProviderAdapter = {

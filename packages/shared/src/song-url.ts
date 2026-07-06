@@ -4,6 +4,7 @@ import { TrackSchema } from "./track";
 
 const PLAYBACK_QUALITY_VALUES = ["jymaster", "hires", "lossless", "exhigh", "standard"] as const;
 export type PlaybackQuality = (typeof PLAYBACK_QUALITY_VALUES)[number];
+export type PlaybackQualityRequest = string;
 
 const PLAYBACK_QUALITY_ALIASES: Record<string, PlaybackQuality> = {
 	jymaster: "jymaster",
@@ -25,14 +26,33 @@ const PLAYBACK_QUALITY_ALIASES: Record<string, PlaybackQuality> = {
 	std: "standard",
 };
 
+const PLAYBACK_QUALITY_REQUEST_ALIASES: Record<string, string> = {
+	master: "jymaster",
+	svip: "jymaster",
+	"hi-res": "hires",
+	highres: "hires",
+	highest: "hires",
+	sq: "lossless",
+	high: "exhigh",
+	"320k": "exhigh",
+	hq: "exhigh",
+	normal: "standard",
+	std: "standard",
+};
+
 export const PlaybackQualitySchema = z.preprocess((value) => {
 	const normalized = typeof value === "string" ? PLAYBACK_QUALITY_ALIASES[value.toLowerCase()] : undefined;
 	return normalized ?? value;
 }, z.enum(PLAYBACK_QUALITY_VALUES));
 
+export const PlaybackQualityRequestSchema = z.preprocess((value) => {
+	const normalized = typeof value === "string" ? PLAYBACK_QUALITY_REQUEST_ALIASES[value.toLowerCase()] : undefined;
+	return normalized ?? value;
+}, z.string().min(1));
+
 export const SongUrlRequestSchema = z.object({
 	track: TrackSchema,
-	quality: PlaybackQualitySchema.optional(),
+	quality: PlaybackQualityRequestSchema.optional(),
 });
 
 export type SongUrlRequest = z.infer<typeof SongUrlRequestSchema>;
@@ -67,10 +87,10 @@ export const SongUrlResultSchema = z.object({
 	provider: z.string().optional(),
 	trial: z.boolean().optional(),
 	playable: z.boolean().optional(),
-	level: PlaybackQualitySchema.optional(),
+	level: z.string().optional(),
 	quality: z.string().optional(),
 	br: z.number().int().nonnegative().optional(),
-	requestedQuality: PlaybackQualitySchema.nullable().optional(),
+	requestedQuality: PlaybackQualityRequestSchema.nullable().optional(),
 	loggedIn: z.boolean().optional(),
 	vipType: z.number().optional(),
 	vipLevel: z.enum(["none", "vip", "svip"]).optional(),
@@ -92,3 +112,28 @@ export const SongUrlResultSchema = z.object({
 });
 
 export type SongUrlResult = z.infer<typeof SongUrlResultSchema>;
+
+export const TrackQualityOptionSchema = z.object({
+	provider: z.string().min(1),
+	id: z.string().min(1),
+	label: z.string().min(1),
+	short: z.string().optional(),
+	detail: z.string().optional(),
+	requestQuality: PlaybackQualityRequestSchema,
+	level: z.string().optional(),
+	type: z.string().optional(),
+	br: z.number().int().nonnegative().optional(),
+	size: z.number().int().nonnegative().optional(),
+	format: z.string().optional(),
+	source: z.enum(["resolved", "declared"]).default("resolved"),
+});
+
+export const TrackQualityAvailabilitySchema = z.object({
+	provider: z.string().min(1),
+	trackId: z.string().min(1),
+	defaultQuality: PlaybackQualityRequestSchema.optional(),
+	qualities: z.array(TrackQualityOptionSchema),
+});
+
+export type TrackQualityOption = z.infer<typeof TrackQualityOptionSchema>;
+export type TrackQualityAvailability = z.infer<typeof TrackQualityAvailabilitySchema>;
