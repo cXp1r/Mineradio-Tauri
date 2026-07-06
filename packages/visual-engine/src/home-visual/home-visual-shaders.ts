@@ -1,5 +1,6 @@
 export const HOME_VISUAL_VERTEX_SHADER = `precision highp float;
 uniform float uTime, uBass, uMid, uTreble, uBeat, uEnergy, uBurstAmt;
+uniform float uAudioBands[32];
 uniform float uPreset, uIntensity, uDepth, uPointScale, uSpeed, uTwist;
 uniform float uVinylSpin;
 uniform float uColorBoost, uScatter, uCoverRes, uBgFade;
@@ -53,6 +54,15 @@ float snoise(vec3 v){
 
 float hash11(float p) {
   return fract(sin(p * 127.1) * 43758.5453123);
+}
+
+float sampleAudioBand(float band) {
+  float target = floor(clamp(band, 0.0, 31.0));
+  float value = 0.0;
+  for (int bi = 0; bi < 32; bi++) {
+    if (float(bi) == target) value = uAudioBands[bi];
+  }
+  return clamp(value, 0.0, 1.6);
 }
 
 vec2 safeCoverUv(vec2 uv) {
@@ -133,10 +143,14 @@ void main(){
 
     float trebleJ = snoise(vec3(pos.x*6.5, pos.y*6.5, t*3.5 + aRand*4.0)) * uTreble * 0.18 * K;
     float bassBreath = snoise(vec3(pos.x*0.35, pos.y*0.35, t*0.4)) * uBass * 0.42 * K;
+    float spectralDetail = sampleAudioBand(aUv.x * 31.0);
+    float spectralMirror = sampleAudioBand((1.0 - aUv.y) * 31.0);
+    float spectralZ = (spectralDetail * 0.26 + spectralMirror * 0.18) * (0.35 + midMask * 0.65) * K;
 
     float depthZ = (depthVal - 0.5) * uAiBoost * uDepth * 1.40 * uHasDepth;
 
-    pos.z = rippleZ * 1.30 + midDisp + trebleJ + bassBreath + depthZ;
+    pos.z = rippleZ * 1.30 + midDisp + trebleJ + bassBreath + spectralZ + depthZ;
+    maxRippleAmp = max(maxRippleAmp, spectralDetail * 0.12 + spectralMirror * 0.08);
   }
 
   else if (uPreset < 1.5) {

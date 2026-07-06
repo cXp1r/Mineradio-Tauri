@@ -25,7 +25,8 @@ const NETEASE_CAPABILITIES: ProviderCapability[] = [
   "playlistDetail",
   "loginStatus",
   "logout",
-  "like"
+  "like",
+  "quality"
 ];
 
 const QQ_CAPABILITIES: ProviderCapability[] = [
@@ -35,7 +36,8 @@ const QQ_CAPABILITIES: ProviderCapability[] = [
   "playlistList",
   "playlistDetail",
   "loginStatus",
-  "logout"
+  "logout",
+  "quality"
 ];
 
 const SODA_CAPABILITIES: ProviderCapability[] = [

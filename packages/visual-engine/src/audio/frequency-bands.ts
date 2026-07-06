@@ -131,3 +131,38 @@ export function analyzeBeatFrame(
 	rms = timeData.length ? Math.sqrt(rms / timeData.length) : 0;
 	return { sub, kick, low, body, vocal, snap, rms };
 }
+
+export function analyzeLogSpectrumBands(
+	freqData: Uint8Array,
+	sampleRate: number,
+	fftSize: number,
+	bandCount: number,
+	minHz = 32,
+	maxHz = 14_000,
+): Float32Array {
+	const out = new Float32Array(Math.max(0, Math.floor(bandCount)));
+	if (!out.length || !freqData.length || sampleRate <= 0 || fftSize <= 0) return out;
+	const nyquist = sampleRate / 2;
+	const hiHz = Math.max(minHz + 1, Math.min(maxHz, nyquist));
+	const lo = Math.log(Math.max(1, minHz));
+	const hi = Math.log(hiHz);
+	const binHz = sampleRate / fftSize;
+	for (let band = 0; band < out.length; band += 1) {
+		const t0 = band / out.length;
+		const t1 = (band + 1) / out.length;
+		const hz0 = Math.exp(lo + (hi - lo) * t0);
+		const hz1 = Math.exp(lo + (hi - lo) * t1);
+		const start = Math.max(1, Math.floor(hz0 / binHz));
+		const end = Math.min(freqData.length - 1, Math.max(start, Math.ceil(hz1 / binHz)));
+		let sum = 0;
+		let count = 0;
+		for (let i = start; i <= end; i += 1) {
+			const v = (freqData[i] ?? 0) / 255;
+			sum += v * v;
+			count += 1;
+		}
+		const rms = count ? Math.sqrt(sum / count) : 0;
+		out[band] = clamp01(Math.pow(rms, 0.82));
+	}
+	return out;
+}

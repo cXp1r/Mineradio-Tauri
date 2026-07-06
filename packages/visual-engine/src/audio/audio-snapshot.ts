@@ -1,3 +1,5 @@
+export const AUDIO_SPECTRUM_BAND_COUNT = 32;
+
 export interface AudioSnapshot {
 	bass: number;
 	mid: number;
@@ -11,6 +13,7 @@ export interface AudioSnapshot {
 	lyricSunEnergy?: number;
 	scheduledBeatPulse: number;
 	beatOnsetFlag: boolean;
+	frequencyBands?: Float32Array;
 }
 
 export interface AudioFrameBytes {

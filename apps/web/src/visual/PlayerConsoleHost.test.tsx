@@ -51,9 +51,9 @@ test("PlayerConsoleHost renders window chrome stub buttons that accept callbacks
 });
 
 test("PlayerConsoleHost renders baseline playback quality options and active short label", () => {
-	const html = renderToStaticMarkup(
-		React.createElement(PlayerConsoleHost, {
-			playbackQuality: "lossless",
+  const html = renderToStaticMarkup(
+    React.createElement(PlayerConsoleHost, {
+      playbackQuality: "lossless",
 		}),
 	);
 	expect(html).toContain('id="quality-control"');
@@ -64,12 +64,93 @@ test("PlayerConsoleHost renders baseline playback quality options and active sho
 	expect(html).toContain('data-quality="hires"');
 	expect(html).toContain('data-quality="lossless"');
 	expect(html).toContain('data-quality="exhigh"');
+  expect(html).toContain('data-quality="standard"');
+});
+
+test("PlayerConsoleHost renders provider-reported quality options when supplied", () => {
+  const html = renderToStaticMarkup(
+    React.createElement(PlayerConsoleHost, {
+      playbackQuality: "320",
+      qualityOptions: [
+        {
+          provider: "qq",
+          id: "flac",
+          label: "FLAC",
+          short: "FLAC",
+          detail: "42MB",
+          requestQuality: "flac",
+          source: "declared",
+        },
+        {
+          provider: "qq",
+          id: "320",
+          label: "320k MP3",
+          short: "320",
+          detail: "9MB",
+          requestQuality: "320",
+          source: "declared",
+        },
+      ],
+    }),
+  );
+
+  expect(html).toContain(">320<");
+  expect(html).toContain('data-quality="flac"');
+  expect(html).toContain('data-quality="320"');
+  expect(html).not.toContain('data-quality="jymaster"');
+  expect(html).not.toContain('data-quality="standard"');
+});
+
+test("PlayerConsoleHost keeps generic quality controls when provider options are empty", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			playbackQuality: "lossless",
+			qualityOptions: [],
+		}),
+	);
+
+	expect(html).toContain('id="quality-btn"');
+	expect(html).not.toContain('id="quality-btn" class="ctrl-btn quality-pill" disabled=""');
+	expect(html).toContain('data-quality="lossless"');
 	expect(html).toContain('data-quality="standard"');
 });
 
+test("PlayerConsoleHost shows the selected quality when it is not in provider options", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			playbackQuality: "lossless",
+			qualityOptions: [
+				{
+					provider: "qq",
+					id: "flac",
+					label: "FLAC",
+					short: "FLAC",
+					detail: "42MB",
+					requestQuality: "flac",
+					source: "declared",
+				},
+				{
+					provider: "qq",
+					id: "320",
+					label: "320k MP3",
+					short: "320",
+					detail: "9MB",
+					requestQuality: "320",
+					source: "declared",
+				},
+			],
+		}),
+	);
+
+	expect(html).toContain('id="quality-btn-label">LOSSLESS<');
+	expect(html).not.toContain('id="quality-btn-label">FLAC<');
+	expect(html).toContain('data-quality="flac"');
+	expect(html).toContain('data-quality="320"');
+});
+
 test("PlayerConsoleHost renders baseline lyric source segment and opens custom lyric editor", async () => {
-	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
-	let opened = 0;
+  await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+  let opened = 0;
 	const container = document.createElement("div");
 	document.body.appendChild(container);
 	const root = createRoot(container);

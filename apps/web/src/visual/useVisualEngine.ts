@@ -60,6 +60,7 @@ import {
 	isWallpaperSafeShelfPreset,
 	type QueueFocusPanelInfo,
 } from "./shelf-focus-zone";
+import { createVisualAudioDebugger } from "./visual-audio-debug";
 
 export interface VisualEngineRefs {
 	hostRef: RefObject<HTMLDivElement | null>;
@@ -126,6 +127,7 @@ interface MountedHandles {
 	offShelfPointerInteractions: () => void;
 	offFreeCamera: () => void;
 	offCanvasPointer: () => void;
+	offVisualAudioDebug: () => void;
 }
 
 const VISUAL_COVER_RETRY_INTERVAL_MS = 2200;
@@ -139,8 +141,53 @@ type BaselineAudioElement = HTMLAudioElement & {
 
 export type ManagedAudioFrameSource = AudioFrameSource & {
 	audioContext: AudioContext | null;
+	getDebugState(): ManagedAudioFrameSourceDebugState;
 	dispose(): void;
 };
+
+export interface ManagedAudioFrameSourceDebugState {
+	audioContextState: AudioContextState | "none";
+	sourceElementReady: boolean;
+	sourceAttached: boolean;
+	sourceAttachFailed: boolean;
+	playing: boolean;
+	currentTimeSeconds: number;
+	mainSampleRate: number;
+	mainFftSize: number;
+	mainFreqAvg: number;
+	mainFreqPeak: number;
+	mainTimeRms: number;
+	beatSampleRate: number;
+	beatFftSize: number;
+	beatFreqAvg: number;
+	beatFreqPeak: number;
+	beatTimeRms: number;
+}
+
+function readByteFrequencyStats(data: Uint8Array): { avg: number; peak: number } {
+	if (!data.length) return { avg: 0, peak: 0 };
+	let sum = 0;
+	let peak = 0;
+	for (let i = 0; i < data.length; i += 1) {
+		const value = data[i] ?? 0;
+		sum += value;
+		if (value > peak) peak = value;
+	}
+	return {
+		avg: sum / (data.length * 255),
+		peak: peak / 255,
+	};
+}
+
+function readByteTimeRms(data: Uint8Array): number {
+	if (!data.length) return 0;
+	let sum = 0;
+	for (let i = 0; i < data.length; i += 1) {
+		const sample = ((data[i] ?? 128) - 128) / 128;
+		sum += sample * sample;
+	}
+	return Math.sqrt(sum / data.length);
+}
 
 function prefersReducedMotion(): boolean {
 	if (typeof window === "undefined") return false;
@@ -386,6 +433,29 @@ export async function initAudioSource(getEl: () => HTMLAudioElement | null): Pro
 	const mainTime = new Uint8Array(mainAnalyser.fftSize);
 	const beatFreq = new Uint8Array(beatAnalyser.frequencyBinCount);
 	const beatTime = new Uint8Array(beatAnalyser.fftSize);
+	const getDebugState = (): ManagedAudioFrameSourceDebugState => {
+		const el = sourceEl ?? (getEl() as BaselineAudioElement | null);
+		const mainStats = readByteFrequencyStats(mainFreq);
+		const beatStats = readByteFrequencyStats(beatFreq);
+		return {
+			audioContextState: ctx.state,
+			sourceElementReady: !!el,
+			sourceAttached: !!source && !!sourceEl,
+			sourceAttachFailed,
+			playing: !!(el && !el.paused && !el.ended),
+			currentTimeSeconds: el ? el.currentTime : 0,
+			mainSampleRate: ctx.sampleRate,
+			mainFftSize: mainAnalyser.fftSize,
+			mainFreqAvg: mainStats.avg,
+			mainFreqPeak: mainStats.peak,
+			mainTimeRms: readByteTimeRms(mainTime),
+			beatSampleRate: ctx.sampleRate,
+			beatFftSize: beatAnalyser.fftSize,
+			beatFreqAvg: beatStats.avg,
+			beatFreqPeak: beatStats.peak,
+			beatTimeRms: readByteTimeRms(beatTime),
+		};
+	};
 
 	const frameSource = function frameSource(): AudioFrameBytes {
 		ensureSource();
@@ -432,6 +502,7 @@ export async function initAudioSource(getEl: () => HTMLAudioElement | null): Pro
 		};
 	} as ManagedAudioFrameSource;
 	frameSource.audioContext = ctx;
+	frameSource.getDebugState = getDebugState;
 	frameSource.dispose = () => {
 		try { source?.disconnect(); } catch { void 0; }
 		try { mainAnalyser.disconnect(); } catch { void 0; }
@@ -460,6 +531,24 @@ function makeFallbackFrameSource(): ManagedAudioFrameSource {
 		};
 	};
 	fallbackFrame.audioContext = null;
+	fallbackFrame.getDebugState = () => ({
+		audioContextState: "none" as const,
+		sourceElementReady: false,
+		sourceAttached: false,
+		sourceAttachFailed: false,
+		playing: false,
+		currentTimeSeconds: 0,
+		mainSampleRate: 0,
+		mainFftSize: 0,
+		mainFreqAvg: 0,
+		mainFreqPeak: 0,
+		mainTimeRms: 0,
+		beatSampleRate: 0,
+		beatFftSize: 0,
+		beatFreqAvg: 0,
+		beatFreqPeak: 0,
+		beatTimeRms: 0,
+	});
 	fallbackFrame.dispose = () => {};
 	return fallbackFrame;
 }
@@ -947,6 +1036,10 @@ function disposeHandles(handles: MountedHandles | null): void {
 	} catch {
 	}
 	try {
+		handles.offVisualAudioDebug();
+	} catch {
+	}
+	try {
 		handles.lifecycle.dispose();
 	} catch {
 	}
@@ -1308,6 +1401,16 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				prefersReducedMotion,
 				onCacheTrim: () => {},
 			});
+			const visualAudioDebugger = createVisualAudioDebugger({
+				frameSource,
+				audioEngine,
+				homeVisual,
+				getAudioElement: () => refs.audioElementRef.current,
+				getHomeActive: () => refs.homeActiveRef?.current === true,
+				getPlaybackActive: () => refs.isPlayingRef.current,
+				getCoverUrl: () => refs.coverUrlRef?.current ?? "",
+				getFps: () => renderLoop.getFps(),
+			});
 			const offHomeAudio = renderLoop.registerStep(RenderStepSlot.Ripples, (ctx) => {
 				if (refs.beatMapVersionRef && syncedBeatMapVersion !== refs.beatMapVersionRef.current) {
 					syncedBeatMapVersion = refs.beatMapVersionRef.current;
@@ -1416,6 +1519,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 					hasOpenContent: shelfManager.hasOpenContent(),
 				}));
 				homeVisual.update(ctx);
+				visualAudioDebugger.tick(ctx);
 			});
 			const offCamera = renderLoop.registerStep(RenderStepSlot.CameraCinematic, (ctx) => {
 				if (updateAndApplyFreeCamera(freeCamera, renderer.camera, ctx.dt, ctx.now, {
@@ -1527,6 +1631,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				offCamera();
 				offHome();
 				offHomeAudio();
+				visualAudioDebugger.dispose();
 				offResize();
 				renderLoop.dispose();
 				lifecycle.dispose();
@@ -1645,6 +1750,7 @@ export function useVisualEngine(refs: VisualEngineRefs): void {
 				offShelfPointerInteractions,
 				offFreeCamera,
 				offCanvasPointer,
+				offVisualAudioDebug: () => visualAudioDebugger.dispose(),
 			};
 			renderLoop.start();
 		})();

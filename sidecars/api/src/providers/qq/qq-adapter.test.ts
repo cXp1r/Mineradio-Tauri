@@ -231,9 +231,57 @@ test("songUrl maps requested playback quality to qq type and returns resolved qu
   const adapter = createQqAdapter(deps);
   const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
   expect(lastQuery["type"]).toBe("flac");
-  expect(out.level).toBe("lossless");
-  expect(out.quality).toBe("无损 FLAC");
+  expect(out.level).toBe("flac");
+  expect(out.quality).toBe("FLAC");
   expect(out.requestedQuality).toBe("lossless");
+});
+
+test("songUrl accepts provider-native QQ quality ids", async () => {
+  let lastQuery: Record<string, unknown> = {};
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
+    songUrl: async (query) => {
+      lastQuery = query;
+      return { body: "http://audio.example/x.320.mp3" };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "320" });
+
+  expect(lastQuery["type"]).toBe("320");
+  expect(out.level).toBe("320");
+  expect(out.quality).toBe("320k MP3");
+  expect(out.requestedQuality).toBe("320");
+});
+
+test("trackQualities uses QQ song detail file sizes and excludes absent native qualities", async () => {
+  const deps = noopDeps({
+    songDetail: async (query) => {
+      expect(query).toEqual({ songmid: "002Zkt5S2oAB7X" });
+      return {
+        body: {
+          track_info: {
+            file: {
+              media_mid: "media-mid",
+              size_96aac: 123,
+              size_128mp3: 456,
+              size_320mp3: 789,
+              size_flac: 1024,
+              size_ape: 0
+            }
+          }
+        }
+      };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  const out = await adapter.trackQualities(trackFixture);
+
+  expect(out.provider).toBe("qq");
+  expect(out.trackId).toBe("002Zkt5S2oAB7X");
+  expect(out.defaultQuality).toBe("flac");
+  expect(out.qualities.map((quality) => quality.id)).toEqual(["flac", "320", "128", "m4a"]);
+  expect(out.qualities.map((quality) => quality.size)).toEqual([1024, 789, 456, 123]);
 });
 
 test("songUrl builds baseline QQ filenames from mediaMid when it differs from songmid", async () => {
@@ -265,9 +313,9 @@ test("songUrl walks the QQ quality ladder until a playable URL is returned", asy
   const adapter = createQqAdapter(deps);
   const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
 
-  expect(calls).toEqual(["flac", "320"]);
+  expect(calls).toEqual(["flac", "ape", "320"]);
   expect(out.url).toBe("http://audio.example/320.mp3");
-  expect(out.level).toBe("exhigh");
+  expect(out.level).toBe("320");
   expect(out.quality).toBe("320k MP3");
   expect(out.requestedQuality).toBe("lossless");
 });
@@ -295,8 +343,8 @@ test("songUrl parses baseline QQ musicu midurlinfo plus sip response", async () 
 
   expect(out.url).toBe("https://ws.stream.qqmusic.qq.com/C400002Zkt5S2oAB7X.m4a?guid=1");
   expect(out.filename).toBe("F000002Zkt5S2oAB7X.flac");
-  expect(out.level).toBe("lossless");
-  expect(out.quality).toBe("无损 FLAC");
+  expect(out.level).toBe("flac");
+  expect(out.quality).toBe("FLAC");
 });
 
 test("songUrl with cookie but empty url throws ProviderError UNAVAILABLE", async () => {
@@ -352,9 +400,11 @@ test("songUrl classifies QQ 104003 without playback key as LOGIN_REQUIRED", asyn
   expect(e.qqCode).toBe(104003);
   expect(e.rawMessage).toBe("no vkey");
   expect(e.tried).toEqual([
-    "无损 FLAC · F000002Zkt5S2oAB7X.flac",
+    "FLAC · F000002Zkt5S2oAB7X.flac",
+    "APE · A000002Zkt5S2oAB7X.ape",
     "320k MP3 · M800002Zkt5S2oAB7X.mp3",
-    "128k MP3 · M500002Zkt5S2oAB7X.mp3"
+    "128k MP3 · M500002Zkt5S2oAB7X.mp3",
+    "AAC · C400002Zkt5S2oAB7X.m4a"
   ]);
   expect(e.restriction?.provider).toBe("qq");
   expect(e.restriction?.category).toBe("login_required");
@@ -937,6 +987,48 @@ test("loginStatus lets QQ official badge icon override ambiguous super member fl
     expect(r.vipIconUrl).toBe("https://y.qq.com/mediastyle/lv-icon/v14/2x/vip7.png");
     expect(r.vipTier).toBe(7);
     expect(r.vipLevelName).toBe("柒");
+  });
+});
+
+test("loginStatus still maps QQ nick and avatar when user detail rejects but musicu succeeds", async () => {
+  await withEnv("MINERADIO_QQ_COOKIE", "uin=1095181037; qqmusic_key=abc", async () => {
+    const calls: string[] = [];
+    const deps = noopDeps({
+      getConfig: () => ({ cookie: "uin=1095181037; qqmusic_key=abc" }),
+      loginStatus: async () => {
+        calls.push("profile");
+        throw new Error("未登陆");
+      },
+      vipInfo: async (query, config) => {
+        calls.push("vip");
+        expect(query).toEqual({ id: "1095181037" });
+        expect(config).toEqual({ cookie: "uin=1095181037; qqmusic_key=abc" });
+        return {
+          body: {
+            getNickHead: {
+              code: 0,
+              data: {
+                map_userinfo: {
+                  "1095181037": {
+                    nick: "QQ昵称",
+                    headurl: "http://q.qlogo.cn/head.jpg"
+                  }
+                }
+              }
+            }
+          }
+        };
+      }
+    } as Partial<QqClientDeps>);
+    const adapter = createQqAdapter(deps);
+    const r = await adapter.loginStatus();
+
+    expect(calls).toEqual(["profile", "vip"]);
+    expect(r.provider).toBe("qq");
+    expect(r.loggedIn).toBe(true);
+    expect(r.nickname).toBe("QQ昵称");
+    expect(r.avatarUrl).toBe("https://q.qlogo.cn/head.jpg");
+    expect(r.userId).toBe("1095181037");
   });
 });
 

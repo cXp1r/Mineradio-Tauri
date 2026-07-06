@@ -27,7 +27,7 @@ import { CUSTOM_LYRIC_PREF_STORE_KEY, CUSTOM_LYRIC_STORE_KEY } from "../lyrics/c
 import { SidecarClientError, type SidecarClient } from "../api/sidecar-client";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
-import type { Track } from "@mineradio/shared";
+import type { LyricPayload, Track } from "@mineradio/shared";
 
 test("web index preloads the baseline simple or DIY mode class before React mounts", async () => {
 	const html = await fetch(new URL("../../index.html", import.meta.url)).then((response) => response.text());
@@ -1299,7 +1299,7 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 	}
 });
 
-test("App resolves Soda relative proxied URLs against the sidecar before loading audio", async () => {
+test("App retries playback after applying an automatic quality fallback", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
 	const restoreAudio = installAppStubAudio();
@@ -1307,15 +1307,15 @@ test("App resolves Soda relative proxied URLs against the sidecar before loading
 	let root: ReturnType<typeof createRoot> | null = null;
 	try {
 		localStorage.clear();
+		localStorage.setItem("mineradio-playback-quality-v1", "m4a");
 		usePlaybackStore.getState().clearQueue();
 		useLyricsStore.getState().reset();
-		const relativeProxyUrl = "/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a&playAuth=play-auth-1";
-		const sidecarProxyUrl = `http://127.0.0.1:39999${relativeProxyUrl}`;
+		useSearchStore.getState().reset();
 		usePlaybackStore.getState().setCurrentTrack({
-			provider: "soda",
-			id: "soda-audio-1",
-			sourceId: "soda-audio-1",
-			title: "Soda Song",
+			provider: "qq",
+			id: "fallback-quality-1",
+			sourceId: "fallback-quality-1",
+			title: "Fallback Quality Song",
 			artists: ["Artist"],
 			album: "",
 			coverUrl: "",
@@ -1324,21 +1324,40 @@ test("App resolves Soda relative proxied URLs against the sidecar before loading
 			playableState: "unknown",
 		});
 
+		const resolveQualities: string[] = [];
 		const fakeClient = {
-			async resolveSongUrl() {
-				return { url: relativeProxyUrl, quality: "m4a", proxied: true, provider: "soda" };
+			async trackQualities() {
+				return {
+					provider: "qq",
+					trackId: "fallback-quality-1",
+					defaultQuality: "flac",
+					qualities: [
+						{
+							provider: "qq",
+							id: "flac",
+							label: "FLAC",
+							short: "FLAC",
+							detail: "42MB",
+							requestQuality: "flac",
+							source: "declared",
+						},
+					],
+				};
 			},
-			proxiedUrl(url: string) {
-				expect(url).toBe(relativeProxyUrl);
-				return sidecarProxyUrl;
+			async resolveSongUrl(_track: Track, quality: string) {
+				resolveQualities.push(quality);
+				if (quality === "m4a") {
+					return { url: "", quality, proxied: false, message: "quality unavailable" };
+				}
+				return { url: "https://media.example.test/fallback-flac.mp3", quality, proxied: false };
 			},
 			audioProxyUrl(url: string) {
-				throw new Error(`raw proxy should not be used for Soda proxied URL: ${url}`);
+				return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
 			},
 			async lyric() {
 				return {
-					provider: "soda",
-					trackId: "soda-audio-1",
+					provider: "qq",
+					trackId: "fallback-quality-1",
 					lines: [],
 					hasTranslation: false,
 					isWordByWord: false,
@@ -1356,17 +1375,20 @@ test("App resolves Soda relative proxied URLs against the sidecar before loading
 		root = createRoot(host);
 		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
 
-		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== sidecarProxyUrl; i += 1) {
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 16 && !audio?.src.includes("fallback-flac"); i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
 
-		expect(appStubAudioInstances[0]?.src).toBe(sidecarProxyUrl);
-		expect(appStubAudioInstances[0]?.loadCalled).toBeGreaterThan(0);
+		expect(resolveQualities).toEqual(["m4a", "flac"]);
+		expect(audio?.src).toContain(encodeURIComponent("https://media.example.test/fallback-flac.mp3"));
+		expect(localStorage.getItem("mineradio-playback-quality-v1")).toBe("flac");
 	} finally {
 		root?.unmount();
 		host.remove();
 		usePlaybackStore.getState().clearQueue();
 		useLyricsStore.getState().reset();
+		useSearchStore.getState().reset();
 		localStorage.clear();
 		restoreAudio();
 	}
@@ -1754,6 +1776,7 @@ test("App opens account dropdown from a single logged-in account and launches on
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("网易账号");
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("黑胶SVIP·陆");
 	expect(host.querySelector("#account-add-provider-qq")).not.toBeNull();
+	expect(host.querySelector("#account-add-provider-qq")?.textContent).toContain("登录已失效");
 	expect(host.querySelector("#account-add-provider-netease")).toBeNull();
 	expect(host.querySelector("#login-modal")).toBeNull();
 	expect(host.querySelector("#qr-img")).toBeNull();

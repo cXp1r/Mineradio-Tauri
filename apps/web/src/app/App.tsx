@@ -14,7 +14,7 @@ import {
   firstLocalCoverFile,
   readLocalFileAsDataUrl,
 } from "../audio/local-audio-import";
-import { PlayerController } from "../audio/player-controller";
+import { PlayerController, type ErrorPayload } from "../audio/player-controller";
 import {
   clearCustomCoverForTrack,
   customCoverKeyForTrack,
@@ -120,7 +120,7 @@ import {
   ensureLyricFallbackPayload,
   ProviderIdSchema,
   type DiscoverHomeResponse,
-  type PlaybackQuality,
+  type PlaybackQualityRequest,
   type PlaylistDetail,
   type PlaylistSummary,
   type PodcastCollection,
@@ -130,6 +130,7 @@ import {
   type ProviderVipIcon,
   type SongUrlResult,
   type Track,
+  type TrackQualityOption,
   type WeatherRadioResponse,
 } from "@mineradio/shared";
 import type { FxState, LyricPalette } from "@mineradio/visual-engine";
@@ -140,6 +141,8 @@ const SIDECAR_STATUS_READY_MAX_POLL_MS = 12000;
 const SIDECAR_STATUS_HIDDEN_MAX_POLL_MS = 60000;
 const SIDECAR_RECOVERED_NOTICE_MS = 2600;
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
+const LONG_PAUSE_PLAYBACK_URL_REFRESH_MS = 10 * 60 * 1000;
+const PLAYBACK_URL_MAX_AGE_MS = 20 * 60 * 1000;
 const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
 const USER_CAPSULE_AUTO_HIDE_STORE_KEY = "mineradio-user-capsule-auto-hide-v1";
 const PLAYLIST_PANEL_PIN_STORE_KEY = "mineradio-playlist-panel-pinned-v1";
@@ -201,21 +204,20 @@ function buildTrackLyricFallback(track: Track) {
   }, track);
 }
 
-function readPlaybackQualityPreference(): PlaybackQuality {
-  if (typeof localStorage === "undefined") return "hires";
-  const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
-  if (
-    raw === "jymaster" ||
-    raw === "hires" ||
-    raw === "lossless" ||
-    raw === "exhigh" ||
-    raw === "standard"
-  )
-    return raw;
-  return "hires";
+function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
+  const text = value.trim();
+  if (!text) return "hires";
+  if (text.toLowerCase() === "hi-res") return "hires";
+  return text;
 }
 
-function savePlaybackQualityPreference(quality: PlaybackQuality): void {
+function readPlaybackQualityPreference(): PlaybackQualityRequest {
+  if (typeof localStorage === "undefined") return "hires";
+  const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
+  return raw ? normalizePlaybackQualityPreference(raw) : "hires";
+}
+
+function savePlaybackQualityPreference(quality: PlaybackQualityRequest): void {
   if (typeof localStorage === "undefined") return;
   localStorage.setItem(PLAYBACK_QUALITY_STORE_KEY, quality);
 }
@@ -242,6 +244,10 @@ function saveBooleanPreference(key: string, value: boolean): void {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+function playbackKeyForTrack(track: Track | null | undefined): string {
+  return track ? `${track.provider}:${track.id}` : "";
 }
 
 export interface DesktopLyricsPayloadContext {
@@ -271,6 +277,23 @@ interface TrialBannerState {
   text: string;
   provider: ProviderId;
   showLogin: boolean;
+}
+
+type PlaybackReloadReason = "long-pause" | "url-age" | "media-error";
+
+interface LoadedPlaybackUrlState {
+  trackKey: string;
+  quality: PlaybackQualityRequest;
+  resolvedAtMs: number;
+  audioUrl: string;
+  rawUrl: string;
+  local: boolean;
+  trial: boolean;
+}
+
+interface PlaybackReloadOptions {
+  preservePosition: boolean;
+  reason: PlaybackReloadReason;
 }
 
 interface LoginQrState {
@@ -1106,9 +1129,10 @@ export function App({
   const [shelfDetailOpen, setShelfDetailOpen] = useState(false);
   const [sidecarRecoveryState, setSidecarRecoveryState] =
     useState<SidecarRecoveryNoticeState | null>(null);
-  const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQuality>(
+  const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQualityRequest>(
     readPlaybackQualityPreference,
   );
+  const [trackQualityOptions, setTrackQualityOptions] = useState<TrackQualityOption[]>([]);
   const [userCapsuleAutoHide, setUserCapsuleAutoHide] = useState(() =>
     readBooleanPreference(USER_CAPSULE_AUTO_HIDE_STORE_KEY, false),
   );
@@ -1230,7 +1254,15 @@ export function App({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const localAudioUrlsRef = useRef(new Map<string, string>());
   const lastLoadedKeyRef = useRef<string>("");
+  const loadedPlaybackUrlRef = useRef<LoadedPlaybackUrlState | null>(null);
+  const pausedAtMsRef = useRef<number | null>(null);
+  const mediaErrorRecoveryTrackKeyRef = useRef("");
   const playbackRequestSeqRef = useRef(0);
+  const lyricRequestSeqRef = useRef(0);
+  const reloadCurrentTrackAndPlayRef = useRef<
+    (options: PlaybackReloadOptions) => Promise<boolean>
+  >(async () => false);
+  const handlePlaybackErrorRef = useRef<(payload: ErrorPayload) => void>(() => {});
   const loginQrRequestSeqRef = useRef(0);
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2634,6 +2666,139 @@ export function App({
     ],
   );
 
+  const reloadCurrentTrackAndPlay = useCallback(
+    async ({ preservePosition, reason }: PlaybackReloadOptions): Promise<boolean> => {
+      const controller = controllerRef.current;
+      const client = sidecarClient;
+      const track = usePlaybackStore.getState().currentTrack;
+      if (!controller || !client || !track) return false;
+
+      const key = playbackKeyForTrack(track);
+      if (!key || localAudioUrlsRef.current.has(key)) return false;
+
+      const seq = playbackRequestSeqRef.current + 1;
+      playbackRequestSeqRef.current = seq;
+      const resumeAt = preservePosition
+        ? Math.max(0, usePlaybackStore.getState().positionMs)
+        : 0;
+
+      try {
+        const result = await client.resolveSongUrl(track, playbackQuality);
+        if (playbackRequestSeqRef.current !== seq) return false;
+        if (!result.url) {
+          throw new Error(result.message || "播放地址不可用");
+        }
+        const audioUrl = result.proxied
+          ? result.url
+          : client.audioProxyUrl(result.url);
+        if (result.trial) {
+          setTrialBanner({
+            text: trialBannerText(result),
+            provider: track.provider,
+            showLogin: !result.loggedIn,
+          });
+        } else {
+          setTrialBanner(null);
+        }
+        controller.load(audioUrl);
+        loadedPlaybackUrlRef.current = {
+          trackKey: key,
+          quality: playbackQuality,
+          resolvedAtMs: Date.now(),
+          audioUrl,
+          rawUrl: result.url,
+          local: false,
+          trial: result.trial === true,
+        };
+        if (reason !== "media-error") mediaErrorRecoveryTrackKeyRef.current = "";
+        const beatmapResolver = client.podcastDjBeatmap?.bind(client);
+        if (beatmapResolver && isPodcastTrack(track)) {
+          void beatmapResolver(
+            result.url,
+            Math.max(
+              0,
+              Number(
+                track.durationMs ??
+                  usePlaybackStore.getState().durationMs ??
+                  0,
+              ) / 1000,
+            ),
+            0,
+          ).then((beatmap) => {
+            if (playbackRequestSeqRef.current !== seq) return;
+            const map = toJsonValue(beatmap.map);
+            setCurrentBeatMapState(map ? {
+              key: desktopLyricsBeatMapKey(map, "dj"),
+              map,
+            } : null);
+          }).catch(() => {
+            if (playbackRequestSeqRef.current === seq) {
+              setCurrentBeatMapState(null);
+            }
+          });
+        }
+        if (resumeAt > 0) {
+          setPositionMs(resumeAt);
+          controller.seek(resumeAt);
+        }
+        await controller.play();
+        if (playbackRequestSeqRef.current !== seq) return false;
+        setHomeForcedOpen(false);
+        setHomeSuppressed(true);
+        return true;
+      } catch (e) {
+        if (playbackRequestSeqRef.current !== seq) return false;
+        const message = e instanceof Error ? e.message : "playback error";
+        setTrialBanner(null);
+        setPlaying(false);
+        setSearchError(message);
+        showToast(message);
+        return false;
+      }
+    },
+    [
+      playbackQuality,
+      setPlaying,
+      setPositionMs,
+      setSearchError,
+      showToast,
+      sidecarClient,
+    ],
+  );
+  reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
+
+  const handlePlaybackError = useCallback(
+    (payload: ErrorPayload) => {
+      const message = payload.message || "音频播放失败";
+      const track = usePlaybackStore.getState().currentTrack;
+      const key = playbackKeyForTrack(track);
+      const loaded = loadedPlaybackUrlRef.current;
+      const canResolveSongUrl = typeof sidecarClient?.resolveSongUrl === "function";
+      if (
+        key &&
+        loaded &&
+        loaded.trackKey === key &&
+        !loaded.local &&
+        !loaded.trial &&
+        canResolveSongUrl &&
+        mediaErrorRecoveryTrackKeyRef.current !== key
+      ) {
+        mediaErrorRecoveryTrackKeyRef.current = key;
+        setTrialBanner(null);
+        void reloadCurrentTrackAndPlayRef.current({
+          preservePosition: true,
+          reason: "media-error",
+        });
+        return;
+      }
+      setTrialBanner(null);
+      setSearchError(message);
+      showToast(message);
+    },
+    [setSearchError, showToast, sidecarClient],
+  );
+  handlePlaybackErrorRef.current = handlePlaybackError;
+
   const togglePlayback = useCallback(() => {
     if (!usePlaybackStore.getState().currentTrack) {
       showToast("先搜索或打开歌单选择一首歌");
@@ -2644,8 +2809,34 @@ export function App({
       togglePlay();
       return;
     }
-    if (usePlaybackStore.getState().isPlaying) controller.pause();
-    else void controller.play();
+    if (usePlaybackStore.getState().isPlaying) {
+      controller.pause();
+      return;
+    }
+    const now = Date.now();
+    const loaded = loadedPlaybackUrlRef.current;
+    const pausedAt = pausedAtMsRef.current;
+    const pauseAgeMs = pausedAt === null ? 0 : now - pausedAt;
+    const urlAgeMs = loaded ? now - loaded.resolvedAtMs : 0;
+    const shouldRefresh =
+      loaded &&
+      !loaded.local &&
+      (
+        pauseAgeMs >= LONG_PAUSE_PLAYBACK_URL_REFRESH_MS ||
+        urlAgeMs >= PLAYBACK_URL_MAX_AGE_MS
+      );
+    if (shouldRefresh) {
+      const reason: PlaybackReloadReason =
+        pauseAgeMs >= LONG_PAUSE_PLAYBACK_URL_REFRESH_MS
+          ? "long-pause"
+          : "url-age";
+      void reloadCurrentTrackAndPlayRef.current({
+        preservePosition: true,
+        reason,
+      });
+      return;
+    }
+    void controller.play();
   }, [showToast, togglePlay]);
 
   const playMiniQueueIndex = useCallback(
@@ -2993,7 +3184,7 @@ export function App({
   }, [visualFx]);
 
   const setPlaybackQuality = useCallback(
-    (quality: PlaybackQuality) => {
+    (quality: PlaybackQualityRequest) => {
       setPlaybackQualityState(quality);
       savePlaybackQualityPreference(quality);
       if (!usePlaybackStore.getState().currentTrack) {
@@ -3494,9 +3685,11 @@ export function App({
       }
     });
     controller.on("play", () => {
+      pausedAtMsRef.current = null;
       setPlaying(true);
     });
     controller.on("pause", () => {
+      pausedAtMsRef.current = Date.now();
       homeListenSessionRef.current = updateHomeListenSession(
         homeListenSessionRef.current,
         usePlaybackStore.getState().positionMs,
@@ -3519,10 +3712,7 @@ export function App({
       }
     });
     controller.on("error", (payload) => {
-      const message = payload.message || "音频播放失败";
-      setTrialBanner(null);
-      setSearchError(message);
-      showToast(message);
+      handlePlaybackErrorRef.current(payload);
     });
     return () => {
       controllerRef.current = null;
@@ -3544,6 +3734,37 @@ export function App({
     if (hydrated === currentTrack || hydrated.coverUrl === currentTrack.coverUrl) return;
     patchCustomCoverTrack(currentTrack, hydrated);
   }, [currentTrack, patchCustomCoverTrack]);
+
+  useEffect(() => {
+    const track = currentTrack;
+    const client = sidecarClient;
+    const key = playbackKeyForTrack(track);
+    if (!track || !client || !key || localAudioUrlsRef.current.has(key)) {
+      setTrackQualityOptions([]);
+      return;
+    }
+    const trackQualities = (client as { trackQualities?: SidecarClient["trackQualities"] }).trackQualities;
+    if (typeof trackQualities !== "function") {
+      setTrackQualityOptions([]);
+      return;
+    }
+    let cancelled = false;
+    void trackQualities.call(client, track).then((availability) => {
+      if (cancelled) return;
+      const qualities = availability.qualities;
+      setTrackQualityOptions(qualities);
+      const selectedAvailable = qualities.some((quality) => quality.requestQuality === playbackQuality);
+      const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
+      if (!selectedAvailable && fallbackQuality) {
+        setPlaybackQuality(fallbackQuality);
+      }
+    }).catch(() => {
+      if (!cancelled) setTrackQualityOptions([]);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [currentTrack, playbackQuality, setPlaybackQuality, sidecarClient]);
 
   useEffect(() => {
     const track = currentTrack;
@@ -3572,20 +3793,27 @@ export function App({
     if (!controller) return;
     if (!currentTrack) {
       lastLoadedKeyRef.current = "";
+      loadedPlaybackUrlRef.current = null;
+      pausedAtMsRef.current = null;
+      mediaErrorRecoveryTrackKeyRef.current = "";
       playbackRequestSeqRef.current += 1;
+      lyricRequestSeqRef.current += 1;
       setCurrentBeatMapState(null);
       setTrialBanner(null);
       controller.pause();
       lyricsReset();
       return;
     }
-    const key = `${currentTrack.provider}:${currentTrack.id}`;
+    const key = playbackKeyForTrack(currentTrack);
     const localAudioUrl = localAudioUrlsRef.current.get(key);
     if (!localAudioUrl && !client) return;
     if (key === lastLoadedKeyRef.current) return;
     lastLoadedKeyRef.current = key;
-    const seq = playbackRequestSeqRef.current + 1;
-    playbackRequestSeqRef.current = seq;
+    mediaErrorRecoveryTrackKeyRef.current = "";
+    const playbackSeq = playbackRequestSeqRef.current + 1;
+    playbackRequestSeqRef.current = playbackSeq;
+    const lyricSeq = lyricRequestSeqRef.current + 1;
+    lyricRequestSeqRef.current = lyricSeq;
     setCurrentBeatMapState(null);
     setTrialBanner(null);
     const fallbackLyric = buildTrackLyricFallback(currentTrack);
@@ -3602,14 +3830,23 @@ export function App({
       void (async () => {
         try {
           controller.load(localAudioUrl);
+          loadedPlaybackUrlRef.current = {
+            trackKey: key,
+            quality: playbackQuality,
+            resolvedAtMs: Date.now(),
+            audioUrl: localAudioUrl,
+            rawUrl: localAudioUrl,
+            local: true,
+            trial: false,
+          };
           if (positionRef.current > 0) controller.seek(positionRef.current);
           await controller.play();
-          if (playbackRequestSeqRef.current !== seq) return;
+          if (playbackRequestSeqRef.current !== playbackSeq) return;
           setLyricsLoading(false);
           setHomeForcedOpen(false);
           setHomeSuppressed(true);
         } catch (e) {
-          if (playbackRequestSeqRef.current !== seq) return;
+          if (playbackRequestSeqRef.current !== playbackSeq) return;
           const message = e instanceof Error ? e.message : "playback error";
           setPlaying(false);
           setSearchError(message);
@@ -3627,7 +3864,7 @@ export function App({
           currentTrack,
           playbackQuality,
         );
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         if (!result.url) {
           throw new Error(result.message || "播放地址不可用");
         }
@@ -3645,6 +3882,15 @@ export function App({
           setTrialBanner(null);
         }
         controller.load(audioUrl);
+        loadedPlaybackUrlRef.current = {
+          trackKey: key,
+          quality: playbackQuality,
+          resolvedAtMs: Date.now(),
+          audioUrl,
+          rawUrl: result.url,
+          local: false,
+          trial: result.trial === true,
+        };
         const beatmapResolver = client.podcastDjBeatmap?.bind(client);
         if (beatmapResolver && isPodcastTrack(currentTrack)) {
           void beatmapResolver(
@@ -3659,25 +3905,25 @@ export function App({
             ),
             0,
           ).then((beatmap) => {
-            if (playbackRequestSeqRef.current !== seq) return;
+            if (playbackRequestSeqRef.current !== playbackSeq) return;
             const map = toJsonValue(beatmap.map);
             setCurrentBeatMapState(map ? {
               key: desktopLyricsBeatMapKey(map, "dj"),
               map,
             } : null);
           }).catch(() => {
-            if (playbackRequestSeqRef.current === seq) {
+            if (playbackRequestSeqRef.current === playbackSeq) {
               setCurrentBeatMapState(null);
             }
           });
         }
         if (positionRef.current > 0) controller.seek(positionRef.current);
         await controller.play();
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         setHomeForcedOpen(false);
         setHomeSuppressed(true);
       } catch (e) {
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (playbackRequestSeqRef.current !== playbackSeq) return;
         const message = e instanceof Error ? e.message : "playback error";
         setTrialBanner(null);
         setPlaying(false);
@@ -3687,7 +3933,7 @@ export function App({
       try {
         setLyricsLoading(true);
         const lyric = ensureLyricFallbackPayload(await client.lyric(currentTrack), currentTrack);
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (lyricRequestSeqRef.current !== lyricSeq) return;
         originalLyricsPayloadRef.current = lyric;
         const resolvedLyric = resolveLyricsForTrack({
           track: currentTrack,
@@ -3697,7 +3943,7 @@ export function App({
         });
         setLyricsPayload(resolvedLyric.payload);
       } catch (e) {
-        if (playbackRequestSeqRef.current !== seq) return;
+        if (lyricRequestSeqRef.current !== lyricSeq) return;
         const message = e instanceof Error ? e.message : "lyrics failed";
         const fallbackLyric = buildTrackLyricFallback(currentTrack);
         originalLyricsPayloadRef.current = fallbackLyric;
@@ -3746,6 +3992,10 @@ export function App({
     ({ provider, status }) =>
       `${providerLabel(provider)} ${status.nickname ?? status.userId ?? "已登录"}`,
   );
+  const providerLoginHint = (provider: ProviderId, fallback: string) => {
+    const status = provider === "netease" ? neteaseStatus : qqStatus;
+    return status?.loggedIn === false ? "登录已失效" : fallback;
+  };
   const topAccountStatus = neteaseStatus?.loggedIn
     ? neteaseStatus
     : qqStatus?.loggedIn
@@ -4027,7 +4277,7 @@ export function App({
                 onClick={() => openSingleProviderLogin(provider)}
               >
                 <span>添加 {providerLabel(provider)}</span>
-                <span>扫码登录</span>
+                <span>{providerLoginHint(provider, "扫码登录")}</span>
               </button>
             ))}
           </div>
@@ -4123,6 +4373,7 @@ export function App({
         volume={volume}
         muted={muted}
         playbackQuality={playbackQuality}
+        qualityOptions={trackQualityOptions}
         shelfMode={shelfMode}
         shelfCameraMode={shelfCameraMode}
         shelfPresence={shelfPresence}
@@ -4373,7 +4624,7 @@ export function App({
                       onClick={() => openSingleProviderLogin(provider)}
                     >
                       <span className="login-add-provider-name">{providerLabel(provider)}</span>
-                      <span className="login-add-provider-meta">扫码添加这个账号</span>
+                      <span className="login-add-provider-meta">{providerLoginHint(provider, "扫码添加这个账号")}</span>
                     </button>
                   ))}
                 </div>

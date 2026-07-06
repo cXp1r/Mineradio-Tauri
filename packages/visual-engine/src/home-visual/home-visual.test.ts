@@ -1,7 +1,7 @@
 import { beforeEach, expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import type { ThreeFactory } from "../runtime/renderer-setup";
-import type { AudioSnapshot } from "../audio/audio-snapshot";
+import { AUDIO_SPECTRUM_BAND_COUNT, type AudioSnapshot } from "../audio/audio-snapshot";
 import type { FrameContext } from "../runtime/frame-context";
 import { createHomeVisual } from "./home-visual";
 import { cloneFxState } from "./fx-defaults";
@@ -96,6 +96,7 @@ function makeFakeRuntimeUniforms() {
 		uVinylSpin: { value: 0 },
 		uParticleDim: { value: 1 },
 		uBurstAmt: { value: 0 },
+		uAudioBands: { value: new Float32Array(AUDIO_SPECTRUM_BAND_COUNT) },
 	};
 }
 
@@ -151,6 +152,18 @@ test("HomeVisual.update threads snapshot into runtime uniforms (uBass/uMid/uTreb
 	expect((ctx.uniforms as unknown as { uBass: { value: number } }).uBass.value).toBeCloseTo(0.5 * fx.intensity, 5);
 	expect((ctx.uniforms as unknown as { uBass: { value: number } }).uBass.value).toBeCloseTo(hv.getField().materialUniforms.uBass.value as number, 5);
 	expect((ctx.uniforms as unknown as { uEnergy: { value: number } }).uEnergy.value).toBeCloseTo(0.6, 5);
+});
+
+test("HomeVisual.update threads frequencyBands into material audio terrain uniform", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
+	const bands = new Float32Array(AUDIO_SPECTRUM_BAND_COUNT);
+	bands[3] = 0.33;
+	bands[20] = 0.18;
+	hv.update(makeFrameCtx({ frequencyBands: bands }) as unknown as FrameContext);
+	const materialBands = hv.getField().materialUniforms.uAudioBands.value as Float32Array;
+	expect(materialBands[3]).toBeCloseTo(0.33, 5);
+	expect(materialBands[20]).toBeCloseTo(0.18, 5);
 });
 
 test("HomeVisual.update syncs materialUniforms.uTime to ctx.uniforms.uTime.value (render loop advances uTime)", async () => {

@@ -17,6 +17,7 @@ import {
   ProviderLoginQrKeySchema,
   SongLikeAckSchema,
   SongLikeCheckAckSchema,
+  TrackQualityAvailabilitySchema,
   PlaylistAddSongAckSchema,
   DiscoverHomeResponseSchema,
   SharedPlaylistImportRequestSchema,
@@ -33,7 +34,7 @@ import {
 } from "./providers/provider-adapter";
 import { normalizeError } from "./services/fallback";
 import { buildDiagnostics } from "./services/diagnostics";
-import { resolveAudioProxy, type AudioProxy } from "./services/audio-proxy";
+import { createAudioProxy, type AudioProxy } from "./services/audio-proxy";
 import { resolveSodaAudioProxy, type SodaAudioProxy } from "./services/soda-audio-proxy";
 import { resolveImageProxy, type ImageProxy } from "./services/image-proxy";
 import {
@@ -87,7 +88,10 @@ export type RouteHandlerDeps = {
 
 export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const resolver = deps.crossSourceResolver ?? crossSourceResolver;
-  const audioProxy = deps.audioProxy ?? resolveAudioProxy;
+  const logger = deps.logger ?? createSidecarLogger();
+  const audioProxy = deps.audioProxy ?? createAudioProxy({
+    log: (entry) => logger.log(entry)
+  });
   const sodaAudioProxy = deps.sodaAudioProxy ?? resolveSodaAudioProxy;
   const imageProxy = deps.imageProxy ?? resolveImageProxy;
   const providerAdapters = deps.providerAdapters ?? providers;
@@ -99,7 +103,6 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
     qq: deps.qqQrLogin ?? qqQrLogin,
     soda: deps.sodaQrLogin ?? sodaQrLogin
   };
-  const logger = deps.logger ?? createSidecarLogger();
 
   return async function handleRoute(request: Request): Promise<Response> {
     const startedAt = performance.now();
@@ -560,6 +563,26 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
             return response;
           }
           response = json(ok(await adapter.songUrl(parsedTrack.data, { quality: parsedRequest.success ? parsedRequest.data.quality : undefined })));
+          await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+          return response;
+        }
+        if (sub === "qualities" && method === "POST") {
+          const body = await parseJsonBody(request);
+          const parsedTrack = TrackSchema.safeParse(body);
+          if (!parsedTrack.success) {
+            response = json(
+              fail({
+                code: "BAD_REQUEST",
+                message: "invalid or missing Track body",
+                provider: providerId,
+                retryable: false
+              }),
+              400
+            );
+            await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+            return response;
+          }
+          response = json(ok(TrackQualityAvailabilitySchema.parse(await adapter.trackQualities(parsedTrack.data))));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }

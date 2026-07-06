@@ -1,6 +1,7 @@
 import type {
   Track,
-  PlaybackQuality,
+  TrackQualityAvailability,
+  TrackQualityOption,
   PlaylistSummary,
   PlaylistDetail,
   LyricPayload
@@ -607,27 +608,115 @@ function mapQqUserPlaylists(rawList: unknown[], seen: Set<string>, subscribed = 
 }
 
 type QqQualityCandidate = {
+  id: string;
   type: string;
-  level: PlaybackQuality;
+  level: string;
   label: string;
+  short: string;
   prefix: string;
   ext: string;
+  sizeFields: string[];
+  format: string;
 };
 
 const QQ_QUALITY_CANDIDATES: QqQualityCandidate[] = [
-  { type: "flac", level: "lossless", label: "无损 FLAC", prefix: "F000", ext: ".flac" },
-  { type: "320", level: "exhigh", label: "320k MP3", prefix: "M800", ext: ".mp3" },
-  { type: "128", level: "standard", label: "128k MP3", prefix: "M500", ext: ".mp3" },
+  { id: "flac", type: "flac", level: "flac", label: "FLAC", short: "FLAC", prefix: "F000", ext: ".flac", sizeFields: ["size_flac"], format: "flac" },
+  { id: "ape", type: "ape", level: "ape", label: "APE", short: "APE", prefix: "A000", ext: ".ape", sizeFields: ["size_ape"], format: "ape" },
+  { id: "320", type: "320", level: "320", label: "320k MP3", short: "320", prefix: "M800", ext: ".mp3", sizeFields: ["size_320mp3"], format: "mp3" },
+  { id: "128", type: "128", level: "128", label: "128k MP3", short: "128", prefix: "M500", ext: ".mp3", sizeFields: ["size_128mp3"], format: "mp3" },
+  { id: "m4a", type: "m4a", level: "m4a", label: "AAC", short: "AAC", prefix: "C400", ext: ".m4a", sizeFields: ["size_96aac", "size_192aac", "size_48aac"], format: "m4a" },
 ];
 
-function qqQualityCandidatesFrom(requested: PlaybackQuality): QqQualityCandidate[] {
-  if (requested === "standard") return QQ_QUALITY_CANDIDATES.slice(2);
-  if (requested === "exhigh") return QQ_QUALITY_CANDIDATES.slice(1);
-  return QQ_QUALITY_CANDIDATES;
+const QQ_QUALITY_REQUEST_ALIASES: Record<string, string> = {
+  jymaster: "flac",
+  hires: "flac",
+  lossless: "flac",
+  sq: "flac",
+  exhigh: "320",
+  high: "320",
+  hq: "320",
+  standard: "128",
+  normal: "128",
+  std: "128",
+  aac: "m4a"
+};
+
+function normalizeQqQualityRequest(requested: string): string {
+  const value = requested.trim().toLowerCase();
+  return QQ_QUALITY_REQUEST_ALIASES[value] ?? value;
+}
+
+function qqQualityCandidatesFrom(requested: string): QqQualityCandidate[] {
+  const normalized = normalizeQqQualityRequest(requested);
+  const start = QQ_QUALITY_CANDIDATES.findIndex(item => item.id === normalized || item.type === normalized);
+  return QQ_QUALITY_CANDIDATES.slice(start >= 0 ? start : 0);
 }
 
 function qqFilenameFor(track: Track, quality: QqQualityCandidate): string {
   return `${quality.prefix}${track.mediaMid || track.sourceId}${quality.ext}`;
+}
+
+function readQqQualitySize(file: Record<string, unknown>, fields: string[]): number {
+  for (const field of fields) {
+    const value = file[field];
+    const num = typeof value === "number" ? value : typeof value === "string" ? Number(value.trim()) : NaN;
+    if (Number.isFinite(num) && num > 0) return Math.floor(num);
+  }
+  return 0;
+}
+
+function formatQqQualitySize(size: number): string {
+  if (size >= 1024 * 1024) {
+    const mb = size / 1024 / 1024;
+    return `${mb >= 10 ? Math.round(mb) : Math.round(mb * 10) / 10} MB`;
+  }
+  if (size >= 1024) return `${Math.round(size / 1024)} KB`;
+  return `${size} B`;
+}
+
+function findQqFileObject(value: unknown, seen = new Set<object>(), depth = 0): Record<string, unknown> | null {
+  if (depth > 6 || value === null || typeof value !== "object") return null;
+  if (seen.has(value)) return null;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const found = findQqFileObject(item, seen, depth + 1);
+      if (found) return found;
+    }
+    return null;
+  }
+  const obj = value as Record<string, unknown>;
+  const directFile = asObj(obj.file);
+  if (directFile) {
+    const found = findQqFileObject(directFile, seen, depth + 1);
+    if (found) return found;
+  }
+  if (QQ_QUALITY_CANDIDATES.some(candidate => readQqQualitySize(obj, candidate.sizeFields) > 0)) {
+    return obj;
+  }
+  for (const child of Object.values(obj)) {
+    const found = findQqFileObject(child, seen, depth + 1);
+    if (found) return found;
+  }
+  return null;
+}
+
+function qqQualityOptionFromFile(candidate: QqQualityCandidate, file: Record<string, unknown>): TrackQualityOption | null {
+  const size = readQqQualitySize(file, candidate.sizeFields);
+  if (size <= 0) return null;
+  return {
+    provider: "qq",
+    id: candidate.id,
+    label: candidate.label,
+    short: candidate.short,
+    detail: formatQqQualitySize(size),
+    requestQuality: candidate.id,
+    level: candidate.level,
+    type: candidate.type,
+    size,
+    format: candidate.format,
+    source: "declared"
+  };
 }
 
 function qqResponseData(body: unknown): Record<string, unknown> | null {
@@ -849,6 +938,23 @@ export function createQqAdapter(
         `qq song-url ${track.sourceId} returned no url`
       );
     },
+    async trackQualities(track): Promise<TrackQualityAvailability> {
+      const cfg = cfgOf(deps);
+      const body = (await deps.songDetail({ songmid: track.sourceId }, cfg)).body;
+      const file = findQqFileObject(body);
+      const qualities = file
+        ? QQ_QUALITY_CANDIDATES.flatMap((candidate) => {
+            const option = qqQualityOptionFromFile(candidate, file);
+            return option ? [option] : [];
+          })
+        : [];
+      return {
+        provider: "qq",
+        trackId: track.sourceId,
+        defaultQuality: qualities[0]?.requestQuality,
+        qualities
+      };
+    },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);
       const resp = await deps.lyric({ songmid: track.sourceId }, cfg);
@@ -960,17 +1066,23 @@ export function createQqAdapter(
       if (!cfg.cookie) return { provider: "qq", loggedIn: false };
       const userId = qqUserIdFromCookie(cfg.cookie);
       if (!userId) return { provider: "qq", loggedIn: true };
+      const readVipBody = async (): Promise<unknown | null> => {
+        if (!deps.vipInfo) return null;
+        try {
+          return (await deps.vipInfo({ id: userId }, { cookie: cfg.cookie })).body;
+        } catch {
+          return null;
+        }
+      };
       try {
         const resp = await deps.loginStatus({ id: userId }, { cookie: cfg.cookie });
         const bodies: unknown[] = [resp.body];
-        if (deps.vipInfo) {
-          try {
-            bodies.push((await deps.vipInfo({ id: userId }, { cookie: cfg.cookie })).body);
-          } catch {
-          }
-        }
+        const vipBody = await readVipBody();
+        if (vipBody) bodies.push(vipBody);
         return mapQqLoginStatus(bodies, userId);
       } catch {
+        const vipBody = await readVipBody();
+        if (vipBody) return mapQqLoginStatus([vipBody], userId);
         return { provider: "qq", loggedIn: true, userId };
       }
     },

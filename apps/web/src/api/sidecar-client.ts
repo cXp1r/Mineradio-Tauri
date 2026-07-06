@@ -47,10 +47,12 @@ import {
 	SongLikeAckSchema,
 	SongLikeCheckAck,
 	SongLikeCheckAckSchema,
+	TrackQualityAvailability,
+	TrackQualityAvailabilitySchema,
 	SongUrlResultSchema,
 	WeatherRadioResponse,
 	WeatherRadioResponseSchema,
-	type PlaybackQuality,
+	type PlaybackQualityRequest,
 	TrackArraySchema,
 	Track,
 	LyricPayload,
@@ -346,7 +348,7 @@ export class SidecarClient {
 		);
 	}
 
-	async songUrl(track: Track, quality?: PlaybackQuality): Promise<SongUrlResult> {
+	async songUrl(track: Track, quality?: PlaybackQualityRequest): Promise<SongUrlResult> {
 		return this.request(
 			"POST",
 			`/providers/${track.provider}/song-url`,
@@ -355,12 +357,21 @@ export class SidecarClient {
 		);
 	}
 
-	async resolveSongUrl(track: Track, quality?: PlaybackQuality): Promise<SongUrlResult> {
+	async resolveSongUrl(track: Track, quality?: PlaybackQualityRequest): Promise<SongUrlResult> {
 		return this.request(
 			"POST",
 			"/song-url",
 			SongUrlResultSchema,
 			quality ? { track, quality } : track,
+		);
+	}
+
+	async trackQualities(track: Track): Promise<TrackQualityAvailability> {
+		return this.request(
+			"POST",
+			`/providers/${track.provider}/qualities`,
+			TrackQualityAvailabilitySchema,
+			track,
 		);
 	}
 

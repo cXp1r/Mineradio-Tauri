@@ -17,9 +17,11 @@ test("capability matrix: netease, qq, and soda are registered", () => {
   expect(netease).toBeDefined();
   expect(netease?.available).toBe(true);
   expect(netease?.capabilities.length).toBeGreaterThan(0);
+  expect(netease?.capabilities).toContain("quality");
   expect(qq).toBeDefined();
   expect(qq?.available).toBe(true);
   expect(qq?.capabilities.length).toBeGreaterThan(0);
+  expect(qq?.capabilities).toContain("quality");
   expect(soda).toBeDefined();
   expect(soda?.available).toBe(true);
   expect(soda?.capabilities).toEqual([

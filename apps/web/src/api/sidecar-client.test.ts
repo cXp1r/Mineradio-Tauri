@@ -441,8 +441,8 @@ test("songUrl POSTs the Track body and parses the SongUrlResult envelope", async
 });
 
 test("resolveSongUrl POSTs to the cross-source song-url endpoint", async () => {
-	let receivedBody: unknown = null;
-	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+  let receivedBody: unknown = null;
+  const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = typeof input === "string" ? input : input.toString();
 		expect(url).toContain("/song-url");
 		expect(url).not.toContain("/providers/");
@@ -461,7 +461,42 @@ test("resolveSongUrl POSTs to the cross-source song-url endpoint", async () => {
 		expect(receivedBody).toEqual({ track: SAMPLE_TRACK, quality: "lossless" });
 		if (!result.url) throw new Error("expected playable test url");
 		expect(client.audioProxyUrl(result.url)).toBe(`${BASE}/audio-proxy?url=https%3A%2F%2Fmedia.example%2Fa.mp3`);
-	});
+  });
+});
+
+test("trackQualities POSTs the Track body and parses native quality options", async () => {
+  let receivedBody: unknown = null;
+  const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    expect(url).toContain("/providers/netease/qualities");
+    expect(init?.method).toBe("POST");
+    receivedBody = JSON.parse(String(init?.body ?? "{}"));
+    return jsonResponse({
+      ok: true,
+      data: {
+        provider: "netease",
+        trackId: "t1",
+        defaultQuality: "exhigh",
+        qualities: [{
+          provider: "netease",
+          id: "exhigh",
+          label: "极高",
+          short: "HQ",
+          requestQuality: "exhigh",
+          level: "exhigh",
+          br: 999000,
+          source: "resolved"
+        }]
+      },
+    });
+  }) as typeof fetch;
+  await withFetch(fake, async () => {
+    const client = new SidecarClient(BASE);
+    const result = await client.trackQualities(SAMPLE_TRACK);
+    expect(receivedBody).toEqual(SAMPLE_TRACK);
+    expect(result.defaultQuality).toBe("exhigh");
+    expect(result.qualities[0].requestQuality).toBe("exhigh");
+  });
 });
 
 test("proxiedUrl resolves sidecar relative proxied paths against the sidecar base URL", () => {
@@ -473,8 +508,8 @@ test("proxiedUrl resolves sidecar relative proxied paths against the sidecar bas
 });
 
 test("imageProxyUrl mirrors baseline cover proxy URL construction for remote covers only", () => {
-	const client = new SidecarClient(BASE);
-	expect(client.imageProxyUrl("https://img.example/a.jpg")).toBe(`${BASE}/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg`);
+  const client = new SidecarClient(BASE);
+  expect(client.imageProxyUrl("https://img.example/a.jpg")).toBe(`${BASE}/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg`);
 	expect(client.imageProxyUrl("http://img.example/a.jpg")).toBe(`${BASE}/image-proxy?url=http%3A%2F%2Fimg.example%2Fa.jpg`);
 	expect(client.imageProxyUrl("data:image/png;base64,abc")).toBe("data:image/png;base64,abc");
 	expect(client.imageProxyUrl("blob:http://local/abc")).toBe("blob:http://local/abc");
