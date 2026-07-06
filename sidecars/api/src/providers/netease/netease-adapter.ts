@@ -1,6 +1,7 @@
 import type {
   Track,
-  PlaybackQuality,
+  TrackQualityAvailability,
+  TrackQualityOption,
   PlaylistSummary,
   PlaylistDetail,
   LyricPayload,
@@ -379,26 +380,80 @@ async function neteaseTrialLoginStatus(deps: NeteaseHanaDeps): Promise<ProviderL
 }
 
 type NeteaseQualityCandidate = {
-  level: PlaybackQuality;
+  level: string;
   br: number;
   label: string;
+  short: string;
 };
 
 const NETEASE_QUALITY_CANDIDATES: NeteaseQualityCandidate[] = [
-  { level: "jymaster", br: 1999000, label: "超清母带" },
-  { level: "hires", br: 1999000, label: "高清臻音" },
-  { level: "lossless", br: 1411000, label: "无损" },
-  { level: "exhigh", br: 999000, label: "极高" },
-  { level: "standard", br: 128000, label: "标准" },
+  { level: "jymaster", br: 1999000, label: "超清母带", short: "母带" },
+  { level: "dolby", br: 1999000, label: "杜比全景声", short: "杜比" },
+  { level: "sky", br: 1999000, label: "沉浸环绕声", short: "沉浸" },
+  { level: "jyeffect", br: 1999000, label: "高清环绕声", short: "环绕" },
+  { level: "hires", br: 1999000, label: "Hi-Res", short: "Hi-Res" },
+  { level: "lossless", br: 1411000, label: "无损", short: "SQ" },
+  { level: "exhigh", br: 999000, label: "极高", short: "HQ" },
+  { level: "higher", br: 192000, label: "较高", short: "192k" },
+  { level: "standard", br: 128000, label: "标准", short: "128k" },
 ];
 
 function requestedQuality(opts?: SongUrlOptions) {
   return opts?.quality ?? "hires";
 }
 
-function qualityCandidatesFrom(target: PlaybackQuality): NeteaseQualityCandidate[] {
+function qualityCandidatesFrom(target: string): NeteaseQualityCandidate[] {
   const start = NETEASE_QUALITY_CANDIDATES.findIndex(item => item.level === target);
-  return NETEASE_QUALITY_CANDIDATES.slice(start >= 0 ? start : 1);
+  return NETEASE_QUALITY_CANDIDATES.slice(start >= 0 ? start : 4);
+}
+
+function neteaseQualityByLevel(level: string | undefined): NeteaseQualityCandidate | undefined {
+  return NETEASE_QUALITY_CANDIDATES.find(item => item.level === level);
+}
+
+function neteaseActualLevel(datum: Record<string, unknown> | null, requested: NeteaseQualityCandidate): string {
+  const raw = datum?.level;
+  return typeof raw === "string" && raw.trim() ? raw.trim() : requested.level;
+}
+
+function neteaseQualityLabel(level: string, fallback: NeteaseQualityCandidate): string {
+  return neteaseQualityByLevel(level)?.label ?? fallback.label;
+}
+
+function neteaseQualityShort(level: string, fallback: NeteaseQualityCandidate): string {
+  return neteaseQualityByLevel(level)?.short ?? fallback.short;
+}
+
+function neteaseQualityRank(level: string): number {
+  const index = NETEASE_QUALITY_CANDIDATES.findIndex(item => item.level === level);
+  return index >= 0 ? index : NETEASE_QUALITY_CANDIDATES.length;
+}
+
+function neteaseQualityOptionFromDatum(
+  datum: Record<string, unknown>,
+  requested: NeteaseQualityCandidate,
+  hasCookie: boolean
+): TrackQualityOption | null {
+  const url = typeof datum.url === "string" && datum.url.length > 0 ? datum.url : null;
+  const code = typeof datum.code === "number" ? datum.code : 0;
+  const state = mapPlayable(datum.fee, code, datum.freeTrialInfo, hasCookie, url);
+  if (state !== "playable" || !url) return null;
+  const actualLevel = neteaseActualLevel(datum, requested);
+  const br = typeof datum.br === "number" && Number.isFinite(datum.br) ? Math.max(0, Math.floor(datum.br)) : requested.br;
+  const type = typeof datum.type === "string" && datum.type.trim() ? datum.type.trim() : undefined;
+  const label = neteaseQualityLabel(actualLevel, requested);
+  return {
+    provider: "netease",
+    id: actualLevel,
+    label,
+    short: neteaseQualityShort(actualLevel, requested),
+    detail: type ? `${Math.round(br / 1000)}kbps · ${type.toUpperCase()}` : `${Math.round(br / 1000)}kbps`,
+    requestQuality: actualLevel,
+    level: actualLevel,
+    type,
+    br,
+    source: "resolved",
+  };
 }
 
 async function requestSongUrlForQuality(
@@ -509,14 +564,15 @@ export function createNeteaseAdapter(
                 }
               )
             : undefined;
+          const actualLevel = neteaseActualLevel(datum, quality);
           const result = {
             url,
             proxied: false,
             provider: "netease",
             trial,
             playable: true,
-            level: quality.level,
-            quality: quality.label,
+            level: actualLevel,
+            quality: neteaseQualityLabel(actualLevel, quality),
             br,
             requestedQuality: requested,
             loggedIn,
@@ -559,6 +615,30 @@ export function createNeteaseAdapter(
         `netease song-url ${track.sourceId} state ${lastState}`,
         { retryable: lastState === "login_required", action: lastState === "login_required" ? "login" : undefined }
       );
+    },
+    async trackQualities(track): Promise<TrackQualityAvailability> {
+      const cfg = cfgOf(deps);
+      const byLevel = new Map<string, TrackQualityOption>();
+      for (const quality of NETEASE_QUALITY_CANDIDATES) {
+        try {
+          const resp = await requestSongUrlForQuality(deps, track, quality, cfg);
+          const datum = pickSongUrlDatum(asObj(resp.body), track);
+          if (!datum) continue;
+          const option = neteaseQualityOptionFromDatum(datum, quality, !!cfg.cookie);
+          if (!option || byLevel.has(option.id)) continue;
+          byLevel.set(option.id, option);
+        } catch {
+        }
+      }
+      const qualities = [...byLevel.values()].sort((a, b) =>
+        neteaseQualityRank(a.level ?? a.id) - neteaseQualityRank(b.level ?? b.id)
+      );
+      return {
+        provider: "netease",
+        trackId: track.sourceId,
+        defaultQuality: qualities[0]?.requestQuality,
+        qualities
+      };
     },
     async lyric(track): Promise<LyricPayload> {
       const cfg = cfgOf(deps);

@@ -23,6 +23,7 @@ export interface UniformContainer {
 	uVinylSpin?: UniformSlot;
 	uParticleDim?: UniformSlot;
 	uBurstAmt?: UniformSlot;
+	uAudioBands?: UniformSlot;
 	[key: string]: UniformSlot | undefined;
 }
 
@@ -99,4 +100,11 @@ export function syncFxUniforms(
 
 	const curBurst = numValue(uniforms.uBurstAmt, 0);
 	if (uniforms.uBurstAmt) uniforms.uBurstAmt.value = curBurst * 0.90;
+
+	const targetBands = uniforms.uAudioBands?.value;
+	if (snapshot.frequencyBands && targetBands instanceof Float32Array) {
+		const n = Math.min(targetBands.length, snapshot.frequencyBands.length);
+		for (let i = 0; i < n; i += 1) targetBands[i] = snapshot.frequencyBands[i] ?? 0;
+		for (let i = n; i < targetBands.length; i += 1) targetBands[i] = 0;
+	}
 }

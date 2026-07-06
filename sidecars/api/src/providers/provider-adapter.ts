@@ -7,8 +7,8 @@ import type {
   ProviderVipIcon,
   PlaybackRestriction,
   PlaybackRestrictionCategory,
-  PlaybackQuality,
   SongUrlResult,
+  TrackQualityAvailability,
   SongLikeAck,
   SongLikeCheckAck,
   PlaylistAddSongAck
@@ -31,13 +31,14 @@ export type ProviderLoginStatus = {
   vipLevelName?: string;
 };
 
-export type SongUrlOptions = { quality?: PlaybackQuality };
+export type SongUrlOptions = { quality?: string };
 export type { SongUrlResult };
 
 export interface ProviderAdapter {
   readonly id: ProviderId;
   search(query: { keyword: string; limit: number }): Promise<Track[]>;
   songUrl(track: Track, opts?: SongUrlOptions): Promise<SongUrlResult>;
+  trackQualities(track: Track): Promise<TrackQualityAvailability>;
   lyric(track: Track): Promise<LyricPayload>;
   playlistList(): Promise<PlaylistSummary[]>;
   playlistDetail(id: string): Promise<PlaylistDetail>;

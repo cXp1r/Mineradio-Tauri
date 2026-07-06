@@ -23,6 +23,14 @@ function adapter(provider: ProviderId): ProviderAdapter {
     id: provider,
     async search() { return []; },
     async songUrl() { return { provider, url: "https://audio.example/song.mp3", proxied: false }; },
+    async trackQualities() {
+      return {
+        provider,
+        trackId: "song-1",
+        defaultQuality: "standard",
+        qualities: []
+      };
+    },
     async lyric() { return { provider, trackId: "song-1", lines: [], hasTranslation: false, isWordByWord: false }; },
     async playlistList() { return []; },
     async playlistDetail(id) {

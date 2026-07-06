@@ -130,6 +130,65 @@ test("songUrl sends requested playback quality to hana and returns resolved qual
   expect(out.requestedQuality).toBe("exhigh");
 });
 
+test("songUrl reports the actual Netease level returned by song/url/v1 after fallback", async () => {
+  const deps = noopDeps({
+    songUrlV1: async (query) => ({
+      body: {
+        data: [{
+          id: 1,
+          url: "http://audio-actual",
+          level: "exhigh",
+          br: 999000,
+          type: "mp3",
+          fee: 0,
+          code: 200,
+          requested: query["level"]
+        }]
+      }
+    })
+  });
+  const adapter = createNeteaseAdapter(deps);
+  const out = await adapter.songUrl(trackFixture, { quality: "lossless" });
+
+  expect(out.url).toBe("http://audio-actual");
+  expect(out.level).toBe("exhigh");
+  expect(out.quality).toBe("极高");
+  expect(out.requestedQuality).toBe("lossless");
+});
+
+test("trackQualities probes Netease candidates and dedupes by actual returned level", async () => {
+  const calls: string[] = [];
+  const deps = noopDeps({
+    songUrlV1: async (query) => {
+      const requested = String(query["level"]);
+      calls.push(requested);
+      if (requested === "lossless") {
+        return {
+          body: { data: [{ id: 1, url: "http://audio-lossless", level: "lossless", br: 1411000, type: "flac", fee: 0, code: 200 }] }
+        };
+      }
+      if (requested === "exhigh") {
+        return {
+          body: { data: [{ id: 1, url: "http://audio-exhigh", level: "exhigh", br: 999000, type: "mp3", fee: 0, code: 200 }] }
+        };
+      }
+      return {
+        body: { data: [{ id: 1, url: "http://audio-fallback", level: "exhigh", br: 999000, type: "mp3", fee: 0, code: 200 }] }
+      };
+    }
+  });
+  const adapter = createNeteaseAdapter(deps);
+  const out = await adapter.trackQualities(trackFixture);
+
+  expect(calls).toContain("jymaster");
+  expect(calls).toContain("lossless");
+  expect(out.provider).toBe("netease");
+  expect(out.trackId).toBe("1");
+  expect(out.defaultQuality).toBe("lossless");
+  expect(out.qualities.map((quality) => quality.id)).toEqual(["lossless", "exhigh"]);
+  expect(out.qualities.map((quality) => quality.requestQuality)).toEqual(["lossless", "exhigh"]);
+});
+
 test("songUrl walks the baseline quality ladder until a playable Netease URL is found", async () => {
   const calls: string[] = [];
   const deps = noopDeps({

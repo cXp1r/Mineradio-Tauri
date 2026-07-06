@@ -27,7 +27,7 @@ import { CUSTOM_LYRIC_PREF_STORE_KEY, CUSTOM_LYRIC_STORE_KEY } from "../lyrics/c
 import { SidecarClientError, type SidecarClient } from "../api/sidecar-client";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
-import type { Track } from "@mineradio/shared";
+import type { LyricPayload, Track } from "@mineradio/shared";
 
 test("web index preloads the baseline simple or DIY mode class before React mounts", async () => {
 	const html = await fetch(new URL("../../index.html", import.meta.url)).then((response) => response.text());
@@ -1279,6 +1279,546 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 	}
 });
 
+test("App retries playback after applying an automatic quality fallback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		localStorage.setItem("mineradio-playback-quality-v1", "m4a");
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		useSearchStore.getState().reset();
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "qq",
+			id: "fallback-quality-1",
+			sourceId: "fallback-quality-1",
+			title: "Fallback Quality Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		const resolveQualities: string[] = [];
+		const fakeClient = {
+			async trackQualities() {
+				return {
+					provider: "qq",
+					trackId: "fallback-quality-1",
+					defaultQuality: "flac",
+					qualities: [
+						{
+							provider: "qq",
+							id: "flac",
+							label: "FLAC",
+							short: "FLAC",
+							detail: "42MB",
+							requestQuality: "flac",
+							source: "declared",
+						},
+					],
+				};
+			},
+			async resolveSongUrl(_track: Track, quality: string) {
+				resolveQualities.push(quality);
+				if (quality === "m4a") {
+					return { url: "", quality, proxied: false, message: "quality unavailable" };
+				}
+				return { url: "https://media.example.test/fallback-flac.mp3", quality, proxied: false };
+			},
+			audioProxyUrl(url: string) {
+				return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+			},
+			async lyric() {
+				return {
+					provider: "qq",
+					trackId: "fallback-quality-1",
+					lines: [],
+					hasTranslation: false,
+					isWordByWord: false,
+				};
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: "http://127.0.0.1:39999",
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 16 && !audio?.src.includes("fallback-flac"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(resolveQualities).toEqual(["m4a", "flac"]);
+		expect(audio?.src).toContain(encodeURIComponent("https://media.example.test/fallback-flac.mp3"));
+		expect(localStorage.getItem("mineradio-playback-quality-v1")).toBe("flac");
+	} finally {
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App refreshes a stale playback URL when resuming after a long pause", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const originalNow = Date.now;
+	let now = 1_000_000;
+	Date.now = () => now;
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "netease",
+			id: "stale-resume-1",
+			sourceId: "stale-resume-1",
+			title: "Stale Resume Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		const rawUrls = [
+			"https://media.example.test/song.mp3?token=old",
+			"https://media.example.test/song.mp3?token=fresh",
+		];
+		const resolveCalls: string[] = [];
+		const fakeClient = {
+			async resolveSongUrl() {
+				resolveCalls.push("resolve");
+				return { url: rawUrls[Math.min(resolveCalls.length - 1, rawUrls.length - 1)], quality: "standard", proxied: false };
+			},
+			audioProxyUrl(url: string) {
+				return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+			},
+			async lyric() {
+				return {
+					provider: "netease",
+					trackId: "stale-resume-1",
+					lines: [],
+					hasTranslation: false,
+					isWordByWord: false,
+				};
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: "http://127.0.0.1:39999",
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(rawUrls[0])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		expect(audio?.src).toContain(encodeURIComponent(rawUrls[0]));
+		expect(resolveCalls.length).toBe(1);
+
+		audio!.currentTime = 23.4;
+		audio!.duration = 60;
+		audio!.dispatchEvent(new Event("timeupdate"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		audio!.pause();
+		now += 30 * 60 * 1000;
+		(host.querySelector("#play-btn") as HTMLButtonElement).click();
+
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(rawUrls[1])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(resolveCalls.length).toBe(2);
+		expect(audio?.src).toContain(encodeURIComponent(rawUrls[1]));
+		expect(audio?.currentTime).toBe(23.4);
+	} finally {
+		Date.now = originalNow;
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App keeps pending provider lyrics when refreshing a stale playback URL", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const originalNow = Date.now;
+	let now = 4_000_000;
+	Date.now = () => now;
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "netease",
+			id: "stale-lyric-refresh-1",
+			sourceId: "stale-lyric-refresh-1",
+			title: "Delayed Lyric Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		const rawUrls = [
+			"https://media.example.test/song.mp3?token=old-lyric",
+			"https://media.example.test/song.mp3?token=fresh-lyric",
+		];
+		const resolveCalls: string[] = [];
+		let lyricCalls = 0;
+		let resolveLyric: ((payload: LyricPayload) => void) | undefined;
+		const fakeClient = {
+			async resolveSongUrl() {
+				resolveCalls.push("resolve");
+				return { url: rawUrls[Math.min(resolveCalls.length - 1, rawUrls.length - 1)], quality: "standard", proxied: false };
+			},
+			audioProxyUrl(url: string) {
+				return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+			},
+			async lyric() {
+				lyricCalls += 1;
+				return await new Promise<LyricPayload>((resolve) => {
+					resolveLyric = resolve;
+				});
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: "http://127.0.0.1:39999",
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(rawUrls[0])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		expect(audio?.src).toContain(encodeURIComponent(rawUrls[0]));
+		expect(lyricCalls).toBe(1);
+
+		audio!.pause();
+		now += 30 * 60 * 1000;
+		(host.querySelector("#play-btn") as HTMLButtonElement).click();
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(rawUrls[1])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		expect(resolveCalls.length).toBe(2);
+		expect(lyricCalls).toBe(1);
+
+		resolveLyric?.({
+			provider: "netease",
+			trackId: "stale-lyric-refresh-1",
+			lines: [{ timeMs: 0, text: "Provider lyric after refresh", source: "lrc" }],
+			hasTranslation: false,
+			isWordByWord: false,
+		});
+		for (let i = 0; i < 12 && useLyricsStore.getState().payload?.lines[0]?.text !== "Provider lyric after refresh"; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(useLyricsStore.getState().payload?.lines[0]?.text).toBe("Provider lyric after refresh");
+	} finally {
+		Date.now = originalNow;
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App resumes a short pause without refreshing the playback URL", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const originalNow = Date.now;
+	let now = 2_000_000;
+	Date.now = () => now;
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "netease",
+			id: "short-resume-1",
+			sourceId: "short-resume-1",
+			title: "Short Resume Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		let resolveCalls = 0;
+		const fakeClient = {
+			async resolveSongUrl() {
+				resolveCalls += 1;
+				return { url: "https://media.example.test/short.mp3", quality: "standard", proxied: false };
+			},
+			audioProxyUrl(url: string) {
+				return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+			},
+			async lyric() {
+				return {
+					provider: "netease",
+					trackId: "short-resume-1",
+					lines: [],
+					hasTranslation: false,
+					isWordByWord: false,
+				};
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: "http://127.0.0.1:39999",
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 12 && (resolveCalls < 1 || (audio?.playCalled ?? 0) < 1); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		const playCallsAfterLoad = audio?.playCalled ?? 0;
+		audio!.pause();
+		now += 2 * 60 * 1000;
+		(host.querySelector("#play-btn") as HTMLButtonElement).click();
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(resolveCalls).toBe(1);
+		expect(audio?.playCalled).toBe(playCallsAfterLoad + 1);
+	} finally {
+		Date.now = originalNow;
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App retries a media error by refreshing the current playback URL only once", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	useSearchStore.getState().reset();
+	usePlaybackStore.getState().setCurrentTrack({
+		provider: "netease",
+		id: "error-retry-1",
+		sourceId: "error-retry-1",
+		title: "Error Retry Song",
+		artists: ["Artist"],
+		album: "",
+		coverUrl: "",
+		durationMs: 60000,
+		qualityHints: [],
+		playableState: "unknown",
+	});
+
+	const urls = [
+		"https://media.example.test/error-old.mp3",
+		"https://media.example.test/error-fresh.mp3",
+		"https://media.example.test/error-unused.mp3",
+	];
+	let resolveCalls = 0;
+	const fakeClient = {
+		async resolveSongUrl() {
+			const url = urls[Math.min(resolveCalls, urls.length - 1)];
+			resolveCalls += 1;
+			return { url, quality: "standard", proxied: false };
+		},
+		audioProxyUrl(url: string) {
+			return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+		},
+		async lyric() {
+			return {
+				provider: "netease",
+				trackId: "error-retry-1",
+				lines: [],
+				hasTranslation: false,
+				isWordByWord: false,
+			};
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const audio = appStubAudioInstances[0];
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(urls[0])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		audio!.currentTime = 12;
+		audio!.dispatchEvent(new Event("timeupdate"));
+		audio!.dispatchEvent(new Event("error"));
+		for (let i = 0; i < 12 && !audio?.src.includes(encodeURIComponent(urls[1])); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(resolveCalls).toBe(2);
+		expect(audio?.src).toContain(encodeURIComponent(urls[1]));
+		expect(useSearchStore.getState().error).toBeNull();
+
+		audio!.dispatchEvent(new Event("error"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(resolveCalls).toBe(2);
+		expect(useSearchStore.getState().error).not.toBeNull();
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App does not refresh local imported audio after a media error", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const oldCreateObjectUrl = URL.createObjectURL;
+	URL.createObjectURL = (() => "blob:local-error-1") as typeof URL.createObjectURL;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	useSearchStore.getState().reset();
+
+	let resolveCalls = 0;
+	const fakeClient = {
+		async resolveSongUrl() {
+			resolveCalls += 1;
+			return { url: "https://media.example.test/local-should-not-load.mp3", quality: "standard", proxied: false };
+		},
+		audioProxyUrl(url: string) {
+			return `http://127.0.0.1:39999/audio-proxy?url=${encodeURIComponent(url)}`;
+		},
+		async lyric() {
+			return {
+				provider: "local",
+				trackId: "local-error-1",
+				lines: [],
+				hasTranslation: false,
+				isWordByWord: false,
+			};
+		},
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return {
+				loggedIn: false,
+				user: null,
+				mode: "starter",
+				dailySongs: [],
+				playlists: [],
+				podcasts: [],
+				updatedAt: 1,
+			};
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const tile = Array.from(host.querySelectorAll(".home-tile"))
+			.find((button) => button.textContent?.includes("导入本地音乐")) as HTMLButtonElement;
+		tile.click();
+		const input = host.querySelector("#file-input") as HTMLInputElement;
+		const file = new File(["audio"], "Local Error Song.mp3", { type: "audio/mpeg", lastModified: 123 });
+		Object.defineProperty(input, "files", { value: [file], configurable: true });
+		input.dispatchEvent(new window.Event("change", { bubbles: true }));
+
+		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== "blob:local-error-1"; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		appStubAudioInstances[0]?.dispatchEvent(new Event("error"));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+
+		expect(resolveCalls).toBe(0);
+		expect(useSearchStore.getState().error).not.toBeNull();
+	} finally {
+		URL.createObjectURL = oldCreateObjectUrl;
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
 test("App shows the baseline trial banner when provider returns a trial-only URL", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
@@ -1596,6 +2136,7 @@ test("App opens account dropdown from a single logged-in account and launches on
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("网易账号");
 	expect(host.querySelector("#account-dropdown")?.textContent).toContain("黑胶SVIP·陆");
 	expect(host.querySelector("#account-add-provider-qq")).not.toBeNull();
+	expect(host.querySelector("#account-add-provider-qq")?.textContent).toContain("登录已失效");
 	expect(host.querySelector("#account-add-provider-netease")).toBeNull();
 	expect(host.querySelector("#login-modal")).toBeNull();
 	expect(host.querySelector("#qr-img")).toBeNull();

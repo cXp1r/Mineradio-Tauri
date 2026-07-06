@@ -2,7 +2,7 @@ import { useEffect, useRef, type ReactElement } from "react";
 import { PlayerConsoleHost } from "../../visual/PlayerConsoleHost";
 import type { PlaybackMode } from "../../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../../stores/shelf-store";
-import type { PlaybackQuality, Track } from "@mineradio/shared";
+import type { PlaybackQualityRequest, Track, TrackQualityOption } from "@mineradio/shared";
 
 export interface BottomControlsHostProps {
 	visible: boolean;
@@ -23,7 +23,7 @@ export interface BottomControlsHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
-	onQualityChange?: (quality: PlaybackQuality) => void;
+	onQualityChange?: (quality: PlaybackQualityRequest) => void;
 	onShelfModeChange?: (mode: ShelfMode) => void;
 	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
 	onShelfPresenceChange?: (presence: ShelfPresence) => void;
@@ -49,7 +49,8 @@ export interface BottomControlsHostProps {
 	durationMs?: number | null;
 	volume?: number;
 	muted?: boolean;
-	playbackQuality?: PlaybackQuality;
+	playbackQuality?: PlaybackQualityRequest;
+	qualityOptions?: TrackQualityOption[];
 	shelfMode?: ShelfMode;
 	shelfCameraMode?: ShelfCameraMode;
 	shelfPresence?: ShelfPresence;
@@ -218,6 +219,7 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				volume={props.volume}
 				muted={props.muted}
 				playbackQuality={props.playbackQuality}
+				qualityOptions={props.qualityOptions}
 				shelfMode={props.shelfMode}
 				shelfCameraMode={props.shelfCameraMode}
 				shelfPresence={props.shelfPresence}

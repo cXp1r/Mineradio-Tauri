@@ -6,9 +6,11 @@ export type AudioProxyRequest = {
 };
 
 export type AudioProxy = (input: AudioProxyRequest) => Promise<Response>;
+export type AudioProxyLog = (entry: Record<string, unknown>) => Promise<void> | void;
 
 export type AudioProxyDeps = {
   fetch?: (request: Request) => Promise<Response>;
+  log?: AudioProxyLog;
 };
 
 const playbackRequestHeaders = ["range"];
@@ -24,6 +26,7 @@ const upstreamResponseHeaders = [
 
 export function createAudioProxy(deps: AudioProxyDeps = {}): AudioProxy {
   const fetcher = deps.fetch ?? fetch;
+  const log = deps.log;
 
   return async function proxyAudio(input: AudioProxyRequest): Promise<Response> {
     const parsed = parseTargetUrl(input.target);
@@ -40,10 +43,12 @@ export function createAudioProxy(deps: AudioProxyDeps = {}): AudioProxy {
     try {
       upstream = await fetcher(upstreamRequest);
     } catch {
+      await logUpstreamFailure(log, { upstreamError: "fetch failed" });
       return upstreamFailure("upstream audio request failed");
     }
 
     if (!upstream.ok) {
+      await logUpstreamFailure(log, { upstreamStatus: upstream.status });
       return upstreamFailure(`upstream audio request returned ${upstream.status}`);
     }
 
@@ -94,6 +99,17 @@ function responseHeadersFrom(upstream: Response): Headers {
     }
   }
   return headers;
+}
+
+async function logUpstreamFailure(log: AudioProxyLog | undefined, entry: Record<string, unknown>): Promise<void> {
+  if (!log) return;
+  try {
+    await log({
+      event: "audio-proxy-upstream-failure",
+      ...entry
+    });
+  } catch {
+  }
 }
 
 function badRequest(message: string): Response {

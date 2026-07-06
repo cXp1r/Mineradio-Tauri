@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PlaybackQualitySchema, SongUrlRequestSchema, SongUrlResultSchema } from "./song-url";
+import { PlaybackQualitySchema, SongUrlRequestSchema, SongUrlResultSchema, TrackQualityAvailabilitySchema } from "./song-url";
 
 test("SongUrlResultSchema parses a valid url result", () => {
 	const parsed = SongUrlResultSchema.parse({
@@ -122,4 +122,45 @@ test("SongUrlRequestSchema carries track plus requested playback quality", () =>
 	});
 	expect(parsed.quality).toBe("lossless");
 	expect(parsed.track.id).toBe("1");
+});
+
+test("SongUrlRequestSchema accepts provider-native quality ids while normalizing legacy aliases", () => {
+	const baseTrack = {
+		provider: "qq",
+		id: "1",
+		sourceId: "1",
+		title: "Song",
+		artists: [],
+		album: "",
+		coverUrl: "",
+		qualityHints: [],
+		playableState: "playable",
+	};
+
+	expect(SongUrlRequestSchema.parse({ track: baseTrack, quality: "320" }).quality).toBe("320");
+	expect(SongUrlRequestSchema.parse({ track: baseTrack, quality: "higher" }).quality).toBe("higher");
+	expect(SongUrlRequestSchema.parse({ track: baseTrack, quality: "hi-res" }).quality).toBe("hires");
+});
+
+test("TrackQualityAvailabilitySchema parses actual per-track quality options", () => {
+	const parsed = TrackQualityAvailabilitySchema.parse({
+		provider: "qq",
+		trackId: "q1",
+		defaultQuality: "flac",
+		qualities: [
+			{
+				provider: "qq",
+				id: "flac",
+				label: "FLAC",
+				short: "FLAC",
+				requestQuality: "flac",
+				type: "flac",
+				size: 1024,
+				source: "declared",
+			},
+		],
+	});
+
+	expect(parsed.qualities[0].requestQuality).toBe("flac");
+	expect(parsed.qualities[0].source).toBe("declared");
 });

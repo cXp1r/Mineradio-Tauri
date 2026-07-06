@@ -7,12 +7,12 @@ import {
 } from "@mineradio/visual-engine";
 import type { PlaybackMode } from "../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../stores/shelf-store";
-import type { PlaybackQuality, Track } from "@mineradio/shared";
+import type { PlaybackQualityRequest, Track, TrackQualityOption } from "@mineradio/shared";
 import { createProgressDragParticleEmitter, type ProgressDragParticleEmitter } from "./progress-drag-particles";
 import { resolveVirtualListWindow } from "../components/shell/virtual-list";
 
 const PLAYBACK_QUALITY_OPTIONS: Array<{
-	value: PlaybackQuality;
+	value: PlaybackQualityRequest;
 	label: string;
 	short: string;
 	detail: string;
@@ -27,8 +27,37 @@ const PLAYBACK_QUALITY_OPTIONS: Array<{
 const MINI_QUEUE_ROW_HEIGHT = 58;
 const MINI_QUEUE_VIEWPORT_HEIGHT = 320;
 
-function playbackQualityOption(value: PlaybackQuality | undefined) {
-	return PLAYBACK_QUALITY_OPTIONS.find((option) => option.value === value) ?? PLAYBACK_QUALITY_OPTIONS[1];
+type PlaybackQualityViewOption = {
+	value: PlaybackQualityRequest;
+	label: string;
+	short: string;
+	detail: string;
+	svip?: boolean;
+};
+
+function qualityViewOptions(options: TrackQualityOption[] | undefined): PlaybackQualityViewOption[] {
+	if (options === undefined || options.length === 0) return PLAYBACK_QUALITY_OPTIONS;
+	return options.map((option) => ({
+		value: option.requestQuality,
+		label: option.label,
+		short: option.short ?? option.label,
+		detail: option.detail ?? option.type?.toUpperCase() ?? option.level ?? option.id,
+	}));
+}
+
+function fallbackQualityOption(value: PlaybackQualityRequest | undefined): PlaybackQualityViewOption {
+	if (value) {
+		const label = value.toUpperCase();
+		return { value, label, short: label, detail: "当前音源档位" };
+	}
+	return { value: "hires", label: "音质", short: "音质", detail: "暂无可切换档位" };
+}
+
+function playbackQualityOption(value: PlaybackQualityRequest | undefined, options: PlaybackQualityViewOption[]) {
+	const selected = value ? options.find((option) => option.value === value) : undefined;
+	if (selected) return selected;
+	if (value) return fallbackQualityOption(value);
+	return options[0] ?? fallbackQualityOption(value);
 }
 
 export interface PlayerConsoleHostProps {
@@ -48,7 +77,7 @@ export interface PlayerConsoleHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
-	onQualityChange?: (quality: PlaybackQuality) => void;
+	onQualityChange?: (quality: PlaybackQualityRequest) => void;
 	onShelfModeChange?: (mode: ShelfMode) => void;
 	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
 	onShelfPresenceChange?: (presence: ShelfPresence) => void;
@@ -75,7 +104,8 @@ export interface PlayerConsoleHostProps {
 	durationMs?: number | null;
 	volume?: number;
 	muted?: boolean;
-	playbackQuality?: PlaybackQuality;
+	playbackQuality?: PlaybackQualityRequest;
+	qualityOptions?: TrackQualityOption[];
 	shelfMode?: ShelfMode;
 	shelfCameraMode?: ShelfCameraMode;
 	shelfPresence?: ShelfPresence;
@@ -362,7 +392,8 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const volume = Math.max(0, Math.min(1, props.volume ?? 0.84));
 	const muted = !!props.muted;
 	const volumePct = Math.round((muted ? 0 : volume) * 100);
-	const quality = playbackQualityOption(props.playbackQuality);
+	const qualityOptions = qualityViewOptions(props.qualityOptions);
+	const quality = playbackQualityOption(props.playbackQuality, qualityOptions);
 	const currentLiked = props.currentLiked === true;
 	const currentLikeBusy = props.currentLikeBusy === true;
 
@@ -409,7 +440,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 							<span id="quality-btn-label">{quality.short}</span>
 						</button>
 						<div className={qualityOpen ? "quality-popover show" : "quality-popover"} onClick={(event) => event.stopPropagation()}>
-							{PLAYBACK_QUALITY_OPTIONS.map((option) => (
+							{qualityOptions.map((option) => (
 								<button
 									key={option.value}
 									className={option.value === quality.value ? "quality-option active" : "quality-option"}

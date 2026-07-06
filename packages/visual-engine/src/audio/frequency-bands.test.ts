@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
 	analyzeMainFrame,
 	analyzeBeatFrame,
+	analyzeLogSpectrumBands,
 	DEFAULT_BIN_RANGES,
 	DEFAULT_BEAT_BAND_HZ,
 	beatBandRms,
@@ -115,4 +116,22 @@ test("analyzeBeatFrame full-scale data sub=1 low clamped to 1", () => {
 	const time = makeTimeData(255, fft);
 	const out = analyzeBeatFrame(freq, time, sr, fft, DEFAULT_BEAT_BAND_HZ);
 	expect(out.low).toBe(1);
+});
+
+test("analyzeLogSpectrumBands preserves frequency terrain across low and high bands", () => {
+	const sr = 44100;
+	const fft = 2048;
+	const binHz = sr / fft;
+	const freq = makeFreqData(0, fft / 2);
+	for (let hz = 80; hz <= 160; hz += binHz) {
+		freq[Math.floor(hz / binHz)] = 255;
+	}
+	for (let hz = 6_000; hz <= 7_200; hz += binHz) {
+		freq[Math.floor(hz / binHz)] = 96;
+	}
+	const bands = analyzeLogSpectrumBands(freq, sr, fft, 32);
+	expect(bands.length).toBe(32);
+	expect(Math.max(...bands.slice(2, 8))).toBeGreaterThan(0.8);
+	expect(Math.max(...bands.slice(22, 30))).toBeGreaterThan(0.25);
+	expect(Math.max(...bands.slice(12, 18))).toBeLessThan(0.05);
 });

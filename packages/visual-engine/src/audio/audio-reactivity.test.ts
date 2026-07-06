@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createAudioReactivity } from "./audio-reactivity";
-import type { AudioFrameBytes } from "./audio-snapshot";
+import { AUDIO_SPECTRUM_BAND_COUNT, type AudioFrameBytes } from "./audio-snapshot";
 
 const FS = 44100;
 const FFT = 2048;
@@ -17,6 +17,21 @@ function makeFrame(opts: { playing: boolean; t: number; value: number }): AudioF
 		mainFftSize: FFT,
 		beatFreqData: new Uint8Array(BINS).fill(v),
 		beatTimeData: new Uint8Array(TD_LEN).fill(v),
+		beatSampleRate: FS,
+		beatFftSize: FFT,
+		playing: opts.playing,
+		currentTimeSeconds: opts.t,
+	};
+}
+
+function makeSplitFrame(opts: { playing: boolean; t: number; mainValue: number; beatValue: number }): AudioFrameBytes {
+	return {
+		mainFreqData: new Uint8Array(BINS).fill(opts.mainValue),
+		mainTimeData: new Uint8Array(TD_LEN).fill(128 + Math.round(opts.mainValue * 0.12)),
+		mainSampleRate: FS,
+		mainFftSize: FFT,
+		beatFreqData: new Uint8Array(BINS).fill(opts.beatValue),
+		beatTimeData: new Uint8Array(TD_LEN).fill(128 + Math.round(opts.beatValue * 0.12)),
 		beatSampleRate: FS,
 		beatFftSize: FFT,
 		playing: opts.playing,
@@ -75,6 +90,59 @@ test("pulsed high-energy frames produce live beat onsets", () => {
 	}
 	expect(onsetFrames).toBeGreaterThanOrEqual(3);
 	expect(beatNotifications).toBeGreaterThanOrEqual(3);
+});
+
+test("rising audio transients keep visual beat pulse bounded before tempo beat locks", () => {
+	let t = 0;
+	const state = { mainValue: 18, beatValue: 18 };
+	const engine = createAudioReactivity({
+		frameSource: () => makeSplitFrame({ playing: true, t, mainValue: state.mainValue, beatValue: state.beatValue }),
+	});
+	let beatNotifications = 0;
+	engine.subscribeBeat(() => beatNotifications++);
+	for (let i = 0; i < 8; i++) {
+		t += DT;
+		engine.update(DT);
+	}
+	state.mainValue = 185;
+	state.beatValue = 210;
+	t += DT;
+	engine.update(DT);
+	const snap = engine.getSnapshot();
+	expect(snap.beatPulse).toBeLessThanOrEqual(0.14);
+	expect(snap.beatPulse).toBeGreaterThan(0.02);
+	expect(beatNotifications).toBe(0);
+});
+
+test("audio snapshot exposes smoothed log-frequency bands for cover-wall terrain", () => {
+	let t = 0;
+	const freq = new Uint8Array(BINS);
+	const binHz = FS / FFT;
+	for (let hz = 90; hz <= 180; hz += binHz) freq[Math.floor(hz / binHz)] = 255;
+	for (let hz = 5_800; hz <= 6_800; hz += binHz) freq[Math.floor(hz / binHz)] = 120;
+	const frame: AudioFrameBytes = {
+		mainFreqData: freq,
+		mainTimeData: new Uint8Array(TD_LEN).fill(128),
+		mainSampleRate: FS,
+		mainFftSize: FFT,
+		beatFreqData: freq,
+		beatTimeData: new Uint8Array(TD_LEN).fill(128),
+		beatSampleRate: FS,
+		beatFftSize: FFT,
+		playing: true,
+		currentTimeSeconds: t,
+	};
+	const engine = createAudioReactivity({ frameSource: () => ({ ...frame, currentTimeSeconds: t }) });
+	for (let i = 0; i < 8; i++) {
+		t += DT;
+		engine.update(DT);
+	}
+	const bands = engine.getSnapshot().frequencyBands;
+	expect(bands).toBeInstanceOf(Float32Array);
+	expect(bands?.length).toBe(AUDIO_SPECTRUM_BAND_COUNT);
+	expect(Math.max(...Array.from(bands ?? []).slice(2, 8))).toBeGreaterThan(0.35);
+	expect(Math.max(...Array.from(bands ?? []).slice(22, 30))).toBeGreaterThan(0.12);
+	expect(Math.max(...Array.from(bands ?? []).slice(12, 18))).toBeLessThan(0.08);
 });
 
 test("triggerScheduledBeat raises beat pulse with onset flag on next frame", () => {
