@@ -3796,6 +3796,40 @@ html.control-glass-svg-ok .pl-inline-detail {
   background: rgba(var(--fc-accent-rgb), .030);
 }
 
+.pl-card.imported {
+  border-color: rgba(var(--fc-accent-rgb), .12);
+}
+
+.pl-card-delete {
+  flex: 0 0 auto;
+  min-width: 44px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .045);
+  color: rgba(255, 255, 255, .62);
+  font: 700 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.pl-card-delete:hover {
+  border-color: rgba(255, 110, 110, .34);
+  background: rgba(255, 80, 80, .10);
+  color: #fff;
+}
+
+.pl-detail-partial {
+  margin: 0 0 8px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  background: rgba(255, 193, 92, .09);
+  border: 1px solid rgba(255, 193, 92, .16);
+  color: rgba(255, 232, 190, .82);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
 .pl-inline-detail {
   margin: -2px 0 10px;
   padding: 9px;

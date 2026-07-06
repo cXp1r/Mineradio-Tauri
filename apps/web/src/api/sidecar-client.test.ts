@@ -561,6 +561,44 @@ test("playlistList GETs provider playlists and parses playlist summaries", async
 	});
 });
 
+test("importSharedPlaylist POSTs share text and parses import result", async () => {
+	let receivedBody: unknown = null;
+	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {
+		const url = typeof input === "string" ? input : input.toString();
+		expect(url).toContain("/shared-playlist/import");
+		expect(init?.method).toBe("POST");
+		receivedBody = JSON.parse(String(init?.body ?? "{}"));
+		return jsonResponse({
+			ok: true,
+			data: {
+				provider: "qq",
+				playlist: {
+					provider: "qq",
+					id: "7167576049",
+					name: "QQ Share",
+					coverUrl: "",
+					trackCount: 1,
+					trackIds: ["q1"],
+					subscribed: false,
+					sourceUrl: "https://i2.y.qq.com/n3/other/pages/details/playlist.html?id=7167576049",
+				},
+				tracks: [{ ...SAMPLE_TRACK, provider: "qq", id: "q1", sourceId: "q1" }],
+				trackCount: 1,
+				loadedCount: 1,
+				partial: false,
+				partialReason: "",
+			},
+		});
+	}) as typeof fetch;
+	await withFetch(fake, async () => {
+		const client = new SidecarClient(BASE);
+		const result = await client.importSharedPlaylist({ text: "https://i2.y.qq.com/n3/other/pages/details/playlist.html?id=7167576049" });
+		expect(receivedBody).toEqual({ text: "https://i2.y.qq.com/n3/other/pages/details/playlist.html?id=7167576049" });
+		expect(result.playlist.id).toBe("7167576049");
+		expect(result.loadedCount).toBe(1);
+	});
+});
+
 test("likeSong POSTs provider like mutation and parses ack", async () => {
 	let receivedBody: unknown = null;
 	const fake = (async (input: RequestInfo | URL, init?: RequestInit) => {

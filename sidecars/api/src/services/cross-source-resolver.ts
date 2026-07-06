@@ -104,7 +104,8 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
   }
 
   async function resolveSongUrl(track: Track, opts: { quality?: PlaybackQuality } = {}): Promise<SongUrlResult> {
-    const attempts = orderedProviders(track.provider);
+    const importOnly = isImportOnlyTrack(track);
+    const attempts = orderedProviders(importOnly ? undefined : track.provider);
     let firstError: unknown;
 
     for (const providerId of attempts) {
@@ -112,7 +113,7 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
       if (!adapter) continue;
 
       try {
-        if (providerId === track.provider) {
+        if (!importOnly && providerId === track.provider) {
           return await adapter.songUrl(track, opts);
         }
 
@@ -137,6 +138,10 @@ export function createCrossSourceResolver(deps: CrossSourceResolverDeps = {}): C
   }
 
   return { resolveSearch, resolveSongUrl };
+}
+
+function isImportOnlyTrack(track: Track): boolean {
+  return /^import:/i.test(track.id) || /^import:/i.test(track.sourceId);
 }
 
 function buildSwitchKeyword(track: Track): string {
