@@ -40,6 +40,9 @@ import {
 	ProviderLoginStatusSchema,
 	ProviderLogoutAck,
 	ProviderLogoutAckSchema,
+	SharedPlaylistImportRequest,
+	SharedPlaylistImportResult,
+	SharedPlaylistImportResultSchema,
 	SongLikeAck,
 	SongLikeAckSchema,
 	SongLikeCheckAck,
@@ -408,6 +411,15 @@ export class SidecarClient {
 			"GET",
 			`/providers/${provider}/playlists`,
 			PlaylistSummaryArraySchema,
+		);
+	}
+
+	async importSharedPlaylist(input: SharedPlaylistImportRequest): Promise<SharedPlaylistImportResult> {
+		return this.request(
+			"POST",
+			"/shared-playlist/import",
+			SharedPlaylistImportResultSchema,
+			input,
 		);
 	}
 

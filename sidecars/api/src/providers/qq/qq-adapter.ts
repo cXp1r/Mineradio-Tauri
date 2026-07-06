@@ -55,6 +55,7 @@ export interface QqClientDeps {
   getConfig(): { cookie?: string };
   smartboxSearch?: (keyword: string, limit: number) => Promise<unknown[]>;
   legacyLyric?: QqCall;
+  officialPlaylistDetail?: (id: string, limit: number) => Promise<QqPlaylistBody | null>;
 }
 
 function cast(fn: unknown): QqCall {
@@ -75,14 +76,85 @@ const defaultDeps: QqClientDeps = {
   logout: cast(qqClient.logout),
   getConfig,
   smartboxSearch: fallbackSmartboxSearch,
-  legacyLyric: legacyQqLyric
+  legacyLyric: legacyQqLyric,
+  officialPlaylistDetail: fetchOfficialPlaylistDetail
 };
+
+const QQ_PUBLIC_PLAYLIST_TRACK_LIMIT = 500;
 
 function asObj(v: unknown): Record<string, unknown> | null {
   if (v && typeof v === "object" && !Array.isArray(v)) {
     return v as Record<string, unknown>;
   }
   return null;
+}
+
+async function fetchOfficialPlaylistDetail(id: string, limit: number): Promise<QqPlaylistBody | null> {
+  const disstid = Number(id);
+  if (!Number.isFinite(disstid) || disstid <= 0) return null;
+  const songNum = Math.max(1, Math.min(limit || QQ_PUBLIC_PLAYLIST_TRACK_LIMIT, QQ_PUBLIC_PLAYLIST_TRACK_LIMIT));
+  const data = {
+    comm: { ct: 24, cv: 0 },
+    req_0: {
+      module: "music.srfDissInfo.aiDissInfo",
+      method: "uniform_get_Dissinfo",
+      param: {
+        disstid,
+        userinfo: 1,
+        tag: 1,
+        orderlist: 1,
+        song_begin: 0,
+        song_num: songNum,
+        onlysonglist: 0,
+        enc_host_uin: ""
+      }
+    },
+    req_1: {
+      module: "music.srfDissInfo.PlExtServer",
+      method: "getPlExtInfo",
+      param: { tid: disstid, need: [6] }
+    }
+  };
+  const params = new URLSearchParams({
+    format: "json",
+    data: JSON.stringify(data)
+  });
+  const res = await fetch(`https://u.y.qq.com/cgi-bin/musicu.fcg?${params.toString()}`, {
+    headers: {
+      Referer: "https://y.qq.com/",
+      Origin: "https://y.qq.com",
+      "user-agent": "Mozilla/5.0"
+    }
+  });
+  if (!res.ok) {
+    throw new ProviderError("qq", "UNAVAILABLE", `qq official playlist ${id} failed with status ${res.status}`);
+  }
+  return normalizeOfficialPlaylistDetail(await res.json(), id);
+}
+
+function normalizeOfficialPlaylistDetail(body: unknown, id: string): QqPlaylistBody | null {
+  const root = asObj(body);
+  const block = asObj(root?.req_0);
+  const data = asObj(block?.data);
+  if (!data || Number(data.code ?? 0) !== 0) return null;
+  const songlist = Array.isArray(data.songlist) ? data.songlist : [];
+  if (!songlist.length) return null;
+  const detail = asObj(data.dirinfo) ?? asObj(data.detail) ?? {};
+  const totalRaw = data.total_song_num ?? detail.songnum ?? songlist.length;
+  const total = typeof totalRaw === "number" ? totalRaw : Number(totalRaw);
+  const detailId = typeof detail.id === "number" || typeof detail.id === "string" ? detail.id : id;
+  return {
+    disstid: detailId,
+    dissname: typeof detail.dissname === "string" ? detail.dissname : undefined,
+    name: typeof detail.name === "string" ? detail.name : undefined,
+    title: typeof detail.title === "string" ? detail.title : undefined,
+    logo: typeof detail.logo === "string" ? detail.logo : undefined,
+    picurl: typeof detail.picurl === "string" ? detail.picurl : undefined,
+    cover: typeof detail.cover === "string" ? detail.cover : undefined,
+    songnum: Number.isFinite(total) ? total : songlist.length,
+    total_song_num: Number.isFinite(total) ? total : songlist.length,
+    songlist: songlist as QqSong[]
+  };
 }
 
 function readQqSearchList(body: unknown): unknown[] {
@@ -941,6 +1013,13 @@ export function createQqAdapter(
       const body = asObj(resp.body);
       const cdlist = body && Array.isArray(body.cdlist) ? body.cdlist : [];
       const first = cdlist.length > 0 ? asObj(cdlist[0]) : null;
+      const rawSonglist = first && Array.isArray(first.songlist) ? first.songlist : [];
+      if ((!first || rawSonglist.length === 0) && deps.officialPlaylistDetail) {
+        const official = await deps.officialPlaylistDetail(id, QQ_PUBLIC_PLAYLIST_TRACK_LIMIT);
+        if (official && Array.isArray(official.songlist) && official.songlist.length > 0) {
+          return mapQqPlaylistToDetail(official, id);
+        }
+      }
       if (!first) {
         throw new ProviderError(
           "qq",

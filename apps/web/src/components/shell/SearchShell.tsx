@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties, type Keyb
 import type { ProviderId, PodcastProgram, PodcastRadio, Track } from "@mineradio/shared";
 import { SidecarClient } from "../../api/sidecar-client";
 import { isPlayable, playSearchResult } from "../search/play-search-result";
+import { isSharedPlaylistCandidateText } from "../../shared-playlist/imported-playlists";
 import { useSearchStore } from "../../stores/search-store";
 import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list";
 
@@ -16,6 +17,7 @@ export interface SearchShellProps {
 	onResultNext?: (track: Track) => void;
 	onResultLike?: (track: Track) => void;
 	onResultCollect?: (track: Track) => void;
+	onSharedPlaylistImport?: (text: string) => Promise<void> | void;
 	onArtistSearch?: (artist: string, track: Track) => void;
 	isResultLiked?: (track: Track) => boolean;
 	isResultLikeBusy?: (track: Track) => boolean;
@@ -117,6 +119,7 @@ export function SearchShell({
 	onResultNext,
 	onResultLike,
 	onResultCollect,
+	onSharedPlaylistImport,
 	onArtistSearch,
 	isResultLiked,
 	isResultLikeBusy,
@@ -150,6 +153,30 @@ export function SearchShell({
 			setKeyword(nextKeyword);
 			modeRef.current = nextMode;
 			setProvider(providerFromMode(nextMode));
+			if (isSharedPlaylistCandidateText(trimmed)) {
+				const seq = searchSeqRef.current + 1;
+				searchSeqRef.current = seq;
+				setSongResultScrollTop(0);
+				setPodcastResultScrollTop(0);
+				setPodcastProgramScrollTop(0);
+				setResults([]);
+				setPodcastResults([]);
+				setPodcastPrograms([]);
+				setPodcastCurrentRadio(null);
+				setLoading(true);
+				setError(null);
+				try {
+					if (!onSharedPlaylistImport) throw new Error("当前版本暂不支持导入歌单链接");
+					await onSharedPlaylistImport(trimmed);
+					if (searchSeqRef.current === seq) setLoading(false);
+				} catch (e) {
+					if (searchSeqRef.current !== seq) return;
+					setLoading(false);
+					const message = e instanceof Error ? e.message : "歌单导入失败";
+					setError(message);
+				}
+				return;
+			}
 			if (nextMode === "podcast") {
 				setSongResultScrollTop(0);
 				setPodcastResultScrollTop(0);
@@ -215,7 +242,7 @@ export function SearchShell({
 				setError(message);
 			}
 		},
-		[client, setError, setKeyword, setLoading, setProvider, setResults],
+		[client, onSharedPlaylistImport, setError, setKeyword, setLoading, setProvider, setResults],
 	);
 
 	useEffect(() => {
