@@ -1,4 +1,4 @@
-﻿import type {
+import type {
   LyricPayload,
   PlaylistDetail,
   PlaylistSummary,
@@ -350,7 +350,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
       const cleanId = id.trim();
       const resp = await client.collectionMedia(cleanId, liked);
       const body = asObj(resp.body) ?? {};
-      
+
       const info = liked ? body.collected_media : body.deleted_media;
       if (!info) {
         const status_info = asObj(body.status_info) ?? {};
@@ -361,7 +361,7 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
           status_msg || `soda like-song failed with status ${resp.status}`
         );
       }
-      
+
       return {
         provider: SODA_PROVIDER_ID,
         id: cleanId,
