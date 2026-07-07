@@ -1081,15 +1081,10 @@ test("soda adapter maps lyric payload from client detail response", async () => 
       lyric: async () => ({ body: {} }),
       trackDetail: async () => ({
         body: {
-          data: {
-            lyric: {
-              content: "[00:01.00]hello\n[00:02.00]world",
-              lang_translations: {
-                zh: {
-                  content: "[00:01.00]你好\n[00:02.00]世界",
-                  lang: "zh"
-                }
-              }
+          lyric: {
+            content: "[00:01.00]hello\n[00:02.00]world",
+            translations: {
+              cn: "[00:01.00]你好\n[00:02.00]世界"
             }
           }
         }
@@ -1163,8 +1158,8 @@ test("parseSodaLyricText parses baseline soda word-by-word lyrics", () => {
 
 test("parseSodaLyricText offsets every soda word by its line start time", () => {
   const lines = parseSodaLyricText([
-    "[5080,2750]<0,240,0>知<340,240,0>り",
-    "[8040,2470]<0,190,0>こ<190,200,0>の"
+    "[5080,2750]<0,240,0>He<340,240,0>llo",
+    "[8040,2470]<0,190,0>Wo<190,200,0>rld"
   ].join("\n"));
 
   expect(lines.length).toBe(2);
@@ -1374,3 +1369,4 @@ test("soda adapter logout without cookie throws ProviderNotImplementedError no-s
     expect((err as ProviderNotImplementedError).action).toBe("no-session");
   }
 });
+

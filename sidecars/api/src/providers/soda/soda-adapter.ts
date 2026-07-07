@@ -148,24 +148,9 @@ function readSodaTrackPlayer(resp: unknown): Record<string, unknown> | null {
 }
 
 function readSodaLyricTranslation(value: unknown): string {
-  if (typeof value === "string") return value;
-  const obj = asObj(value);
-  if (!obj) return "";
-  const direct = firstString(obj.content, obj.text, obj.lyric);
-  if (direct) return direct;
-  const nested = asObj(obj.cn) ?? asObj(obj.zh) ?? asObj(obj.translation) ?? asObj(obj.trans);
-  if (nested) {
-    const fromNested = firstString(nested.content, nested.text, nested.lyric);
-    if (fromNested) return fromNested;
-  }
-  const translations = asObj(obj.translations) ?? asObj(obj.lang_translations);
-  if (translations) {
-    for (const item of Object.values(translations)) {
-      const nestedText = readSodaLyricTranslation(item);
-      if (nestedText) return nestedText;
-    }
-  }
-  return "";
+  let translations = asObj(value) ?? {};
+  let cn = readString(translations.cn) ?? "";
+  return cn
 }
 
 function readSodaCollectedState(resp: unknown): boolean | undefined {
@@ -180,8 +165,7 @@ function readSodaCollectedState(resp: unknown): boolean | undefined {
 
 function readSodaTrackObject(resp: unknown): Record<string, unknown> | null {
   const root = asObj(resp);
-  const data = asObj(root?.data);
-  return asObj(root?.track) ?? asObj(data?.track);
+  return asObj(root?.track);
 }
 
 function readSodaBitRates(track: Record<string, unknown> | null): Record<string, unknown>[] {
@@ -402,9 +386,8 @@ export function createSodaAdapter(deps: SodaAdapterDeps): ProviderAdapter {
     async lyric(track: Track): Promise<LyricPayload> {
       const resp = await client.trackDetail(track.sourceId);
       const root = asObj(resp.body);
-      const data = asObj(root?.data) ?? root;
-      const lyric = asObj(data?.lyric);
-      const trans = readSodaLyricTranslation(lyric?.translations) || readSodaLyricTranslation(lyric?.lang_translations);
+      const lyric = asObj(root?.lyric);
+      const trans = readSodaLyricTranslation(lyric?.translations);
       return mapSodaLyricToPayload({
         trackId: track.sourceId,
         lyric: readString(lyric?.content),
