@@ -120,6 +120,17 @@ function disposeTexture(tex: { dispose?: () => void } | null | undefined): void 
 	}
 }
 
+function disposeMaterialTexture(material: unknown): void {
+	const mat = material as {
+		map?: { dispose?: () => void } | null;
+		uniforms?: { uMap?: { value?: { dispose?: () => void } | null } };
+	} | null | undefined;
+	const map = mat?.map;
+	const uniformMap = mat?.uniforms?.uMap?.value;
+	disposeTexture(map);
+	if (uniformMap !== map) disposeTexture(uniformMap);
+}
+
 function rgbToThreeColor(THREE: ThreeModule, rgb: ReturnType<typeof lyricThreeColor>): THREE.Color | null {
 	if (typeof THREE.Color !== "function") return null;
 	return new THREE.Color(rgb.r, rgb.g, rgb.b) as THREE.Color;
@@ -351,10 +362,10 @@ export function disposeLyricGroup(lyric: LyricGroup): void {
 		disposeObject(sparkObj);
 	}
 	disposeTexture(lyric.mask.texture);
-	disposeTexture((lyric.sunMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.glowMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.readabilityMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.sparkMat as unknown as { uniforms: { uMap: { value: { dispose?: () => void } } } }).uniforms.uMap.value);
+	disposeMaterialTexture(lyric.sunMat);
+	disposeMaterialTexture(lyric.glowMat);
+	disposeMaterialTexture(lyric.readabilityMat);
+	disposeMaterialTexture(lyric.sparkMat);
 	if (group) {
 		const children = (group as unknown as { children: unknown[] }).children;
 		if (Array.isArray(children)) children.length = 0;
