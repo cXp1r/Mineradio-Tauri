@@ -181,6 +181,16 @@ test("buildLyricGroup assigns baseline renderOrders 40/41/42/43/44 across sun/gl
 	expect((lyric.sparks as unknown as { renderOrder: number }).renderOrder).toBe(44);
 });
 
+test("buildLyricGroup uses facing-aware shader materials for glow readability and sun", async () => {
+	const lyric = await buildLyricGroup("test", DEFAULT_LYRIC_PALETTE, {
+		threeFactory: makeFakeThree(),
+		dotTexture: makeFakeDotTexture(),
+	});
+	expect((lyric.glowMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+	expect((lyric.readabilityMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+	expect((lyric.sunMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+});
+
 test("buildLyricGroup sun position/scale match baseline 8837-8838", async () => {
 	const lyric = await buildLyricGroup("test", DEFAULT_LYRIC_PALETTE, {
 		threeFactory: makeFakeThree(),
@@ -300,16 +310,20 @@ test("updateLyricGroupProgress writes uProgress and lastLyricProgress (clamped 0
 });
 
 test("disposeLyricGroup-removes children + disposes geometries/materials/per-group textures", async () => {
+	const dot = makeFakeDotTexture();
 	const lyric = await buildLyricGroup("test", DEFAULT_LYRIC_PALETTE, {
 		threeFactory: makeFakeThree(),
-		dotTexture: makeFakeDotTexture(),
+		dotTexture: dot,
 	});
-	const sunMesh = lyric.sun as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean; map: { disposed: boolean } | null } };
-	const glowMesh = lyric.glow as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean; map: { disposed: boolean } | null } };
-	const readabilityMesh = lyric.readability as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean; map: { disposed: boolean } | null } };
+	const sunMesh = lyric.sun as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean } };
+	const glowMesh = lyric.glow as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean } };
+	const readabilityMesh = lyric.readability as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean } };
 	const textMesh = lyric.textMesh as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean } };
 	const sparks = lyric.sparks as unknown as { geometry: { disposed: boolean }; material: { disposed: boolean } };
 	const maskTexture = lyric.mask.texture as unknown as { disposed: boolean } | null;
+	const sunTexture = (lyric.sunMat as unknown as { uniforms: { uMap: { value: { disposed: boolean } | null } } }).uniforms.uMap.value;
+	const glowTexture = (lyric.glowMat as unknown as { uniforms: { uMap: { value: { disposed: boolean } | null } } }).uniforms.uMap.value;
+	const readabilityTexture = (lyric.readabilityMat as unknown as { uniforms: { uMap: { value: { disposed: boolean } | null } } }).uniforms.uMap.value;
 	disposeLyricGroup(lyric);
 	expect(sunMesh.geometry.disposed).toBe(true);
 	expect(sunMesh.material.disposed).toBe(true);
@@ -322,8 +336,9 @@ test("disposeLyricGroup-removes children + disposes geometries/materials/per-gro
 	expect(sparks.geometry.disposed).toBe(true);
 	expect(sparks.material.disposed).toBe(true);
 	if (maskTexture) expect(maskTexture.disposed).toBe(true);
-	if (sunMesh.material.map) expect(sunMesh.material.map.disposed).toBe(true);
-	if (glowMesh.material.map) expect(glowMesh.material.map.disposed).toBe(true);
-	if (readabilityMesh.material.map) expect(readabilityMesh.material.map.disposed).toBe(true);
+	if (sunTexture) expect(sunTexture.disposed).toBe(true);
+	if (glowTexture) expect(glowTexture.disposed).toBe(true);
+	if (readabilityTexture) expect(readabilityTexture.disposed).toBe(true);
+	expect((dot as unknown as { disposed: boolean }).disposed).toBe(true);
 	expect((lyric.group as unknown as { children: unknown[] }).children.length).toBe(0);
 });

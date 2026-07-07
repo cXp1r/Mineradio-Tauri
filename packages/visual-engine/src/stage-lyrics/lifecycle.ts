@@ -677,6 +677,28 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 	function setMaterialColor(target: unknown, value: unknown): void {
 		const color = (target as { color?: unknown } | null | undefined)?.color;
 		copyColor(color, value);
+		setUniformColor(target, "uColor", value);
+	}
+
+	function getMaterialOpacity(target: unknown, fallback = 0): number {
+		const uniform = (target as { uniforms?: Record<string, { value?: unknown }> } | null | undefined)?.uniforms?.uOpacity;
+		const uniformValue = Number(uniform?.value);
+		if (Number.isFinite(uniformValue)) return uniformValue;
+		const opacity = Number((target as { opacity?: unknown } | null | undefined)?.opacity);
+		return Number.isFinite(opacity) ? opacity : fallback;
+	}
+
+	function setMaterialOpacity(target: unknown, value: number): void {
+		const clamped = clamp(value, 0, 1);
+		const uniform = (target as { uniforms?: Record<string, { value?: unknown }> } | null | undefined)?.uniforms?.uOpacity;
+		if (uniform) {
+			uniform.value = clamped;
+			return;
+		}
+		const material = target as { opacity?: number } | null | undefined;
+		if (material && typeof material.opacity === "number") {
+			material.opacity = clamped;
+		}
 	}
 
 	function setUniformColor(mat: unknown, key: string, value: unknown): void {
@@ -1177,9 +1199,10 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		if (uOpacity) (uOpacity as SizeOfMaterial).value = newOpacity;
 		if (readabilityMat) {
 			const readabilityTarget = newOpacity * shelf.profile.readability;
+			const currentReadability = getMaterialOpacity(readabilityMat, 0);
 			const reassEase =
-				shelf.shelfDetailOpen && readabilityMat.opacity > readabilityTarget ? 0.28 : 0.16;
-			readabilityMat.opacity += (readabilityTarget - readabilityMat.opacity) * reassEase;
+				shelf.shelfDetailOpen && currentReadability > readabilityTarget ? 0.28 : 0.16;
+			setMaterialOpacity(readabilityMat, currentReadability + (readabilityTarget - currentReadability) * reassEase);
 		}
 		if (uSolar) {
 			const solarTarget = state.highBloom * shelf.profile.bloom;
@@ -1190,7 +1213,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		if (glowMat) {
 			const solar = state.highBloom * shelf.profile.bloom;
 			const glowTarget = lyricGlowStrength > 0 ? Math.min(shelf.profile.glowCap, (0.075 + solar * 0.34 + state.beatGlow * 0.16 * shelf.profile.bloom) * Math.min(3.0, glowDrive)) : 0;
-			glowMat.opacity += (glowTarget - glowMat.opacity) * (glowTarget > glowMat.opacity ? 0.095 : (shelf.shelfDetailOpen ? 0.20 : 0.055));
+			const currentGlowOpacity = getMaterialOpacity(glowMat, 0);
+			setMaterialOpacity(glowMat, currentGlowOpacity + (glowTarget - currentGlowOpacity) * (glowTarget > currentGlowOpacity ? 0.095 : (shelf.shelfDetailOpen ? 0.20 : 0.055)));
 			if (state.three) {
 				const { hot } = lyricSunColorValues();
 				const base = colorValue(state.three, state.paletteRuntime.get().glowColor || state.paletteRuntime.get().secondary, "#9cffdf", 0.36);
@@ -1211,7 +1235,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		}
 		if (sunMat) {
 			const sunTarget = lyricGlowStrength > 0 && !shelf.shelfDetailOpen ? Math.min(0.88, (Math.pow(Math.min(1.35, state.highBloom), 1.08) * 0.28 + state.beatGlow * 0.20) * Math.min(2.4, glowDrive)) : 0;
-			sunMat.opacity += (sunTarget - sunMat.opacity) * (shelf.shelfDetailOpen ? 0.18 : 0.055);
+			const currentSunOpacity = getMaterialOpacity(sunMat, 0);
+			setMaterialOpacity(sunMat, currentSunOpacity + (sunTarget - currentSunOpacity) * (shelf.shelfDetailOpen ? 0.18 : 0.055));
 			const { sun, hot } = lyricSunColorValues();
 			setMaterialColor(sunMat, lerpColorValue(sun, hot, solar * 0.55) ?? sun);
 		}
@@ -1318,16 +1343,16 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			}
 			const opacity = (1 - aSmooth) * 0.72 * shelf.profile.outgoing;
 			if (uOpacity) (uOpacity as SizeOfMaterial).value = opacity;
-			if (readabilityMat) readabilityMat.opacity = opacity * (shelf.shelfDetailOpen ? shelf.profile.readability : 0.58);
+			if (readabilityMat) setMaterialOpacity(readabilityMat, opacity * (shelf.shelfDetailOpen ? shelf.profile.readability : 0.58));
 			const uSolar = uniforms(lyric, "uSolar");
 			if (uSolar) (uSolar as SizeOfMaterial).value *= shelf.shelfDetailOpen ? 0.72 : 0.86;
-			if (glowMat) glowMat.opacity = lyricGlowStrength > 0 ? (shelf.shelfDetailOpen ? Math.min(shelf.profile.glowCap * 0.40, opacity * 0.05 * lyricGlowStrength) : opacity * 0.08 * lyricGlowStrength) : 0;
+			if (glowMat) setMaterialOpacity(glowMat, lyricGlowStrength > 0 ? (shelf.shelfDetailOpen ? Math.min(shelf.profile.glowCap * 0.40, opacity * 0.05 * lyricGlowStrength) : opacity * 0.08 * lyricGlowStrength) : 0);
 			if (data?.sparkMat) {
 				const outgoingSpark = lyricGlowStrength > 0 && lyricGlowParticles && !shelf.shelfDetailOpen ? Math.max(opacity * 0.24 * lyricGlowStrength, (1 - aSmooth) * 0.18 * lyricGlowStrength) : 0;
 				setUniformValue(data.sparkMat, "uOpacity", outgoingSpark);
 				setUniformValue(data.sparkMat, "uSize", 0.046 + (1 - aSmooth) * 0.020);
 			}
-			if (sunMat) sunMat.opacity = lyricGlowStrength > 0 && !shelf.shelfDetailOpen ? opacity * 0.08 * lyricGlowStrength : 0;
+			if (sunMat) setMaterialOpacity(sunMat, lyricGlowStrength > 0 && !shelf.shelfDetailOpen ? opacity * 0.08 * lyricGlowStrength : 0);
 			const pos = lyric.group.position as unknown as Vec3Like;
 			pos.z -= dt * 0.26;
 			pos.y += dt * 0.08;

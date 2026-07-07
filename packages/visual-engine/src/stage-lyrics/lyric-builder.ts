@@ -32,10 +32,10 @@ export interface LyricGroup {
 	readonly sparks: THREE.Points;
 	readonly sun: THREE.Mesh;
 	readonly textMat: THREE.ShaderMaterial;
-	readonly readabilityMat: THREE.MeshBasicMaterial;
-	readonly glowMat: THREE.MeshBasicMaterial;
+	readonly readabilityMat: THREE.ShaderMaterial;
+	readonly glowMat: THREE.ShaderMaterial;
 	readonly sparkMat: THREE.ShaderMaterial;
-	readonly sunMat: THREE.MeshBasicMaterial;
+	readonly sunMat: THREE.ShaderMaterial;
 	readonly basePositions: Float32Array;
 	readonly textWorldW: number;
 	readonly textWorldH: number;
@@ -45,6 +45,28 @@ export interface LyricGroup {
 
 const DEFAULT_THREE_FACTORY: ThreeFactory = async () => await import("three");
 const SPARK_COUNT = 132;
+
+const FACING_TEXTURE_VERTEX_SHADER = [
+	"varying vec2 vUv;",
+	"void main(){",
+	"  vUv = uv;",
+	"  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);",
+	"}",
+].join("\n");
+
+const FACING_TEXTURE_FRAGMENT_SHADER = [
+	"precision highp float;",
+	"uniform sampler2D uMap;",
+	"uniform vec3 uColor;",
+	"uniform float uOpacity;",
+	"varying vec2 vUv;",
+	"void main(){",
+	"  vec2 uv = gl_FrontFacing ? vUv : vec2(1.0 - vUv.x, vUv.y);",
+	"  vec4 tex = texture2D(uMap, uv);",
+	"  if (tex.a <= 0.001) discard;",
+	"  gl_FragColor = vec4(tex.rgb * uColor, tex.a * uOpacity);",
+	"}",
+].join("\n");
 
 const SPARKS_VERTEX_SHADER = [
 	"attribute float seed;",
@@ -98,9 +120,47 @@ function disposeTexture(tex: { dispose?: () => void } | null | undefined): void 
 	}
 }
 
+function disposeMaterialTexture(material: unknown): void {
+	const mat = material as {
+		map?: { dispose?: () => void } | null;
+		uniforms?: { uMap?: { value?: { dispose?: () => void } | null } };
+	} | null | undefined;
+	const map = mat?.map;
+	const uniformMap = mat?.uniforms?.uMap?.value;
+	disposeTexture(map);
+	if (uniformMap !== map) disposeTexture(uniformMap);
+}
+
 function rgbToThreeColor(THREE: ThreeModule, rgb: ReturnType<typeof lyricThreeColor>): THREE.Color | null {
 	if (typeof THREE.Color !== "function") return null;
 	return new THREE.Color(rgb.r, rgb.g, rgb.b) as THREE.Color;
+}
+
+function makeFacingTextureMaterial(
+	THREE: ThreeModule,
+	texture: THREE.Texture | null,
+	color: ReturnType<typeof lyricThreeColor>,
+	opacity: number,
+	blending: number,
+): THREE.ShaderMaterial {
+	const baseColor = rgbToThreeColor(THREE, color) ?? color;
+	const material = new THREE.ShaderMaterial({
+		uniforms: {
+			uMap: { value: texture },
+			uColor: { value: baseColor },
+			uOpacity: { value: opacity },
+		},
+		vertexShader: FACING_TEXTURE_VERTEX_SHADER,
+		fragmentShader: FACING_TEXTURE_FRAGMENT_SHADER,
+		transparent: true,
+		depthWrite: false,
+		depthTest: false,
+		side: THREE.DoubleSide,
+		blending,
+	} as THREE.ShaderMaterialParameters) as THREE.ShaderMaterial;
+	(material as unknown as { color: unknown; opacity: number }).color = baseColor;
+	(material as unknown as { opacity: number }).opacity = opacity;
+	return material;
 }
 
 export async function buildLyricGroup(
@@ -139,16 +199,7 @@ export async function buildLyricGroup(
 
 	const sunBloomTex = getLyricSunBloomTexture(THREE);
 	const sunMatColor = lyricThreeColor(pal.highlight || pal.secondary || pal.primary, "#ffe7a6", 0.5);
-	const sunMat = new THREE.MeshBasicMaterial({
-		map: sunBloomTex,
-		transparent: true,
-		opacity: 0,
-		depthWrite: false,
-		depthTest: false,
-		side: THREE.DoubleSide,
-		blending: THREE.AdditiveBlending,
-		color: rgbToThreeColor(THREE, sunMatColor) ?? sunMatColor,
-	} as THREE.MeshBasicMaterialParameters) as THREE.MeshBasicMaterial;
+	const sunMat = makeFacingTextureMaterial(THREE, sunBloomTex, sunMatColor, 0, THREE.AdditiveBlending);
 	const sunWorldW0 = Math.max(textWorldW + worldH * 1.1, textWorldW * 1.18);
 	const sunWorldW = Math.min(worldW * 1.16, Math.max(worldH * 1.35, sunWorldW0));
 	const sunWorldH = Math.max(worldH * 1.02, Math.min(worldH * 1.54, worldH + textWorldW * 0.07));
@@ -167,16 +218,7 @@ export async function buildLyricGroup(
 	};
 	const glowTex = makeLyricGlowTexture(cleaned, mask.fontSize, mask.textWidth, mask.lines, mask.lineHeight, mask.fitScaleX, THREE, glowOptions);
 	const glowMatColor = lyricThreeColor(pal.secondary, "#9cffdf", 0.36);
-	const glowMat = new THREE.MeshBasicMaterial({
-		map: glowTex,
-		transparent: true,
-		opacity: 0,
-		depthWrite: false,
-		depthTest: false,
-		side: THREE.DoubleSide,
-		blending: THREE.AdditiveBlending,
-		color: rgbToThreeColor(THREE, glowMatColor) ?? glowMatColor,
-	} as THREE.MeshBasicMaterialParameters) as THREE.MeshBasicMaterial;
+	const glowMat = makeFacingTextureMaterial(THREE, glowTex, glowMatColor, 0, THREE.AdditiveBlending);
 	const glowMeta = (glowTex as unknown as { userData?: { width?: number; height?: number; textWidth?: number } } | null)?.userData ?? {};
 	const glowWorldW0 = textWorldW * ((glowMeta.width || mask.width) / Math.max(1, glowMeta.textWidth || mask.textWidth));
 	const glowWorldW = Math.min(worldW * 1.1, Math.max(textWorldW + worldH * 0.38, glowWorldW0));
@@ -196,14 +238,7 @@ export async function buildLyricGroup(
 		...(opts.readabilityOptions ?? {}),
 	};
 	const readabilityTex = makeLyricReadabilityTexture(mask, THREE, readabilityOptions);
-	const readabilityMat = new THREE.MeshBasicMaterial({
-		map: readabilityTex,
-		transparent: true,
-		opacity: 0,
-		depthWrite: false,
-		depthTest: false,
-		side: THREE.DoubleSide,
-	} as THREE.MeshBasicMaterialParameters) as THREE.MeshBasicMaterial;
+	const readabilityMat = makeFacingTextureMaterial(THREE, readabilityTex, lyricThreeColor("#ffffff", "#ffffff", 0), 0, THREE.NormalBlending);
 	const readability = new THREE.Mesh(new THREE.PlaneGeometry(worldW, worldH, 1, 1) as THREE.PlaneGeometry, readabilityMat) as THREE.Mesh;
 	(readability as unknown as { renderOrder: number }).renderOrder = 42;
 	readability.position.set(0, 0, -0.012);
@@ -327,10 +362,10 @@ export function disposeLyricGroup(lyric: LyricGroup): void {
 		disposeObject(sparkObj);
 	}
 	disposeTexture(lyric.mask.texture);
-	disposeTexture((lyric.sunMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.glowMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.readabilityMat as unknown as { map?: { dispose?: () => void } }).map);
-	disposeTexture((lyric.sparkMat as unknown as { uniforms: { uMap: { value: { dispose?: () => void } } } }).uniforms.uMap.value);
+	disposeMaterialTexture(lyric.sunMat);
+	disposeMaterialTexture(lyric.glowMat);
+	disposeMaterialTexture(lyric.readabilityMat);
+	disposeMaterialTexture(lyric.sparkMat);
 	if (group) {
 		const children = (group as unknown as { children: unknown[] }).children;
 		if (Array.isArray(children)) children.length = 0;
