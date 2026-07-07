@@ -13,7 +13,12 @@ type PersistedProviderSessions = {
 };
 
 function envCookie(provider: ProviderId): string | undefined {
-  const key = provider === "netease" ? "MINERADIO_NETEASE_COOKIE" : "MINERADIO_QQ_COOKIE";
+  const key =
+    provider === "netease"
+      ? "MINERADIO_NETEASE_COOKIE"
+      : provider === "qq"
+        ? "MINERADIO_QQ_COOKIE"
+        : "MINERADIO_SODA_COOKIE";
   const cookie = process.env[key];
   if (typeof cookie === "string" && cookie.trim().length > 0) return cookie;
   return undefined;
@@ -34,7 +39,7 @@ function parsePersistedCookies(raw: unknown): ProviderCookieMap {
   const providers = (raw as PersistedProviderSessions).providers;
   if (!providers || typeof providers !== "object") return {};
   const out: ProviderCookieMap = {};
-  for (const provider of ["netease", "qq"] as const) {
+  for (const provider of ["netease", "qq", "soda"] as const) {
     const cookie = providers[provider];
     if (typeof cookie === "string" && cookie.trim()) out[provider] = cookie.trim();
   }

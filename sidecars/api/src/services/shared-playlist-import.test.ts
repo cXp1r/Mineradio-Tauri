@@ -175,7 +175,7 @@ test("importSharedPlaylist fetches the detected Apple Music link when share text
 test("importSharedPlaylist maps adapter playlist detail into import result", async () => {
   const result = await importSharedPlaylist(
     { url: "https://y.qq.com/n/ryqq/playlist/7697196542" },
-    { providerAdapters: { netease: adapter("netease"), qq: adapter("qq") } }
+    { providerAdapters: { netease: adapter("netease"), qq: adapter("qq"), soda: adapter("soda") } }
   );
 
   expect(result.provider).toBe("qq");
@@ -191,6 +191,7 @@ test("importSharedPlaylist marks adapter playlist imports partial when fewer tra
     {
       providerAdapters: {
         netease: adapter("netease"),
+        soda: adapter("soda"),
         qq: {
           ...qq,
           async playlistDetail(id) {

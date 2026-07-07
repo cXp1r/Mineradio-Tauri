@@ -499,6 +499,14 @@ test("trackQualities POSTs the Track body and parses native quality options", as
   });
 });
 
+test("proxiedUrl resolves sidecar relative proxied paths against the sidecar base URL", () => {
+	const client = new SidecarClient(BASE);
+	expect(client.proxiedUrl("/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example%2Fsoda.m4a&playAuth=abc")).toBe(
+		`${BASE}/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example%2Fsoda.m4a&playAuth=abc`,
+	);
+	expect(client.proxiedUrl("https://cdn.example.com/already.mp3")).toBe("https://cdn.example.com/already.mp3");
+});
+
 test("imageProxyUrl mirrors baseline cover proxy URL construction for remote covers only", () => {
   const client = new SidecarClient(BASE);
   expect(client.imageProxyUrl("https://img.example/a.jpg")).toBe(`${BASE}/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg`);

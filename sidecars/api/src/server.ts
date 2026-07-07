@@ -35,6 +35,7 @@ import {
 import { normalizeError } from "./services/fallback";
 import { buildDiagnostics } from "./services/diagnostics";
 import { createAudioProxy, type AudioProxy } from "./services/audio-proxy";
+import { resolveSodaAudioProxy, type SodaAudioProxy } from "./services/soda-audio-proxy";
 import { resolveImageProxy, type ImageProxy } from "./services/image-proxy";
 import {
   createSidecarLogger,
@@ -67,10 +68,12 @@ import {
 } from "./services/auth-session";
 import { neteaseQrLogin, type NeteaseQrLoginService } from "./services/netease-qr-login";
 import { qqQrLogin, type QqQrLoginService } from "./services/qq-qr-login";
+import { sodaQrLogin, type SodaQrLoginService } from "./services/soda-qr-login";
 
 export type RouteHandlerDeps = {
   crossSourceResolver?: CrossSourceResolver;
   audioProxy?: AudioProxy;
+  sodaAudioProxy?: SodaAudioProxy;
   imageProxy?: ImageProxy;
   providerAdapters?: Record<ProviderId, ProviderAdapter>;
   weatherRadio?: WeatherRadioService;
@@ -78,6 +81,7 @@ export type RouteHandlerDeps = {
   discoverRequester?: DiscoverRequester;
   neteaseQrLogin?: NeteaseQrLoginService;
   qqQrLogin?: QqQrLoginService;
+  sodaQrLogin?: SodaQrLoginService;
   logger?: SidecarLogger;
   now?: () => number;
 };
@@ -88,13 +92,16 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
   const audioProxy = deps.audioProxy ?? createAudioProxy({
     log: (entry) => logger.log(entry)
   });
+  const sodaAudioProxy = deps.sodaAudioProxy ?? resolveSodaAudioProxy;
   const imageProxy = deps.imageProxy ?? resolveImageProxy;
   const providerAdapters = deps.providerAdapters ?? providers;
   const weatherRadioService = deps.weatherRadio ?? weatherRadio;
   const podcast = { ...podcastService, ...(deps.podcast ?? {}) };
-  const qrLoginByProvider: Record<ProviderId, NeteaseQrLoginService | QqQrLoginService> = {
+  type AnyQrLoginService = NeteaseQrLoginService | QqQrLoginService | SodaQrLoginService;
+  const qrLoginByProvider: Record<ProviderId, AnyQrLoginService> = {
     netease: deps.neteaseQrLogin ?? neteaseQrLogin,
-    qq: deps.qqQrLogin ?? qqQrLogin
+    qq: deps.qqQrLogin ?? qqQrLogin,
+    soda: deps.sodaQrLogin ?? sodaQrLogin
   };
 
   return async function handleRoute(request: Request): Promise<Response> {
@@ -143,6 +150,14 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
       const target = url.searchParams.get("url") ?? "";
       response = await audioProxy({ target, request });
       await logRequest(logger, { method, path, status: response.status, startedAt });
+      return response;
+    }
+
+    if (path === "/providers/soda/audio-proxy" && method === "GET") {
+      const target = url.searchParams.get("url") ?? "";
+      const playAuth = url.searchParams.get("playAuth") ?? "";
+      response = await sodaAudioProxy({ target, playAuth, request });
+      await logRequest(logger, { method, path, status: response.status, startedAt, provider: "soda", action: "audio-proxy" });
       return response;
     }
 
@@ -374,24 +389,47 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
       try {
         if (sub === "login-qr-key" && method === "GET") {
           const qrLogin = qrLoginByProvider[providerId];
-          response = json(ok(ProviderLoginQrKeySchema.parse(await qrLogin.createKey())));
+          if (providerId === "soda") {
+            const sodaQrLogin = qrLogin as SodaQrLoginService;
+            const image = await sodaQrLogin.createImage();
+            response = json(ok(ProviderLoginQrKeySchema.parse({ provider: "soda", key: image.key })));
+          } else {
+            const legacyQrLogin = qrLogin as NeteaseQrLoginService | QqQrLoginService;
+            response = json(ok(ProviderLoginQrKeySchema.parse(await legacyQrLogin.createKey())));
+          }
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }
         if (sub === "login-qr-create" && method === "GET") {
           const qrLogin = qrLoginByProvider[providerId];
-          const key = url.searchParams.get("key")?.trim() ?? "";
-          if (!key) {
-            response = json(fail({
-              code: "BAD_REQUEST",
-              message: "QR key required",
-              provider: providerId,
-              retryable: false
-            }), 400);
-            await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
-            return response;
+          if (providerId === "soda") {
+            const sodaQrLogin = qrLogin as SodaQrLoginService;
+            const key = url.searchParams.get("key")?.trim() ?? "";
+            if (!key) {
+              response = json(fail({
+                code: "BAD_REQUEST",
+                message: "QR key required",
+                provider: providerId,
+                retryable: false
+              }), 400);
+              await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+              return response;
+            }
+            response = json(ok(ProviderLoginQrImageSchema.parse(await sodaQrLogin.createImage(key))));
+          } else {
+            const key = url.searchParams.get("key")?.trim() ?? "";
+            if (!key) {
+              response = json(fail({
+                code: "BAD_REQUEST",
+                message: "QR key required",
+                provider: providerId,
+                retryable: false
+              }), 400);
+              await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
+              return response;
+            }
+            response = json(ok(ProviderLoginQrImageSchema.parse(await qrLogin.createImage(key))));
           }
-          response = json(ok(ProviderLoginQrImageSchema.parse(await qrLogin.createImage(key))));
           await logRequest(logger, { method, path, status: response.status, startedAt, provider: providerId, action: sub });
           return response;
         }
@@ -451,16 +489,36 @@ export function createRouteHandler(deps: RouteHandlerDeps = {}) {
           return response;
         }
         if (sub === "logout" && method === "POST") {
-          const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
-          clearRuntimeProviderCookie(providerId);
-          try {
-            await adapter.logout();
-          } catch (err) {
-            if (
-              !hadRuntimeOrEnvSession ||
-              !(err instanceof ProviderNotImplementedError && err.action === "no-session")
-            ) {
-              throw err;
+          if (providerId === "soda") {
+            const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
+            let logoutError: unknown;
+            try {
+              await adapter.logout();
+            } catch (err) {
+              logoutError = err;
+            } finally {
+              clearRuntimeProviderCookie(providerId);
+            }
+            if (logoutError) {
+              if (
+                !hadRuntimeOrEnvSession ||
+                !(logoutError instanceof ProviderNotImplementedError && logoutError.action === "no-session")
+              ) {
+                throw logoutError;
+              }
+            }
+          } else {
+            const hadRuntimeOrEnvSession = !!getProviderCookie(providerId);
+            clearRuntimeProviderCookie(providerId);
+            try {
+              await adapter.logout();
+            } catch (err) {
+              if (
+                !hadRuntimeOrEnvSession ||
+                !(err instanceof ProviderNotImplementedError && err.action === "no-session")
+              ) {
+                throw err;
+              }
             }
           }
           response = json(ok({ provider: providerId, loggedOut: true }));

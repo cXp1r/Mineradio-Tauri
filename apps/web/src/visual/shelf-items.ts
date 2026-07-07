@@ -22,7 +22,9 @@ export function mapQueueToShelfItems(queue: Track[], currentTrack: Track | null)
 }
 
 function providerAbbr(provider: PlaylistSummary["provider"]): string {
-	return provider === "netease" ? "NE" : "QQ";
+	if (provider === "netease") return "NE";
+	if (provider === "soda") return "SODA";
+	return "QQ";
 }
 
 function playlistTag(playlist: PlaylistSummary): string {

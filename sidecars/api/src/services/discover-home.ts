@@ -28,7 +28,7 @@ export type DiscoverHomeServiceOptions = {
   now?: () => number;
 };
 
-const PROVIDER_ORDER: ProviderId[] = ["netease", "qq"];
+const PROVIDER_ORDER: ProviderId[] = ["netease", "qq", "soda"];
 
 export async function buildDiscoverHome(
   options: DiscoverHomeServiceOptions

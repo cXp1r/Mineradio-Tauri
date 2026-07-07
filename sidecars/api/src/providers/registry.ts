@@ -6,14 +6,16 @@ import type {
 } from "@mineradio/shared";
 import { neteaseAdapter } from "./netease/netease-adapter";
 import { qqAdapter } from "./qq/qq-adapter";
+import { sodaAdapter } from "./soda/soda-adapter";
 import type { ProviderAdapter } from "./provider-adapter";
 
 export const providers: Record<ProviderId, ProviderAdapter> = {
   netease: neteaseAdapter,
-  qq: qqAdapter
+  qq: qqAdapter,
+  soda: sodaAdapter
 };
 
-export const PROVIDER_IDS: ProviderId[] = ["netease", "qq"];
+export const PROVIDER_IDS: ProviderId[] = ["netease", "qq", "soda"];
 
 const NETEASE_CAPABILITIES: ProviderCapability[] = [
   "search",
@@ -38,6 +40,18 @@ const QQ_CAPABILITIES: ProviderCapability[] = [
   "quality"
 ];
 
+const SODA_CAPABILITIES: ProviderCapability[] = [
+  "search",
+  "songUrl",
+  "lyric",
+  "playlistList",
+  "playlistDetail",
+  "loginStatus",
+  "logout",
+  "like",
+  "quality"
+];
+
 export function buildCapabilityMatrix(): CapabilityMatrix {
   const entries: ProviderStatusEntry[] = [
     {
@@ -50,6 +64,12 @@ export function buildCapabilityMatrix(): CapabilityMatrix {
       providerId: "qq",
       available: true,
       capabilities: QQ_CAPABILITIES,
+      message: "online"
+    },
+    {
+      providerId: "soda",
+      available: true,
+      capabilities: SODA_CAPABILITIES,
       message: "online"
     }
   ];

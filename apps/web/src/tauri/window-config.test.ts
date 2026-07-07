@@ -20,7 +20,9 @@ test("production CSP allows required desktop runtime sources", () => {
 	expect(csp).toContain("https://*.music.126.net");
 	expect(csp).toContain("http://*.y.qq.com");
 	expect(csp).toContain("https://*.y.qq.com");
+	expect(csp).toContain("https://*.douyinpic.com");
 	expect(csp).toContain("media-src 'self' blob: http://127.0.0.1:*");
 	expect(devCsp).toContain("http://*.y.qq.com");
 	expect(devCsp).toContain("https://*.y.qq.com");
+	expect(devCsp).toContain("https://*.douyinpic.com");
 });

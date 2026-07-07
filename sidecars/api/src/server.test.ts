@@ -33,8 +33,8 @@ test("GET /health returns 200 with both providers", async () => {
   expect(r.headers.get("access-control-allow-origin")).toBe("*");
   const b = await body(r);
   expect(b.ok).toBe(true);
-  expect(b.providers).toEqual(["netease", "qq"]);
-  expect(b.providerStatus.providers.map((p: { providerId: string }) => p.providerId)).toEqual(["netease", "qq"]);
+  expect(b.providers).toEqual(["netease", "qq", "soda"]);
+  expect(b.providerStatus.providers.map((p: { providerId: string }) => p.providerId)).toEqual(["netease", "qq", "soda"]);
   expect(b.providerStatus.providers[0].capabilities).toContain("search");
 });
 
@@ -491,6 +491,47 @@ test("QQ QR login routes return key image and poll status without exposing cooki
   expect(JSON.stringify(checked)).not.toContain("cookie");
 });
 
+test("Soda QR login routes return key image and poll status without exposing cookies", async () => {
+  const createCalls: Array<string | undefined> = [];
+  const handler = createRouteHandler({
+    sodaQrLogin: {
+      createImage: async (key?: string) => {
+        createCalls.push(key);
+        return {
+          provider: "soda",
+          key: "soda-qr-key-1",
+          img: "data:image/png;base64,soda"
+        };
+      },
+      check: async (key: string) => ({
+        provider: "soda",
+        key,
+        code: 803,
+        message: "login success",
+        loggedIn: true,
+        stored: true
+      })
+    }
+  });
+
+  const key = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-key")));
+  expect(key).toEqual({ ok: true, data: { provider: "soda", key: "soda-qr-key-1" } });
+  expect(createCalls).toEqual([undefined]);
+
+  const image = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-create?key=soda-qr-key-1")));
+  expect(image.data.img).toBe("data:image/png;base64,soda");
+  expect(createCalls).toEqual([undefined, "soda-qr-key-1"]);
+
+  const checked = await body(await handler(new Request("http://127.0.0.1/providers/soda/login-qr-check?key=soda-qr-key-1")));
+  expect(checked.data).toMatchObject({
+    provider: "soda",
+    key: "soda-qr-key-1",
+    code: 803,
+    loggedIn: true,
+    stored: true
+  });
+});
+
 test("POST /providers/qq/session-cookie stores runtime cookie without echoing secrets", async () => {
   const secret = "uin=123; qqmusic_key=runtime-secret";
   const r = await call("/providers/qq/session-cookie", {
@@ -591,6 +632,51 @@ test("POST /providers/qq/logout clears runtime cookie even when provider logout 
     expect(after.data.loggedIn).toBe(false);
   } finally {
     await call("/providers/qq/session-cookie", { method: "DELETE" });
+  }
+});
+
+test("POST /providers/soda/logout uses the saved cookie before clearing it", async () => {
+  const secret = "soda_session=runtime-secret";
+  try {
+    await call("/providers/soda/session-cookie", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookie: secret })
+    });
+    const fakeSoda: ProviderAdapter = {
+      ...providers.soda,
+      async loginStatus() {
+        return { provider: "soda", loggedIn: !!getProviderCookie("soda") };
+      },
+      async logout() {
+        const cookie = getProviderCookie("soda");
+        if (!cookie) {
+          throw new ProviderNotImplementedError("soda", "no-session");
+        }
+        expect(cookie).toBe(secret);
+      }
+    };
+    const handler = createRouteHandler({
+      providerAdapters: { ...providers, soda: fakeSoda }
+    });
+
+    const logout = await handler(new Request("http://127.0.0.1/providers/soda/logout", { method: "POST" }));
+    expect(logout.status).toBe(200);
+    const logoutBody = await body(logout);
+    expect(logoutBody).toEqual({ ok: true, data: { provider: "soda", loggedOut: true } });
+    expect(JSON.stringify(logoutBody)).not.toContain(secret);
+
+    const after = await body(await call("/providers/soda/login-status"));
+    expect(after.data.provider).toBe("soda");
+    expect(after.data.loggedIn).toBe(false);
+
+    const secondLogout = await handler(new Request("http://127.0.0.1/providers/soda/logout", { method: "POST" }));
+    expect(secondLogout.status).toBe(501);
+    const secondBody = await body(secondLogout);
+    expect(secondBody.error.action).toBe("no-session");
+    expect(JSON.stringify(secondBody)).not.toContain(secret);
+  } finally {
+    await call("/providers/soda/session-cookie", { method: "DELETE" });
   }
 });
 
@@ -780,6 +866,79 @@ test("GET /discover/home aggregates logged-in playlists, daily tracks, and podca
   expect(b.data.playlists[0].name).toBe("我的歌单");
   expect(b.data.podcasts[0].name).toBe("热门播客");
   expect(calls).toContain("netease:detail:p1");
+});
+
+test("GET /discover/home treats a Soda-only account as a member session", async () => {
+  const calls: string[] = [];
+  const handler = createRouteHandler({
+    providerAdapters: {
+      ...providers,
+      netease: {
+        ...providers.netease,
+        async loginStatus() {
+          calls.push("netease:login");
+          return { provider: "netease", loggedIn: false };
+        }
+      },
+      qq: {
+        ...providers.qq,
+        async loginStatus() {
+          calls.push("qq:login");
+          return { provider: "qq", loggedIn: false };
+        }
+      },
+      soda: {
+        ...providers.soda,
+        async loginStatus() {
+          calls.push("soda:login");
+          return { provider: "soda", loggedIn: true, nickname: "soda user", userId: "soda-42" };
+        },
+        async playlistList() {
+          calls.push("soda:list");
+          return [{
+            provider: "soda",
+            id: "soda-p1",
+            name: "汽水歌单",
+            coverUrl: "https://p3-luna.douyinpic.com/img/soda.jpg",
+            trackCount: 1,
+            trackIds: ["soda-t1"],
+            subscribed: false
+          }];
+        },
+        async playlistDetail(id) {
+          calls.push(`soda:detail:${id}`);
+          return {
+            provider: "soda",
+            id,
+            name: "汽水歌单",
+            coverUrl: "https://p3-luna.douyinpic.com/img/soda.jpg",
+            trackCount: 1,
+            trackIds: ["soda-t1"],
+            subscribed: false,
+            tracks: [{ ...routeTrack, provider: "soda", id: "soda-t1", sourceId: "soda-t1", title: "汽水歌曲" }]
+          };
+        }
+      }
+    },
+    podcast: {
+      async hot() {
+        return { podcasts: [], more: false };
+      }
+    },
+    now: () => 1782656256000
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/discover/home"));
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b.ok).toBe(true);
+  expect(b.data.loggedIn).toBe(true);
+  expect(b.data.mode).toBe("member");
+  expect(b.data.user).toEqual({ provider: "soda", userId: "soda-42", nickname: "soda user", avatarUrl: "" });
+  expect(b.data.playlists[0]).toMatchObject({ provider: "soda", id: "soda-p1", name: "汽水歌单" });
+  expect(b.data.dailySongs[0]).toMatchObject({ provider: "soda", id: "soda-t1", title: "汽水歌曲" });
+  expect(calls).toContain("soda:login");
+  expect(calls).toContain("soda:detail:soda-p1");
 });
 
 test("GET /discover/home uses the baseline Netease recommendation sources", async () => {
@@ -1471,16 +1630,18 @@ test("POST /providers/netease/login-status (method mismatch) returns 404", async
   expect(r.status).toBe(404);
 });
 
-test("GET /providers/capabilities returns 200 matrix with both netease and qq online (post-A6)", async () => {
+test("GET /providers/capabilities returns 200 matrix with netease, qq, and soda", async () => {
   const r = await call("/providers/capabilities");
   expect(r.status).toBe(200);
   const b = await body(r);
   expect(b.ok).toBe(true);
-  expect(b.data.providers.length).toBe(2);
+  expect(b.data.providers.length).toBe(3);
   const netease = b.data.providers.find((e: { providerId: string }) => e.providerId === "netease");
   const qq = b.data.providers.find((e: { providerId: string }) => e.providerId === "qq");
+  const soda = b.data.providers.find((e: { providerId: string }) => e.providerId === "soda");
   expect(netease.available).toBe(true);
   expect(qq.available).toBe(true);
+  expect(soda.available).toBe(true);
 });
 
 test("GET /diagnostics returns 200 and contains none of the forbidden cookie/auth keys", async () => {
@@ -1528,6 +1689,32 @@ test("GET /audio-proxy returns injected proxy response directly", async () => {
   expect(r.headers.get("content-type")).toBe("audio/mpeg");
   expect(r.headers.get("access-control-allow-origin")).toBe("*");
   expect(await r.text()).toBe("song");
+});
+
+test("GET /providers/soda/audio-proxy returns injected soda proxy response directly", async () => {
+  const handler = createRouteHandler({
+    sodaAudioProxy: async ({ target, playAuth, request }) => {
+      expect(target).toBe("https://media.example.test/soda.m4a");
+      expect(playAuth).toBe("play-auth-1");
+      expect(request.method).toBe("GET");
+      return new Response("soda-song", {
+        status: 200,
+        headers: {
+          "content-type": "audio/mp4",
+          "access-control-allow-origin": "*"
+        }
+      });
+    }
+  });
+
+  const r = await handler(
+    new Request("http://127.0.0.1/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda.m4a&playAuth=play-auth-1")
+  );
+
+  expect(r.status).toBe(200);
+  expect(r.headers.get("content-type")).toBe("audio/mp4");
+  expect(r.headers.get("access-control-allow-origin")).toBe("*");
+  expect(await r.text()).toBe("soda-song");
 });
 
 test("GET /image-proxy returns injected proxy response directly", async () => {

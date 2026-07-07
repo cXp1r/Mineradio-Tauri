@@ -262,8 +262,9 @@ export function PlaylistPanelHost(props: PlaylistPanelHostProps): ReactElement {
 	const renderPlaylists = () => {
 		const imported = props.importedPlaylists ?? [];
 		const groups = [
-			{ key: "netease", label: "网易云歌单", items: props.playlists.filter((playlist) => playlist.provider !== "qq") },
+			{ key: "netease", label: "网易云歌单", items: props.playlists.filter((playlist) => playlist.provider === "netease") },
 			{ key: "qq", label: "QQ 音乐歌单", items: props.playlists.filter((playlist) => playlist.provider === "qq") },
+			{ key: "soda", label: "汽水音乐歌单", items: props.playlists.filter((playlist) => playlist.provider === "soda") },
 		];
 		return (
 			<div id="pl-pane">
