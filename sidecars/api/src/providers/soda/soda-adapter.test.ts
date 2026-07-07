@@ -1368,4 +1368,3 @@ test("soda adapter logout without cookie throws ProviderNotImplementedError no-s
     expect((err as ProviderNotImplementedError).action).toBe("no-session");
   }
 });
-
