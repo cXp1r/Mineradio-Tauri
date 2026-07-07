@@ -181,6 +181,16 @@ test("buildLyricGroup assigns baseline renderOrders 40/41/42/43/44 across sun/gl
 	expect((lyric.sparks as unknown as { renderOrder: number }).renderOrder).toBe(44);
 });
 
+test("buildLyricGroup uses facing-aware shader materials for glow readability and sun", async () => {
+	const lyric = await buildLyricGroup("test", DEFAULT_LYRIC_PALETTE, {
+		threeFactory: makeFakeThree(),
+		dotTexture: makeFakeDotTexture(),
+	});
+	expect((lyric.glowMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+	expect((lyric.readabilityMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+	expect((lyric.sunMat as unknown as { fragmentShader: string }).fragmentShader).toContain("gl_FrontFacing");
+});
+
 test("buildLyricGroup sun position/scale match baseline 8837-8838", async () => {
 	const lyric = await buildLyricGroup("test", DEFAULT_LYRIC_PALETTE, {
 		threeFactory: makeFakeThree(),
