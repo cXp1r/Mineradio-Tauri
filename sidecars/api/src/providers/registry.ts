@@ -48,7 +48,8 @@ const SODA_CAPABILITIES: ProviderCapability[] = [
   "playlistDetail",
   "loginStatus",
   "logout",
-  "like"
+  "like",
+  "quality"
 ];
 
 export function buildCapabilityMatrix(): CapabilityMatrix {

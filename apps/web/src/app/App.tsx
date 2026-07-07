@@ -2688,8 +2688,9 @@ export function App({
         if (!result.url) {
           throw new Error(result.message || "播放地址不可用");
         }
+        const proxiedUrl = (client as { proxiedUrl?: (url: string) => string }).proxiedUrl;
         const audioUrl = result.proxied
-          ? result.url
+          ? (proxiedUrl ? proxiedUrl.call(client, result.url) : result.url)
           : client.audioProxyUrl(result.url);
         if (result.trial) {
           setTrialBanner({
@@ -3993,7 +3994,7 @@ export function App({
       `${providerLabel(provider)} ${status.nickname ?? status.userId ?? "已登录"}`,
   );
   const providerLoginHint = (provider: ProviderId, fallback: string) => {
-    const status = provider === "netease" ? neteaseStatus : qqStatus;
+    const status = providerStatuses[provider];
     return status?.loggedIn === false ? "登录已失效" : fallback;
   };
   const topAccountStatus = neteaseStatus?.loggedIn

@@ -32,6 +32,7 @@ test("capability matrix: netease, qq, and soda are registered", () => {
     "playlistDetail",
     "loginStatus",
     "logout",
-    "like"
+    "like",
+    "quality"
   ]);
 });

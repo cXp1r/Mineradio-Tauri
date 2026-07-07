@@ -965,7 +965,6 @@ test("soda adapter loginStatus can use runtime session cookie config", async () 
     clearRuntimeProviderCookie("soda");
   }
 });
-
 test("soda adapter loginStatus without cookie returns loggedIn:false without calling client", async () => {
   let called = false;
   const adapter = createSodaAdapter({

@@ -868,6 +868,79 @@ test("GET /discover/home aggregates logged-in playlists, daily tracks, and podca
   expect(calls).toContain("netease:detail:p1");
 });
 
+test("GET /discover/home treats a Soda-only account as a member session", async () => {
+  const calls: string[] = [];
+  const handler = createRouteHandler({
+    providerAdapters: {
+      ...providers,
+      netease: {
+        ...providers.netease,
+        async loginStatus() {
+          calls.push("netease:login");
+          return { provider: "netease", loggedIn: false };
+        }
+      },
+      qq: {
+        ...providers.qq,
+        async loginStatus() {
+          calls.push("qq:login");
+          return { provider: "qq", loggedIn: false };
+        }
+      },
+      soda: {
+        ...providers.soda,
+        async loginStatus() {
+          calls.push("soda:login");
+          return { provider: "soda", loggedIn: true, nickname: "soda user", userId: "soda-42" };
+        },
+        async playlistList() {
+          calls.push("soda:list");
+          return [{
+            provider: "soda",
+            id: "soda-p1",
+            name: "汽水歌单",
+            coverUrl: "https://p3-luna.douyinpic.com/img/soda.jpg",
+            trackCount: 1,
+            trackIds: ["soda-t1"],
+            subscribed: false
+          }];
+        },
+        async playlistDetail(id) {
+          calls.push(`soda:detail:${id}`);
+          return {
+            provider: "soda",
+            id,
+            name: "汽水歌单",
+            coverUrl: "https://p3-luna.douyinpic.com/img/soda.jpg",
+            trackCount: 1,
+            trackIds: ["soda-t1"],
+            subscribed: false,
+            tracks: [{ ...routeTrack, provider: "soda", id: "soda-t1", sourceId: "soda-t1", title: "汽水歌曲" }]
+          };
+        }
+      }
+    },
+    podcast: {
+      async hot() {
+        return { podcasts: [], more: false };
+      }
+    },
+    now: () => 1782656256000
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/discover/home"));
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b.ok).toBe(true);
+  expect(b.data.loggedIn).toBe(true);
+  expect(b.data.mode).toBe("member");
+  expect(b.data.user).toEqual({ provider: "soda", userId: "soda-42", nickname: "soda user", avatarUrl: "" });
+  expect(b.data.playlists[0]).toMatchObject({ provider: "soda", id: "soda-p1", name: "汽水歌单" });
+  expect(b.data.dailySongs[0]).toMatchObject({ provider: "soda", id: "soda-t1", title: "汽水歌曲" });
+  expect(calls).toContain("soda:login");
+  expect(calls).toContain("soda:detail:soda-p1");
+});
+
 test("GET /discover/home uses the baseline Netease recommendation sources", async () => {
   const calls: string[] = [];
   const handler = createRouteHandler({

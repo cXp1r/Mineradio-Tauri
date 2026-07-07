@@ -1299,6 +1299,92 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 	}
 });
 
+test("App resolves proxied Soda URLs against the sidecar base when reloading after media errors", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	const host = document.createElement("div");
+	let root: ReturnType<typeof createRoot> | null = null;
+	try {
+		localStorage.clear();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		usePlaybackStore.getState().setCurrentTrack({
+			provider: "soda",
+			id: "soda-reload-1",
+			sourceId: "soda-reload-1",
+			title: "Soda Reload Song",
+			artists: ["Artist"],
+			album: "",
+			coverUrl: "",
+			durationMs: 60000,
+			qualityHints: [],
+			playableState: "unknown",
+		});
+
+		const baseUrl = "http://127.0.0.1:39999";
+		let resolveCount = 0;
+		const relativeUrls = [
+			"/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda-1.m4a&playAuth=auth-1",
+			"/providers/soda/audio-proxy?url=https%3A%2F%2Fmedia.example.test%2Fsoda-2.m4a&playAuth=auth-2",
+		];
+		const fakeClient = {
+			async resolveSongUrl() {
+				const url = relativeUrls[Math.min(resolveCount, relativeUrls.length - 1)];
+				resolveCount += 1;
+				return { url, quality: "标准音质", proxied: true, provider: "soda", trial: false, playable: true };
+			},
+			proxiedUrl(url: string) {
+				return `${baseUrl}${url}`;
+			},
+			audioProxyUrl() {
+				throw new Error("Soda proxied URLs should not use the generic audio proxy");
+			},
+			async lyric() {
+				return {
+					provider: "soda",
+					trackId: "soda-reload-1",
+					lines: [],
+					hasTranslation: false,
+					isWordByWord: false,
+				};
+			},
+		} as unknown as SidecarClient;
+		const rootConfig: RuntimeConfig = {
+			sidecarBaseUrl: baseUrl,
+			appDataDir: "",
+			appVersion: "0.0.0-test",
+			schemaVersion: "0.1.0",
+			updaterPublicKeyConfigured: false,
+		};
+		document.body.appendChild(host);
+		root = createRoot(host);
+		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+
+		const firstExpected = `${baseUrl}${relativeUrls[0]}`;
+		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== firstExpected; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		expect(appStubAudioInstances[0]?.src).toBe(firstExpected);
+
+		appStubAudioInstances[0]?.dispatchEvent(new Event("error"));
+		const secondExpected = `${baseUrl}${relativeUrls[1]}`;
+		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== secondExpected; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(resolveCount).toBe(2);
+		expect(appStubAudioInstances[0]?.src).toBe(secondExpected);
+	} finally {
+		root?.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useLyricsStore.getState().reset();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
 test("App retries playback after applying an automatic quality fallback", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
@@ -1793,6 +1879,107 @@ test("App opens account dropdown from a single logged-in account and launches on
 	expect(host.querySelector("#login-modal-title")?.textContent).toContain("扫码登录 QQ 音乐");
 	expect(host.querySelector("#qr-img")?.getAttribute("src")).toBe("data:image/png;base64,qq-img");
 	expect(qrProviders).toEqual(["qq"]);
+
+	root.unmount();
+	host.remove();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+	localStorage.clear();
+	restoreAudio();
+});
+
+test("App uses Soda's own login status for the add-account hint", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	const restoreAudio = installAppStubAudio();
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useLyricsStore.getState().reset();
+
+	const fakeClient = {
+		async health() {
+			return {
+				ok: true,
+				appVersion: "0.0.0-test",
+				apiVersion: "0.1.0",
+				schemaVersion: "0.1.0",
+				providers: [],
+			};
+		},
+		async capabilities() {
+			return { version: "0.1.0", providers: [] };
+		},
+		async loginStatus(provider: string) {
+			if (provider === "soda") return { provider, loggedIn: false };
+			return {
+				provider,
+				loggedIn: true,
+				nickname: provider === "netease" ? "网易账号" : "QQ 账号",
+				userId: `${provider}-user`,
+			};
+		},
+		async playlistList() {
+			return [];
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+		async discoverHome() {
+			return { loggedIn: true, user: { provider: "netease", userId: "netease-user", nickname: "网易账号", avatarUrl: "" }, dailySongs: [], playlists: [], podcasts: [], mode: "member", updatedAt: 1 };
+		},
+		async weatherRadio() {
+			return {
+				ok: true,
+				weather: {
+					provider: "open-meteo",
+					location: { name: "上海", country: "中国", admin1: "", latitude: 31.23, longitude: 121.47, timezone: "Asia/Shanghai", fallback: false },
+					label: "晴",
+					weatherCode: 0,
+					temperature: 22,
+					apparentTemperature: 21,
+					humidity: 60,
+					precipitation: 0,
+					cloudCover: 10,
+					windSpeed: 6,
+					windGusts: 10,
+					isDay: 1,
+					time: "",
+					updatedAt: 1,
+					error: "",
+					mood: { key: "clear", title: "晴天电台", tagline: "把光留给旋律", energy: 0.58, warmth: 0.62, focus: 0.54, melancholy: 0.24, keywords: ["晴天"] },
+				},
+				radio: {
+					title: "晴天电台",
+					subtitle: "把光留给旋律",
+					seedQueries: ["晴天"],
+					updatedAt: 1,
+					songs: [],
+				},
+			};
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+	for (let i = 0; i < 16 && !host.querySelector("#user-avatar"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	(host.querySelector("#user-btn") as HTMLButtonElement).click();
+	for (let i = 0; i < 12 && !host.querySelector("#account-dropdown"); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(host.querySelector("#account-add-provider-soda")).not.toBeNull();
+	expect(host.querySelector("#account-add-provider-soda")?.textContent).toContain("登录已失效");
 
 	root.unmount();
 	host.remove();
