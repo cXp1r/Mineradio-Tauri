@@ -197,6 +197,7 @@ function sodaQualityOptionFromBitRate(
   labelInfo: Record<string, unknown> | null
 ): TrackQualityOption | null {
   const rawQuality = firstString(bitRate.quality).trim();
+  // Soda's raw "lossless" bit_rate tier is a shell; real lossless playback is exposed as "highest".
   if (!rawQuality || rawQuality.toLowerCase() === "lossless") return null;
   const level = mapSodaPlaybackQuality(rawQuality);
   if (!level) return null;
