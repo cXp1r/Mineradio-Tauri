@@ -290,6 +290,10 @@ function indexOfBytes(haystack: Uint8Array, needle: Uint8Array): number {
   return -1;
 }
 
+function sumSampleSizes(sampleSizes: number[]): number {
+  return sampleSizes.reduce((sum, size) => sum + size, 0);
+}
+
 async function decryptAesCtr(data: Uint8Array, keyBytes: Uint8Array, iv: Uint8Array): Promise<Uint8Array> {
   const key = await crypto.subtle.importKey("raw", toArrayBuffer(keyBytes), { name: "AES-CTR" }, false, ["decrypt"]);
   const decrypted = await crypto.subtle.decrypt(
@@ -319,9 +323,13 @@ class SpadeDecryptor {
     const buff = concatBytes(SPADE_PREFIX, spadeKeyBytes);
     for (let index = 0; index < result.length; index += 1) {
       const raw = (spadeKeyBytes[index] ^ buff[index]) - SpadeDecryptor.bitCount(index) - 21;
-      result[index] = raw >= 0 ? raw : ((raw % 255) + 255) % 255;
+      result[index] = raw & 0xff;
     }
     return result;
+  }
+
+  static decryptSpadeInnerForTest(spadeKeyBytes: Uint8Array): Uint8Array {
+    return SpadeDecryptor.decryptSpadeInner(spadeKeyBytes);
   }
 
   static extractKey(playAuth: string): string | null {
@@ -337,6 +345,10 @@ class SpadeDecryptor {
     const endIndex = 1 + (bytes.length - paddingLength - 2) - SpadeDecryptor.decodeBase36(tmpBuff[0]);
     return new TextDecoder().decode(tmpBuff.subarray(1, endIndex));
   }
+}
+
+export function __decodeSodaSpadeBytesForTest(spadeKeyBytes: Uint8Array): Uint8Array {
+  return SpadeDecryptor.decryptSpadeInnerForTest(spadeKeyBytes);
 }
 
 function findBox(data: Uint8Array, boxType: string, start = 0, end = data.length): Mp4Box | null {
@@ -380,12 +392,28 @@ export async function decryptSodaAudioData(fileData: Uint8Array, playAuth: strin
   const stsz = findBox(fileData, "stsz", stbl.offset + 8, stbl.offset + stbl.size);
   if (!stsz) return { data: fileData, decrypted: false, reason: "stsz box not found" };
 
+  const mdat = findBox(fileData, "mdat");
+  if (!mdat) return { data: fileData, decrypted: false, reason: "mdat box not found" };
+  const mdatPayloadSize = mdat.size - 8;
+
   const stszData = stsz.data;
+  if (stszData.length < 12) {
+    return { data: fileData, decrypted: false, reason: "stsz box is truncated" };
+  }
   const sampleSizeFixed = readUInt32BE(stszData, 4);
   const sampleCount = readUInt32BE(stszData, 8);
+  if (sampleSizeFixed && sampleSizeFixed * sampleCount !== mdatPayloadSize) {
+    return { data: fileData, decrypted: false, reason: "sample size table does not match mdat payload" };
+  }
+  if (!sampleSizeFixed && stszData.length < 12 + sampleCount * 4) {
+    return { data: fileData, decrypted: false, reason: "stsz sample table is truncated" };
+  }
   const sampleSizes = sampleSizeFixed
     ? Array.from({ length: sampleCount }, () => sampleSizeFixed)
     : Array.from({ length: sampleCount }, (_, index) => readUInt32BE(stszData, 12 + index * 4));
+  if (!sampleSizeFixed && sumSampleSizes(sampleSizes) !== mdatPayloadSize) {
+    return { data: fileData, decrypted: false, reason: "sample size table does not match mdat payload" };
+  }
 
   if (!senc) {
     senc = findBox(fileData, "senc", stbl.offset + 8, stbl.offset + stbl.size);
@@ -393,6 +421,9 @@ export async function decryptSodaAudioData(fileData: Uint8Array, playAuth: strin
   }
 
   const sencData = senc.data;
+  if (sencData.length < 8) {
+    return { data: fileData, decrypted: false, reason: "senc box is truncated" };
+  }
   const sencFlags = readUInt32BE(sencData, 0) & 0x00ffffff;
   const sencSampleCount = readUInt32BE(sencData, 4);
   if ((sencFlags & 0x02) !== 0) {
@@ -405,12 +436,12 @@ export async function decryptSodaAudioData(fileData: Uint8Array, playAuth: strin
   const ivs: Uint8Array[] = [];
   let sencPtr = 8;
   for (let index = 0; index < sencSampleCount; index += 1) {
+    if (sencPtr + 8 > sencData.length) {
+      return { data: fileData, decrypted: false, reason: "senc IV table is truncated" };
+    }
     ivs.push(concatBytes(sencData.subarray(sencPtr, sencPtr + 8), new Uint8Array(8)));
     sencPtr += 8;
   }
-
-  const mdat = findBox(fileData, "mdat");
-  if (!mdat) return { data: fileData, decrypted: false, reason: "mdat box not found" };
 
   const output = new Uint8Array(fileData);
   const keyBytes = hexToBytes(hexKey);
@@ -423,7 +454,10 @@ export async function decryptSodaAudioData(fileData: Uint8Array, playAuth: strin
   }
 
   const decryptedMdat = concatBytes(...decryptedMdatParts);
-  if (decryptedMdat.length === mdat.size - 8) output.set(decryptedMdat, mdat.offset + 8);
+  if (decryptedMdat.length !== mdat.size - 8) {
+    return { data: fileData, decrypted: false, reason: "sample size table does not match mdat payload" };
+  }
+  output.set(decryptedMdat, mdat.offset + 8);
 
   const stsd = findBox(output, "stsd", stbl.offset + 8, stbl.offset + stbl.size);
   if (stsd) {

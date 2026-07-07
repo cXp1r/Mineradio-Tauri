@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { decryptSodaAudioData, createSodaAudioProxy } from "./soda-audio-proxy";
+import { __decodeSodaSpadeBytesForTest, decryptSodaAudioData, createSodaAudioProxy } from "./soda-audio-proxy";
 
 async function jsonBody(response: Response): Promise<any> {
   return await response.json();
@@ -59,6 +59,12 @@ test("soda audio proxy rejects missing playAuth", async () => {
   expect(body.error.message).toBe("playAuth required");
 });
 
+test("Soda Spade byte decoding wraps underflow with byte modulo 256", () => {
+  const decoded = __decodeSodaSpadeBytesForTest(bytes(0xee));
+
+  expect(decoded[0]).toBe(0xff);
+});
+
 test("decryptSodaAudioData rejects subsample-encrypted samples instead of decrypting them as full samples", async () => {
   const playAuth = "AHBg";
   const senc = mp4Box(
@@ -76,12 +82,53 @@ test("decryptSodaAudioData rejects subsample-encrypted samples instead of decryp
   const mdia = mp4Box("mdia", minf);
   const trak = mp4Box("trak", mdia);
   const moov = mp4Box("moov", senc, trak);
-  const result = await decryptSodaAudioData(moov, playAuth);
+  const fileData = concat(moov, mp4Box("mdat", bytes(1, 2, 3, 4)));
+  const result = await decryptSodaAudioData(fileData, playAuth);
 
   expect(result).toEqual({
-    data: moov,
+    data: fileData,
     decrypted: false,
     reason: "soda audio subsample encryption is not supported"
+  });
+});
+
+test("decryptSodaAudioData rejects mismatched sample sizes instead of reporting encrypted mdat as decrypted", async () => {
+  const playAuth = "AHBg";
+  const senc = mp4Box("senc", u32(0), u32(0));
+  const stsz = mp4Box("stsz", u32(0), u32(1), u32(4));
+  const stbl = mp4Box("stbl", stsz);
+  const minf = mp4Box("minf", stbl);
+  const mdia = mp4Box("mdia", minf);
+  const trak = mp4Box("trak", mdia);
+  const moov = mp4Box("moov", senc, trak);
+  const mdat = mp4Box("mdat", bytes(1, 2, 3, 4, 5));
+  const fileData = concat(moov, mdat);
+  const result = await decryptSodaAudioData(fileData, playAuth);
+
+  expect(result).toEqual({
+    data: fileData,
+    decrypted: false,
+    reason: "sample size table does not match mdat payload"
+  });
+});
+
+test("decryptSodaAudioData rejects mismatched fixed sample sizes before allocating sample entries", async () => {
+  const playAuth = "AHBg";
+  const senc = mp4Box("senc", u32(0), u32(0));
+  const stsz = mp4Box("stsz", u32(0), u32(1), u32(5));
+  const stbl = mp4Box("stbl", stsz);
+  const minf = mp4Box("minf", stbl);
+  const mdia = mp4Box("mdia", minf);
+  const trak = mp4Box("trak", mdia);
+  const moov = mp4Box("moov", senc, trak);
+  const mdat = mp4Box("mdat", bytes(1, 2, 3, 4));
+  const fileData = concat(moov, mdat);
+  const result = await decryptSodaAudioData(fileData, playAuth);
+
+  expect(result).toEqual({
+    data: fileData,
+    decrypted: false,
+    reason: "sample size table does not match mdat payload"
   });
 });
 
