@@ -409,6 +409,154 @@ test("player console CSS hides advanced controls from the main bar", async () =>
 	expect(css).toContain("html.control-glass-svg-ok #play-btn");
 });
 
+test("Search detail CSS includes the full-screen glass result surface", async () => {
+	const css = await fetch(new URL("../styles.css", import.meta.url)).then((response) => response.text());
+	expect(css).toContain("[data-search-detail]");
+	expect(css).toContain(".search-detail-track");
+	expect(css).toContain(".search-detail-action");
+});
+
+test("App opens Search detail from the compact search Enter action", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useSearchStore.getState().reset();
+	useSearchStore.setState({ keyword: "晴天", mode: "song", detailOpen: false });
+
+	const fakeClient = {
+		async searchAll() {
+			return [{
+				provider: "netease",
+				id: "song-1",
+				sourceId: "song-1",
+				title: "晴天",
+				artists: ["周杰伦"],
+				album: "叶惠美",
+				coverUrl: "",
+				durationMs: 269000,
+				qualityHints: [],
+				playableState: "playable",
+			} satisfies Track];
+		},
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return { loggedIn: false, user: null, dailySongs: [], playlists: [], podcasts: [], mode: "starter", updatedAt: 1 };
+		},
+		async weatherRadio() {
+			return { ok: true, weather: null, radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] } };
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const input = host.querySelector<HTMLInputElement>("#search-input");
+		expect(input).not.toBeNull();
+		input!.focus();
+		input!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+		for (let i = 0; i < 16 && !host.querySelector("[data-search-detail]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(host.querySelector("[data-search-detail]")).not.toBeNull();
+		expect(host.querySelector("[data-search-detail]")?.textContent).toContain("晴天");
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+	}
+});
+
+test("App Search detail append action queues a song without starting playback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useSearchStore.getState().reset();
+	useSearchStore.setState({ keyword: "晴天", mode: "song", detailOpen: false });
+
+	const fakeClient = {
+		async searchAll() {
+			return [{
+				provider: "netease",
+				id: "song-1",
+				sourceId: "song-1",
+				title: "晴天",
+				artists: ["周杰伦"],
+				album: "叶惠美",
+				coverUrl: "",
+				durationMs: 269000,
+				qualityHints: [],
+				playableState: "playable",
+			} satisfies Track];
+		},
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return { loggedIn: false, user: null, dailySongs: [], playlists: [], podcasts: [], mode: "starter", updatedAt: 1 };
+		},
+		async weatherRadio() {
+			return { ok: true, weather: null, radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] } };
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const input = host.querySelector<HTMLInputElement>("#search-input");
+		expect(input).not.toBeNull();
+		input!.focus();
+		input!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+		for (let i = 0; i < 16 && !host.querySelector("[data-search-detail-append]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		host.querySelector<HTMLButtonElement>("[data-search-detail-append]")?.click();
+
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toContain("song-1");
+		expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+	}
+});
+
 test("App unmounts SplashHost after splash dismissed instead of leaving hidden splash listeners alive", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	const host = document.createElement("div");

@@ -3,10 +3,10 @@ import type { ProviderId, PodcastProgram, PodcastRadio, Track } from "@mineradio
 import { SidecarClient } from "../../api/sidecar-client";
 import { isPlayable, playSearchResult } from "../search/play-search-result";
 import { isSharedPlaylistCandidateText } from "../../shared-playlist/imported-playlists";
-import { useSearchStore } from "../../stores/search-store";
+import { useSearchStore, type SearchMode } from "../../stores/search-store";
 import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list";
 
-export type SearchMode = "song" | "netease" | "qq" | "podcast";
+export type { SearchMode } from "../../stores/search-store";
 
 export interface SearchShellProps {
 	client: SidecarClient | null;
@@ -134,9 +134,11 @@ export function SearchShell({
 	const error = useSearchStore((s) => s.error);
 	const setProvider = useSearchStore((s) => s.setProvider);
 	const setKeyword = useSearchStore((s) => s.setKeyword);
+	const setMode = useSearchStore((s) => s.setMode);
 	const setResults = useSearchStore((s) => s.setResults);
 	const setLoading = useSearchStore((s) => s.setLoading);
 	const setError = useSearchStore((s) => s.setError);
+	const openDetail = useSearchStore((s) => s.openDetail);
 	const reset = useSearchStore((s) => s.reset);
 	const modeRef = useRef<SearchMode>("song");
 	const searchSeqRef = useRef(0);
@@ -152,6 +154,7 @@ export function SearchShell({
 			const trimmed = nextKeyword.trim();
 			setKeyword(nextKeyword);
 			modeRef.current = nextMode;
+			setMode(nextMode);
 			setProvider(providerFromMode(nextMode));
 			if (isSharedPlaylistCandidateText(trimmed)) {
 				const seq = searchSeqRef.current + 1;
@@ -242,7 +245,7 @@ export function SearchShell({
 				setError(message);
 			}
 		},
-		[client, onSharedPlaylistImport, setError, setKeyword, setLoading, setProvider, setResults],
+		[client, onSharedPlaylistImport, setError, setKeyword, setLoading, setMode, setProvider, setResults],
 	);
 
 	useEffect(() => {
@@ -265,6 +268,7 @@ export function SearchShell({
 	useEffect(() => {
 		if (!requestedMode) return;
 		modeRef.current = requestedMode;
+		setMode(requestedMode);
 		setProvider(providerFromMode(requestedMode));
 		if (requestedMode === "podcast") {
 			void runSearch(keyword.trim() ? keyword : "", "podcast");
@@ -275,10 +279,11 @@ export function SearchShell({
 			setResults([]);
 			setError(null);
 		}
-	}, [keyword, requestedMode, runSearch, setError, setProvider, setResults]);
+	}, [keyword, requestedMode, runSearch, setError, setMode, setProvider, setResults]);
 
 	const selectMode = (mode: SearchMode) => {
 		modeRef.current = mode;
+		setMode(mode);
 		setProvider(providerFromMode(mode));
 		setResults([]);
 		setPodcastResults([]);
@@ -296,6 +301,7 @@ export function SearchShell({
 	};
 
 	const submit = () => {
+		openDetail(keyword, modeRef.current);
 		void runSearch(keyword, modeRef.current);
 	};
 
@@ -303,6 +309,7 @@ export function SearchShell({
 		playSearchResult(track);
 		if (isPodcastTrack(track)) {
 			modeRef.current = "song";
+			setMode("song");
 			setProvider(providerFromMode("song"));
 			setPodcastResults([]);
 			setPodcastPrograms([]);

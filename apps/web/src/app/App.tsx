@@ -77,6 +77,7 @@ import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePre
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
+import { SearchDetailPage } from "../components/shell/SearchDetailPage";
 import { SearchShell, type SearchMode } from "../components/shell/SearchShell";
 import {
   createDesktopLyricsPushState,
@@ -3137,6 +3138,30 @@ export function App({
     [insertQueueNext, showToast],
   );
 
+  const appendSearchResult = useCallback(
+    (track: Track) => {
+      usePlaybackStore.getState().enqueue(track);
+      showToast(`已加入播放队列: ${track.title}`);
+    },
+    [showToast],
+  );
+
+  const playSearchDetailTracks = useCallback(
+    (tracks: Track[], index: number) => {
+      if (!tracks.length) {
+        showToast("没有可播放的搜索结果");
+        return;
+      }
+      const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
+      setQueue(tracks);
+      usePlaybackStore.getState().playAt(safeIndex);
+      useSearchStore.getState().closeDetail();
+      enterPlaybackSurface();
+      showToast(tracks[safeIndex]?.title ?? "已开始播放");
+    },
+    [enterPlaybackSurface, setQueue, showToast],
+  );
+
   const searchArtistFromResult = useCallback(
     (artist: string) => {
       searchQuery(artist, "song");
@@ -4321,6 +4346,24 @@ export function App({
         hasCustomCover={currentHasCustomCover}
         peek={emptyHomeActive || searchKeyword.trim().length > 0}
         requestedMode={searchModeRequest}
+      />
+      <SearchDetailPage
+        client={sidecarClient}
+        onClose={focusSearch}
+        onPlayResults={playSearchDetailTracks}
+        onAppendQueue={appendSearchResult}
+        onResultNext={insertSearchResultNext}
+        onResultLike={(track) => void toggleLikeTrack(track)}
+        onResultCollect={openCollectPicker}
+        onArtistSearch={searchArtistFromResult}
+        isResultLiked={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likedSongMap[key] === true : false;
+        }}
+        isResultLikeBusy={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likeBusyMap[key] === true : false;
+        }}
       />
       <TopRightControls
         onHome={goHome}
