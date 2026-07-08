@@ -92,6 +92,7 @@ export const qqClient = {
   userSonglists: wrap("user/songlist"),
   userCollectSonglists: wrap("user/collect/songlist"),
   playlistDetail: wrap("songlist"),
+  playlistMap: wrap("songlist/map"),
   addSongToPlaylist: wrap("songlist/add"),
   loginStatus: wrap("user/detail"),
   vipInfo: qqVipInfo,

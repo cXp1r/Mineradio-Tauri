@@ -48,6 +48,7 @@ export interface QqClientDeps {
   userSonglists: QqCall;
   userCollectSonglists: QqCall;
   playlistDetail: QqCall;
+  playlistMap?: QqCall;
   addSongToPlaylist: QqCall;
   loginStatus: QqCall;
   vipInfo?: QqCall;
@@ -70,6 +71,7 @@ const defaultDeps: QqClientDeps = {
   userSonglists: cast(qqClient.userSonglists),
   userCollectSonglists: cast(qqClient.userCollectSonglists),
   playlistDetail: cast(qqClient.playlistDetail),
+  playlistMap: cast(qqClient.playlistMap),
   addSongToPlaylist: cast(qqClient.addSongToPlaylist),
   loginStatus: cast(qqClient.loginStatus),
   vipInfo: cast(qqClient.vipInfo),
@@ -81,6 +83,7 @@ const defaultDeps: QqClientDeps = {
 };
 
 const QQ_PUBLIC_PLAYLIST_TRACK_LIMIT = 500;
+const QQ_OWN_PLAYLIST_DETAIL_BATCH_SIZE = 48;
 
 function asObj(v: unknown): Record<string, unknown> | null {
   if (v && typeof v === "object" && !Array.isArray(v)) {
@@ -628,6 +631,222 @@ function mapQqUserPlaylists(rawList: unknown[], seen: Set<string>, subscribed = 
   return out;
 }
 
+function isQqPlaylistBodyCandidate(obj: Record<string, unknown>): boolean {
+  return Array.isArray(obj.songlist) ||
+    !!readStringField(obj, ["dissname", "diss_name", "name", "title", "logo", "diss_cover", "picurl", "cover"]) ||
+    readNumberField(obj, ["total_song_num", "song_cnt", "songnum", "song_count"]) !== undefined;
+}
+
+function readQqPlaylistDetailBody(body: unknown): QqPlaylistBody | null {
+  const root = asObj(body);
+  if (!root) return null;
+  const rootCdlist = Array.isArray(root.cdlist) ? root.cdlist : [];
+  const data = asObj(root.data);
+  const dataCdlist = data && Array.isArray(data.cdlist) ? data.cdlist : [];
+  const candidates = [
+    rootCdlist.length > 0 ? asObj(rootCdlist[0]) : null,
+    dataCdlist.length > 0 ? asObj(dataCdlist[0]) : null,
+    data,
+    root
+  ];
+  for (const candidate of candidates) {
+    if (candidate && isQqPlaylistBodyCandidate(candidate)) {
+      return candidate as unknown as QqPlaylistBody;
+    }
+  }
+  return null;
+}
+
+function readQqStringList(value: unknown): string[] {
+  const out: string[] = [];
+  const push = (candidate: unknown): void => {
+    if (candidate === null || candidate === undefined) return;
+    if (typeof candidate === "string") {
+      const parts = candidate.includes(",") ? candidate.split(",") : [candidate];
+      for (const part of parts) {
+        const text = part.trim();
+        if (text) out.push(text);
+      }
+      return;
+    }
+    if (typeof candidate === "number" && Number.isFinite(candidate)) {
+      out.push(String(candidate));
+    }
+  };
+  if (Array.isArray(value)) {
+    for (const item of value) push(item);
+    return out;
+  }
+  const obj = asObj(value);
+  if (obj) {
+    for (const item of Object.keys(obj)) push(item);
+    return out;
+  }
+  push(value);
+  return out;
+}
+
+function stringifyQqError(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  const obj = asObj(err);
+  const message = readStringField(obj, ["message", "errMsg", "msg", "error", "tips"]);
+  if (message) return message;
+  if (typeof err === "string") return err;
+  if (typeof err === "number" || typeof err === "boolean") return String(err);
+  try {
+    const text = JSON.stringify(err);
+    if (text && text !== "{}") return text;
+  } catch {
+  }
+  return "unknown qq sdk error";
+}
+
+function hasField(obj: Record<string, unknown>, fields: string[]): boolean {
+  return fields.some(field => Object.prototype.hasOwnProperty.call(obj, field));
+}
+
+function readQqPlaylistMapPayload(body: unknown): { ids: string[]; mids: string[] } | null {
+  const root = asObj(body);
+  if (!root) return null;
+  const data = asObj(root.data);
+  for (const candidate of [data, root]) {
+    if (!candidate) continue;
+    const idFields = ["id", "ids", "map"];
+    const midFields = ["mid", "mids", "mapmid"];
+    if (!hasField(candidate, idFields) && !hasField(candidate, midFields)) continue;
+    const idValue = candidate.id ?? candidate.ids ?? candidate.map;
+    const midValue = candidate.mid ?? candidate.mids ?? candidate.mapmid;
+    return {
+      ids: readQqStringList(idValue),
+      mids: readQqStringList(midValue)
+    };
+  }
+  return null;
+}
+
+function isQqSongCandidate(obj: Record<string, unknown>): boolean {
+  return !!readStringField(obj, [
+    "songmid",
+    "mid",
+    "media_mid",
+    "strMediaMid",
+    "mediaMid",
+    "songname",
+    "name",
+    "title",
+    "albumname",
+    "singername",
+    "singerName"
+  ]) ||
+    readNumberField(obj, ["songid", "id"]) !== undefined ||
+    Array.isArray(obj.singer) ||
+    !!asObj(obj.album) ||
+    !!asObj(obj.file);
+}
+
+function readQqSongDetailBody(body: unknown): QqSong | null {
+  const root = asObj(body);
+  if (!root) return null;
+  const data = asObj(root.data);
+  const songinfo = asObj(root.songinfo);
+  const songinfoData = asObj(songinfo?.data);
+  const candidates = [
+    asObj(root.track_info),
+    asObj(data?.track_info),
+    asObj(songinfoData?.track_info),
+    songinfoData,
+    data,
+    root
+  ];
+  for (const candidate of candidates) {
+    if (candidate && isQqSongCandidate(candidate)) {
+      return candidate as unknown as QqSong;
+    }
+  }
+  return null;
+}
+
+function fillQqSongRef(song: QqSong, ref: { id?: string; mid: string }): QqSong {
+  const out: QqSong = { ...song };
+  const songMid = out.songmid ?? out.mid;
+  if (!songMid) out.songmid = ref.mid;
+  if (!out.mid && out.songmid) out.mid = String(out.songmid);
+  const songId = out.songid ?? out.id;
+  if (!songId && ref.id) out.id = ref.id;
+  return out;
+}
+
+async function readQqSongFromDetail(
+  deps: QqClientDeps,
+  cfg: { cookie?: string },
+  ref: { id?: string; mid: string }
+): Promise<QqSong | null> {
+  try {
+    const body = (await deps.songDetail({ songmid: ref.mid }, cfg)).body;
+    const song = readQqSongDetailBody(body);
+    return song ? fillQqSongRef(song, ref) : null;
+  } catch {
+    return null;
+  }
+}
+
+function qqOwnPlaylistRefs(payload: { ids: string[]; mids: string[] }): Array<{ id?: string; mid: string }> {
+  return payload.mids
+    .map((mid, index) => ({ mid, id: payload.ids[index] }))
+    .filter(ref => ref.mid.length > 0);
+}
+
+function ownQqPlaylistBody(
+  id: string,
+  base: QqPlaylistBody | null,
+  trackCount: number,
+  songlist: QqSong[]
+): QqPlaylistBody {
+  const baseObj = asObj(base) ?? {};
+  const hasName = !!readStringField(baseObj, ["dissname", "diss_name", "name", "title"]);
+  const raw: QqPlaylistBody = {
+    ...(base ?? {}),
+    dirid: base?.dirid ?? id,
+    id: base?.id ?? id,
+    total_song_num: trackCount,
+    songnum: trackCount,
+    songlist
+  };
+  if (!hasName) raw.dissname = id === "201" ? "我喜欢" : "QQ歌单";
+  return raw;
+}
+
+async function playlistDetailFromOwnQqMap(
+  deps: QqClientDeps,
+  id: string,
+  cfg: { cookie?: string },
+  base: QqPlaylistBody | null
+): Promise<PlaylistDetail | null> {
+  if (!cfg.cookie || !deps.playlistMap) return null;
+  let payload: { ids: string[]; mids: string[] } | null = null;
+  try {
+    payload = readQqPlaylistMapPayload((await deps.playlistMap({ dirid: id }, cfg)).body);
+  } catch {
+    return null;
+  }
+  if (!payload) return null;
+  const refs = qqOwnPlaylistRefs(payload).slice(0, QQ_PUBLIC_PLAYLIST_TRACK_LIMIT);
+  const songs: QqSong[] = [];
+  for (let index = 0; index < refs.length; index += QQ_OWN_PLAYLIST_DETAIL_BATCH_SIZE) {
+    const batch = refs.slice(index, index + QQ_OWN_PLAYLIST_DETAIL_BATCH_SIZE);
+    const resolved = await Promise.all(batch.map(ref => readQqSongFromDetail(deps, cfg, ref)));
+    for (const song of resolved) {
+      if (song) songs.push(song);
+    }
+  }
+  const trackCount = Math.max(payload.ids.length, payload.mids.length, songs.length);
+  const detail = mapQqPlaylistToDetail(ownQqPlaylistBody(id, base, trackCount, songs), id);
+  const fallbackTrackIds = payload.mids.length > 0 ? payload.mids : payload.ids;
+  return detail.trackIds.length === 0 && fallbackTrackIds.length > 0
+    ? { ...detail, trackIds: fallbackTrackIds }
+    : detail;
+}
+
 type QqQualityCandidate = {
   id: string;
   type: string;
@@ -945,7 +1164,7 @@ export function createQqAdapter(
         );
       }
       if (lastError) {
-        const msg = lastError instanceof Error ? lastError.message : String(lastError);
+        const msg = stringifyQqError(lastError);
         throw new ProviderError(
           "qq",
           "UNAVAILABLE",
@@ -1031,24 +1250,27 @@ export function createQqAdapter(
     async playlistDetail(id): Promise<PlaylistDetail> {
       const cfg = cfgOf(deps);
       const resp = await deps.playlistDetail({ id }, cfg);
-      const body = asObj(resp.body);
-      const cdlist = body && Array.isArray(body.cdlist) ? body.cdlist : [];
-      const first = cdlist.length > 0 ? asObj(cdlist[0]) : null;
-      const rawSonglist = first && Array.isArray(first.songlist) ? first.songlist : [];
-      if ((!first || rawSonglist.length === 0) && deps.officialPlaylistDetail) {
+      const detailBody = readQqPlaylistDetailBody(resp.body);
+      const rawSonglist = detailBody && Array.isArray(detailBody.songlist) ? detailBody.songlist : [];
+      if (detailBody && rawSonglist.length > 0) {
+        return mapQqPlaylistToDetail(detailBody, id);
+      }
+      const ownPlaylistDetail = await playlistDetailFromOwnQqMap(deps, id, cfg, detailBody);
+      if (ownPlaylistDetail) return ownPlaylistDetail;
+      if (deps.officialPlaylistDetail) {
         const official = await deps.officialPlaylistDetail(id, QQ_PUBLIC_PLAYLIST_TRACK_LIMIT);
         if (official && Array.isArray(official.songlist) && official.songlist.length > 0) {
           return mapQqPlaylistToDetail(official, id);
         }
       }
-      if (!first) {
+      if (!detailBody) {
         throw new ProviderError(
           "qq",
           "UNAVAILABLE",
           `qq playlist ${id} missing payload`
         );
       }
-      return mapQqPlaylistToDetail(first as unknown as QqPlaylistBody, id);
+      return mapQqPlaylistToDetail(detailBody, id);
     },
     async addSongToPlaylist(playlistId, trackId) {
       const cfg = cfgOf(deps);

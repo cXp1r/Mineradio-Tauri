@@ -204,6 +204,23 @@ function buildTrackLyricFallback(track: Track) {
   }, track);
 }
 
+export function mergeProviderPlaylists(
+  current: PlaylistSummary[],
+  provider: ProviderId,
+  next: PlaylistSummary[],
+): PlaylistSummary[] {
+  const merged = current.filter((playlist) => playlist.provider !== provider);
+  const seen = new Set(merged.map((playlist) => `${playlist.provider}:${playlist.id}`));
+  for (const playlist of next) {
+    if (playlist.provider !== provider) continue;
+    const key = `${playlist.provider}:${playlist.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(playlist);
+  }
+  return merged;
+}
+
 function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
   const text = value.trim();
   if (!text) return "hires";
@@ -1803,6 +1820,15 @@ export function App({
     [],
   );
 
+  const refreshProviderPlaylists = useCallback(
+    async (client: SidecarClient, provider: ProviderId) => {
+      const playlists = await client.playlistList(provider);
+      setShelfPlaylists((current) => mergeProviderPlaylists(current, provider, playlists));
+      return playlists;
+    },
+    [],
+  );
+
   const refreshProviderStatus = useCallback(
     async (provider: ProviderId) => {
       const client = sidecarClient;
@@ -1813,7 +1839,8 @@ export function App({
       try {
         const status = await client.loginStatus(provider);
         setProviderStatus(status);
-        void refreshShelfPlaylists(client);
+        if (status.loggedIn) void refreshProviderPlaylists(client, provider);
+        else void refreshShelfPlaylists(client);
         const label = providerLabel(provider);
         showToast(
           status.loggedIn
@@ -1827,6 +1854,7 @@ export function App({
     },
     [
       providerLabel,
+      refreshProviderPlaylists,
       refreshShelfPlaylists,
       setProviderStatus,
       showToast,
@@ -1950,6 +1978,36 @@ export function App({
     void refreshProviderLoginQr(loginProvider);
   }, [loginModalMode, loginModalOpen, loginProvider, refreshProviderLoginQr]);
 
+  const refreshHomeDiscover = useCallback(async () => {
+    const client = sidecarClient;
+    if (!client) {
+      setHomeDiscover(null);
+      setHomeDiscoverLoading(false);
+      return null;
+    }
+    const seq = ++homeDiscoverRequestSeqRef.current;
+    setHomeDiscoverLoading(true);
+    try {
+      const next = await client.discoverHome();
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
+      return next;
+    } catch {
+      const fallback: DiscoverHomeResponse = {
+        loggedIn: false,
+        user: null,
+        dailySongs: [],
+        playlists: [],
+        podcasts: [],
+        mode: "starter",
+        updatedAt: Date.now(),
+      };
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
+      return fallback;
+    } finally {
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
+    }
+  }, [sidecarClient]);
+
   useEffect(() => {
     const activeQr =
       loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
@@ -1989,15 +2047,32 @@ export function App({
           }
           if (cancelled) return;
           const label = providerLabel(provider);
+          let providerPlaylistSyncFailed = false;
           if (status) {
             setProviderStatus(status);
-            void refreshShelfPlaylists(sidecarClient);
+            if (status.loggedIn) {
+              setQrStatus({ text: "登录成功，正在同步歌单", tone: "success" });
+              try {
+                await refreshProviderPlaylists(sidecarClient, provider);
+                await refreshHomeDiscover();
+              } catch {
+                if (cancelled) return;
+                providerPlaylistSyncFailed = true;
+                setQrStatus({ text: "登录成功，歌单同步失败，可稍后刷新", tone: "success" });
+              }
+            } else {
+              void refreshShelfPlaylists(sidecarClient);
+            }
           }
+          if (cancelled) return;
           setQr((current) =>
             current?.key === activeQr.key ? { ...current, completed: true } : current,
           );
           if (status?.loggedIn) {
-            setQrStatus({ text: "登录成功，账号状态已同步", tone: "success" });
+            setQrStatus({
+              text: providerPlaylistSyncFailed ? "登录成功，歌单同步失败，可稍后刷新" : "登录成功，歌单已同步",
+              tone: "success",
+            });
             showToast(`${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`);
           } else {
             setQrStatus({ text: "登录成功，会话已保存，可刷新状态", tone: "success" });
@@ -2045,41 +2120,13 @@ export function App({
     qqQr?.key,
     sodaQr?.completed,
     sodaQr?.key,
+    refreshHomeDiscover,
+    refreshProviderPlaylists,
     refreshShelfPlaylists,
     setProviderStatus,
     showToast,
     sidecarClient,
   ]);
-
-  const refreshHomeDiscover = useCallback(async () => {
-    const client = sidecarClient;
-    if (!client) {
-      setHomeDiscover(null);
-      setHomeDiscoverLoading(false);
-      return null;
-    }
-    const seq = ++homeDiscoverRequestSeqRef.current;
-    setHomeDiscoverLoading(true);
-    try {
-      const next = await client.discoverHome();
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
-      return next;
-    } catch {
-      const fallback: DiscoverHomeResponse = {
-        loggedIn: false,
-        user: null,
-        dailySongs: [],
-        playlists: [],
-        podcasts: [],
-        mode: "starter",
-        updatedAt: Date.now(),
-      };
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
-      return fallback;
-    } finally {
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
-    }
-  }, [sidecarClient]);
 
   const refreshHomeWeatherRadio = useCallback(async () => {
     const client = sidecarClient;
@@ -2618,7 +2665,16 @@ export function App({
         setQqManualCookieOpen(false);
         const status = await client.loginStatus(provider);
         setProviderStatus(status);
-        void refreshShelfPlaylists(client);
+        if (status.loggedIn) {
+          try {
+            await refreshProviderPlaylists(client, provider);
+            await refreshHomeDiscover();
+          } catch {
+            showToast(`${label}已登录，歌单同步失败，可稍后刷新`);
+          }
+        } else {
+          void refreshShelfPlaylists(client);
+        }
         showToast(
           status.loggedIn
             ? `${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`
@@ -2632,6 +2688,8 @@ export function App({
     },
     [
       providerLabel,
+      refreshHomeDiscover,
+      refreshProviderPlaylists,
       refreshShelfPlaylists,
       setProviderStatus,
       showToast,

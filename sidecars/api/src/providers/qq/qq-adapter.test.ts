@@ -365,6 +365,26 @@ test("songUrl with cookie but empty url throws ProviderError UNAVAILABLE", async
   expect(e.provider).toBe("qq");
 });
 
+test("songUrl formats qq sdk object errors instead of exposing object Object", async () => {
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
+    songUrl: async () => {
+      throw { message: "获取播放链接出错" };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+  let err: unknown = null;
+  try {
+    await adapter.songUrl(trackFixture);
+  } catch (e) {
+    err = e;
+  }
+  expect(err).toBeInstanceOf(ProviderError);
+  const e = err as ProviderError;
+  expect(e.message).toContain("获取播放链接出错");
+  expect(e.message).not.toContain("[object Object]");
+});
+
 test("songUrl classifies QQ 104003 without playback key as LOGIN_REQUIRED", async () => {
   const calls: string[] = [];
   const deps = noopDeps({
@@ -702,6 +722,107 @@ test("playlistDetail falls back to official public playlist detail when legacy c
   expect(out.name).toBe("Public QQ");
   expect(out.tracks.length).toBe(1);
   expect(out.tracks[0].id).toBe("001hRqO33rprdA");
+});
+
+test("playlistDetail falls back to logged-in dirid map and song details when public payload is missing", async () => {
+  const calls: Array<{ endpoint: string; query: Record<string, unknown>; config?: { cookie?: string } }> = [];
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=o00123; qqmusic_key=abc" }),
+    playlistDetail: async (query, config) => {
+      calls.push({ endpoint: "playlistDetail", query, config });
+      return { body: { cdlist: [] } };
+    },
+    playlistMap: async (query, config) => {
+      calls.push({ endpoint: "playlistMap", query, config });
+      return {
+        body: {
+          data: {
+            id: ["1001", "1002"],
+            mid: ["sm1", "sm2"]
+          }
+        }
+      };
+    },
+    officialPlaylistDetail: async () => null,
+    songDetail: async (query, config) => {
+      calls.push({ endpoint: "songDetail", query, config });
+      const mid = String(query.songmid);
+      return {
+        body: {
+          track_info: {
+            mid,
+            id: mid === "sm1" ? 1001 : 1002,
+            name: mid === "sm1" ? "自建歌曲一" : "自建歌曲二",
+            singer: [{ name: "歌手" }],
+            album: { mid: "alb1", title: "自建专辑" },
+            interval: 88,
+            file: { media_mid: `${mid}-media` }
+          }
+        }
+      };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+
+  const out = await adapter.playlistDetail("201");
+
+  expect(out.id).toBe("201");
+  expect(out.name).toBe("我喜欢");
+  expect(out.trackCount).toBe(2);
+  expect(out.tracks.map(track => track.id)).toEqual(["sm1", "sm2"]);
+  expect(out.tracks[0].title).toBe("自建歌曲一");
+  expect(out.tracks[0].mediaMid).toBe("sm1-media");
+  expect(calls.map(call => call.endpoint)).toEqual([
+    "playlistDetail",
+    "playlistMap",
+    "songDetail",
+    "songDetail"
+  ]);
+  expect(calls[1]).toEqual({
+    endpoint: "playlistMap",
+    query: { dirid: "201" },
+    config: { cookie: "uin=o00123; qqmusic_key=abc" }
+  });
+});
+
+test("playlistDetail reads qq dirid map object keys as song ids and mids", async () => {
+  const songDetailQueries: Array<Record<string, unknown>> = [];
+  const deps = noopDeps({
+    getConfig: () => ({ cookie: "uin=o00123; qqmusic_key=abc" }),
+    playlistDetail: async () => ({ body: { cdlist: [] } }),
+    playlistMap: async () => ({
+      body: {
+        data: {
+          id: { "1001": 1, "1002": 1 },
+          mid: { sm1: 1, sm2: 1 }
+        }
+      }
+    }),
+    songDetail: async (query) => {
+      songDetailQueries.push(query);
+      const mid = String(query.songmid);
+      return {
+        body: {
+          track_info: {
+            mid,
+            id: mid === "sm1" ? 1001 : 1002,
+            name: mid === "sm1" ? "对象键歌曲一" : "对象键歌曲二",
+            singer: [{ name: "歌手" }],
+            album: { mid: "alb1", title: "专辑" },
+            interval: 66
+          }
+        }
+      };
+    }
+  });
+  const adapter = createQqAdapter(deps);
+
+  const out = await adapter.playlistDetail("201");
+
+  expect(songDetailQueries).toEqual([{ songmid: "sm1" }, { songmid: "sm2" }]);
+  expect(out.trackIds).toEqual(["sm1", "sm2"]);
+  expect(out.tracks.map(track => track.id)).toEqual(["sm1", "sm2"]);
+  expect(out.tracks[0].title).toBe("对象键歌曲一");
 });
 
 test("addSongToPlaylist requires cookie and calls qq songlist add with mid and dirid", async () => {

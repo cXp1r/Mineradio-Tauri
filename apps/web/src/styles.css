@@ -816,14 +816,14 @@ body.immersive-mode #empty-home {
   min-height: 440px;
   display: grid;
   grid-template-columns: minmax(370px, .94fr) minmax(520px, 1.06fr);
-  grid-template-rows: auto 1fr;
+  grid-template-rows: minmax(0, 1fr);
   gap: 14px;
   align-content: stretch;
 }
 
 .home-hero {
   position: relative;
-  grid-row: 1 / span 2;
+  grid-row: 1;
   min-height: 438px;
   padding: 28px;
   border-radius: 28px;
@@ -833,6 +833,32 @@ body.immersive-mode #empty-home {
   backdrop-filter: blur(30px) saturate(1.16);
   -webkit-backdrop-filter: blur(30px) saturate(1.16);
   overflow: hidden;
+}
+
+.home-right-pane {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 6px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, .22) transparent;
+}
+
+.home-right-pane::-webkit-scrollbar {
+  width: 8px;
+}
+
+.home-right-pane::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.home-right-pane::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .18);
 }
 
 .home-hero::before {
@@ -1286,10 +1312,11 @@ body.empty-home-active .home-visual {
 .home-rail {
   align-self: stretch;
   min-height: 0;
-  display: grid;
-  grid-template-rows: auto minmax(0, 1fr);
+  display: flex;
+  flex-direction: column;
   gap: 12px;
-  overflow: hidden;
+  overflow: visible;
+  padding-bottom: 2px;
 }
 
 .home-section-head {
@@ -1313,6 +1340,68 @@ body.empty-home-active .home-visual {
   white-space: nowrap;
 }
 
+.home-rail-sections {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-height: 0;
+}
+
+.home-rail-section {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.home-rail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 2px;
+}
+
+.home-rail-section-title {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 760;
+  color: rgba(255, 255, 255, .82);
+}
+
+.home-rail-section-title::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, .34);
+  box-shadow: 0 0 16px rgba(255, 255, 255, .16);
+}
+
+.home-rail-section[data-home-provider="netease"] .home-rail-section-title::before {
+  background: #f04f55;
+  box-shadow: 0 0 18px rgba(240, 79, 85, .28);
+}
+
+.home-rail-section[data-home-provider="qq"] .home-rail-section-title::before {
+  background: #00d084;
+  box-shadow: 0 0 18px rgba(0, 208, 132, .26);
+}
+
+.home-rail-section[data-home-provider="soda"] .home-rail-section-title::before {
+  background: #ffb057;
+  box-shadow: 0 0 18px rgba(255, 176, 87, .24);
+}
+
+.home-rail-section-note {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: rgba(255, 255, 255, .36);
+  white-space: nowrap;
+}
+
 .home-tile-row {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
@@ -1320,24 +1409,7 @@ body.empty-home-active .home-visual {
   align-content: start;
   gap: 10px;
   min-height: 0;
-  overflow-y: auto;
-  overscroll-behavior: contain;
-  padding-right: 6px;
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, .22) transparent;
-}
-
-.home-tile-row::-webkit-scrollbar {
-  width: 8px;
-}
-
-.home-tile-row::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.home-tile-row::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .18);
+  overflow: visible;
 }
 
 .home-tile {
@@ -1819,9 +1891,15 @@ html:fullscreen body.desktop-shell .home-mosaic-cell.has-cover {
 
   body.desktop-shell .empty-home-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: auto;
     padding-bottom: 4px;
+  }
+
+  body.desktop-shell .home-right-pane {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
   }
 
   body.desktop-shell .home-hero {
@@ -6259,9 +6337,15 @@ body.controls-visible #fx-fab-hide-btn {
 
   .empty-home-shell {
     grid-template-columns: 1fr;
-    grid-template-rows: auto auto 1fr;
+    grid-template-rows: auto minmax(0, 1fr);
     overflow: auto;
     padding-bottom: 4px;
+  }
+
+  .home-right-pane {
+    height: auto;
+    overflow: visible;
+    padding-right: 0;
   }
 
   .home-hero {

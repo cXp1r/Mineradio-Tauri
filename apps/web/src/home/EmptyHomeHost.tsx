@@ -1,5 +1,5 @@
 import { type CSSProperties, type ReactElement } from "react";
-import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, Track, WeatherRadioResponse } from "@mineradio/shared";
+import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, ProviderId, Track, WeatherRadioResponse } from "@mineradio/shared";
 
 export interface EmptyHomeHostProps {
 	discover?: DiscoverHomeResponse | null;
@@ -53,6 +53,13 @@ interface HomeWaveFrame {
 const HOME_WAVE_BAR_COUNT = 24;
 const HOME_RAIL_MAX_TILES = 32;
 const HOME_RAIL_PRIMARY_SONG_COUNT = 4;
+const HOME_PROVIDER_ORDER: ProviderId[] = ["netease", "qq", "soda"];
+
+const HOME_PROVIDER_LABELS: Record<ProviderId, string> = {
+	netease: "网易云音乐",
+	qq: "QQ音乐",
+	soda: "汽水音乐",
+};
 
 const STARTER_TILES = [
 	{ kind: "login", tone: "library", title: "登录同步歌单", sub: "网易云 / QQ 音乐", action: "Login" },
@@ -69,9 +76,17 @@ type HomeTile =
 	| { kind: "recent"; tone: string; title: string; sub: string; action: string; record: HomeListenRecord; coverUrl?: string }
 	| { kind: "profile"; tone: string; title: string; sub: string; action: string; query: string; coverUrl?: string }
 	| { kind: "song"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
-	| { kind: "playlist"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
+	| { kind: "playlist"; tone: string; title: string; sub: string; action: string; index: number; provider: ProviderId; coverUrl?: string }
 	| { kind: "podcast"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
 	| { kind: "weatherSong"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string };
+
+interface HomeRailSection {
+	id: string;
+	title: string;
+	note: string;
+	tiles: HomeTile[];
+	provider?: ProviderId;
+}
 
 function artistLine(track: Track | null | undefined, fallback = "推荐歌曲"): string {
 	if (!track) return fallback;
@@ -180,6 +195,7 @@ function buildHomeTiles(
 			sub: playlist.trackCount ? `${playlist.trackCount} 首 · 公开推荐` : "公开推荐",
 			action: "Open",
 			index,
+			provider: playlist.provider,
 			coverUrl: playlist.coverUrl,
 		}));
 		weatherSongs.forEach((song, index) => pushTile(tiles, {
@@ -217,6 +233,7 @@ function buildHomeTiles(
 			sub: playlist.trackCount ? `${playlist.trackCount} 首` : "Playlist",
 			action: "Open",
 			index,
+			provider: playlist.provider,
 			coverUrl: playlist.coverUrl,
 		});
 	});
@@ -246,6 +263,98 @@ function buildHomeTiles(
 	});
 
 	return tiles.length ? tiles.slice(0, HOME_RAIL_MAX_TILES) : [...STARTER_TILES];
+}
+
+function isStarterTile(tile: HomeTile): tile is StarterTile {
+	return tile.kind === "login" ||
+		tile.kind === "search" ||
+		tile.kind === "local" ||
+		tile.kind === "podcastSearch" ||
+		tile.kind === "guide";
+}
+
+function providerPlaylistSectionTitle(provider: ProviderId, loggedOut: boolean): string {
+	if (loggedOut && provider === "netease") return "网易云推荐歌单";
+	return `${HOME_PROVIDER_LABELS[provider]}歌单`;
+}
+
+function providerPlaylistSectionNote(provider: ProviderId, count: number, loggedOut: boolean): string {
+	const source = loggedOut && provider === "netease" ? "公开推荐" : "用户歌单";
+	return `${count} 个 · ${source}`;
+}
+
+function buildHomeRailSections(tiles: HomeTile[], loggedOut: boolean): HomeRailSection[] {
+	const sections: HomeRailSection[] = [];
+	const personalTiles = tiles.filter((tile) => tile.kind === "recent" || tile.kind === "profile");
+	const songTiles = tiles.filter((tile) => tile.kind === "song");
+	const playlistTiles = tiles.filter((tile): tile is Extract<HomeTile, { kind: "playlist" }> => tile.kind === "playlist");
+	const podcastTiles = tiles.filter((tile) => tile.kind === "podcast");
+	const weatherTiles = tiles.filter((tile) => tile.kind === "weatherSong");
+	const starterTiles = tiles.filter(isStarterTile);
+
+	if (personalTiles.length) {
+		sections.push({
+			id: "personal",
+			title: "继续收听",
+			note: `${personalTiles.length} 个 · 最近偏好`,
+			tiles: personalTiles,
+		});
+	}
+
+	if (songTiles.length) {
+		sections.push({
+			id: "daily",
+			title: loggedOut ? "推荐歌曲" : "今日推荐歌曲",
+			note: `${songTiles.length} 首 · 个性化推荐`,
+			tiles: songTiles,
+		});
+	}
+
+	HOME_PROVIDER_ORDER.forEach((provider) => {
+		const providerTiles = playlistTiles.filter((tile) => tile.provider === provider);
+		if (!providerTiles.length) return;
+		sections.push({
+			id: `provider-${provider}`,
+			title: providerPlaylistSectionTitle(provider, loggedOut),
+			note: providerPlaylistSectionNote(provider, providerTiles.length, loggedOut),
+			tiles: providerTiles,
+			provider,
+		});
+	});
+
+	if (podcastTiles.length) {
+		sections.push({
+			id: "podcasts",
+			title: "播客与电台",
+			note: `${podcastTiles.length} 个 · 热门内容`,
+			tiles: podcastTiles,
+		});
+	}
+
+	if (weatherTiles.length) {
+		sections.push({
+			id: "weather",
+			title: "天气电台",
+			note: `${weatherTiles.length} 首 · 当前氛围`,
+			tiles: weatherTiles,
+		});
+	}
+
+	if (starterTiles.length) {
+		sections.push({
+			id: "starter",
+			title: "开始探索",
+			note: loggedOut ? "登录后同步多平台歌单" : "更多入口",
+			tiles: starterTiles,
+		});
+	}
+
+	return sections.length ? sections : [{
+		id: "starter",
+		title: "开始探索",
+		note: "选择一个入口",
+		tiles: [...STARTER_TILES],
+	}];
 }
 
 function homeTileCover(tile: HomeTile): string | undefined {
@@ -286,6 +395,7 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 	const firstPodcast = discover?.podcasts[0] ?? null;
 	const listenSummary = props.listenSummary ?? null;
 	const tiles = buildHomeTiles(discover, props.weatherRadio, listenSummary);
+	const railSections = buildHomeRailSections(tiles, loggedOut);
 	const loading = props.loading === true;
 	const hasPublicRecommendations = loggedOut && (discover?.playlists.length ?? 0) > 0;
 	const libraryCover = firstPlaylist?.coverUrl || daily?.coverUrl;
@@ -310,72 +420,89 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 					</div>
 				</div>
 
-				<div className="home-grid">
-					<button className="home-card" data-home-card="library" data-home-tone="library" type="button" onClick={props.onOpenLibrary}>
-						<div className="home-card-label">Library</div>
-						<div className="home-card-title" id="home-weather-card-title">我的歌单</div>
-						<div className="home-card-sub" id="home-weather-card-sub">{playlistSub(firstPlaylist)}</div>
-						<div className={cardCoverClass(libraryCover)} id="home-weather-art" style={coverStyle(libraryCover)} />
-					</button>
-					<button className="home-card" data-home-card="daily" data-home-tone="mix" type="button" onClick={props.onPlayDaily}>
-						<div className="home-card-label">Daily</div>
-						<div className="home-card-title" id="home-daily-title">{loggedOut ? "每日推荐" : (daily?.title || "每日推荐")}</div>
-						<div className="home-card-sub" id="home-daily-sub">{loggedOut ? "登录后同步你的今日歌曲" : (daily ? `${artistLine(daily, "今日歌曲")} · 点击播放今日队列` : "同步你的今日歌曲")}</div>
-						<div className={cardCoverClass(dailyCover)} id="home-daily-art" style={coverStyle(dailyCover)} />
-					</button>
-					<button
-						className="home-card"
-						data-home-card="private"
-						data-home-tone="playlist"
-						type="button"
-						onClick={props.onPlayPrivate}
-					>
-						<div className="home-card-label">Song</div>
-						<div className="home-card-title" id="home-private-title">{loggedOut ? "推荐歌曲" : (privateSong?.title || "私人雷达")}</div>
-						<div className="home-card-sub" id="home-private-sub">{loggedOut ? "登录后同步更多歌曲" : (privateSong ? artistLine(privateSong) : `${discover?.dailySongs.length ?? 0} 首 · 根据今日推荐与常听偏好`)}</div>
-						<div className={cardCoverClass(privateCover)} id="home-private-art" style={coverStyle(privateCover)} />
-					</button>
-					<button className="home-card" data-home-card="continue" data-home-tone="mix" type="button" onClick={props.onPlayRecent}>
-						<div className="home-card-label">Continue</div>
-						<div className="home-card-title" id="home-continue-title">{recentTrack?.title || "继续听"}</div>
-						<div className="home-card-sub" id="home-continue-sub">{recentTrack ? artistLine(recentTrack, "最近播放") : "最近播放会出现在这里"}</div>
-						<div className={cardCoverClass(continueCover)} id="home-continue-art" style={coverStyle(continueCover)} />
-					</button>
-					<button className="home-card" data-home-card="profile" data-home-tone="local" type="button" onClick={props.onOpenInsight}>
-						<div className="home-card-label">Profile</div>
-						<div className="home-card-title" id="home-profile-title">{topArtist?.name || topSong?.title || "听歌画像"}</div>
-						<div className="home-card-sub" id="home-profile-sub">{topArtist ? `常听歌手 · ${topArtist.plays} 次` : (listenSummary?.totalPlays ? `${listenSummary.totalPlays} 次有效播放` : "播放几首后生成偏好")}</div>
-						<div className={cardCoverClass(profileCover)} id="home-profile-art" style={coverStyle(profileCover)} />
-					</button>
-					<button className="home-card" data-home-card="more" data-home-tone="local" type="button" onClick={() => props.onPlaySong?.(2)}>
-						<div className="home-card-label">Song</div>
-						<div className="home-card-title" id="home-library-title">{loggedOut ? "更多歌曲" : (thirdSong?.title || topArtist?.name || "更多歌曲")}</div>
-						<div className="home-card-sub" id="home-library-sub">{loggedOut ? "播放后会继续补全推荐" : (thirdSong ? artistLine(thirdSong) : (topArtist ? `歌手偏好 · ${topArtist.plays} 次` : "播放几首后生成你的偏好"))}</div>
-						<div className={cardCoverClass(moreCover)} id="home-library-art" style={coverStyle(moreCover)} />
-					</button>
-				</div>
-
-				<div className="home-rail">
-					<div className="home-section-head">
-						<div className="home-section-title" id="home-rail-title">{loggedOut ? (hasPublicRecommendations ? "推荐歌单与开始探索" : "先从这里开始") : "你的歌单与推荐"}</div>
-						<div className="home-section-note" id="home-rail-note">{loggedOut && !hasWeatherSongs && !hasPublicRecommendations ? "正在等待推荐源" : "刚刚更新 · 点击即可播放"}</div>
+				<div className="home-right-pane">
+					<div className="home-grid">
+						<button className="home-card" data-home-card="library" data-home-tone="library" type="button" onClick={props.onOpenLibrary}>
+							<div className="home-card-label">Library</div>
+							<div className="home-card-title" id="home-weather-card-title">我的歌单</div>
+							<div className="home-card-sub" id="home-weather-card-sub">{playlistSub(firstPlaylist)}</div>
+							<div className={cardCoverClass(libraryCover)} id="home-weather-art" style={coverStyle(libraryCover)} />
+						</button>
+						<button className="home-card" data-home-card="daily" data-home-tone="mix" type="button" onClick={props.onPlayDaily}>
+							<div className="home-card-label">Daily</div>
+							<div className="home-card-title" id="home-daily-title">{loggedOut ? "每日推荐" : (daily?.title || "每日推荐")}</div>
+							<div className="home-card-sub" id="home-daily-sub">{loggedOut ? "登录后同步你的今日歌曲" : (daily ? `${artistLine(daily, "今日歌曲")} · 点击播放今日队列` : "同步你的今日歌曲")}</div>
+							<div className={cardCoverClass(dailyCover)} id="home-daily-art" style={coverStyle(dailyCover)} />
+						</button>
+						<button
+							className="home-card"
+							data-home-card="private"
+							data-home-tone="playlist"
+							type="button"
+							onClick={props.onPlayPrivate}
+						>
+							<div className="home-card-label">Song</div>
+							<div className="home-card-title" id="home-private-title">{loggedOut ? "推荐歌曲" : (privateSong?.title || "私人雷达")}</div>
+							<div className="home-card-sub" id="home-private-sub">{loggedOut ? "登录后同步更多歌曲" : (privateSong ? artistLine(privateSong) : `${discover?.dailySongs.length ?? 0} 首 · 根据今日推荐与常听偏好`)}</div>
+							<div className={cardCoverClass(privateCover)} id="home-private-art" style={coverStyle(privateCover)} />
+						</button>
+						<button className="home-card" data-home-card="continue" data-home-tone="mix" type="button" onClick={props.onPlayRecent}>
+							<div className="home-card-label">Continue</div>
+							<div className="home-card-title" id="home-continue-title">{recentTrack?.title || "继续听"}</div>
+							<div className="home-card-sub" id="home-continue-sub">{recentTrack ? artistLine(recentTrack, "最近播放") : "最近播放会出现在这里"}</div>
+							<div className={cardCoverClass(continueCover)} id="home-continue-art" style={coverStyle(continueCover)} />
+						</button>
+						<button className="home-card" data-home-card="profile" data-home-tone="local" type="button" onClick={props.onOpenInsight}>
+							<div className="home-card-label">Profile</div>
+							<div className="home-card-title" id="home-profile-title">{topArtist?.name || topSong?.title || "听歌画像"}</div>
+							<div className="home-card-sub" id="home-profile-sub">{topArtist ? `常听歌手 · ${topArtist.plays} 次` : (listenSummary?.totalPlays ? `${listenSummary.totalPlays} 次有效播放` : "播放几首后生成偏好")}</div>
+							<div className={cardCoverClass(profileCover)} id="home-profile-art" style={coverStyle(profileCover)} />
+						</button>
+						<button className="home-card" data-home-card="more" data-home-tone="local" type="button" onClick={() => props.onPlaySong?.(2)}>
+							<div className="home-card-label">Song</div>
+							<div className="home-card-title" id="home-library-title">{loggedOut ? "更多歌曲" : (thirdSong?.title || topArtist?.name || "更多歌曲")}</div>
+							<div className="home-card-sub" id="home-library-sub">{loggedOut ? "播放后会继续补全推荐" : (thirdSong ? artistLine(thirdSong) : (topArtist ? `歌手偏好 · ${topArtist.plays} 次` : "播放几首后生成你的偏好"))}</div>
+							<div className={cardCoverClass(moreCover)} id="home-library-art" style={coverStyle(moreCover)} />
+						</button>
 					</div>
-					<div id="home-tile-row" className="home-tile-row">
-						{tiles.map((tile, index) => (
-							<button
-								className={`home-tile${!homeTileCover(tile) && loading ? " home-skeleton" : ""}`}
-								data-home-tone={tile.tone}
-								type="button"
-								aria-label={`${tile.title} ${tile.action}`}
-								title={tile.action}
-								onClick={() => handleTileAction(props, tile)}
-								key={homeTileKey(tile, index)}
-							>
-								<div className={`home-tile-cover${"coverUrl" in tile && tile.coverUrl ? " has-cover" : ""}`} style={"coverUrl" in tile ? coverStyle(tile.coverUrl) : undefined} />
-								<div className="home-tile-title">{tile.title}</div>
-								<div className="home-tile-sub">{tile.sub}</div>
-							</button>
-						))}
+
+					<div className="home-rail">
+						<div className="home-section-head">
+							<div className="home-section-title" id="home-rail-title">{loggedOut ? (hasPublicRecommendations ? "推荐歌单与开始探索" : "先从这里开始") : "你的歌单与推荐"}</div>
+							<div className="home-section-note" id="home-rail-note">{loggedOut && !hasWeatherSongs && !hasPublicRecommendations ? "正在等待推荐源" : "按供应商分组 · 点击即可播放"}</div>
+						</div>
+						<div id="home-tile-row" className="home-rail-sections">
+							{railSections.map((section) => (
+								<section
+									className="home-rail-section"
+									data-home-rail-section={section.id}
+									data-home-provider={section.provider}
+									key={section.id}
+								>
+									<div className="home-rail-section-head">
+										<div className="home-rail-section-title">{section.title}</div>
+										<div className="home-rail-section-note">{section.note}</div>
+									</div>
+									<div className="home-tile-row">
+										{section.tiles.map((tile, index) => (
+											<button
+												className={`home-tile${!homeTileCover(tile) && loading ? " home-skeleton" : ""}`}
+												data-home-tone={tile.tone}
+												type="button"
+												aria-label={`${tile.title} ${tile.action}`}
+												title={tile.action}
+												onClick={() => handleTileAction(props, tile)}
+												key={homeTileKey(tile, index)}
+											>
+												<div className={`home-tile-cover${"coverUrl" in tile && tile.coverUrl ? " has-cover" : ""}`} style={"coverUrl" in tile ? coverStyle(tile.coverUrl) : undefined} />
+												<div className="home-tile-title">{tile.title}</div>
+												<div className="home-tile-sub">{tile.sub}</div>
+											</button>
+										))}
+									</div>
+								</section>
+							))}
+						</div>
 					</div>
 				</div>
 			</div>

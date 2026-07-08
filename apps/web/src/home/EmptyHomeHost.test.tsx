@@ -11,11 +11,12 @@ test("EmptyHomeHost renders the baseline empty-home music landing structure", ()
 	expect(html).toContain('class="home-hero-inner home-construction-inner"');
 	expect(html).toContain("🚧此处施工，敬请期待🚧");
 	expect(html).toContain("展开播放器控制台");
+	expect(html).toContain('class="home-right-pane"');
 	expect(html).toContain('class="home-grid"');
 	expect(html).toContain("我的歌单");
 	expect(html).toContain("每日推荐");
 	expect(html).toContain("推荐歌曲");
-	expect(html).toContain('id="home-tile-row"');
+	expect(html).toContain('class="home-rail-sections"');
 	expect(html).not.toContain('id="home-weather-kicker"');
 	expect(html).not.toContain("Mineradio · Your Library");
 	expect(html).not.toContain('class="home-quick-row"');
@@ -228,7 +229,7 @@ test("EmptyHomeHost prefers baseline weather radio songs in the rail when discov
 
 	expect(html).toContain("Rain One");
 	expect(html).toContain("Alice");
-	expect(html).toContain("刚刚更新 · 点击即可播放");
+	expect(html).toContain("按供应商分组 · 点击即可播放");
 	expect(html).not.toContain("登录同步歌单");
 });
 
@@ -254,7 +255,7 @@ test("EmptyHomeHost renders discover songs, playlists, and podcasts into baselin
 	expect(html).toContain("第三首");
 	expect(html).toContain("我的歌单");
 	expect(html).toContain("热门播客");
-	expect(html).toContain("刚刚更新 · 点击即可播放");
+	expect(html).toContain("按供应商分组 · 点击即可播放");
 });
 
 test("EmptyHomeHost renders more than five playlist rail tiles without dropping later playlists", () => {
@@ -282,6 +283,9 @@ test("EmptyHomeHost renders more than five playlist rail tiles without dropping 
 	expect(html).toContain("探索歌单 1");
 	expect(html).toContain("探索歌单 6");
 	expect(html).toContain("探索歌单 8");
+	expect(html).toContain("网易云音乐歌单");
+	expect(html).toContain("QQ音乐歌单");
+	expect(html.indexOf("网易云音乐歌单")).toBeLessThan(html.indexOf("QQ音乐歌单"));
 	expect((html.match(/class="home-tile/g) ?? []).length).toBeGreaterThan(5);
 });
 
@@ -313,8 +317,11 @@ test("Home CSS keeps cover pseudo-elements without the extra bottom mask", async
 	expect(css).toContain(".home-card-art::after");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::before");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::after");
+	expect(css).toContain(".home-right-pane");
+	expect(css).toContain(".home-rail-sections");
 	expect(css).toContain("overflow-y: auto");
 	expect(css).toContain("grid-template-columns: repeat(auto-fill, minmax(132px, 1fr))");
+	expect(css).not.toContain(".home-tile-row::-webkit-scrollbar");
 	expect(css).not.toContain("grid-template-columns: repeat(5, minmax(0, 1fr))");
 	expect(css).not.toContain("body.empty-home-active::before");
 });
@@ -407,6 +414,40 @@ test("EmptyHomeHost routes logged-out public playlist tiles through playlist cal
 	const playlistTiles = Array.from(host.querySelectorAll(".home-tile"))
 		.filter((tile) => tile.textContent?.includes("公开推荐"));
 	(playlistTiles[1] as HTMLButtonElement).click();
+
+	expect(calls).toEqual([1]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost groups provider playlists while preserving original playlist callback indexes", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: number[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		discover={{
+			loggedIn: true,
+			user: { provider: "netease", userId: "42", nickname: "tester", avatarUrl: "" },
+			mode: "member",
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "n1", name: "网易歌单一", coverUrl: "", trackCount: 12, trackIds: [], subscribed: false },
+				{ provider: "qq", id: "q1", name: "QQ歌单一", coverUrl: "", trackCount: 8, trackIds: [], subscribed: false },
+				{ provider: "soda", id: "s1", name: "汽水歌单一", coverUrl: "", trackCount: 6, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			updatedAt: 1,
+		}}
+		onOpenPlaylist={(index) => calls.push(index)}
+	/>));
+
+	expect(host.querySelector('[data-home-provider="netease"]')?.textContent).toContain("网易歌单一");
+	expect(host.querySelector('[data-home-provider="qq"]')?.textContent).toContain("QQ歌单一");
+	expect(host.querySelector('[data-home-provider="soda"]')?.textContent).toContain("汽水歌单一");
+	(host.querySelector('[data-home-provider="qq"] .home-tile') as HTMLButtonElement).click();
 
 	expect(calls).toEqual([1]);
 	root.unmount();

@@ -12,6 +12,7 @@ import {
 	isCollectSupportedTrack,
 	isHomeBlankDismissElement,
 	isNeteaseLikeSupported,
+	mergeProviderPlaylists,
 	nextSidecarStatusPollDelayMs,
 	shouldUseSecondaryLeftDisplaySeamGuard,
 	shouldShowEmptyHome,
@@ -34,6 +35,24 @@ test("web index preloads the baseline simple or DIY mode class before React moun
 	expect(html).toContain("mineradio-diy-player-mode-v1");
 	expect(html).toContain("diy-mode-preload");
 	expect(html).toContain("simple-mode-preload");
+});
+
+test("mergeProviderPlaylists replaces only the refreshed provider playlists", () => {
+	const merged = mergeProviderPlaylists([
+		{ provider: "netease", id: "ne-old", name: "旧网易歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false },
+		{ provider: "qq", id: "qq-old", name: "旧QQ歌单", coverUrl: "", trackCount: 2, trackIds: [], subscribed: false },
+		{ provider: "soda", id: "soda-old", name: "旧汽水歌单", coverUrl: "", trackCount: 3, trackIds: [], subscribed: false },
+	], "qq", [
+		{ provider: "qq", id: "qq-new", name: "新QQ歌单", coverUrl: "", trackCount: 4, trackIds: [], subscribed: false },
+		{ provider: "netease", id: "ne-noise", name: "错误供应商噪声", coverUrl: "", trackCount: 5, trackIds: [], subscribed: false },
+		{ provider: "qq", id: "qq-new", name: "重复QQ歌单", coverUrl: "", trackCount: 4, trackIds: [], subscribed: false },
+	]);
+
+	expect(merged.map((playlist) => `${playlist.provider}:${playlist.id}`)).toEqual([
+		"netease:ne-old",
+		"soda:soda-old",
+		"qq:qq-new",
+	]);
 });
 
 test("App mounts the baseline guide particle canvas host", async () => {
@@ -2134,6 +2153,8 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 	useLyricsStore.getState().reset();
 
 	let qqQrConfirmed = false;
+	const playlistCalls: string[] = [];
+	let discoverHomeCalls = 0;
 	let resolveSyncedQqStatus = (_status: { provider: string; loggedIn: boolean; userId: string }) => {};
 	const syncedQqStatus = new Promise<{ provider: string; loggedIn: boolean; userId: string }>((resolve) => {
 		resolveSyncedQqStatus = resolve;
@@ -2158,11 +2179,26 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 			}
 			return { provider, key, code: 801, loggedIn: false };
 		},
-		async playlistList() {
-			return [];
+		async playlistList(provider: string) {
+			playlistCalls.push(provider);
+			return provider === "qq"
+				? [{ provider: "qq", id: "qq-auto-1", name: "登录后自动同步QQ歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false }]
+				: [];
 		},
 		async podcastMy() {
 			return { loggedIn: false, collections: [] };
+		},
+		async discoverHome() {
+			discoverHomeCalls += 1;
+			return {
+				loggedIn: true,
+				user: { provider: "qq", userId: "10001", nickname: "", avatarUrl: "" },
+				dailySongs: [],
+				playlists: [{ provider: "qq", id: "qq-auto-1", name: "登录后自动同步QQ歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false }],
+				podcasts: [],
+				mode: "member",
+				updatedAt: 1,
+			};
 		},
 	} as unknown as SidecarClient;
 	const rootConfig: RuntimeConfig = {
@@ -2198,6 +2234,9 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 
 	expect(host.querySelector("#qr-status")?.textContent).toContain("登录成功");
 	expect(host.querySelector(".account-status-line")?.textContent).toContain("已登录 10001");
+	expect(playlistCalls.filter((provider) => provider === "qq").length).toBeGreaterThan(0);
+	expect(discoverHomeCalls).toBeGreaterThan(0);
+	expect(host.textContent).toContain("登录后自动同步QQ歌单");
 
 	root.unmount();
 	host.remove();
