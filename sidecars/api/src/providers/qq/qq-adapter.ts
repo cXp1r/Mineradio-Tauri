@@ -305,6 +305,27 @@ function readFlagField(obj: Record<string, unknown> | null | undefined, fields: 
   return undefined;
 }
 
+function readQqModuleCode(block: unknown): number | undefined {
+  const obj = asObj(block);
+  if (!obj) return undefined;
+  const raw = obj.code ?? obj.ret ?? obj.result;
+  const code = typeof raw === "number" ? raw : typeof raw === "string" ? Number(raw.trim()) : NaN;
+  return Number.isFinite(code) ? code : undefined;
+}
+
+function qqVipBodyRejectsSession(body: unknown): boolean {
+  const roots = Array.isArray(body) ? body : [body];
+  for (const candidate of roots) {
+    const root = asObj(candidate);
+    if (!root) continue;
+    const vipInfo = asObj(root.getVipInfo);
+    const vipIcon = asObj(root.getVipIcon);
+    if (vipInfo && readQqModuleCode(vipInfo) === 1000) return true;
+    if (vipIcon && readQqModuleCode(vipIcon) === 1000) return true;
+  }
+  return false;
+}
+
 const VIP_LEVEL_NAMES = ["", "壹", "贰", "叁", "肆", "伍", "陆", "柒", "捌", "玖", "拾"] as const;
 
 function vipLevelNameOf(tier: number | undefined): string | undefined {
@@ -1078,10 +1099,12 @@ export function createQqAdapter(
         const resp = await deps.loginStatus({ id: userId }, { cookie: cfg.cookie });
         const bodies: unknown[] = [resp.body];
         const vipBody = await readVipBody();
+        if (qqVipBodyRejectsSession(vipBody)) return { provider: "qq", loggedIn: false };
         if (vipBody) bodies.push(vipBody);
         return mapQqLoginStatus(bodies, userId);
       } catch {
         const vipBody = await readVipBody();
+        if (qqVipBodyRejectsSession(vipBody)) return { provider: "qq", loggedIn: false };
         if (vipBody) return mapQqLoginStatus([vipBody], userId);
         return { provider: "qq", loggedIn: true, userId };
       }

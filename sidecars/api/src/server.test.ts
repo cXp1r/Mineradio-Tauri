@@ -548,7 +548,7 @@ test("POST /providers/qq/session-cookie stores runtime cookie without echoing se
   expect(serialized).not.toContain("qqmusic_key");
 
   const status = await body(await call("/providers/qq/login-status"));
-  expect(status.data.loggedIn).toBe(true);
+  expect(status.data).toMatchObject({ provider: "qq", loggedIn: false });
 
   const cleared = await body(await call("/providers/qq/session-cookie", { method: "DELETE" }));
   expect(cleared).toEqual({ ok: true, data: { provider: "qq", stored: false } });

@@ -878,6 +878,47 @@ test("loginStatus maps QQ vip info from musicu vip query payload", async () => {
   });
 });
 
+test("loginStatus marks QQ session expired when VIP modules reject the cookie", async () => {
+  await withEnv("MINERADIO_QQ_COOKIE", "uin=123; qqmusic_key=abc", async () => {
+    const deps = noopDeps({
+      getConfig: () => ({ cookie: "uin=123; qqmusic_key=abc" }),
+      loginStatus: async () => ({
+        body: {
+          data: {
+            user: {
+              uin: "123",
+              nick: "公开资料昵称",
+              headurl: "https://q.qlogo.cn/head.jpg"
+            }
+          }
+        }
+      }),
+      vipInfo: async () => ({
+        body: {
+          code: 0,
+          getVipInfo: { code: 1000 },
+          getVipIcon: { code: 1000 },
+          getNickHead: {
+            code: 0,
+            data: {
+              map_userinfo: {
+                "123": {
+                  nick: "公开资料昵称",
+                  headurl: "https://q.qlogo.cn/head.jpg"
+                }
+              }
+            }
+          }
+        }
+      })
+    } as Partial<QqClientDeps>);
+    const adapter = createQqAdapter(deps);
+    const r = await adapter.loginStatus();
+
+    expect(r).toEqual({ provider: "qq", loggedIn: false });
+  });
+});
+
 test("loginStatus maps QQ green VIP tier without super member", async () => {
   await withEnv("MINERADIO_QQ_COOKIE", "uin=123; qqmusic_key=abc", async () => {
     const deps = noopDeps({
