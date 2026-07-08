@@ -1266,6 +1266,7 @@ export function App({
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const clearQueue = usePlaybackStore((s) => s.clearQueue);
   const searchKeyword = useSearchStore((s) => s.keyword);
+  const searchDetailOpen = useSearchStore((s) => s.detailOpen);
   const setSearchKeyword = useSearchStore((s) => s.setKeyword);
   const setSearchError = useSearchStore((s) => s.setError);
 
@@ -3521,6 +3522,7 @@ export function App({
     document.body.classList.toggle("user-capsule-auto-hide", userCapsuleAutoHide);
     document.body.classList.toggle("user-capsule-peek", userCapsuleAutoHide && userCapsulePeek);
     document.body.classList.toggle("visual-guide-active", visualGuideOpen);
+    document.body.classList.toggle("search-detail-open", searchDetailOpen);
     return () => {
       document.body.classList.remove(
         "splash-active",
@@ -3531,12 +3533,14 @@ export function App({
         "user-capsule-auto-hide",
         "user-capsule-peek",
         "visual-guide-active",
+        "search-detail-open",
       );
     };
   }, [
     consoleVisible,
     emptyHomeActive,
     homeControlsLocked,
+    searchDetailOpen,
     splashActive,
     userCapsuleAutoHide,
     userCapsulePeek,

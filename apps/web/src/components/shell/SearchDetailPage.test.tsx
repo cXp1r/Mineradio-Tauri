@@ -103,6 +103,12 @@ test("SearchDetailPage renders committed keyword and song row actions", async ()
 	expect(container.querySelector("[data-search-detail-play]")).not.toBeNull();
 	expect(container.querySelector("[data-search-detail-append]")).not.toBeNull();
 	expect(container.querySelector("[data-search-detail-next]")).not.toBeNull();
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-play]")?.getAttribute("aria-label")).toBe("播放单曲");
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-append]")?.getAttribute("aria-label")).toBe("加入播放队列");
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-next]")?.getAttribute("aria-label")).toBe("下一首播放");
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-play]")?.textContent).toBe("▶");
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-append]")?.textContent).toBe("≡+");
+	expect(container.querySelector<HTMLButtonElement>("[data-search-detail-next]")?.textContent).toBe("↦");
 	root.unmount();
 });
 

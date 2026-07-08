@@ -297,6 +297,28 @@ body.splash-active:not(.splash-revealing) #search-area {
   pointer-events: none;
 }
 
+body.search-detail-open #search-area {
+  top: -96px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateX(calc(-50% + var(--search-offset))) translateY(-18px) scale(.96);
+}
+
+body.search-detail-open #top-right,
+body.search-detail-open #bottom-bar,
+body.search-detail-open #bottom-handle,
+body.search-detail-open #playlist-panel,
+body.search-detail-open #mini-queue-popover {
+  opacity: 0;
+  pointer-events: none;
+}
+
+body.search-detail-open #empty-home {
+  opacity: .12 !important;
+  filter: blur(8px) saturate(.72) brightness(.55);
+  pointer-events: none !important;
+}
+
 #search-area {
   --search-offset: 0px;
   position: fixed;
@@ -475,6 +497,8 @@ body.simple-mode #search-results {
   backdrop-filter: blur(40px) saturate(1.4);
   -webkit-backdrop-filter: blur(40px) saturate(1.4);
   display: none;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 #search-results.show,
@@ -482,6 +506,32 @@ body.simple-mode #search-results {
   display: block;
   border-color: rgba(var(--fc-accent-rgb), .16);
   box-shadow: 0 18px 54px rgba(0, 0, 0, .34), 0 0 0 1px rgba(var(--fc-accent-rgb), .05);
+}
+
+#search-results::-webkit-scrollbar,
+.search-shell-list::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+#search-results::-webkit-scrollbar-track,
+.search-shell-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#search-results::-webkit-scrollbar-thumb,
+.search-shell-list::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+#search-results:hover::-webkit-scrollbar-thumb,
+.search-shell-list:hover::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+#search-results::-webkit-scrollbar-corner,
+.search-shell-list::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .search-history {
@@ -535,6 +585,8 @@ body.simple-mode #search-results {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .search-shell-row {
@@ -4587,6 +4639,59 @@ html.control-glass-svg-ok .mini-queue-remove {
   -webkit-backdrop-filter: none !important;
 }
 
+/* 搜索下拉结果：补回播放器控制台式透明玻璃。 */
+#search-results.show,
+#search-box:focus-within + .search-mode-tabs + #search-results {
+  background:
+    radial-gradient(circle at 14% 0%, rgba(255, 255, 255, .075), transparent 32%),
+    radial-gradient(circle at 86% 8%, rgba(var(--fc-accent-rgb), .070), transparent 36%),
+    linear-gradient(145deg, rgba(255, 255, 255, .052), rgba(6, 8, 12, .24) 48%, rgba(0, 0, 0, .14)) !important;
+  border-color: rgba(255, 255, 255, .14) !important;
+  box-shadow:
+    inset 0 0 2px 1px rgba(255, 255, 255, .26),
+    inset 0 0 10px 4px rgba(255, 255, 255, .085),
+    0 14px 46px rgba(0, 0, 0, .24),
+    0 22px 74px rgba(0, 0, 0, .18) !important;
+  backdrop-filter: blur(18px) saturate(1.8) brightness(1.16) !important;
+  -webkit-backdrop-filter: blur(18px) saturate(1.8) brightness(1.16) !important;
+}
+
+.search-shell-row {
+  border: 1px solid transparent;
+  background: rgba(255, 255, 255, .010);
+}
+
+.search-shell-row:hover,
+.search-shell-row:focus-within {
+  border-color: rgba(255, 255, 255, .088);
+  background: rgba(255, 255, 255, .064);
+}
+
+.search-shell-action.song-action-btn,
+.search-shell-action.add-btn {
+  background: rgba(255, 255, 255, .052) !important;
+  border-color: rgba(255, 255, 255, .13) !important;
+  box-shadow:
+    inset 0 0 2px 1px rgba(255, 255, 255, .18),
+    inset 0 1px 0 rgba(255, 255, 255, .10) !important;
+  backdrop-filter: blur(12px) saturate(1.8) brightness(1.16) !important;
+  -webkit-backdrop-filter: blur(12px) saturate(1.8) brightness(1.16) !important;
+}
+
+.search-shell-action.song-action-btn:hover,
+.search-shell-action.add-btn:hover {
+  background: rgba(255, 255, 255, .086) !important;
+  border-color: rgba(255, 255, 255, .20) !important;
+}
+
+html.control-glass-svg-ok #search-results.show,
+html.control-glass-svg-ok #search-box:focus-within + .search-mode-tabs + #search-results,
+html.control-glass-svg-ok .search-shell-action.song-action-btn,
+html.control-glass-svg-ok .search-shell-action.add-btn {
+  backdrop-filter: url(#mineradio-control-glass-filter) saturate(1) !important;
+  -webkit-backdrop-filter: url(#mineradio-control-glass-filter) saturate(1) !important;
+}
+
 html.control-glass-svg-ok .home-hero,
 html.control-glass-svg-ok .home-card,
 html.control-glass-svg-ok .home-tile,
@@ -8180,22 +8285,39 @@ body.controls-visible #fx-fab-hide-btn {
 /* 搜索详情页：沿用首页歌单详情的透明玻璃与表格化浏览节奏。 */
 [data-search-detail] {
   position: fixed;
-  z-index: 42;
+  z-index: 60;
   left: 50%;
-  top: 122px;
-  bottom: 44px;
+  top: 64px;
+  bottom: 24px;
   width: min(1396px, calc(100vw - 44px));
   transform: translateX(-50%);
+  transform-origin: top center;
+  animation: search-detail-stage-expand .46s cubic-bezier(.16, 1, .3, 1) both;
   pointer-events: auto;
+  isolation: isolate;
+  will-change: transform, opacity;
+}
+
+.search-detail-page::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 50% 0%, rgba(var(--home-accent-rgb), .12), transparent 34%),
+    linear-gradient(180deg, rgba(0, 0, 0, .38), rgba(0, 0, 0, .66));
+  backdrop-filter: blur(12px) saturate(.72) brightness(.62);
+  -webkit-backdrop-filter: blur(12px) saturate(.72) brightness(.62);
 }
 
 .search-detail-panel {
   --search-detail-accent: var(--home-accent);
   --search-detail-accent-rgb: var(--home-accent-rgb);
   --search-detail-glass-bg:
-    radial-gradient(circle at 8% 0%, rgba(255, 255, 255, .16), transparent 30%),
-    radial-gradient(circle at 84% 4%, rgba(var(--search-detail-accent-rgb), .15), transparent 32%),
-    linear-gradient(145deg, rgba(255, 255, 255, .088), rgba(14, 15, 20, .44) 44%, rgba(4, 5, 9, .34));
+    radial-gradient(circle at 8% 0%, rgba(255, 255, 255, .09), transparent 30%),
+    radial-gradient(circle at 84% 4%, rgba(var(--search-detail-accent-rgb), .075), transparent 32%),
+    linear-gradient(145deg, rgba(255, 255, 255, .055), rgba(7, 9, 13, .22) 46%, rgba(0, 0, 0, .12));
   position: relative;
   height: 100%;
   display: grid;
@@ -8207,12 +8329,17 @@ body.controls-visible #fx-fab-hide-btn {
   border: 1px solid rgba(255, 255, 255, .14);
   background: var(--search-detail-glass-bg);
   box-shadow:
-    0 26px 86px rgba(0, 0, 0, .32),
-    0 0 0 1px rgba(255, 255, 255, .045),
-    inset 0 1px 0 rgba(255, 255, 255, .22),
-    inset 0 -28px 58px rgba(0, 0, 0, .12);
-  backdrop-filter: blur(28px) saturate(1.22) brightness(1.05);
-  -webkit-backdrop-filter: blur(28px) saturate(1.22) brightness(1.05);
+    inset 0 0 2px 1px rgba(255, 255, 255, .30),
+    inset 0 0 10px 4px rgba(255, 255, 255, .10),
+    0 16px 56px rgba(0, 0, 0, .18),
+    0 24px 84px rgba(0, 0, 0, .18),
+    inset 0 -18px 48px rgba(0, 0, 0, .07);
+  backdrop-filter: blur(18px) saturate(1.8) brightness(1.16);
+  -webkit-backdrop-filter: blur(18px) saturate(1.8) brightness(1.16);
+  clip-path: inset(0 round 24px);
+  transform-origin: top center;
+  animation: search-detail-panel-expand .52s cubic-bezier(.16, 1, .3, 1) both;
+  will-change: clip-path, transform, opacity;
 }
 
 .search-detail-panel::before {
@@ -8236,6 +8363,55 @@ body.controls-visible #fx-fab-hide-btn {
 .search-detail-empty {
   position: relative;
   z-index: 1;
+  animation: search-detail-content-rise .34s cubic-bezier(.16, 1, .3, 1) both;
+  animation-delay: .11s;
+}
+
+@keyframes search-detail-stage-expand {
+  0% {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-82px) scale(.40);
+  }
+
+  54% {
+    opacity: 1;
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+@keyframes search-detail-panel-expand {
+  0% {
+    opacity: 0;
+    clip-path: inset(43% 35% 43% round 22px);
+    transform: scale(.96);
+  }
+
+  56% {
+    opacity: 1;
+    clip-path: inset(8% 5% 8% round 22px);
+  }
+
+  100% {
+    opacity: 1;
+    clip-path: inset(0 round 24px);
+    transform: scale(1);
+  }
+}
+
+@keyframes search-detail-content-rise {
+  0% {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 .search-detail-toolbar {
@@ -8443,7 +8619,7 @@ body.controls-visible #fx-fab-hide-btn {
 .search-detail-list-head {
   min-height: 34px;
   display: grid;
-  grid-template-columns: 52px minmax(0, 1.22fr) minmax(168px, .58fr) minmax(344px, .90fr);
+  grid-template-columns: 52px minmax(0, 1.30fr) minmax(152px, .56fr) 188px;
   align-items: center;
   gap: 12px;
   padding: 0 16px;
@@ -8460,10 +8636,13 @@ body.controls-visible #fx-fab-hide-btn {
   background: transparent;
   border: 0;
   box-shadow: none;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 .search-detail-list::-webkit-scrollbar {
-  width: 8px;
+  width: 0;
+  height: 0;
 }
 
 .search-detail-list::-webkit-scrollbar-track {
@@ -8471,14 +8650,21 @@ body.controls-visible #fx-fab-hide-btn {
 }
 
 .search-detail-list::-webkit-scrollbar-thumb {
-  border-radius: 999px;
-  background: rgba(255, 255, 255, .12);
+  background: transparent;
+}
+
+.search-detail-list:hover::-webkit-scrollbar-thumb {
+  background: transparent;
+}
+
+.search-detail-list::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .search-detail-track {
   min-height: 58px;
   display: grid;
-  grid-template-columns: 52px minmax(0, 1.22fr) minmax(168px, .58fr) minmax(344px, .90fr);
+  grid-template-columns: 52px minmax(0, 1.30fr) minmax(152px, .56fr) 188px;
   align-items: center;
   gap: 12px;
   padding: 7px 8px;
@@ -8610,34 +8796,59 @@ body.controls-visible #fx-fab-hide-btn {
   display: flex;
   align-items: center;
   justify-content: flex-end;
-  gap: 6px;
+  gap: 7px;
+  opacity: .72;
+  transition: opacity .18s ease, transform .18s ease;
+}
+
+.search-detail-track:hover .search-detail-actions,
+.search-detail-track:focus-visible .search-detail-actions,
+.search-detail-track:focus-within .search-detail-actions {
+  opacity: 1;
+  transform: translateX(-1px);
 }
 
 .search-detail-action {
+  width: 30px;
+  min-width: 30px;
   height: 30px;
-  min-width: 86px;
-  padding: 0 10px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 730;
+  padding: 0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, .035);
+  border-color: rgba(255, 255, 255, .082);
+  color: rgba(255, 255, 255, .58);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .075);
+  font-size: 12px;
+  font-weight: 760;
   letter-spacing: 0;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .search-detail-action.primary {
-  min-width: 78px;
-  border-color: rgba(var(--search-detail-accent-rgb), .38);
-  background: rgba(var(--search-detail-accent-rgb), .13);
-  color: rgba(235, 255, 252, .95);
+  min-width: 30px;
+  border-color: rgba(var(--search-detail-accent-rgb), .20);
+  background: rgba(var(--search-detail-accent-rgb), .082);
+  color: rgba(235, 255, 252, .84);
 }
 
 .search-detail-action.icon {
   width: 30px;
   min-width: 30px;
   padding: 0;
-  color: rgba(255, 255, 255, .62);
-  font-size: 14px;
+  color: rgba(255, 255, 255, .60);
+  font-size: 13px;
   line-height: 1;
+}
+
+.search-detail-action:hover:not(:disabled),
+.search-detail-action:focus-visible {
+  outline: none;
+  border-color: rgba(var(--search-detail-accent-rgb), .32);
+  background: rgba(var(--search-detail-accent-rgb), .105);
+  color: rgba(255, 255, 255, .94);
 }
 
 .search-detail-action.icon.liked {
@@ -8726,8 +8937,23 @@ html.control-glass-svg-ok .search-detail-back,
 html.control-glass-svg-ok .search-detail-submit,
 html.control-glass-svg-ok .search-detail-action,
 html.control-glass-svg-ok .search-detail-podcast-back {
-  backdrop-filter: var(--panel-glass-filter);
-  -webkit-backdrop-filter: var(--panel-glass-filter);
+  backdrop-filter: url(#mineradio-control-glass-filter) saturate(1);
+  -webkit-backdrop-filter: url(#mineradio-control-glass-filter) saturate(1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-search-detail],
+  .search-detail-panel,
+  .search-detail-toolbar,
+  .search-detail-hero,
+  .search-detail-tabs,
+  .search-detail-podcast-head,
+  .search-detail-list-head,
+  .search-detail-list,
+  .search-detail-state,
+  .search-detail-empty {
+    animation: none !important;
+  }
 }
 
 @media (max-height: 760px) {

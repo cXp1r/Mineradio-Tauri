@@ -416,39 +416,45 @@ export function SearchDetailPage({
 									</div>
 									<div className="search-detail-actions" aria-label="歌曲操作">
 										<button
-											className="search-detail-action primary"
+											className="search-detail-action primary icon"
 											type="button"
 											data-search-detail-play
+											title="播放单曲"
+											aria-label="播放单曲"
 											disabled={disabled}
 											onClick={(event) => {
 												event.stopPropagation();
 												if (!disabled) playResult(index);
 											}}
 										>
-											播放单曲
+											▶
 										</button>
 										<button
-											className="search-detail-action"
+											className="search-detail-action icon"
 											type="button"
 											data-search-detail-append
+											title="加入播放队列"
+											aria-label="加入播放队列"
 											onClick={(event) => {
 												event.stopPropagation();
 												onAppendQueue(track);
 											}}
 										>
-											加入播放队列
+											≡+
 										</button>
 										<button
-											className="search-detail-action"
+											className="search-detail-action icon"
 											type="button"
 											data-search-detail-next
+											title="下一首播放"
+											aria-label="下一首播放"
 											disabled={disabled}
 											onClick={(event) => {
 												event.stopPropagation();
 												if (!disabled) onResultNext(track);
 											}}
 										>
-											下一首播放
+											↦
 										</button>
 										<button
 											className={`search-detail-action icon${liked ? " liked" : ""}${likeBusy ? " busy" : ""}`}
@@ -545,39 +551,45 @@ export function SearchDetailPage({
 									</div>
 									<div className="search-detail-actions" aria-label="播客节目操作">
 										<button
-											className="search-detail-action primary"
+											className="search-detail-action primary icon"
 											type="button"
 											data-search-detail-play
+											title="播放单曲"
+											aria-label="播放单曲"
 											disabled={disabled}
 											onClick={(event) => {
 												event.stopPropagation();
 												if (!disabled) playProgram(index);
 											}}
 										>
-											播放单曲
+											▶
 										</button>
 										<button
-											className="search-detail-action"
+											className="search-detail-action icon"
 											type="button"
 											data-search-detail-append
+											title="加入播放队列"
+											aria-label="加入播放队列"
 											onClick={(event) => {
 												event.stopPropagation();
 												onAppendQueue(program);
 											}}
 										>
-											加入播放队列
+											≡+
 										</button>
 										<button
-											className="search-detail-action"
+											className="search-detail-action icon"
 											type="button"
 											data-search-detail-next
+											title="下一首播放"
+											aria-label="下一首播放"
 											disabled={disabled}
 											onClick={(event) => {
 												event.stopPropagation();
 												if (!disabled) onResultNext(program);
 											}}
 										>
-											下一首播放
+											↦
 										</button>
 									</div>
 								</div>

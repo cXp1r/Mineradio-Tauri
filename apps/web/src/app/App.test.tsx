@@ -409,11 +409,44 @@ test("player console CSS hides advanced controls from the main bar", async () =>
 	expect(css).toContain("html.control-glass-svg-ok #play-btn");
 });
 
+test("Search shell CSS uses transparent control glass for compact results", async () => {
+	const css = await fetch(new URL("../styles.css", import.meta.url)).then((response) => response.text());
+	expect(css).toContain("/* 搜索下拉结果：补回播放器控制台式透明玻璃。 */");
+	expect(css).toContain("#search-results.show");
+	expect(css).toContain("linear-gradient(145deg, rgba(255, 255, 255, .052), rgba(6, 8, 12, .24) 48%, rgba(0, 0, 0, .14)) !important;");
+	expect(css).toContain(".search-shell-action.song-action-btn,\n.search-shell-action.add-btn");
+	expect(css).toContain("background: rgba(255, 255, 255, .052) !important;");
+	expect(css).toContain("html.control-glass-svg-ok #search-results.show");
+	expect(css).toContain("url(#mineradio-control-glass-filter) saturate(1) !important");
+});
+
 test("Search detail CSS includes the full-screen glass result surface", async () => {
 	const css = await fetch(new URL("../styles.css", import.meta.url)).then((response) => response.text());
 	expect(css).toContain("[data-search-detail]");
 	expect(css).toContain(".search-detail-track");
 	expect(css).toContain(".search-detail-action");
+	expect(css).toContain("@keyframes search-detail-stage-expand");
+	expect(css).toContain("@keyframes search-detail-panel-expand");
+	expect(css).toContain("animation: search-detail-stage-expand");
+	expect(css).toContain("transform-origin: top center;");
+	expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+	expect(css).toContain("grid-template-columns: 52px minmax(0, 1.30fr) minmax(152px, .56fr) 188px;");
+	expect(css).toContain(".search-detail-track:hover .search-detail-actions");
+	expect(css).toContain("opacity: .72;");
+	expect(css).toContain("scrollbar-width: none;");
+	expect(css).toContain("-ms-overflow-style: none;");
+	expect(css).toContain("#search-results::-webkit-scrollbar");
+	expect(css).toContain(".search-detail-list::-webkit-scrollbar");
+	expect(css).toContain("width: 0;");
+	expect(css).toContain("body.search-detail-open #search-area");
+	expect(css).toContain("body.search-detail-open #empty-home");
+	expect(css).toContain("opacity: .12 !important;");
+	expect(css).toContain("pointer-events: none !important;");
+	expect(css).toContain(".search-detail-page::before");
+	expect(css).toContain("isolation: isolate;");
+	expect(css).toContain("linear-gradient(145deg, rgba(255, 255, 255, .055), rgba(7, 9, 13, .22) 46%, rgba(0, 0, 0, .12));");
+	expect(css).toContain("backdrop-filter: blur(18px) saturate(1.8) brightness(1.16);");
+	expect(css).toContain("inset 0 0 2px 1px rgba(255, 255, 255, .30)");
 });
 
 test("App opens Search detail from the compact search Enter action", async () => {
@@ -477,6 +510,7 @@ test("App opens Search detail from the compact search Enter action", async () =>
 
 		expect(host.querySelector("[data-search-detail]")).not.toBeNull();
 		expect(host.querySelector("[data-search-detail]")?.textContent).toContain("晴天");
+		expect(document.body.classList.contains("search-detail-open")).toBe(true);
 	} finally {
 		root.unmount();
 		host.remove();
