@@ -319,6 +319,11 @@ test("Home CSS keeps cover pseudo-elements without the extra bottom mask", async
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::after");
 	expect(css).toContain(".home-right-pane");
 	expect(css).toContain(".home-rail-sections");
+	expect(css).toContain("#empty-home.home-detail-active");
+	expect(css).toContain(".home-playlist-detail");
+	expect(css).toContain(".home-detail-tabs");
+	expect(css).toContain(".home-detail-list-head");
+	expect(css).toContain(".home-detail-list");
 	expect(css).toContain("overflow-y: auto");
 	expect(css).toContain("grid-template-columns: repeat(auto-fill, minmax(132px, 1fr))");
 	expect(css).not.toContain(".home-tile-row::-webkit-scrollbar");
@@ -450,6 +455,49 @@ test("EmptyHomeHost groups provider playlists while preserving original playlist
 	(host.querySelector('[data-home-provider="qq"] .home-tile') as HTMLButtonElement).click();
 
 	expect(calls).toEqual([1]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost renders a full-screen playlist detail page and routes detail actions", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: string[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		playlistDetail={{
+			playlist: { provider: "qq", id: "q1", name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false },
+			tracks: [
+				{ provider: "qq", id: "song-1", sourceId: "song-1", title: "第一首", artists: ["Alice"], album: "Album", coverUrl: "", durationMs: 3000, qualityHints: [], playableState: "playable" },
+				{ provider: "qq", id: "song-2", sourceId: "song-2", title: "第二首", artists: ["Bob"], album: "Album", coverUrl: "https://img.example/s2.jpg", durationMs: 65000, qualityHints: [], playableState: "playable" },
+			],
+		}}
+		onClosePlaylistDetail={() => calls.push("back")}
+		onPlayPlaylistDetail={(index) => calls.push(`play:${index}`)}
+		onPlaylistDetailArtist={(artist) => calls.push(`artist:${artist}`)}
+	/>));
+
+	expect(host.querySelector("[data-home-playlist-detail]")).not.toBeNull();
+	expect(host.textContent).toContain("QQ 深夜歌单");
+	expect(host.textContent).toContain("QQ音乐");
+	expect(host.textContent).toContain("已载入 2 首");
+	expect(host.textContent).toContain("专辑");
+	expect(host.querySelector(".home-detail-kicker")?.textContent).toBe("歌单");
+	expect(host.textContent).toContain("首页歌单");
+	expect(host.textContent).toContain("第一首");
+	expect(host.textContent).toContain("第二首");
+	expect(host.textContent).toContain("Album");
+	expect(host.textContent).toContain("0:03");
+	expect(host.textContent).not.toContain("🚧此处施工，敬请期待🚧");
+
+	(host.querySelector(".home-detail-back") as HTMLButtonElement).click();
+	(host.querySelector(".home-detail-play") as HTMLButtonElement).click();
+	(host.querySelector('[data-home-detail-track="1"]') as HTMLButtonElement).click();
+	(host.querySelector(".home-detail-artist") as HTMLButtonElement).click();
+
+	expect(calls).toEqual(["back", "play:0", "play:1", "artist:Alice"]);
 	root.unmount();
 	host.remove();
 });

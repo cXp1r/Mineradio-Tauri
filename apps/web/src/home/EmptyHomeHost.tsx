@@ -1,10 +1,11 @@
-import { type CSSProperties, type ReactElement } from "react";
+import { type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
 import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, ProviderId, Track, WeatherRadioResponse } from "@mineradio/shared";
 
 export interface EmptyHomeHostProps {
 	discover?: DiscoverHomeResponse | null;
 	weatherRadio?: WeatherRadioResponse | null;
 	listenSummary?: HomeListenSummary | null;
+	playlistDetail?: HomePlaylistDetailView | null;
 	active?: boolean;
 	loading?: boolean;
 	isPlaying?: boolean;
@@ -26,6 +27,9 @@ export interface EmptyHomeHostProps {
 	onOpenInsight?: () => void;
 	onPlayRecent?: () => void;
 	onPlayWeatherSong?: (index: number) => void;
+	onClosePlaylistDetail?: () => void;
+	onPlayPlaylistDetail?: (index: number) => void;
+	onPlaylistDetailArtist?: (artist: string, track: Track) => void;
 }
 
 export interface HomeListenRecord {
@@ -38,6 +42,14 @@ export interface HomeListenSummary {
 	topSong?: HomeListenRecord | null;
 	topArtist?: { name: string; plays: number; coverUrl?: string } | null;
 	totalPlays?: number;
+}
+
+export interface HomePlaylistDetailView {
+	key?: string;
+	playlist: PlaylistSummary;
+	tracks: Track[];
+	loading?: boolean;
+	error?: string;
 }
 
 interface HomeWaveBar {
@@ -384,7 +396,114 @@ function handleTileAction(props: EmptyHomeHostProps, tile: HomeTile): void {
 	else if (tile.kind === "weatherSong") props.onPlayWeatherSong?.(tile.index);
 }
 
+function homeDetailTrackKey(track: Track, index: number): string {
+	return `${track.provider}:${track.id}:${index}`;
+}
+
+function handleDetailTrackKeyDown(event: KeyboardEvent<HTMLDivElement>, action: () => void): void {
+	if (event.key !== "Enter" && event.key !== " ") return;
+	event.preventDefault();
+	action();
+}
+
+function formatDurationMs(durationMs: number | undefined): string {
+	if (!durationMs) return "";
+	const totalSeconds = Math.max(0, Math.round(durationMs / 1000));
+	const minutes = Math.floor(totalSeconds / 60);
+	const seconds = totalSeconds % 60;
+	return `${minutes}:${String(seconds).padStart(2, "0")}`;
+}
+
+function renderPlaylistDetailPage(props: EmptyHomeHostProps, detail: HomePlaylistDetailView): ReactElement {
+	const playlist = detail.playlist;
+	const tracks = detail.tracks;
+	const provider = playlist.provider;
+	const providerName = HOME_PROVIDER_LABELS[provider];
+	const totalCount = playlist.trackCount ?? tracks.length;
+	const cover = playlist.coverUrl || tracks.find((track) => track.coverUrl)?.coverUrl;
+	const loadedCount = tracks.length;
+	const loadedLabel = totalCount && totalCount !== loadedCount
+		? `${loadedCount}/${totalCount}`
+		: `${loadedCount || totalCount || 0}`;
+
+	return (
+		<section id="empty-home" className="home-detail-active" aria-label="Playlist detail">
+			<div className="home-playlist-detail" data-home-playlist-detail data-home-provider={provider}>
+				<div className="home-detail-toolbar">
+					<button className="home-detail-back" type="button" onClick={props.onClosePlaylistDetail}>返回首页</button>
+					<div className="home-detail-provider">{providerName}</div>
+				</div>
+				<div className="home-detail-hero">
+					<div className={`home-detail-cover${cover ? " has-cover" : ""}`} style={coverStyle(cover)} />
+					<div className="home-detail-copy">
+						<div className="home-detail-kicker">歌单</div>
+						<h2 className="home-detail-title">{playlist.name || "歌单详情"}</h2>
+						<div className="home-detail-meta">
+							<span>{providerName}</span>
+							<span>{detail.loading ? "载入中" : `已载入 ${loadedLabel} 首`}</span>
+							<span>{playlist.subscribed ? "收藏歌单" : "首页歌单"}</span>
+						</div>
+						{detail.error ? <div className="home-detail-error">{detail.error}</div> : null}
+						<button className="home-detail-play" type="button" disabled={detail.loading || tracks.length === 0} onClick={() => props.onPlayPlaylistDetail?.(0)}>
+							播放全部
+						</button>
+					</div>
+				</div>
+				<div className="home-detail-tabs" aria-label="Playlist sections">
+					<div className="active">歌曲 <strong>{loadedCount || totalCount || 0}</strong></div>
+				</div>
+				<div className="home-detail-list-head">
+					<div>#</div>
+					<div>标题</div>
+					<div>专辑</div>
+					<div>时长</div>
+				</div>
+				<div className="home-detail-list" aria-label="Playlist tracks">
+					{detail.loading ? (
+						<div className="home-detail-empty">正在载入歌单</div>
+					) : tracks.length === 0 ? (
+						<div className="home-detail-empty">{detail.error || "歌单暂无可播放歌曲"}</div>
+					) : tracks.map((track, index) => {
+						const artist = artistLine(track, "未知歌手");
+						return (
+							<div
+								className="home-detail-track"
+								data-home-detail-track={index}
+								key={homeDetailTrackKey(track, index)}
+								onClick={() => props.onPlayPlaylistDetail?.(index)}
+								onKeyDown={(event) => handleDetailTrackKeyDown(event, () => props.onPlayPlaylistDetail?.(index))}
+								role="button"
+								tabIndex={0}
+							>
+								<div className="home-detail-track-index">{String(index + 1).padStart(2, "0")}</div>
+								<div className="home-detail-track-main">
+									<div className={`home-detail-track-cover${track.coverUrl ? " has-cover" : ""}`} style={coverStyle(track.coverUrl)} />
+									<div className="home-detail-track-text">
+										<div className="home-detail-track-title">{track.title || "未命名歌曲"}</div>
+										<div className="home-detail-track-sub">
+											<button className="home-detail-artist" type="button" onClick={(event) => {
+												event.stopPropagation();
+												props.onPlaylistDetailArtist?.(artist, track);
+											}}>{artist}</button>
+										</div>
+									</div>
+								</div>
+								<div className="home-detail-track-album">{track.album || "-"}</div>
+								<div className="home-detail-track-side">
+									<span>{formatDurationMs(track.durationMs)}</span>
+								</div>
+							</div>
+						);
+					})}
+				</div>
+			</div>
+		</section>
+	);
+}
+
 export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
+	if (props.playlistDetail) return renderPlaylistDetailPage(props, props.playlistDetail);
+
 	const discover = props.discover ?? null;
 	const loggedOut = !discover?.loggedIn;
 	const hasWeatherSongs = !!props.weatherRadio?.radio.songs.length;

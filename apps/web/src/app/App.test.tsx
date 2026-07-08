@@ -16,6 +16,7 @@ import {
 	nextSidecarStatusPollDelayMs,
 	shouldUseSecondaryLeftDisplaySeamGuard,
 	shouldShowEmptyHome,
+	shouldUseCachedHomeDiscoverPlaylist,
 } from "./App";
 import type { SplashHostProps } from "../visual/SplashHost";
 import type { SidecarStatus, RuntimeConfig } from "../tauri/runtime";
@@ -28,7 +29,7 @@ import { CUSTOM_LYRIC_PREF_STORE_KEY, CUSTOM_LYRIC_STORE_KEY } from "../lyrics/c
 import { SidecarClientError, type SidecarClient } from "../api/sidecar-client";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
-import type { LyricPayload, Track } from "@mineradio/shared";
+import type { DiscoverHomeResponse, LyricPayload, Track } from "@mineradio/shared";
 
 test("web index preloads the baseline simple or DIY mode class before React mounts", async () => {
 	const html = await fetch(new URL("../../index.html", import.meta.url)).then((response) => response.text());
@@ -53,6 +54,28 @@ test("mergeProviderPlaylists replaces only the refreshed provider playlists", ()
 		"soda:soda-old",
 		"qq:qq-new",
 	]);
+});
+
+test("shouldUseCachedHomeDiscoverPlaylist refreshes stale logged-out discover after provider login", () => {
+	const loggedOutWithPublicPlaylists: DiscoverHomeResponse = {
+		loggedIn: false,
+		user: null,
+		mode: "starter",
+		dailySongs: [],
+		playlists: [{ provider: "netease" as const, id: "pub-1", name: "公开推荐", coverUrl: "", trackCount: 12, trackIds: [], subscribed: false }],
+		podcasts: [],
+		updatedAt: 1,
+	};
+	const loggedInDiscover: DiscoverHomeResponse = {
+		...loggedOutWithPublicPlaylists,
+		loggedIn: true,
+		user: { provider: "qq" as const, userId: "q1", nickname: "QQ User", avatarUrl: "" },
+		mode: "member",
+	};
+
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedOutWithPublicPlaylists, false)).toBe(true);
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedOutWithPublicPlaylists, true)).toBe(false);
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedInDiscover, true)).toBe(true);
 });
 
 test("App mounts the baseline guide particle canvas host", async () => {
@@ -2780,6 +2803,90 @@ test("App starts baseline Home weather radio from a weather rail song", async ()
 		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["rain-1", "rain-2"]);
 		expect(usePlaybackStore.getState().currentTrack?.id).toBe("rain-2");
 		expect(host.querySelector("#toast.show")?.textContent).toContain("雨天电台 · 2 首");
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App opens Home playlist tiles as a full-screen detail page before playback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	const restoreAudio = installAppStubAudio();
+
+	const playlistCalls: unknown[] = [];
+	const tracks: Track[] = [
+		{ provider: "qq", id: "qq-song-1", sourceId: "qq-song-1", title: "QQ Song One", artists: ["Alice"], album: "", coverUrl: "", durationMs: 1000, qualityHints: [], playableState: "playable" },
+		{ provider: "qq", id: "qq-song-2", sourceId: "qq-song-2", title: "QQ Song Two", artists: ["Bob"], album: "", coverUrl: "", durationMs: 2000, qualityHints: [], playableState: "playable" },
+	];
+	const fakeClient = {
+		...playbackSidecarClientStubs(),
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return {
+				loggedIn: true,
+				user: { provider: "qq", userId: "q1", nickname: "QQ User", avatarUrl: "" },
+				mode: "member",
+				dailySongs: [],
+				playlists: [{ provider: "qq", id: "qq-pl-1", name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false }],
+				podcasts: [],
+				updatedAt: 1,
+			};
+		},
+		async weatherRadio() {
+			return {
+				ok: true,
+				weather: null,
+				radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] },
+			};
+		},
+		async playlistDetail(provider: string, id: string) {
+			playlistCalls.push({ provider, id });
+			return { provider, id, name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false, tracks };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		for (let i = 0; i < 16 && !host.textContent?.includes("QQ 深夜歌单"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		const playlistTile = Array.from(host.querySelectorAll(".home-tile"))
+			.find((button) => button.textContent?.includes("QQ 深夜歌单")) as HTMLButtonElement;
+		playlistTile.click();
+		for (let i = 0; i < 16 && !host.querySelector("[data-home-playlist-detail]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(playlistCalls).toEqual([{ provider: "qq", id: "qq-pl-1" }]);
+		expect(host.querySelector("[data-home-playlist-detail]")?.textContent).toContain("QQ Song One");
+		expect(usePlaybackStore.getState().queue).toEqual([]);
+		expect(usePlaybackStore.getState().currentTrack).toBeNull();
+
+		(host.querySelector(".home-detail-play") as HTMLButtonElement).click();
+		for (let i = 0; i < 8 && usePlaybackStore.getState().queue.length === 0; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["qq-song-1", "qq-song-2"]);
+		expect(usePlaybackStore.getState().currentTrack?.id).toBe("qq-song-1");
 	} finally {
 		root.unmount();
 		host.remove();
