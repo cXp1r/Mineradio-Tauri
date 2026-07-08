@@ -161,6 +161,28 @@ test("EmptyHomeHost renders baseline logged-out starter tiles", () => {
 	expect(html).toContain("看看视觉舞台");
 });
 
+test("EmptyHomeHost puts logged-out public recommendation playlists before starter actions", () => {
+	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
+		discover: {
+			loggedIn: false,
+			user: null,
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "pub-1", name: "公开推荐一", coverUrl: "https://img.example/pub1.jpg", trackCount: 30, trackIds: [], subscribed: false },
+				{ provider: "netease", id: "pub-2", name: "公开推荐二", coverUrl: "https://img.example/pub2.jpg", trackCount: 18, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			mode: "starter",
+			updatedAt: 1782656256000,
+		},
+	}));
+
+	expect(html).toContain('id="home-rail-title">推荐歌单与开始探索');
+	expect(html.indexOf("公开推荐一")).toBeGreaterThan(-1);
+	expect(html.indexOf("登录同步歌单")).toBeGreaterThan(-1);
+	expect(html.indexOf("公开推荐一")).toBeLessThan(html.indexOf("登录同步歌单"));
+});
+
 test("EmptyHomeHost prefers baseline weather radio songs in the rail when discover is logged out", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
 		discover: {
@@ -235,6 +257,34 @@ test("EmptyHomeHost renders discover songs, playlists, and podcasts into baselin
 	expect(html).toContain("刚刚更新 · 点击即可播放");
 });
 
+test("EmptyHomeHost renders more than five playlist rail tiles without dropping later playlists", () => {
+	const playlists = Array.from({ length: 8 }, (_, index) => ({
+		provider: index % 2 ? "qq" as const : "netease" as const,
+		id: `p${index + 1}`,
+		name: `探索歌单 ${index + 1}`,
+		coverUrl: `https://img.example/p${index + 1}.jpg`,
+		trackCount: 10 + index,
+		trackIds: [],
+		subscribed: false,
+	}));
+	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
+		discover: {
+			loggedIn: true,
+			user: { provider: "netease", userId: "42", nickname: "tester", avatarUrl: "" },
+			mode: "member",
+			dailySongs: [],
+			playlists,
+			podcasts: [],
+			updatedAt: 1782656256000,
+		},
+	}));
+
+	expect(html).toContain("探索歌单 1");
+	expect(html).toContain("探索歌单 6");
+	expect(html).toContain("探索歌单 8");
+	expect((html.match(/class="home-tile/g) ?? []).length).toBeGreaterThan(5);
+});
+
 test("EmptyHomeHost marks real Home card covers with the baseline has-cover class", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
 		discover: {
@@ -263,6 +313,9 @@ test("Home CSS keeps cover pseudo-elements without the extra bottom mask", async
 	expect(css).toContain(".home-card-art::after");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::before");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::after");
+	expect(css).toContain("overflow-y: auto");
+	expect(css).toContain("grid-template-columns: repeat(auto-fill, minmax(132px, 1fr))");
+	expect(css).not.toContain("grid-template-columns: repeat(5, minmax(0, 1fr))");
 	expect(css).not.toContain("body.empty-home-active::before");
 });
 
@@ -325,6 +378,37 @@ test("EmptyHomeHost routes weather song tiles to the baseline weather callback",
 	(host.querySelector(".home-tile") as HTMLButtonElement).click();
 
 	expect(calls).toEqual([0]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost routes logged-out public playlist tiles through playlist callback indexes", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: number[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		discover={{
+			loggedIn: false,
+			user: null,
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "pub-1", name: "公开推荐一", coverUrl: "", trackCount: 30, trackIds: [], subscribed: false },
+				{ provider: "netease", id: "pub-2", name: "公开推荐二", coverUrl: "", trackCount: 18, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			mode: "starter",
+			updatedAt: 1,
+		}}
+		onOpenPlaylist={(index) => calls.push(index)}
+	/>));
+	const playlistTiles = Array.from(host.querySelectorAll(".home-tile"))
+		.filter((tile) => tile.textContent?.includes("公开推荐"));
+	(playlistTiles[1] as HTMLButtonElement).click();
+
+	expect(calls).toEqual([1]);
 	root.unmount();
 	host.remove();
 });

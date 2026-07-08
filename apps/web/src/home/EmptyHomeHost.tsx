@@ -51,6 +51,8 @@ interface HomeWaveFrame {
 }
 
 const HOME_WAVE_BAR_COUNT = 24;
+const HOME_RAIL_MAX_TILES = 32;
+const HOME_RAIL_PRIMARY_SONG_COUNT = 4;
 
 const STARTER_TILES = [
 	{ kind: "login", tone: "library", title: "登录同步歌单", sub: "网易云 / QQ 音乐", action: "Login" },
@@ -60,8 +62,10 @@ const STARTER_TILES = [
 	{ kind: "guide", tone: "guide", title: "看看视觉舞台", sub: "粒子 / 歌词 / 封面", action: "Visual" },
 ] as const;
 
+type StarterTile = (typeof STARTER_TILES)[number];
+
 type HomeTile =
-	| (typeof STARTER_TILES)[number]
+	| StarterTile
 	| { kind: "recent"; tone: string; title: string; sub: string; action: string; record: HomeListenRecord; coverUrl?: string }
 	| { kind: "profile"; tone: string; title: string; sub: string; action: string; query: string; coverUrl?: string }
 	| { kind: "song"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
@@ -129,16 +133,23 @@ function podcastSub(podcast: PodcastRadio | null | undefined): string {
 	return podcast.djName || podcast.category || "Podcast";
 }
 
+function pushTile(tiles: HomeTile[], tile: HomeTile, max = HOME_RAIL_MAX_TILES): void {
+	if (tiles.length < max) tiles.push(tile);
+}
+
 function buildHomeTiles(
 	discover: DiscoverHomeResponse | null | undefined,
 	weatherRadio: WeatherRadioResponse | null | undefined,
 	listenSummary: HomeListenSummary | null | undefined,
 ): HomeTile[] {
 	const weatherSongs = weatherRadio?.radio.songs ?? [];
+	const playlists = discover?.playlists ?? [];
+	const podcasts = discover?.podcasts ?? [];
 	const tiles: HomeTile[] = [];
-	if (listenSummary?.recent?.track && tiles.length < 5) {
+
+	if (listenSummary?.recent?.track) {
 		const recent = listenSummary.recent;
-		tiles.push({
+		pushTile(tiles, {
 			kind: "recent",
 			tone: "search",
 			title: recent.track.title || "继续听",
@@ -148,8 +159,9 @@ function buildHomeTiles(
 			coverUrl: recent.track.coverUrl,
 		});
 	}
-	if (listenSummary?.topArtist?.name && tiles.length < 5) {
-		tiles.push({
+
+	if (listenSummary?.topArtist?.name) {
+		pushTile(tiles, {
 			kind: "profile",
 			tone: "local",
 			title: listenSummary.topArtist.name,
@@ -159,8 +171,18 @@ function buildHomeTiles(
 			coverUrl: listenSummary.topArtist.coverUrl,
 		});
 	}
-	if (!discover?.loggedIn && weatherSongs.length) {
-		weatherSongs.slice(0, 5 - tiles.length).forEach((song, index) => tiles.push({
+
+	if (!discover?.loggedIn) {
+		playlists.forEach((playlist, index) => pushTile(tiles, {
+			kind: "playlist",
+			tone: "playlist",
+			title: playlist.name || "推荐歌单",
+			sub: playlist.trackCount ? `${playlist.trackCount} 首 · 公开推荐` : "公开推荐",
+			action: "Open",
+			index,
+			coverUrl: playlist.coverUrl,
+		}));
+		weatherSongs.forEach((song, index) => pushTile(tiles, {
 			kind: "weatherSong",
 			tone: "daily",
 			title: song.title || "天气电台歌曲",
@@ -169,12 +191,14 @@ function buildHomeTiles(
 			index,
 			coverUrl: song.coverUrl,
 		}));
-		return tiles.slice(0, 5);
+		if (playlists.length || !weatherSongs.length) {
+			STARTER_TILES.forEach((tile) => pushTile(tiles, tile));
+		}
+		return tiles.length ? tiles.slice(0, HOME_RAIL_MAX_TILES) : [...STARTER_TILES];
 	}
-	if (!discover?.loggedIn) return tiles.length ? [...tiles, ...STARTER_TILES].slice(0, 5) : [...STARTER_TILES];
-	discover.dailySongs.slice(0, Math.max(0, 4 - tiles.length)).forEach((song, index) => {
-		if (tiles.length >= 5) return;
-		tiles.push({
+
+	discover.dailySongs.slice(0, HOME_RAIL_PRIMARY_SONG_COUNT).forEach((song, index) => {
+		pushTile(tiles, {
 			kind: "song",
 			tone: index % 2 ? "search" : "daily",
 			title: song.title || "今日歌曲",
@@ -184,8 +208,9 @@ function buildHomeTiles(
 			coverUrl: song.coverUrl,
 		});
 	});
-	discover.playlists.slice(0, Math.max(0, 5 - tiles.length)).forEach((playlist, index) => {
-		tiles.push({
+
+	playlists.forEach((playlist, index) => {
+		pushTile(tiles, {
 			kind: "playlist",
 			tone: "playlist",
 			title: playlist.name || "推荐歌单",
@@ -195,8 +220,9 @@ function buildHomeTiles(
 			coverUrl: playlist.coverUrl,
 		});
 	});
-	discover.podcasts.slice(0, Math.max(0, 5 - tiles.length)).forEach((podcast, index) => {
-		tiles.push({
+
+	podcasts.forEach((podcast, index) => {
+		pushTile(tiles, {
 			kind: "podcast",
 			tone: "podcast",
 			title: podcast.name || "热门播客",
@@ -206,8 +232,9 @@ function buildHomeTiles(
 			coverUrl: podcast.coverUrl,
 		});
 	});
-	weatherSongs.slice(0, Math.max(0, 5 - tiles.length)).forEach((song, index) => {
-		tiles.push({
+
+	weatherSongs.forEach((song, index) => {
+		pushTile(tiles, {
 			kind: "weatherSong",
 			tone: "daily",
 			title: song.title || "天气电台歌曲",
@@ -217,7 +244,8 @@ function buildHomeTiles(
 			coverUrl: song.coverUrl,
 		});
 	});
-	return tiles.length ? tiles.slice(0, 5) : [...STARTER_TILES];
+
+	return tiles.length ? tiles.slice(0, HOME_RAIL_MAX_TILES) : [...STARTER_TILES];
 }
 
 function homeTileCover(tile: HomeTile): string | undefined {
@@ -259,6 +287,7 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 	const listenSummary = props.listenSummary ?? null;
 	const tiles = buildHomeTiles(discover, props.weatherRadio, listenSummary);
 	const loading = props.loading === true;
+	const hasPublicRecommendations = loggedOut && (discover?.playlists.length ?? 0) > 0;
 	const libraryCover = firstPlaylist?.coverUrl || daily?.coverUrl;
 	const dailyCover = daily?.coverUrl;
 	const privateCover = privateSong?.coverUrl || daily?.coverUrl || firstPlaylist?.coverUrl;
@@ -328,8 +357,8 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 
 				<div className="home-rail">
 					<div className="home-section-head">
-						<div className="home-section-title" id="home-rail-title">{loggedOut ? "先从这里开始" : "你的歌单与推荐"}</div>
-						<div className="home-section-note" id="home-rail-note">{loggedOut && !hasWeatherSongs ? "不会自动拉取外部推荐" : "刚刚更新 · 点击即可播放"}</div>
+						<div className="home-section-title" id="home-rail-title">{loggedOut ? (hasPublicRecommendations ? "推荐歌单与开始探索" : "先从这里开始") : "你的歌单与推荐"}</div>
+						<div className="home-section-note" id="home-rail-note">{loggedOut && !hasWeatherSongs && !hasPublicRecommendations ? "正在等待推荐源" : "刚刚更新 · 点击即可播放"}</div>
 					</div>
 					<div id="home-tile-row" className="home-tile-row">
 						{tiles.map((tile, index) => (
