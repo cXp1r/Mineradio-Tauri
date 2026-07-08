@@ -29,6 +29,9 @@ export type DiscoverHomeServiceOptions = {
 };
 
 const PROVIDER_ORDER: ProviderId[] = ["netease", "qq", "soda"];
+const HOME_PLAYLIST_LIMIT = 24;
+const NETEASE_PRIVATE_PLAYLIST_LIMIT = 8;
+const NETEASE_PUBLIC_PLAYLIST_LIMIT = 12;
 
 export async function buildDiscoverHome(
   options: DiscoverHomeServiceOptions
@@ -40,11 +43,12 @@ export async function buildDiscoverHome(
   const logged = statuses.find((status) => status?.loggedIn) ?? null;
 
   if (!logged) {
+    const publicPlaylists = await loadLoggedOutPublicPlaylists(options.discoverRequester, now);
     return DiscoverHomeResponseSchema.parse({
       loggedIn: false,
       user: null,
       dailySongs: [],
-      playlists: [],
+      playlists: publicPlaylists,
       podcasts: [],
       mode: "starter",
       updatedAt: now()
@@ -57,12 +61,9 @@ export async function buildDiscoverHome(
   const neteaseDiscover = loggedProviders.includes("netease")
     ? await loadNeteaseDiscover(options.discoverRequester, now)
     : { dailySongs: [], playlists: [], podcasts: [] };
-  const adapterPlaylists = neteaseDiscover.playlists.length
-    ? []
-    : await loadAdapterPlaylists(options.providerAdapters, loggedProviders);
-  const playlists = (neteaseDiscover.playlists.length ? neteaseDiscover.playlists : adapterPlaylists)
-    .filter((playlist) => playlist.id && playlist.name)
-    .slice(0, 10);
+  const adapterPlaylists = await loadAdapterPlaylists(options.providerAdapters, loggedProviders);
+  const playlists = mergePlaylists(neteaseDiscover.playlists, adapterPlaylists)
+    .slice(0, HOME_PLAYLIST_LIMIT);
   const dailySongs = neteaseDiscover.dailySongs.length
     ? neteaseDiscover.dailySongs.slice(0, 12)
     : await firstPlaylistTracks(options.providerAdapters, playlists)
@@ -87,6 +88,24 @@ export async function buildDiscoverHome(
   });
 }
 
+async function loadLoggedOutPublicPlaylists(
+  requester: DiscoverRequester | undefined,
+  now: () => number
+): Promise<PlaylistSummary[]> {
+  try {
+    const api = requester ?? defaultDiscoverRequester();
+    const result = await api.personalized({ timestamp: now(), limit: NETEASE_PUBLIC_PLAYLIST_LIMIT });
+    return resultBody({ status: "fulfilled", value: result })
+      .map((body) => arrayOf(body.result ?? body.data)
+        .map((playlist) => mapDiscoverPlaylist(playlist))
+        .filter(isValidPlaylist)
+        .slice(0, NETEASE_PUBLIC_PLAYLIST_LIMIT))
+      .unwrapOr([]);
+  } catch {
+    return [];
+  }
+}
+
 async function loadNeteaseDiscover(
   requester: DiscoverRequester | undefined,
   now: () => number
@@ -96,7 +115,7 @@ async function loadNeteaseDiscover(
   const api = requester ?? defaultDiscoverRequester();
   const baseParams = cookie ? { cookie, timestamp: now() } : { timestamp: now() };
   const results = await Promise.allSettled([
-    api.personalized({ ...baseParams, limit: 8 }),
+    api.personalized({ ...baseParams, limit: NETEASE_PUBLIC_PLAYLIST_LIMIT }),
     api.djHot({ ...baseParams, limit: 6, offset: 0 }),
     api.recommendResource(baseParams),
     api.recommendSongs(baseParams)
@@ -105,8 +124,8 @@ async function loadNeteaseDiscover(
   const publicPlaylists = resultBody(results[0])
     .map((body) => arrayOf(body.result ?? body.data)
       .map((playlist) => mapDiscoverPlaylist(playlist))
-      .filter((playlist) => playlist.id && playlist.name)
-      .slice(0, 8))
+      .filter(isValidPlaylist)
+      .slice(0, NETEASE_PUBLIC_PLAYLIST_LIMIT))
     .unwrapOr([]);
   const podcasts = resultBody(results[1])
     .map((body) => arrayOf(body.djRadios ?? body.djradios ?? body.radios ?? body.data)
@@ -117,8 +136,8 @@ async function loadNeteaseDiscover(
   const privatePlaylists = resultBody(results[2])
     .map((body) => arrayOf(body.recommend ?? body.data)
       .map((playlist) => mapDiscoverPlaylist(playlist))
-      .filter((playlist) => playlist.id && playlist.name)
-      .slice(0, 6))
+      .filter(isValidPlaylist)
+      .slice(0, NETEASE_PRIVATE_PLAYLIST_LIMIT))
     .unwrapOr([]);
   const dailySongs = resultBody(results[3])
     .map((body) => {
@@ -133,7 +152,7 @@ async function loadNeteaseDiscover(
 
   return {
     dailySongs,
-    playlists: privatePlaylists.concat(publicPlaylists).slice(0, 10),
+    playlists: mergePlaylists(privatePlaylists, publicPlaylists).slice(0, HOME_PLAYLIST_LIMIT),
     podcasts
   };
 }
@@ -158,8 +177,8 @@ async function loadAdapterPlaylists(
   );
   return playlistResults
     .flatMap((result) => result.status === "fulfilled" ? result.value : [])
-    .filter((playlist) => playlist.id && playlist.name)
-    .slice(0, 10);
+    .filter(isValidPlaylist)
+    .slice(0, HOME_PLAYLIST_LIMIT);
 }
 
 async function firstPlaylistTracks(
@@ -272,6 +291,23 @@ function mapDiscoverPlaylist(raw: unknown): PlaylistSummary {
     trackIds: [],
     subscribed: playlist.subscribed === true
   };
+}
+
+function isValidPlaylist(playlist: PlaylistSummary): boolean {
+  return !!(playlist.id && playlist.name);
+}
+
+function mergePlaylists(...groups: PlaylistSummary[][]): PlaylistSummary[] {
+  const seen = new Set<string>();
+  const merged: PlaylistSummary[] = [];
+  for (const playlist of groups.flat()) {
+    if (!isValidPlaylist(playlist)) continue;
+    const key = `${playlist.provider}:${playlist.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(playlist);
+  }
+  return merged;
 }
 
 function mapPodcastRadio(raw: unknown): PodcastRadio {

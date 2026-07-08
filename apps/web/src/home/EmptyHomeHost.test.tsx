@@ -11,11 +11,12 @@ test("EmptyHomeHost renders the baseline empty-home music landing structure", ()
 	expect(html).toContain('class="home-hero-inner home-construction-inner"');
 	expect(html).toContain("🚧此处施工，敬请期待🚧");
 	expect(html).toContain("展开播放器控制台");
+	expect(html).toContain('class="home-right-pane"');
 	expect(html).toContain('class="home-grid"');
 	expect(html).toContain("我的歌单");
 	expect(html).toContain("每日推荐");
 	expect(html).toContain("推荐歌曲");
-	expect(html).toContain('id="home-tile-row"');
+	expect(html).toContain('class="home-rail-sections"');
 	expect(html).not.toContain('id="home-weather-kicker"');
 	expect(html).not.toContain("Mineradio · Your Library");
 	expect(html).not.toContain('class="home-quick-row"');
@@ -161,6 +162,28 @@ test("EmptyHomeHost renders baseline logged-out starter tiles", () => {
 	expect(html).toContain("看看视觉舞台");
 });
 
+test("EmptyHomeHost puts logged-out public recommendation playlists before starter actions", () => {
+	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
+		discover: {
+			loggedIn: false,
+			user: null,
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "pub-1", name: "公开推荐一", coverUrl: "https://img.example/pub1.jpg", trackCount: 30, trackIds: [], subscribed: false },
+				{ provider: "netease", id: "pub-2", name: "公开推荐二", coverUrl: "https://img.example/pub2.jpg", trackCount: 18, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			mode: "starter",
+			updatedAt: 1782656256000,
+		},
+	}));
+
+	expect(html).toContain('id="home-rail-title">推荐歌单与开始探索');
+	expect(html.indexOf("公开推荐一")).toBeGreaterThan(-1);
+	expect(html.indexOf("登录同步歌单")).toBeGreaterThan(-1);
+	expect(html.indexOf("公开推荐一")).toBeLessThan(html.indexOf("登录同步歌单"));
+});
+
 test("EmptyHomeHost prefers baseline weather radio songs in the rail when discover is logged out", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
 		discover: {
@@ -206,7 +229,7 @@ test("EmptyHomeHost prefers baseline weather radio songs in the rail when discov
 
 	expect(html).toContain("Rain One");
 	expect(html).toContain("Alice");
-	expect(html).toContain("刚刚更新 · 点击即可播放");
+	expect(html).toContain("按供应商分组 · 点击即可播放");
 	expect(html).not.toContain("登录同步歌单");
 });
 
@@ -232,7 +255,38 @@ test("EmptyHomeHost renders discover songs, playlists, and podcasts into baselin
 	expect(html).toContain("第三首");
 	expect(html).toContain("我的歌单");
 	expect(html).toContain("热门播客");
-	expect(html).toContain("刚刚更新 · 点击即可播放");
+	expect(html).toContain("按供应商分组 · 点击即可播放");
+});
+
+test("EmptyHomeHost renders more than five playlist rail tiles without dropping later playlists", () => {
+	const playlists = Array.from({ length: 8 }, (_, index) => ({
+		provider: index % 2 ? "qq" as const : "netease" as const,
+		id: `p${index + 1}`,
+		name: `探索歌单 ${index + 1}`,
+		coverUrl: `https://img.example/p${index + 1}.jpg`,
+		trackCount: 10 + index,
+		trackIds: [],
+		subscribed: false,
+	}));
+	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
+		discover: {
+			loggedIn: true,
+			user: { provider: "netease", userId: "42", nickname: "tester", avatarUrl: "" },
+			mode: "member",
+			dailySongs: [],
+			playlists,
+			podcasts: [],
+			updatedAt: 1782656256000,
+		},
+	}));
+
+	expect(html).toContain("探索歌单 1");
+	expect(html).toContain("探索歌单 6");
+	expect(html).toContain("探索歌单 8");
+	expect(html).toContain("网易云音乐歌单");
+	expect(html).toContain("QQ音乐歌单");
+	expect(html.indexOf("网易云音乐歌单")).toBeLessThan(html.indexOf("QQ音乐歌单"));
+	expect((html.match(/class="home-tile/g) ?? []).length).toBeGreaterThan(5);
 });
 
 test("EmptyHomeHost marks real Home card covers with the baseline has-cover class", () => {
@@ -263,6 +317,17 @@ test("Home CSS keeps cover pseudo-elements without the extra bottom mask", async
 	expect(css).toContain(".home-card-art::after");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::before");
 	expect(css).toContain(".home-tile-cover:not(.has-cover)::after");
+	expect(css).toContain(".home-right-pane");
+	expect(css).toContain(".home-rail-sections");
+	expect(css).toContain("#empty-home.home-detail-active");
+	expect(css).toContain(".home-playlist-detail");
+	expect(css).toContain(".home-detail-tabs");
+	expect(css).toContain(".home-detail-list-head");
+	expect(css).toContain(".home-detail-list");
+	expect(css).toContain("overflow-y: auto");
+	expect(css).toContain("grid-template-columns: repeat(auto-fill, minmax(132px, 1fr))");
+	expect(css).not.toContain(".home-tile-row::-webkit-scrollbar");
+	expect(css).not.toContain("grid-template-columns: repeat(5, minmax(0, 1fr))");
 	expect(css).not.toContain("body.empty-home-active::before");
 });
 
@@ -325,6 +390,114 @@ test("EmptyHomeHost routes weather song tiles to the baseline weather callback",
 	(host.querySelector(".home-tile") as HTMLButtonElement).click();
 
 	expect(calls).toEqual([0]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost routes logged-out public playlist tiles through playlist callback indexes", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: number[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		discover={{
+			loggedIn: false,
+			user: null,
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "pub-1", name: "公开推荐一", coverUrl: "", trackCount: 30, trackIds: [], subscribed: false },
+				{ provider: "netease", id: "pub-2", name: "公开推荐二", coverUrl: "", trackCount: 18, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			mode: "starter",
+			updatedAt: 1,
+		}}
+		onOpenPlaylist={(index) => calls.push(index)}
+	/>));
+	const playlistTiles = Array.from(host.querySelectorAll(".home-tile"))
+		.filter((tile) => tile.textContent?.includes("公开推荐"));
+	(playlistTiles[1] as HTMLButtonElement).click();
+
+	expect(calls).toEqual([1]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost groups provider playlists while preserving original playlist callback indexes", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: number[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		discover={{
+			loggedIn: true,
+			user: { provider: "netease", userId: "42", nickname: "tester", avatarUrl: "" },
+			mode: "member",
+			dailySongs: [],
+			playlists: [
+				{ provider: "netease", id: "n1", name: "网易歌单一", coverUrl: "", trackCount: 12, trackIds: [], subscribed: false },
+				{ provider: "qq", id: "q1", name: "QQ歌单一", coverUrl: "", trackCount: 8, trackIds: [], subscribed: false },
+				{ provider: "soda", id: "s1", name: "汽水歌单一", coverUrl: "", trackCount: 6, trackIds: [], subscribed: false },
+			],
+			podcasts: [],
+			updatedAt: 1,
+		}}
+		onOpenPlaylist={(index) => calls.push(index)}
+	/>));
+
+	expect(host.querySelector('[data-home-provider="netease"]')?.textContent).toContain("网易歌单一");
+	expect(host.querySelector('[data-home-provider="qq"]')?.textContent).toContain("QQ歌单一");
+	expect(host.querySelector('[data-home-provider="soda"]')?.textContent).toContain("汽水歌单一");
+	(host.querySelector('[data-home-provider="qq"] .home-tile') as HTMLButtonElement).click();
+
+	expect(calls).toEqual([1]);
+	root.unmount();
+	host.remove();
+});
+
+test("EmptyHomeHost renders a full-screen playlist detail page and routes detail actions", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: string[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(<EmptyHomeHost
+		playlistDetail={{
+			playlist: { provider: "qq", id: "q1", name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false },
+			tracks: [
+				{ provider: "qq", id: "song-1", sourceId: "song-1", title: "第一首", artists: ["Alice"], album: "Album", coverUrl: "", durationMs: 3000, qualityHints: [], playableState: "playable" },
+				{ provider: "qq", id: "song-2", sourceId: "song-2", title: "第二首", artists: ["Bob"], album: "Album", coverUrl: "https://img.example/s2.jpg", durationMs: 65000, qualityHints: [], playableState: "playable" },
+			],
+		}}
+		onClosePlaylistDetail={() => calls.push("back")}
+		onPlayPlaylistDetail={(index) => calls.push(`play:${index}`)}
+		onPlaylistDetailArtist={(artist) => calls.push(`artist:${artist}`)}
+	/>));
+
+	expect(host.querySelector("[data-home-playlist-detail]")).not.toBeNull();
+	expect(host.textContent).toContain("QQ 深夜歌单");
+	expect(host.textContent).toContain("QQ音乐");
+	expect(host.textContent).toContain("已载入 2 首");
+	expect(host.textContent).toContain("专辑");
+	expect(host.querySelector(".home-detail-kicker")?.textContent).toBe("歌单");
+	expect(host.textContent).toContain("首页歌单");
+	expect(host.textContent).toContain("第一首");
+	expect(host.textContent).toContain("第二首");
+	expect(host.textContent).toContain("Album");
+	expect(host.textContent).toContain("0:03");
+	expect(host.textContent).not.toContain("🚧此处施工，敬请期待🚧");
+
+	(host.querySelector(".home-detail-back") as HTMLButtonElement).click();
+	(host.querySelector(".home-detail-play") as HTMLButtonElement).click();
+	(host.querySelector('[data-home-detail-track="1"]') as HTMLButtonElement).click();
+	(host.querySelector(".home-detail-artist") as HTMLButtonElement).click();
+
+	expect(calls).toEqual(["back", "play:0", "play:1", "artist:Alice"]);
 	root.unmount();
 	host.remove();
 });

@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ProviderId, Track } from "@mineradio/shared";
 import { clearSearchAfterPlayback, searchTracksForMode } from "./SearchShell";
+import { useSearchStore } from "../../stores/search-store";
 
 function makeTrack(id: string, provider: ProviderId = "netease"): Track {
 	return {
@@ -64,4 +65,21 @@ test("clearSearchAfterPlayback invalidates in-flight search before clearing UI s
 	});
 
 	expect(calls).toEqual(["nextSearchSeq", "loading:false", "keyword:", "results:0", "error:"]);
+});
+
+test("search store opens full-screen detail with committed keyword and mode", () => {
+	const store = useSearchStore.getState() as typeof useSearchStore extends { getState: () => infer S } ? S & {
+		openDetail: (keyword: string, mode: "song" | "netease" | "qq" | "podcast") => void;
+		detailOpen: boolean;
+		mode: "song" | "netease" | "qq" | "podcast";
+		recentQueries: Array<{ keyword: string; mode: "song" | "netease" | "qq" | "podcast" }>;
+	} : never;
+
+	store.openDetail("晴天", "song");
+	const next = useSearchStore.getState() as typeof store;
+
+	expect(next.detailOpen).toBe(true);
+	expect(next.keyword).toBe("晴天");
+	expect(next.mode).toBe("song");
+	expect(next.recentQueries[0]).toEqual({ keyword: "晴天", mode: "song" });
 });

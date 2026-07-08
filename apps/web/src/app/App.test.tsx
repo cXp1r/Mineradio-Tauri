@@ -12,9 +12,11 @@ import {
 	isCollectSupportedTrack,
 	isHomeBlankDismissElement,
 	isNeteaseLikeSupported,
+	mergeProviderPlaylists,
 	nextSidecarStatusPollDelayMs,
 	shouldUseSecondaryLeftDisplaySeamGuard,
 	shouldShowEmptyHome,
+	shouldUseCachedHomeDiscoverPlaylist,
 } from "./App";
 import type { SplashHostProps } from "../visual/SplashHost";
 import type { SidecarStatus, RuntimeConfig } from "../tauri/runtime";
@@ -27,13 +29,53 @@ import { CUSTOM_LYRIC_PREF_STORE_KEY, CUSTOM_LYRIC_STORE_KEY } from "../lyrics/c
 import { SidecarClientError, type SidecarClient } from "../api/sidecar-client";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
-import type { LyricPayload, Track } from "@mineradio/shared";
+import type { DiscoverHomeResponse, LyricPayload, Track } from "@mineradio/shared";
 
 test("web index preloads the baseline simple or DIY mode class before React mounts", async () => {
 	const html = await fetch(new URL("../../index.html", import.meta.url)).then((response) => response.text());
 	expect(html).toContain("mineradio-diy-player-mode-v1");
 	expect(html).toContain("diy-mode-preload");
 	expect(html).toContain("simple-mode-preload");
+});
+
+test("mergeProviderPlaylists replaces only the refreshed provider playlists", () => {
+	const merged = mergeProviderPlaylists([
+		{ provider: "netease", id: "ne-old", name: "旧网易歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false },
+		{ provider: "qq", id: "qq-old", name: "旧QQ歌单", coverUrl: "", trackCount: 2, trackIds: [], subscribed: false },
+		{ provider: "soda", id: "soda-old", name: "旧汽水歌单", coverUrl: "", trackCount: 3, trackIds: [], subscribed: false },
+	], "qq", [
+		{ provider: "qq", id: "qq-new", name: "新QQ歌单", coverUrl: "", trackCount: 4, trackIds: [], subscribed: false },
+		{ provider: "netease", id: "ne-noise", name: "错误供应商噪声", coverUrl: "", trackCount: 5, trackIds: [], subscribed: false },
+		{ provider: "qq", id: "qq-new", name: "重复QQ歌单", coverUrl: "", trackCount: 4, trackIds: [], subscribed: false },
+	]);
+
+	expect(merged.map((playlist) => `${playlist.provider}:${playlist.id}`)).toEqual([
+		"netease:ne-old",
+		"soda:soda-old",
+		"qq:qq-new",
+	]);
+});
+
+test("shouldUseCachedHomeDiscoverPlaylist refreshes stale logged-out discover after provider login", () => {
+	const loggedOutWithPublicPlaylists: DiscoverHomeResponse = {
+		loggedIn: false,
+		user: null,
+		mode: "starter",
+		dailySongs: [],
+		playlists: [{ provider: "netease" as const, id: "pub-1", name: "公开推荐", coverUrl: "", trackCount: 12, trackIds: [], subscribed: false }],
+		podcasts: [],
+		updatedAt: 1,
+	};
+	const loggedInDiscover: DiscoverHomeResponse = {
+		...loggedOutWithPublicPlaylists,
+		loggedIn: true,
+		user: { provider: "qq" as const, userId: "q1", nickname: "QQ User", avatarUrl: "" },
+		mode: "member",
+	};
+
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedOutWithPublicPlaylists, false)).toBe(true);
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedOutWithPublicPlaylists, true)).toBe(false);
+	expect(shouldUseCachedHomeDiscoverPlaylist(loggedInDiscover, true)).toBe(true);
 });
 
 test("App mounts the baseline guide particle canvas host", async () => {
@@ -365,6 +407,188 @@ test("player console CSS hides advanced controls from the main bar", async () =>
 	expect(css).toContain("#quality-btn.quality-pill");
 	expect(css).toContain("background: rgba(0, 0, 0, .10);");
 	expect(css).toContain("html.control-glass-svg-ok #play-btn");
+});
+
+test("Search shell CSS uses transparent control glass for compact results", async () => {
+	const css = await fetch(new URL("../styles.css", import.meta.url)).then((response) => response.text());
+	expect(css).toContain("/* 搜索下拉结果：补回播放器控制台式透明玻璃。 */");
+	expect(css).toContain("#search-results.show");
+	expect(css).toContain("linear-gradient(145deg, rgba(255, 255, 255, .052), rgba(6, 8, 12, .24) 48%, rgba(0, 0, 0, .14)) !important;");
+	expect(css).toContain(".search-shell-action.song-action-btn,\n.search-shell-action.add-btn");
+	expect(css).toContain("background: rgba(255, 255, 255, .052) !important;");
+	expect(css).toContain("html.control-glass-svg-ok #search-results.show");
+	expect(css).toContain("url(#mineradio-control-glass-filter) saturate(1) !important");
+});
+
+test("Search detail CSS includes the full-screen glass result surface", async () => {
+	const css = await fetch(new URL("../styles.css", import.meta.url)).then((response) => response.text());
+	expect(css).toContain("[data-search-detail]");
+	expect(css).toContain(".search-detail-track");
+	expect(css).toContain(".search-detail-action");
+	expect(css).toContain("@keyframes search-detail-stage-expand");
+	expect(css).toContain("@keyframes search-detail-panel-expand");
+	expect(css).toContain("animation: search-detail-stage-expand");
+	expect(css).toContain("transform-origin: top center;");
+	expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+	expect(css).toContain("grid-template-columns: 52px minmax(0, 1.30fr) minmax(152px, .56fr) 188px;");
+	expect(css).toContain(".search-detail-track:hover .search-detail-actions");
+	expect(css).toContain("opacity: .72;");
+	expect(css).toContain("scrollbar-width: none;");
+	expect(css).toContain("-ms-overflow-style: none;");
+	expect(css).toContain("#search-results::-webkit-scrollbar");
+	expect(css).toContain(".search-detail-list::-webkit-scrollbar");
+	expect(css).toContain("width: 0;");
+	expect(css).toContain("body.search-detail-open #search-area");
+	expect(css).toContain("body.search-detail-open #empty-home");
+	expect(css).toContain("opacity: .12 !important;");
+	expect(css).toContain("pointer-events: none !important;");
+	expect(css).toContain(".search-detail-page::before");
+	expect(css).toContain("isolation: isolate;");
+	expect(css).toContain("linear-gradient(145deg, rgba(255, 255, 255, .055), rgba(7, 9, 13, .22) 46%, rgba(0, 0, 0, .12));");
+	expect(css).toContain("backdrop-filter: blur(18px) saturate(1.8) brightness(1.16);");
+	expect(css).toContain("inset 0 0 2px 1px rgba(255, 255, 255, .30)");
+});
+
+test("App opens Search detail from the compact search Enter action", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useSearchStore.getState().reset();
+	useSearchStore.setState({ keyword: "晴天", mode: "song", detailOpen: false });
+
+	const fakeClient = {
+		async searchAll() {
+			return [{
+				provider: "netease",
+				id: "song-1",
+				sourceId: "song-1",
+				title: "晴天",
+				artists: ["周杰伦"],
+				album: "叶惠美",
+				coverUrl: "",
+				durationMs: 269000,
+				qualityHints: [],
+				playableState: "playable",
+			} satisfies Track];
+		},
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return { loggedIn: false, user: null, dailySongs: [], playlists: [], podcasts: [], mode: "starter", updatedAt: 1 };
+		},
+		async weatherRadio() {
+			return { ok: true, weather: null, radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] } };
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const input = host.querySelector<HTMLInputElement>("#search-input");
+		expect(input).not.toBeNull();
+		input!.focus();
+		input!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+		for (let i = 0; i < 16 && !host.querySelector("[data-search-detail]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(host.querySelector("[data-search-detail]")).not.toBeNull();
+		expect(host.querySelector("[data-search-detail]")?.textContent).toContain("晴天");
+		expect(document.body.classList.contains("search-detail-open")).toBe(true);
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+	}
+});
+
+test("App Search detail append action queues a song without starting playback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	useSearchStore.getState().reset();
+	useSearchStore.setState({ keyword: "晴天", mode: "song", detailOpen: false });
+
+	const fakeClient = {
+		async searchAll() {
+			return [{
+				provider: "netease",
+				id: "song-1",
+				sourceId: "song-1",
+				title: "晴天",
+				artists: ["周杰伦"],
+				album: "叶惠美",
+				coverUrl: "",
+				durationMs: 269000,
+				qualityHints: [],
+				playableState: "playable",
+			} satisfies Track];
+		},
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return { loggedIn: false, user: null, dailySongs: [], playlists: [], podcasts: [], mode: "starter", updatedAt: 1 };
+		},
+		async weatherRadio() {
+			return { ok: true, weather: null, radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] } };
+		},
+		async podcastMy() {
+			return { loggedIn: false, collections: [] };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		const input = host.querySelector<HTMLInputElement>("#search-input");
+		expect(input).not.toBeNull();
+		input!.focus();
+		input!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+
+		for (let i = 0; i < 16 && !host.querySelector("[data-search-detail-append]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		host.querySelector<HTMLButtonElement>("[data-search-detail-append]")?.click();
+
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toContain("song-1");
+		expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		useSearchStore.getState().reset();
+		localStorage.clear();
+	}
 });
 
 test("App unmounts SplashHost after splash dismissed instead of leaving hidden splash listeners alive", async () => {
@@ -2134,6 +2358,8 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 	useLyricsStore.getState().reset();
 
 	let qqQrConfirmed = false;
+	const playlistCalls: string[] = [];
+	let discoverHomeCalls = 0;
 	let resolveSyncedQqStatus = (_status: { provider: string; loggedIn: boolean; userId: string }) => {};
 	const syncedQqStatus = new Promise<{ provider: string; loggedIn: boolean; userId: string }>((resolve) => {
 		resolveSyncedQqStatus = resolve;
@@ -2158,11 +2384,26 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 			}
 			return { provider, key, code: 801, loggedIn: false };
 		},
-		async playlistList() {
-			return [];
+		async playlistList(provider: string) {
+			playlistCalls.push(provider);
+			return provider === "qq"
+				? [{ provider: "qq", id: "qq-auto-1", name: "登录后自动同步QQ歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false }]
+				: [];
 		},
 		async podcastMy() {
 			return { loggedIn: false, collections: [] };
+		},
+		async discoverHome() {
+			discoverHomeCalls += 1;
+			return {
+				loggedIn: true,
+				user: { provider: "qq", userId: "10001", nickname: "", avatarUrl: "" },
+				dailySongs: [],
+				playlists: [{ provider: "qq", id: "qq-auto-1", name: "登录后自动同步QQ歌单", coverUrl: "", trackCount: 1, trackIds: [], subscribed: false }],
+				podcasts: [],
+				mode: "member",
+				updatedAt: 1,
+			};
 		},
 	} as unknown as SidecarClient;
 	const rootConfig: RuntimeConfig = {
@@ -2198,6 +2439,9 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 
 	expect(host.querySelector("#qr-status")?.textContent).toContain("登录成功");
 	expect(host.querySelector(".account-status-line")?.textContent).toContain("已登录 10001");
+	expect(playlistCalls.filter((provider) => provider === "qq").length).toBeGreaterThan(0);
+	expect(discoverHomeCalls).toBeGreaterThan(0);
+	expect(host.textContent).toContain("登录后自动同步QQ歌单");
 
 	root.unmount();
 	host.remove();
@@ -2741,6 +2985,90 @@ test("App starts baseline Home weather radio from a weather rail song", async ()
 		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["rain-1", "rain-2"]);
 		expect(usePlaybackStore.getState().currentTrack?.id).toBe("rain-2");
 		expect(host.querySelector("#toast.show")?.textContent).toContain("雨天电台 · 2 首");
+	} finally {
+		root.unmount();
+		host.remove();
+		usePlaybackStore.getState().clearQueue();
+		localStorage.clear();
+		restoreAudio();
+	}
+});
+
+test("App opens Home playlist tiles as a full-screen detail page before playback", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	usePlaybackStore.getState().clearQueue();
+	const restoreAudio = installAppStubAudio();
+
+	const playlistCalls: unknown[] = [];
+	const tracks: Track[] = [
+		{ provider: "qq", id: "qq-song-1", sourceId: "qq-song-1", title: "QQ Song One", artists: ["Alice"], album: "", coverUrl: "", durationMs: 1000, qualityHints: [], playableState: "playable" },
+		{ provider: "qq", id: "qq-song-2", sourceId: "qq-song-2", title: "QQ Song Two", artists: ["Bob"], album: "", coverUrl: "", durationMs: 2000, qualityHints: [], playableState: "playable" },
+	];
+	const fakeClient = {
+		...playbackSidecarClientStubs(),
+		async playlistList() {
+			return [];
+		},
+		async discoverHome() {
+			return {
+				loggedIn: true,
+				user: { provider: "qq", userId: "q1", nickname: "QQ User", avatarUrl: "" },
+				mode: "member",
+				dailySongs: [],
+				playlists: [{ provider: "qq", id: "qq-pl-1", name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false }],
+				podcasts: [],
+				updatedAt: 1,
+			};
+		},
+		async weatherRadio() {
+			return {
+				ok: true,
+				weather: null,
+				radio: { title: "天气电台", subtitle: "", seedQueries: [], updatedAt: 1, songs: [] },
+			};
+		},
+		async playlistDetail(provider: string, id: string) {
+			playlistCalls.push({ provider, id });
+			return { provider, id, name: "QQ 深夜歌单", coverUrl: "https://img.example/q.jpg", trackCount: 2, trackIds: [], subscribed: false, tracks };
+		},
+	} as unknown as SidecarClient;
+	const rootConfig: RuntimeConfig = {
+		sidecarBaseUrl: "http://127.0.0.1:39999",
+		appDataDir: "",
+		appVersion: "0.0.0-test",
+		schemaVersion: "0.1.0",
+		updaterPublicKeyConfigured: false,
+	};
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	try {
+		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
+		for (let i = 0; i < 16 && !host.textContent?.includes("QQ 深夜歌单"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		const playlistTile = Array.from(host.querySelectorAll(".home-tile"))
+			.find((button) => button.textContent?.includes("QQ 深夜歌单")) as HTMLButtonElement;
+		playlistTile.click();
+		for (let i = 0; i < 16 && !host.querySelector("[data-home-playlist-detail]"); i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(playlistCalls).toEqual([{ provider: "qq", id: "qq-pl-1" }]);
+		expect(host.querySelector("[data-home-playlist-detail]")?.textContent).toContain("QQ Song One");
+		expect(usePlaybackStore.getState().queue).toEqual([]);
+		expect(usePlaybackStore.getState().currentTrack).toBeNull();
+
+		(host.querySelector(".home-detail-play") as HTMLButtonElement).click();
+		for (let i = 0; i < 8 && usePlaybackStore.getState().queue.length === 0; i += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["qq-song-1", "qq-song-2"]);
+		expect(usePlaybackStore.getState().currentTrack?.id).toBe("qq-song-1");
 	} finally {
 		root.unmount();
 		host.remove();

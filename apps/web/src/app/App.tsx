@@ -77,6 +77,7 @@ import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePre
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
+import { SearchDetailPage } from "../components/shell/SearchDetailPage";
 import { SearchShell, type SearchMode } from "../components/shell/SearchShell";
 import {
   createDesktopLyricsPushState,
@@ -94,7 +95,7 @@ import {
   type VisualGuideStep,
 } from "../components/shell/VisualGuideHost";
 import { UpdateHost } from "../components/shell/UpdateHost";
-import { EmptyHomeHost, type HomeListenRecord, type HomeListenSummary } from "../home/EmptyHomeHost";
+import { EmptyHomeHost, type HomeListenRecord, type HomeListenSummary, type HomePlaylistDetailView } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import {
   AI_DEPTH_STATUS_EVENT,
@@ -202,6 +203,30 @@ function buildTrackLyricFallback(track: Track) {
     hasTranslation: false,
     isWordByWord: false,
   }, track);
+}
+
+export function mergeProviderPlaylists(
+  current: PlaylistSummary[],
+  provider: ProviderId,
+  next: PlaylistSummary[],
+): PlaylistSummary[] {
+  const merged = current.filter((playlist) => playlist.provider !== provider);
+  const seen = new Set(merged.map((playlist) => `${playlist.provider}:${playlist.id}`));
+  for (const playlist of next) {
+    if (playlist.provider !== provider) continue;
+    const key = `${playlist.provider}:${playlist.id}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(playlist);
+  }
+  return merged;
+}
+
+export function shouldUseCachedHomeDiscoverPlaylist(
+  discover: DiscoverHomeResponse | null | undefined,
+  hasProviderLogin: boolean,
+): boolean {
+  return !!discover?.loggedIn || (!hasProviderLogin && (discover?.playlists.length ?? 0) > 0);
 }
 
 function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
@@ -1164,6 +1189,8 @@ export function App({
     useState<DiscoverHomeResponse | null>(null);
   const [homeWeatherRadio, setHomeWeatherRadio] =
     useState<WeatherRadioResponse | null>(null);
+  const [homePlaylistDetail, setHomePlaylistDetail] =
+    useState<HomePlaylistDetailView | null>(null);
   const [homeDiscoverLoading, setHomeDiscoverLoading] = useState(false);
   const [homeWeatherRadioLoading, setHomeWeatherRadioLoading] = useState(false);
   const [homeListenHistory, setHomeListenHistory] = useState<
@@ -1239,6 +1266,7 @@ export function App({
   const setQueue = usePlaybackStore((s) => s.setQueue);
   const clearQueue = usePlaybackStore((s) => s.clearQueue);
   const searchKeyword = useSearchStore((s) => s.keyword);
+  const searchDetailOpen = useSearchStore((s) => s.detailOpen);
   const setSearchKeyword = useSearchStore((s) => s.setKeyword);
   const setSearchError = useSearchStore((s) => s.setError);
 
@@ -1630,6 +1658,7 @@ export function App({
   }, [showToast]);
 
   const enterPlaybackSurface = useCallback(() => {
+    setHomePlaylistDetail(null);
     setHomeForcedOpen(false);
     setHomeSuppressed(true);
     setConsole(true);
@@ -1638,6 +1667,7 @@ export function App({
 
   const goHome = useCallback(() => {
     if (homeForcedOpen || emptyHomeActive) {
+      setHomePlaylistDetail(null);
       setHomeForcedOpen(false);
       setHomeSuppressed(true);
       setConsole(false);
@@ -1648,6 +1678,7 @@ export function App({
       showToast("已关闭 Home");
       return;
     }
+    setHomePlaylistDetail(null);
     setHomeSuppressed(false);
     setHomeForcedOpen(true);
     setConsole(false);
@@ -1803,6 +1834,15 @@ export function App({
     [],
   );
 
+  const refreshProviderPlaylists = useCallback(
+    async (client: SidecarClient, provider: ProviderId) => {
+      const playlists = await client.playlistList(provider);
+      setShelfPlaylists((current) => mergeProviderPlaylists(current, provider, playlists));
+      return playlists;
+    },
+    [],
+  );
+
   const refreshProviderStatus = useCallback(
     async (provider: ProviderId) => {
       const client = sidecarClient;
@@ -1813,7 +1853,8 @@ export function App({
       try {
         const status = await client.loginStatus(provider);
         setProviderStatus(status);
-        void refreshShelfPlaylists(client);
+        if (status.loggedIn) void refreshProviderPlaylists(client, provider);
+        else void refreshShelfPlaylists(client);
         const label = providerLabel(provider);
         showToast(
           status.loggedIn
@@ -1827,6 +1868,7 @@ export function App({
     },
     [
       providerLabel,
+      refreshProviderPlaylists,
       refreshShelfPlaylists,
       setProviderStatus,
       showToast,
@@ -1950,6 +1992,36 @@ export function App({
     void refreshProviderLoginQr(loginProvider);
   }, [loginModalMode, loginModalOpen, loginProvider, refreshProviderLoginQr]);
 
+  const refreshHomeDiscover = useCallback(async () => {
+    const client = sidecarClient;
+    if (!client) {
+      setHomeDiscover(null);
+      setHomeDiscoverLoading(false);
+      return null;
+    }
+    const seq = ++homeDiscoverRequestSeqRef.current;
+    setHomeDiscoverLoading(true);
+    try {
+      const next = await client.discoverHome();
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
+      return next;
+    } catch {
+      const fallback: DiscoverHomeResponse = {
+        loggedIn: false,
+        user: null,
+        dailySongs: [],
+        playlists: [],
+        podcasts: [],
+        mode: "starter",
+        updatedAt: Date.now(),
+      };
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
+      return fallback;
+    } finally {
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
+    }
+  }, [sidecarClient]);
+
   useEffect(() => {
     const activeQr =
       loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
@@ -1989,15 +2061,32 @@ export function App({
           }
           if (cancelled) return;
           const label = providerLabel(provider);
+          let providerPlaylistSyncFailed = false;
           if (status) {
             setProviderStatus(status);
-            void refreshShelfPlaylists(sidecarClient);
+            if (status.loggedIn) {
+              setQrStatus({ text: "登录成功，正在同步歌单", tone: "success" });
+              try {
+                await refreshProviderPlaylists(sidecarClient, provider);
+                await refreshHomeDiscover();
+              } catch {
+                if (cancelled) return;
+                providerPlaylistSyncFailed = true;
+                setQrStatus({ text: "登录成功，歌单同步失败，可稍后刷新", tone: "success" });
+              }
+            } else {
+              void refreshShelfPlaylists(sidecarClient);
+            }
           }
+          if (cancelled) return;
           setQr((current) =>
             current?.key === activeQr.key ? { ...current, completed: true } : current,
           );
           if (status?.loggedIn) {
-            setQrStatus({ text: "登录成功，账号状态已同步", tone: "success" });
+            setQrStatus({
+              text: providerPlaylistSyncFailed ? "登录成功，歌单同步失败，可稍后刷新" : "登录成功，歌单已同步",
+              tone: "success",
+            });
             showToast(`${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`);
           } else {
             setQrStatus({ text: "登录成功，会话已保存，可刷新状态", tone: "success" });
@@ -2045,41 +2134,13 @@ export function App({
     qqQr?.key,
     sodaQr?.completed,
     sodaQr?.key,
+    refreshHomeDiscover,
+    refreshProviderPlaylists,
     refreshShelfPlaylists,
     setProviderStatus,
     showToast,
     sidecarClient,
   ]);
-
-  const refreshHomeDiscover = useCallback(async () => {
-    const client = sidecarClient;
-    if (!client) {
-      setHomeDiscover(null);
-      setHomeDiscoverLoading(false);
-      return null;
-    }
-    const seq = ++homeDiscoverRequestSeqRef.current;
-    setHomeDiscoverLoading(true);
-    try {
-      const next = await client.discoverHome();
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
-      return next;
-    } catch {
-      const fallback: DiscoverHomeResponse = {
-        loggedIn: false,
-        user: null,
-        dailySongs: [],
-        playlists: [],
-        podcasts: [],
-        mode: "starter",
-        updatedAt: Date.now(),
-      };
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
-      return fallback;
-    } finally {
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
-    }
-  }, [sidecarClient]);
 
   const refreshHomeWeatherRadio = useCallback(async () => {
     const client = sidecarClient;
@@ -2183,6 +2244,7 @@ export function App({
   }, [playlistPanelPinned, setPlaylistPanelPinned, showToast]);
 
   const openHomeLibrary = useCallback(() => {
+    setHomePlaylistDetail(null);
     if (homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) {
       if (sidecarClient) void refreshShelfPlaylists(sidecarClient);
       setHomeForcedOpen(false);
@@ -2252,41 +2314,95 @@ export function App({
 
   const openHomeDiscoverPlaylist = useCallback(
     async (index: number) => {
-      const discover = homeDiscover?.loggedIn ? homeDiscover : await refreshHomeDiscover();
-      if (!homeHasLogin() && !discover?.loggedIn) {
-        searchQuery("", "song");
-        return;
-      }
+      const useCachedDiscover = shouldUseCachedHomeDiscoverPlaylist(homeDiscover, homeHasLogin());
+      const discover = useCachedDiscover ? homeDiscover : await refreshHomeDiscover();
       const item = discover?.playlists[index];
-      if (!item || !sidecarClient) {
-        openHomeLibrary();
+      if (!item) {
+        if (!homeHasLogin() && !discover?.loggedIn) searchQuery("", "song");
+        else openHomeLibrary();
         return;
       }
+      if (!sidecarClient) {
+        showToast("sidecar 未连接，稍后再试");
+        return;
+      }
+      const key = `${item.provider}:${item.id}`;
+      setHomePlaylistDetail({ key, playlist: item, tracks: [], loading: true });
+      setHomeSuppressed(false);
+      setHomeForcedOpen(true);
+      setConsole(false);
+      setMiniQueue(false);
+      if (!playlistPanelPinned) setPlaylistPanelOpen(false);
+      closeShelf();
+      selectShelfPlaylist(null);
       try {
         const detail = await sidecarClient.playlistDetail(item.provider, item.id);
-        if (!detail.tracks.length) {
-          showToast("歌单暂时没有可播放歌曲");
-          return;
-        }
-        usePlaybackStore.getState().setQueue(detail.tracks);
-        usePlaybackStore.getState().playAt(0);
-        enterPlaybackSurface();
-        showToast(detail.name || item.name);
+        setHomePlaylistDetail((current) =>
+          current?.key === key
+            ? { key, playlist: detail, tracks: detail.tracks, loading: false }
+            : current,
+        );
       } catch (e) {
         const message = e instanceof Error ? e.message : "歌单载入失败";
+        setHomePlaylistDetail((current) =>
+          current?.key === key
+            ? { ...current, loading: false, error: message, tracks: [] }
+            : current,
+        );
         showToast(message);
       }
     },
     [
-      enterPlaybackSurface,
+      closeShelf,
       homeDiscover,
       homeHasLogin,
       openHomeLibrary,
+      playlistPanelPinned,
       refreshHomeDiscover,
       searchQuery,
+      selectShelfPlaylist,
+      setConsole,
+      setMiniQueue,
       showToast,
       sidecarClient,
     ],
+  );
+
+  const closeHomePlaylistDetail = useCallback(() => {
+    setHomePlaylistDetail(null);
+  }, []);
+
+  const playHomePlaylistDetail = useCallback(
+    (index: number) => {
+      const detail = homePlaylistDetail;
+      const tracks = detail?.tracks ?? [];
+      if (!detail || detail.loading) {
+        showToast("歌单仍在载入");
+        return;
+      }
+      if (!tracks.length) {
+        showToast("歌单暂时没有可播放歌曲");
+        return;
+      }
+      const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
+      usePlaybackStore.getState().setQueue(tracks);
+      usePlaybackStore.getState().playAt(safeIndex);
+      const title = detail.playlist.name || "歌单";
+      setHomePlaylistDetail(null);
+      enterPlaybackSurface();
+      showToast(title);
+    },
+    [enterPlaybackSurface, homePlaylistDetail, showToast],
+  );
+
+  const searchHomePlaylistDetailArtist = useCallback(
+    (artist: string) => {
+      const keyword = artist.trim();
+      if (!keyword) return;
+      setHomePlaylistDetail(null);
+      searchQuery(keyword, "song");
+    },
+    [searchQuery],
   );
 
   const playShelfPlaylist = useCallback(
@@ -2618,7 +2734,16 @@ export function App({
         setQqManualCookieOpen(false);
         const status = await client.loginStatus(provider);
         setProviderStatus(status);
-        void refreshShelfPlaylists(client);
+        if (status.loggedIn) {
+          try {
+            await refreshProviderPlaylists(client, provider);
+            await refreshHomeDiscover();
+          } catch {
+            showToast(`${label}已登录，歌单同步失败，可稍后刷新`);
+          }
+        } else {
+          void refreshShelfPlaylists(client);
+        }
         showToast(
           status.loggedIn
             ? `${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`
@@ -2632,6 +2757,8 @@ export function App({
     },
     [
       providerLabel,
+      refreshHomeDiscover,
+      refreshProviderPlaylists,
       refreshShelfPlaylists,
       setProviderStatus,
       showToast,
@@ -3012,6 +3139,30 @@ export function App({
     [insertQueueNext, showToast],
   );
 
+  const appendSearchResult = useCallback(
+    (track: Track) => {
+      usePlaybackStore.getState().enqueue(track);
+      showToast(`已加入播放队列: ${track.title}`);
+    },
+    [showToast],
+  );
+
+  const playSearchDetailTracks = useCallback(
+    (tracks: Track[], index: number) => {
+      if (!tracks.length) {
+        showToast("没有可播放的搜索结果");
+        return;
+      }
+      const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
+      setQueue(tracks);
+      usePlaybackStore.getState().playAt(safeIndex);
+      useSearchStore.getState().closeDetail();
+      enterPlaybackSurface();
+      showToast(tracks[safeIndex]?.title ?? "已开始播放");
+    },
+    [enterPlaybackSurface, setQueue, showToast],
+  );
+
   const searchArtistFromResult = useCallback(
     (artist: string) => {
       searchQuery(artist, "song");
@@ -3371,6 +3522,7 @@ export function App({
     document.body.classList.toggle("user-capsule-auto-hide", userCapsuleAutoHide);
     document.body.classList.toggle("user-capsule-peek", userCapsuleAutoHide && userCapsulePeek);
     document.body.classList.toggle("visual-guide-active", visualGuideOpen);
+    document.body.classList.toggle("search-detail-open", searchDetailOpen);
     return () => {
       document.body.classList.remove(
         "splash-active",
@@ -3381,12 +3533,14 @@ export function App({
         "user-capsule-auto-hide",
         "user-capsule-peek",
         "visual-guide-active",
+        "search-detail-open",
       );
     };
   }, [
     consoleVisible,
     emptyHomeActive,
     homeControlsLocked,
+    searchDetailOpen,
     splashActive,
     userCapsuleAutoHide,
     userCapsulePeek,
@@ -4148,6 +4302,7 @@ export function App({
         discover={homeDiscover}
         weatherRadio={homeWeatherRadio}
         listenSummary={homeListenSummary}
+        playlistDetail={homePlaylistDetail}
         active={emptyHomeActive}
         loading={homeDiscoverLoading || homeWeatherRadioLoading}
         isPlaying={isPlaying}
@@ -4169,6 +4324,9 @@ export function App({
         onOpenInsight={openHomeInsight}
         onPlayRecent={playHomeRecent}
         onPlayWeatherSong={(index) => void playHomeWeatherSong(index)}
+        onClosePlaylistDetail={closeHomePlaylistDetail}
+        onPlayPlaylistDetail={playHomePlaylistDetail}
+        onPlaylistDetailArtist={searchHomePlaylistDetailArtist}
       />
       <SearchShell
         client={sidecarClient}
@@ -4192,6 +4350,24 @@ export function App({
         hasCustomCover={currentHasCustomCover}
         peek={emptyHomeActive || searchKeyword.trim().length > 0}
         requestedMode={searchModeRequest}
+      />
+      <SearchDetailPage
+        client={sidecarClient}
+        onClose={focusSearch}
+        onPlayResults={playSearchDetailTracks}
+        onAppendQueue={appendSearchResult}
+        onResultNext={insertSearchResultNext}
+        onResultLike={(track) => void toggleLikeTrack(track)}
+        onResultCollect={openCollectPicker}
+        onArtistSearch={searchArtistFromResult}
+        isResultLiked={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likedSongMap[key] === true : false;
+        }}
+        isResultLikeBusy={(track) => {
+          const key = trackLikeKey(track);
+          return key ? likeBusyMap[key] === true : false;
+        }}
       />
       <TopRightControls
         onHome={goHome}

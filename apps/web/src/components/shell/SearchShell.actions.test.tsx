@@ -74,6 +74,9 @@ function resetStores(): void {
 		error: null,
 		provider: "netease",
 		keyword: "Song",
+		mode: "song",
+		detailOpen: false,
+		recentQueries: [],
 	});
 	usePlaybackStore.setState({
 		currentTrack: null,
@@ -245,6 +248,34 @@ test("SearchShell clears stale results after clearing input so host peek can hid
 	expect(useSearchStore.getState().results).toEqual([]);
 	expect(container.querySelector("#search-results")?.classList.contains("show")).toBe(false);
 	expect(container.querySelector("#search-area")?.classList.contains("peek")).toBe(false);
+	root.unmount();
+});
+
+test("SearchShell opens full-screen search detail when Enter commits the compact search", async () => {
+	useSearchStore.setState({
+		results: [],
+		loading: false,
+		error: null,
+		provider: "netease",
+		keyword: "晴天",
+	});
+
+	const { root, container } = await renderSearchShell(<SearchShell client={null} peek />);
+	const input = container.querySelector<HTMLInputElement>("#search-input");
+	expect(input).not.toBeNull();
+	input!.focus();
+	input!.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+	await Promise.resolve();
+
+	const state = useSearchStore.getState() as typeof useSearchStore extends { getState: () => infer S } ? S & {
+		detailOpen: boolean;
+		mode: "song" | "netease" | "qq" | "podcast";
+		recentQueries: Array<{ keyword: string; mode: "song" | "netease" | "qq" | "podcast" }>;
+	} : never;
+	expect(state.detailOpen).toBe(true);
+	expect(state.keyword).toBe("晴天");
+	expect(state.mode).toBe("song");
+	expect(state.recentQueries[0]).toEqual({ keyword: "晴天", mode: "song" });
 	root.unmount();
 });
 
