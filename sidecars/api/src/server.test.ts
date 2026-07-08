@@ -751,7 +751,8 @@ test("provider route redacts sensitive ProviderError messages while preserving e
   expect(serialized).not.toContain("secret");
 });
 
-test("GET /discover/home returns the logged-out starter envelope", async () => {
+test("GET /discover/home returns logged-out public playlist recommendations when available", async () => {
+  const calls: string[] = [];
   const handler = createRouteHandler({
     providerAdapters: {
       ...providers,
@@ -766,6 +767,105 @@ test("GET /discover/home returns the logged-out starter envelope", async () => {
         async loginStatus() {
           return { provider: "qq", loggedIn: false };
         }
+      },
+      soda: {
+        ...providers.soda,
+        async loginStatus() {
+          return { provider: "soda", loggedIn: false };
+        }
+      }
+    },
+    discoverRequester: {
+      async personalized(params) {
+        calls.push(`personalized:${"cookie" in params ? "cookie" : "public"}`);
+        return {
+          body: {
+            result: [{
+              id: 7001,
+              name: "公开推荐歌单",
+              picUrl: "https://img.example/public.jpg",
+              trackCount: 24
+            }]
+          }
+        };
+      },
+      async djHot() {
+        calls.push("dj_hot");
+        return { body: { djRadios: [] } };
+      },
+      async recommendResource() {
+        calls.push("recommend_resource");
+        return { body: { recommend: [] } };
+      },
+      async recommendSongs() {
+        calls.push("recommend_songs");
+        return { body: { data: { dailySongs: [] } } };
+      }
+    },
+    now: () => 1782656256000
+  });
+
+  const r = await handler(new Request("http://127.0.0.1/discover/home"));
+  expect(r.status).toBe(200);
+  const b = await body(r);
+  expect(b).toEqual({
+    ok: true,
+    data: {
+      loggedIn: false,
+      user: null,
+      dailySongs: [],
+      playlists: [{
+        provider: "netease",
+        id: "7001",
+        name: "公开推荐歌单",
+        coverUrl: "https://img.example/public.jpg",
+        trackCount: 24,
+        trackIds: [],
+        subscribed: false
+      }],
+      podcasts: [],
+      mode: "starter",
+      updatedAt: 1782656256000
+    }
+  });
+  expect(calls).toEqual(["personalized:public"]);
+});
+
+test("GET /discover/home keeps starter mode when logged-out public recommendations fail", async () => {
+  const handler = createRouteHandler({
+    providerAdapters: {
+      ...providers,
+      netease: {
+        ...providers.netease,
+        async loginStatus() {
+          return { provider: "netease", loggedIn: false };
+        }
+      },
+      qq: {
+        ...providers.qq,
+        async loginStatus() {
+          return { provider: "qq", loggedIn: false };
+        }
+      },
+      soda: {
+        ...providers.soda,
+        async loginStatus() {
+          return { provider: "soda", loggedIn: false };
+        }
+      }
+    },
+    discoverRequester: {
+      async personalized() {
+        throw new Error("public recommendation unavailable");
+      },
+      async djHot() {
+        return { body: { djRadios: [] } };
+      },
+      async recommendResource() {
+        return { body: { recommend: [] } };
+      },
+      async recommendSongs() {
+        return { body: { data: { dailySongs: [] } } };
       }
     },
     now: () => 1782656256000
@@ -952,8 +1052,16 @@ test("GET /discover/home uses the baseline Netease recommendation sources", asyn
           return { provider: "netease", loggedIn: true, nickname: "tester", userId: "42" };
         },
         async playlistList() {
-          calls.push("adapter:list");
-          return [];
+          calls.push("netease:list");
+          return [{
+            provider: "netease",
+            id: "mine-1",
+            name: "网易用户歌单",
+            coverUrl: "https://img.example/mine.jpg",
+            trackCount: 18,
+            trackIds: [],
+            subscribed: false
+          }];
         },
         async search() {
           calls.push("adapter:search");
@@ -963,7 +1071,19 @@ test("GET /discover/home uses the baseline Netease recommendation sources", asyn
       qq: {
         ...providers.qq,
         async loginStatus() {
-          return { provider: "qq", loggedIn: false };
+          return { provider: "qq", loggedIn: true, nickname: "qq user", userId: "qq-42" };
+        },
+        async playlistList() {
+          calls.push("qq:list");
+          return [{
+            provider: "qq",
+            id: "qq-mine-1",
+            name: "QQ 用户歌单",
+            coverUrl: "https://img.example/qq.jpg",
+            trackCount: 11,
+            trackIds: [],
+            subscribed: false
+          }];
         }
       }
     },
@@ -1045,9 +1165,11 @@ test("GET /discover/home uses the baseline Netease recommendation sources", asyn
     coverUrl: "https://img.example/song.jpg",
     durationMs: 210000
   });
-  expect(b.data.playlists.map((playlist: { name: string }) => playlist.name)).toEqual([
-    "私人推荐歌单",
-    "公开推荐歌单"
+  expect(b.data.playlists.map((playlist: { provider: string; name: string }) => `${playlist.provider}:${playlist.name}`)).toEqual([
+    "netease:私人推荐歌单",
+    "netease:公开推荐歌单",
+    "netease:网易用户歌单",
+    "qq:QQ 用户歌单"
   ]);
   expect(b.data.podcasts[0]).toMatchObject({
     id: "8001",
@@ -1060,7 +1182,9 @@ test("GET /discover/home uses the baseline Netease recommendation sources", asyn
     "personalized",
     "dj_hot",
     "recommend_resource",
-    "recommend_songs"
+    "recommend_songs",
+    "netease:list",
+    "qq:list"
   ]);
 });
 
