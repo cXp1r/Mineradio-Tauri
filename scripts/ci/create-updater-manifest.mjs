@@ -5,7 +5,8 @@ import { pathToFileURL } from "node:url";
 import { parseReleaseTag } from "./verify-release-version.mjs";
 
 const DEFAULT_NOTES = "See the GitHub release notes.";
-const REPOSITORY_PATTERN = /^[^/\s]+\/[^/\s]+$/;
+const REPOSITORY_PATTERN =
+  /^(?=.{1,39}\/)[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*\/(?=.{1,100}$)(?!\.{1,2}$)[A-Za-z0-9._-]+$/;
 
 export function createUpdaterManifest({
   tag,
@@ -75,11 +76,12 @@ function assertRegularFile(filePath, label) {
 }
 
 function runCli() {
-  const [tag, repository, exePath, signaturePath, outputPath] =
-    process.argv.slice(2);
+  const cliArguments = process.argv.slice(2);
+  const [tag, repository, exePath, signaturePath, outputPath] = cliArguments;
 
   if (
-    [tag, repository, exePath, signaturePath, outputPath].some(
+    cliArguments.length !== 5 ||
+    cliArguments.some(
       (argument) => typeof argument !== "string" || argument.length === 0,
     )
   ) {

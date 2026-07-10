@@ -31,8 +31,9 @@ describe("createUpdaterManifest", () => {
       signature: "fixed-signature-text",
       url: "https://github.com/zzstar101/Mineradio-Tauri/releases/download/v0.1.0/MineRadio-Tauri_0.1.0_x64-setup.exe",
     };
+    const manifest = createUpdaterManifest(validInput);
 
-    expect(createUpdaterManifest(validInput)).toEqual({
+    expect(manifest).toEqual({
       version: "0.1.0",
       notes: "Fixed release notes.",
       pub_date: "2026-07-10T01:02:03.000Z",
@@ -41,6 +42,12 @@ describe("createUpdaterManifest", () => {
         "windows-x86_64": platform,
       },
     });
+
+    const releaseUrl = new URL(
+      manifest.platforms["windows-x86_64-nsis"].url,
+    );
+    expect(releaseUrl.search).toBe("");
+    expect(releaseUrl.hash).toBe("");
   });
 
   test("未提供 notes 时使用默认发布说明", () => {
@@ -50,6 +57,22 @@ describe("createUpdaterManifest", () => {
         notes: undefined,
       }).notes,
     ).toBe("See the GitHub release notes.");
+  });
+
+  test("接受安全的 GitHub owner/repo 字符及 .github 仓库名", () => {
+    const manifest = createUpdaterManifest({
+      ...validInput,
+      repository: "owner-name/.github",
+    });
+    const releaseUrl = new URL(
+      manifest.platforms["windows-x86_64-nsis"].url,
+    );
+
+    expect(releaseUrl.pathname).toBe(
+      "/owner-name/.github/releases/download/v0.1.0/MineRadio-Tauri_0.1.0_x64-setup.exe",
+    );
+    expect(releaseUrl.search).toBe("");
+    expect(releaseUrl.hash).toBe("");
   });
 
   test("原样保留签名中的首尾空白与多行内容", () => {
@@ -71,6 +94,14 @@ describe("createUpdaterManifest", () => {
       "zzstar101/Mineradio-Tauri/extra",
       "/Mineradio-Tauri",
       "zzstar101/",
+      "zzstar101/Mineradio-Tauri?download=1",
+      "zzstar101/Mineradio-Tauri#latest",
+      "zzstar101/Mineradio-Tauri\\nested",
+      "zzstar101/.",
+      "zzstar101/..",
+      "owner--name/repository",
+      "a".repeat(40) + "/repository",
+      "owner/" + "r".repeat(101),
     ]) {
       expect(() =>
         createUpdaterManifest({ ...validInput, repository }),
@@ -161,6 +192,44 @@ describe("create-updater-manifest CLI", () => {
     expect(result.stderr).toContain(
       "用法: create-updater-manifest.mjs <tag> <repository> <exePath> <signaturePath> <outputPath>",
     );
+  });
+
+  test("拒绝多余参数", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-updater-arguments-"),
+    );
+
+    try {
+      const exePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_0.1.0_x64-setup.exe",
+      );
+      const signaturePath = exePath + ".sig";
+      const outputPath = join(temporaryRoot, "latest.json");
+      writeFileSync(exePath, "", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+
+      const result = spawnSync(
+        "node",
+        [
+          cliPath,
+          "v0.1.0",
+          "zzstar101/Mineradio-Tauri",
+          exePath,
+          signaturePath,
+          outputPath,
+          "unexpected-argument",
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "用法: create-updater-manifest.mjs <tag> <repository> <exePath> <signaturePath> <outputPath>",
+      );
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
   });
 
   test("拒绝不存在的安装包或签名文件", () => {
