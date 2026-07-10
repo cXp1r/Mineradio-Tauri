@@ -27,3 +27,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+[dev-dependencies]
+base64 = "=0.22.1"
+minisign-verify = "=0.2.5"

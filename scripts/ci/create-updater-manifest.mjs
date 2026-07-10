@@ -73,6 +73,53 @@ function assertRegularFile(filePath, label) {
   if (!statistics.isFile()) {
     throw new Error(`${label}不是文件: ${filePath}`);
   }
+
+  return statistics;
+}
+
+function readUtf8FileStrict(filePath, label) {
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(
+      readFileSync(filePath),
+    );
+  } catch (error) {
+    if (error instanceof TypeError) {
+      throw new Error(`${label}不是有效的 UTF-8: ${filePath}`);
+    }
+
+    throw error;
+  }
+}
+
+function normalizePathForComparison(filePath) {
+  const normalizedPath = resolve(filePath);
+  return process.platform === "win32"
+    ? normalizedPath.toLowerCase()
+    : normalizedPath;
+}
+
+function pathsAlias(leftPath, rightPath) {
+  if (
+    normalizePathForComparison(leftPath) ===
+    normalizePathForComparison(rightPath)
+  ) {
+    return true;
+  }
+
+  try {
+    const leftStatistics = statSync(leftPath);
+    const rightStatistics = statSync(rightPath);
+    return (
+      leftStatistics.dev === rightStatistics.dev &&
+      leftStatistics.ino === rightStatistics.ino
+    );
+  } catch (error) {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
+      return false;
+    }
+
+    throw error;
+  }
 }
 
 function runCli() {
@@ -90,14 +137,27 @@ function runCli() {
     );
   }
 
-  assertRegularFile(exePath, "安装包文件");
+  if (
+    [exePath, signaturePath].some(
+      (inputPath) => pathsAlias(inputPath, outputPath),
+    )
+  ) {
+    throw new Error(`输出路径不能覆盖输入文件: ${outputPath}`);
+  }
+
+  const exeStatistics = assertRegularFile(exePath, "安装包文件");
+
+  if (exeStatistics.size <= 0) {
+    throw new Error(`安装包文件不能为空: ${exePath}`);
+  }
+
   assertRegularFile(signaturePath, "签名文件");
 
   const manifest = createUpdaterManifest({
     tag,
     repository,
     assetName: basename(exePath),
-    signature: readFileSync(signaturePath, "utf8"),
+    signature: readUtf8FileStrict(signaturePath, "签名文件"),
   });
 
   writeFileSync(

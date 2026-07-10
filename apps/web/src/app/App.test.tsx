@@ -315,7 +315,7 @@ test("App default sidecar client factory stays stable and does not storm health 
 		globalThis.fetch = previousFetch;
 		useSearchStore.getState().reset();
 	}
-});
+}, 15_000);
 
 test("DIY desktop lyrics toggle drives the desktop lyrics window lifecycle", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");

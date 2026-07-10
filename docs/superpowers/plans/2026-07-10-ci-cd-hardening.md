@@ -49,7 +49,8 @@
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
-- Modify: `.github/workflows/release.yml`
+- Create: `.github/workflows/protected-release.yml`
+- Retire and permanently disable: `.github/workflows/release.yml`
 - Create: `.github/dependabot.yml`
 - Create: `scripts/ci/create-updater-manifest.mjs`
 - Create: `scripts/ci/create-updater-manifest.test.ts`

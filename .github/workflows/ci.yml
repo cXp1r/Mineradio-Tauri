@@ -163,3 +163,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "Rust 测试失败"
           }
+
+      - name: Test updater signature verifier
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --example verify_updater_signature
+          if ($LASTEXITCODE -ne 0) {
+            throw "updater 签名 verifier 测试失败"
+          }

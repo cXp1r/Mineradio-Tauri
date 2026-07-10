@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
+  linkSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -134,6 +135,155 @@ describe("createUpdaterManifest", () => {
 });
 
 describe("create-updater-manifest CLI", () => {
+  test("拒绝零字节安装包", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-updater-empty-exe-"),
+    );
+
+    try {
+      const exePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_0.1.0_x64-setup.exe",
+      );
+      const signaturePath = exePath + ".sig";
+      const outputPath = join(temporaryRoot, "latest.json");
+
+      writeFileSync(exePath, "", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "v0.1.0",
+          "zzstar101/Mineradio-Tauri",
+          exePath,
+          signaturePath,
+          outputPath,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("安装包文件不能为空");
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("拒绝不是有效 UTF-8 的签名文件", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-updater-invalid-utf8-"),
+    );
+
+    try {
+      const exePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_0.1.0_x64-setup.exe",
+      );
+      const signaturePath = exePath + ".sig";
+      const outputPath = join(temporaryRoot, "latest.json");
+
+      writeFileSync(exePath, "MZ", "utf8");
+      writeFileSync(signaturePath, Uint8Array.of(0xff));
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "v0.1.0",
+          "zzstar101/Mineradio-Tauri",
+          exePath,
+          signaturePath,
+          outputPath,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("签名文件不是有效的 UTF-8");
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("拒绝输出路径覆盖任一输入文件", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-updater-output-alias-"),
+    );
+
+    try {
+      const exePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_0.1.0_x64-setup.exe",
+      );
+      const signaturePath = exePath + ".sig";
+      writeFileSync(exePath, "MZ", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+
+      for (const [outputPath, expectedContent] of [
+        [exePath, "MZ"],
+        [signaturePath, "signature"],
+      ]) {
+        const result = spawnSync(
+          process.execPath,
+          [
+            cliPath,
+            "v0.1.0",
+            "zzstar101/Mineradio-Tauri",
+            exePath,
+            signaturePath,
+            outputPath,
+          ],
+          { encoding: "utf8" },
+        );
+
+        expect(result.status).toBe(1);
+        expect(result.stderr).toContain("输出路径不能覆盖输入文件");
+        expect(readFileSync(outputPath, "utf8")).toBe(expectedContent);
+      }
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("拒绝输出路径通过 hardlink 覆盖输入文件", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-updater-output-hardlink-"),
+    );
+
+    try {
+      const exePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_0.1.0_x64-setup.exe",
+      );
+      const signaturePath = exePath + ".sig";
+      const outputPath = join(temporaryRoot, "latest.json");
+      writeFileSync(exePath, "MZ", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+      linkSync(signaturePath, outputPath);
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "v0.1.0",
+          "zzstar101/Mineradio-Tauri",
+          exePath,
+          signaturePath,
+          outputPath,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain("输出路径不能覆盖输入文件");
+      expect(readFileSync(signaturePath, "utf8")).toBe("signature");
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
   test("写入 UTF-8 pretty JSON 并原样保留签名文件内容", () => {
     const temporaryRoot = mkdtempSync(
       join(tmpdir(), "mineradio-updater-manifest-"),
@@ -148,11 +298,11 @@ describe("create-updater-manifest CLI", () => {
       const outputPath = join(temporaryRoot, "latest.json");
       const signature = "\nfixed-line-1\r\nfixed-line-2\n";
 
-      writeFileSync(exePath, "", "utf8");
+      writeFileSync(exePath, "MZ", "utf8");
       writeFileSync(signaturePath, signature, "utf8");
 
       const result = spawnSync(
-        "node",
+        process.execPath,
         [
           cliPath,
           "v0.1.0",
@@ -186,7 +336,7 @@ describe("create-updater-manifest CLI", () => {
   });
 
   test("拒绝缺少必需参数", () => {
-    const result = spawnSync("node", [cliPath], { encoding: "utf8" });
+    const result = spawnSync(process.execPath, [cliPath], { encoding: "utf8" });
 
     expect(result.status).toBe(1);
     expect(result.stderr).toContain(
@@ -206,11 +356,11 @@ describe("create-updater-manifest CLI", () => {
       );
       const signaturePath = exePath + ".sig";
       const outputPath = join(temporaryRoot, "latest.json");
-      writeFileSync(exePath, "", "utf8");
+      writeFileSync(exePath, "MZ", "utf8");
       writeFileSync(signaturePath, "signature", "utf8");
 
       const result = spawnSync(
-        "node",
+        process.execPath,
         [
           cliPath,
           "v0.1.0",
@@ -244,7 +394,7 @@ describe("create-updater-manifest CLI", () => {
       );
       const signaturePath = exePath + ".sig";
       const outputPath = join(temporaryRoot, "latest.json");
-      writeFileSync(exePath, "", "utf8");
+      writeFileSync(exePath, "MZ", "utf8");
       writeFileSync(signaturePath, "signature", "utf8");
 
       const cases = [
@@ -262,7 +412,7 @@ describe("create-updater-manifest CLI", () => {
 
       for (const testCase of cases) {
         const result = spawnSync(
-          "node",
+          process.execPath,
           [
             cliPath,
             "v0.1.0",

@@ -1,0 +1,721 @@
+name: Protected Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+concurrency:
+  group: protected-release-${{ github.repository }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    name: Validate release tag and source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout tagged commit with history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          fetch-tags: true
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Verify version and default-branch tip
+        shell: bash
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+
+          bun scripts/ci/verify-release-version.mjs "$GITHUB_REF_NAME"
+
+          head_sha="$(git rev-parse HEAD)"
+          if [[ "$head_sha" != "$GITHUB_SHA" ]]; then
+            echo "本地 HEAD $head_sha 与触发提交 $GITHUB_SHA 不一致" >&2
+            exit 1
+          fi
+
+          if ! git show-ref --verify --quiet "refs/remotes/origin/$DEFAULT_BRANCH"; then
+            echo "找不到默认分支 origin/$DEFAULT_BRANCH" >&2
+            exit 1
+          fi
+
+          default_branch_sha="$(git rev-parse "origin/$DEFAULT_BRANCH")"
+          if [[ "$GITHUB_SHA" != "$default_branch_sha" ]]; then
+            echo "发布 tag 必须精确指向触发时默认分支 $DEFAULT_BRANCH 的 tip $default_branch_sha" >&2
+            exit 1
+          fi
+
+          if [[ -n "$(git status --porcelain --untracked-files=no)" ]]; then
+            echo "preflight 检出后 tracked worktree 不干净" >&2
+            exit 1
+          fi
+
+  build-windows:
+    name: Test and build unsigned Windows updater
+    needs: preflight
+    runs-on: windows-2022
+    timeout-minutes: 90
+    outputs:
+      unsigned_artifact_name: ${{ steps.unsigned.outputs.artifact_name }}
+      unsigned_artifact_digest: ${{ steps.upload_unsigned.outputs.artifact-digest }}
+      verifier_artifact_name: ${{ steps.verifier.outputs.artifact_name }}
+      verifier_artifact_digest: ${{ steps.upload_verifier.outputs.artifact-digest }}
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache Bun install cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-1.3.14-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-1.3.14-
+
+      - name: Install Rust 1.95.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & rustup toolchain install 1.95.0 --profile minimal --component clippy --component rustfmt
+          if ($LASTEXITCODE -ne 0) {
+            throw "安装 Rust 1.95.0 失败"
+          }
+
+          & rustup default 1.95.0
+          if ($LASTEXITCODE -ne 0) {
+            throw "切换 Rust 1.95.0 失败"
+          }
+
+          $rustVersion = (@(& rustc --version) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $rustVersion -notmatch '^rustc 1\.95\.0(?:\s|$)') {
+            throw "Rust 版本不匹配: $rustVersion"
+          }
+
+      - name: Cache Cargo downloads
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: cargo-downloads-${{ runner.os }}-1.95.0-${{ hashFiles('apps/desktop/src-tauri/Cargo.lock') }}
+          restore-keys: |
+            cargo-downloads-${{ runner.os }}-1.95.0-
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) {
+            throw "安装依赖失败"
+          }
+
+      - name: Verify pinned release tools
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & bun scripts/ci/verify-release-version.mjs "$env:GITHUB_REF_NAME"
+          if ($LASTEXITCODE -ne 0) {
+            throw "发布版本校验失败"
+          }
+
+          $tauriCli = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/node_modules/.bin/tauri.exe"
+          if (-not (Test-Path -LiteralPath $tauriCli -PathType Leaf)) {
+            throw "固定 Tauri CLI 不存在: $tauriCli"
+          }
+
+          $tauriVersion = (@(& $tauriCli --version) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $tauriVersion -cne "tauri-cli 2.11.3") {
+            throw "Tauri CLI 版本不匹配: $tauriVersion"
+          }
+
+      - name: Typecheck workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun run typecheck
+          if ($LASTEXITCODE -ne 0) {
+            throw "类型检查失败"
+          }
+
+      - name: Test workspace
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun run test
+          if ($LASTEXITCODE -ne 0) {
+            throw "Bun 测试失败"
+          }
+
+      - name: Build web app for Tauri checks
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun run web:build
+          if ($LASTEXITCODE -ne 0) {
+            throw "构建 Web 应用失败"
+          }
+
+      - name: Validate Cargo metadata
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo metadata --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --format-version 1 --no-deps
+          if ($LASTEXITCODE -ne 0) {
+            throw "Cargo metadata 校验失败"
+          }
+
+      - name: Check Rust formatting
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml --all -- --check
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust 格式校验失败"
+          }
+
+      - name: Lint Rust targets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo clippy --manifest-path apps/desktop/src-tauri/Cargo.toml --all-targets --all-features --locked -- -D warnings
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust Clippy 校验失败"
+          }
+
+      - name: Test Rust workspace and updater verifier
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
+          if ($LASTEXITCODE -ne 0) {
+            throw "Rust 测试失败"
+          }
+
+          & cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --example verify_updater_signature
+          if ($LASTEXITCODE -ne 0) {
+            throw "updater 签名 verifier 测试失败"
+          }
+
+          & cargo build --manifest-path apps/desktop/src-tauri/Cargo.toml --locked --example verify_updater_signature
+          if ($LASTEXITCODE -ne 0) {
+            throw "构建 updater 签名 verifier 失败"
+          }
+
+      - name: Locate updater signature verifier
+        id: verifier
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $verifierPath = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/debug/examples/verify_updater_signature.exe"
+          if (-not (Test-Path -LiteralPath $verifierPath -PathType Leaf)) {
+            throw "updater 签名 verifier 不存在: $verifierPath"
+          }
+
+          if ((Get-Item -LiteralPath $verifierPath).Length -le 0) {
+            throw "updater 签名 verifier 为空: $verifierPath"
+          }
+
+          "path=$verifierPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=release-verifier-$env:GITHUB_RUN_ATTEMPT" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload updater signature verifier
+        id: upload_verifier
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.verifier.outputs.artifact_name }}
+          path: ${{ steps.verifier.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          include-hidden-files: false
+
+      - name: Build unsigned NSIS bundle
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun run --filter ./apps/desktop tauri build --bundles nsis --ci --no-sign -- --locked
+          if ($LASTEXITCODE -ne 0) {
+            throw "NSIS 构建失败"
+          }
+
+      - name: Verify source and locate unsigned NSIS bundle
+        id: unsigned
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $headSha = (@(& git rev-parse HEAD) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $headSha -cne $env:GITHUB_SHA) {
+            throw "构建后本地 HEAD $headSha 与触发提交 $env:GITHUB_SHA 不一致"
+          }
+
+          $trackedChanges = @(& git status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0) {
+            throw "读取 tracked worktree 状态失败"
+          }
+          if ($trackedChanges.Count -ne 0) {
+            throw "构建后 tracked worktree 不干净"
+          }
+
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exeName = "MineRadio-Tauri_${version}_x64-setup.exe"
+          $exePath = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/release/bundle/nsis/$exeName"
+          if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
+            throw "unsigned NSIS 产物不存在: $exePath"
+          }
+          if ((Get-Item -LiteralPath $exePath).Length -le 0) {
+            throw "unsigned NSIS 产物为空: $exePath"
+          }
+
+          "path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_name=unsigned-nsis-$env:GITHUB_RUN_ATTEMPT" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Upload unsigned NSIS bundle
+        id: upload_unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.unsigned.outputs.artifact_name }}
+          path: ${{ steps.unsigned.outputs.path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          include-hidden-files: false
+
+  sign-windows:
+    name: Sign updater artifacts on isolated runner
+    needs: build-windows
+    runs-on: windows-2022
+    environment: production-release
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      signed_artifact_name: ${{ steps.signing.outputs.signed_artifact_name }}
+      signed_artifact_digest: ${{ steps.upload_signed.outputs.artifact-digest }}
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Cache Bun install cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-1.3.14-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-1.3.14-
+
+      - name: Install signer dependencies without lifecycle scripts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun install --frozen-lockfile --ignore-scripts
+          if ($LASTEXITCODE -ne 0) {
+            throw "安装签名依赖失败"
+          }
+
+      - name: Download unsigned NSIS bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.unsigned_artifact_name }}
+          path: ${{ runner.temp }}\unsigned-nsis
+
+      - name: Download updater signature verifier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.verifier_artifact_name }}
+          path: ${{ runner.temp }}\release-verifier
+
+      - name: Prepare isolated signing inputs
+        id: signing
+        shell: pwsh
+        env:
+          UNSIGNED_ARTIFACT_DIGEST: ${{ needs.build-windows.outputs.unsigned_artifact_digest }}
+          VERIFIER_ARTIFACT_DIGEST: ${{ needs.build-windows.outputs.verifier_artifact_digest }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          foreach ($digest in @($env:UNSIGNED_ARTIFACT_DIGEST, $env:VERIFIER_ARTIFACT_DIGEST)) {
+            if ($digest -notmatch '^[0-9a-f]{64}$') {
+              throw "Actions artifact digest 格式无效: $digest"
+            }
+          }
+
+          $headSha = (@(& git rev-parse HEAD) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $headSha -cne $env:GITHUB_SHA) {
+            throw "签名前本地 HEAD $headSha 与触发提交 $env:GITHUB_SHA 不一致"
+          }
+
+          $trackedChanges = @(& git status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $trackedChanges.Count -ne 0) {
+            throw "签名前 tracked worktree 不干净"
+          }
+
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exeName = "MineRadio-Tauri_${version}_x64-setup.exe"
+          $downloadedExePath = Join-Path $env:RUNNER_TEMP "unsigned-nsis/$exeName"
+          $verifierPath = Join-Path $env:RUNNER_TEMP "release-verifier/verify_updater_signature.exe"
+          foreach ($requiredPath in @($downloadedExePath, $verifierPath)) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+              throw "签名输入不存在: $requiredPath"
+            }
+            if ((Get-Item -LiteralPath $requiredPath).Length -le 0) {
+              throw "签名输入为空: $requiredPath"
+            }
+          }
+
+          $signedDirectory = Join-Path $env:RUNNER_TEMP "signed-release"
+          if (Test-Path -LiteralPath $signedDirectory) {
+            throw "签名输出目录已存在: $signedDirectory"
+          }
+          New-Item -ItemType Directory -Path $signedDirectory | Out-Null
+
+          $exePath = Join-Path $signedDirectory $exeName
+          Copy-Item -LiteralPath $downloadedExePath -Destination $exePath
+
+          $tauriCliPath = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/node_modules/.bin/tauri.exe"
+          if (-not (Test-Path -LiteralPath $tauriCliPath -PathType Leaf)) {
+            throw "固定 Tauri CLI 不存在: $tauriCliPath"
+          }
+          $tauriVersion = (@(& $tauriCliPath --version) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $tauriVersion -cne "tauri-cli 2.11.3") {
+            throw "Tauri CLI 版本不匹配: $tauriVersion"
+          }
+
+          $bunPath = (Get-Command bun -ErrorAction Stop).Source
+          $bunVersion = (@(& $bunPath --version) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $bunVersion -cne "1.3.14") {
+            throw "Bun 版本不匹配: $bunVersion"
+          }
+
+          "bun_path=$bunPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tauri_cli_path=$tauriCliPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "verifier_path=$verifierPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tauri_config_path=$(Join-Path $env:GITHUB_WORKSPACE 'apps/desktop/src-tauri/tauri.conf.json')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe_path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe_sig_path=$exePath.sig" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "manifest_path=$(Join-Path $signedDirectory 'latest.json')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "provenance_path=$(Join-Path $signedDirectory 'release-provenance.json')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "provenance_sig_path=$(Join-Path $signedDirectory 'release-provenance.json.sig')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "signed_artifact_name=signed-release-$env:GITHUB_RUN_ATTEMPT" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Sign updater executable
+        shell: pwsh
+        env:
+          TAURI_CLI_PATH: ${{ steps.signing.outputs.tauri_cli_path }}
+          EXE_PATH: ${{ steps.signing.outputs.exe_path }}
+          EXE_SIG_PATH: ${{ steps.signing.outputs.exe_sig_path }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (Test-Path -LiteralPath $env:EXE_SIG_PATH) {
+            throw "签名前 updater 签名文件已存在: $env:EXE_SIG_PATH"
+          }
+
+          & $env:TAURI_CLI_PATH signer sign $env:EXE_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "updater 产物签名失败"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:EXE_SIG_PATH -PathType Leaf)) {
+            throw "updater 签名文件不存在: $env:EXE_SIG_PATH"
+          }
+          if ((Get-Item -LiteralPath $env:EXE_SIG_PATH).Length -le 0) {
+            throw "updater 签名文件为空: $env:EXE_SIG_PATH"
+          }
+
+      - name: Create updater manifest and release provenance
+        shell: pwsh
+        env:
+          BUN_PATH: ${{ steps.signing.outputs.bun_path }}
+          EXE_PATH: ${{ steps.signing.outputs.exe_path }}
+          EXE_SIG_PATH: ${{ steps.signing.outputs.exe_sig_path }}
+          MANIFEST_PATH: ${{ steps.signing.outputs.manifest_path }}
+          PROVENANCE_PATH: ${{ steps.signing.outputs.provenance_path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & $env:BUN_PATH scripts/ci/create-updater-manifest.mjs $env:GITHUB_REF_NAME $env:GITHUB_REPOSITORY $env:EXE_PATH $env:EXE_SIG_PATH $env:MANIFEST_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "创建 updater manifest 失败"
+          }
+
+          & $env:BUN_PATH scripts/ci/release-provenance.mjs create $env:GITHUB_REPOSITORY $env:GITHUB_REF_NAME $env:GITHUB_SHA $env:PROVENANCE_PATH $env:EXE_PATH $env:EXE_SIG_PATH $env:MANIFEST_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "创建 release provenance 失败"
+          }
+
+      - name: Sign release provenance
+        shell: pwsh
+        env:
+          TAURI_CLI_PATH: ${{ steps.signing.outputs.tauri_cli_path }}
+          PROVENANCE_PATH: ${{ steps.signing.outputs.provenance_path }}
+          PROVENANCE_SIG_PATH: ${{ steps.signing.outputs.provenance_sig_path }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if (Test-Path -LiteralPath $env:PROVENANCE_SIG_PATH) {
+            throw "签名前 provenance 签名文件已存在: $env:PROVENANCE_SIG_PATH"
+          }
+
+          & $env:TAURI_CLI_PATH signer sign $env:PROVENANCE_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "release provenance 签名失败"
+          }
+
+          if (-not (Test-Path -LiteralPath $env:PROVENANCE_SIG_PATH -PathType Leaf)) {
+            throw "provenance 签名文件不存在: $env:PROVENANCE_SIG_PATH"
+          }
+          if ((Get-Item -LiteralPath $env:PROVENANCE_SIG_PATH).Length -le 0) {
+            throw "provenance 签名文件为空: $env:PROVENANCE_SIG_PATH"
+          }
+
+      - name: Verify signed release package
+        shell: pwsh
+        env:
+          BUN_PATH: ${{ steps.signing.outputs.bun_path }}
+          VERIFIER_PATH: ${{ steps.signing.outputs.verifier_path }}
+          TAURI_CONFIG_PATH: ${{ steps.signing.outputs.tauri_config_path }}
+          EXE_PATH: ${{ steps.signing.outputs.exe_path }}
+          EXE_SIG_PATH: ${{ steps.signing.outputs.exe_sig_path }}
+          MANIFEST_PATH: ${{ steps.signing.outputs.manifest_path }}
+          PROVENANCE_PATH: ${{ steps.signing.outputs.provenance_path }}
+          PROVENANCE_SIG_PATH: ${{ steps.signing.outputs.provenance_sig_path }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & $env:VERIFIER_PATH $env:TAURI_CONFIG_PATH $env:EXE_PATH $env:EXE_SIG_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "updater 产物真实验签失败"
+          }
+
+          & $env:VERIFIER_PATH $env:TAURI_CONFIG_PATH $env:PROVENANCE_PATH $env:PROVENANCE_SIG_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "release provenance 真实验签失败"
+          }
+
+          & $env:BUN_PATH scripts/ci/release-provenance.mjs verify $env:GITHUB_REPOSITORY $env:GITHUB_REF_NAME $env:GITHUB_SHA $env:PROVENANCE_PATH $env:EXE_PATH $env:EXE_SIG_PATH $env:MANIFEST_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "release provenance 内容校验失败"
+          }
+
+          $expectedNames = @(
+            [System.IO.Path]::GetFileName($env:EXE_PATH),
+            [System.IO.Path]::GetFileName($env:EXE_SIG_PATH),
+            "latest.json",
+            "release-provenance.json",
+            "release-provenance.json.sig"
+          )
+          $signedDirectory = Split-Path -Parent $env:EXE_PATH
+          $actualFiles = @(Get-ChildItem -LiteralPath $signedDirectory -File)
+          $actualNames = @($actualFiles | ForEach-Object { $_.Name })
+          $difference = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames -CaseSensitive)
+          if ($actualFiles.Count -ne 5 -or $difference.Count -ne 0) {
+            throw "签名发布资产集合不匹配"
+          }
+          foreach ($file in $actualFiles) {
+            if ($file.Length -le 0) {
+              throw "签名发布资产为空: $($file.FullName)"
+            }
+          }
+
+          $trackedChanges = @(& git status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $trackedChanges.Count -ne 0) {
+            throw "签名后 tracked worktree 不干净"
+          }
+
+      - name: Upload signed release package
+        id: upload_signed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.signing.outputs.signed_artifact_name }}
+          path: |
+            ${{ steps.signing.outputs.exe_path }}
+            ${{ steps.signing.outputs.exe_sig_path }}
+            ${{ steps.signing.outputs.manifest_path }}
+            ${{ steps.signing.outputs.provenance_path }}
+            ${{ steps.signing.outputs.provenance_sig_path }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          include-hidden-files: false
+
+  publish-release:
+    name: Verify and publish GitHub Release
+    needs:
+      - build-windows
+      - sign-windows
+    runs-on: windows-2022
+    environment: production-release
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Download signed release package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign-windows.outputs.signed_artifact_name }}
+          path: ${{ runner.temp }}\signed-release
+
+      - name: Download updater signature verifier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.verifier_artifact_name }}
+          path: ${{ runner.temp }}\release-verifier
+
+      - name: Verify publication inputs
+        id: release
+        shell: pwsh
+        env:
+          SIGNED_ARTIFACT_DIGEST: ${{ needs.sign-windows.outputs.signed_artifact_digest }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          if ($env:SIGNED_ARTIFACT_DIGEST -notmatch '^[0-9a-f]{64}$') {
+            throw "signed Actions artifact digest 格式无效: $env:SIGNED_ARTIFACT_DIGEST"
+          }
+
+          $headSha = (@(& git rev-parse HEAD) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $headSha -cne $env:GITHUB_SHA) {
+            throw "发布前本地 HEAD $headSha 与触发提交 $env:GITHUB_SHA 不一致"
+          }
+          $trackedChanges = @(& git status --porcelain --untracked-files=no)
+          if ($LASTEXITCODE -ne 0 -or $trackedChanges.Count -ne 0) {
+            throw "发布前 tracked worktree 不干净"
+          }
+
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exeName = "MineRadio-Tauri_${version}_x64-setup.exe"
+          $signedDirectory = Join-Path $env:RUNNER_TEMP "signed-release"
+          $verifierPath = Join-Path $env:RUNNER_TEMP "release-verifier/verify_updater_signature.exe"
+          $expectedNames = @(
+            $exeName,
+            "$exeName.sig",
+            "latest.json",
+            "release-provenance.json",
+            "release-provenance.json.sig"
+          )
+          $actualFiles = @(Get-ChildItem -LiteralPath $signedDirectory -File)
+          $actualNames = @($actualFiles | ForEach-Object { $_.Name })
+          $difference = @(Compare-Object -ReferenceObject $expectedNames -DifferenceObject $actualNames -CaseSensitive)
+          if ($actualFiles.Count -ne 5 -or $difference.Count -ne 0) {
+            throw "待发布资产集合不匹配"
+          }
+          $requiredPaths = @($actualFiles | ForEach-Object { $_.FullName })
+          $requiredPaths += $verifierPath
+          foreach ($requiredPath in $requiredPaths) {
+            if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+              throw "待发布输入不存在: $requiredPath"
+            }
+            if ((Get-Item -LiteralPath $requiredPath).Length -le 0) {
+              throw "待发布输入为空: $requiredPath"
+            }
+          }
+
+          $bunPath = (Get-Command bun -ErrorAction Stop).Source
+          $bunVersion = (@(& $bunPath --version) -join "").Trim()
+          if ($LASTEXITCODE -ne 0 -or $bunVersion -cne "1.3.14") {
+            throw "Bun 版本不匹配: $bunVersion"
+          }
+
+          $tauriConfigPath = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/tauri.conf.json"
+          $exePath = Join-Path $signedDirectory $exeName
+          $exeSigPath = Join-Path $signedDirectory "$exeName.sig"
+          $manifestPath = Join-Path $signedDirectory "latest.json"
+          $provenancePath = Join-Path $signedDirectory "release-provenance.json"
+          $provenanceSigPath = Join-Path $signedDirectory "release-provenance.json.sig"
+
+          "bun_path=$bunPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "verifier_path=$verifierPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tauri_config_path=$tauriConfigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe_path=$exePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "exe_sig_path=$exeSigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "manifest_path=$manifestPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "provenance_path=$provenancePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "provenance_sig_path=$provenanceSigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish verified release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUN_PATH: ${{ steps.release.outputs.bun_path }}
+          SIGNATURE_VERIFIER_PATH: ${{ steps.release.outputs.verifier_path }}
+          TAURI_CONFIG_PATH: ${{ steps.release.outputs.tauri_config_path }}
+          EXE_PATH: ${{ steps.release.outputs.exe_path }}
+          EXE_SIG_PATH: ${{ steps.release.outputs.exe_sig_path }}
+          MANIFEST_PATH: ${{ steps.release.outputs.manifest_path }}
+          PROVENANCE_PATH: ${{ steps.release.outputs.provenance_path }}
+          PROVENANCE_SIG_PATH: ${{ steps.release.outputs.provenance_sig_path }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          & $env:BUN_PATH scripts/ci/publish-release.mjs `
+            --repository $env:GITHUB_REPOSITORY `
+            --tag $env:GITHUB_REF_NAME `
+            --commit-sha $env:GITHUB_SHA `
+            --default-branch $env:DEFAULT_BRANCH `
+            --tauri-config-path $env:TAURI_CONFIG_PATH `
+            --signature-verifier-path $env:SIGNATURE_VERIFIER_PATH `
+            --exe-path $env:EXE_PATH `
+            --exe-sig-path $env:EXE_SIG_PATH `
+            --manifest-path $env:MANIFEST_PATH `
+            --provenance-path $env:PROVENANCE_PATH `
+            --provenance-sig-path $env:PROVENANCE_SIG_PATH
+          if ($LASTEXITCODE -ne 0) {
+            throw "GitHub Release 发布失败"
+          }
