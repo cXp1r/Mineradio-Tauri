@@ -24,6 +24,6 @@
     "release:verify-version": "node scripts/ci/verify-release-version.mjs",
     "release:create-manifest": "node scripts/ci/create-updater-manifest.mjs",
     "typecheck": "bun run --filter ./packages/shared typecheck && bun run --filter ./packages/visual-engine typecheck && bun run --filter ./sidecars/api typecheck && bun run --filter ./apps/web typecheck",
-    "test": "bun test packages/shared packages/visual-engine sidecars/api apps/web scripts/ci"
+    "test": "bun test --parallel=1 packages/shared packages/visual-engine sidecars/api apps/web scripts/ci"
   }
 }
