@@ -12,7 +12,11 @@ const VERSION_SOURCES = [
 export function validateReleaseVersions(tag, versions) {
   const releaseTag = typeof tag === "string" ? tag : "";
 
-  if (!/^v\d+\.\d+\.\d+$/.test(releaseTag)) {
+  if (
+    !/^v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(
+      releaseTag,
+    )
+  ) {
     throw new Error(
       `发布标签 "${releaseTag}" 格式无效，必须匹配 vX.Y.Z`,
     );
