@@ -9,7 +9,7 @@ const VERSION_SOURCES = [
   "apps/desktop/src-tauri/Cargo.toml",
 ];
 
-export function validateReleaseVersions(tag, versions) {
+export function parseReleaseTag(tag) {
   const releaseTag = typeof tag === "string" ? tag : "";
 
   if (
@@ -22,6 +22,12 @@ export function validateReleaseVersions(tag, versions) {
     );
   }
 
+  return releaseTag.slice(1);
+}
+
+export function validateReleaseVersions(tag, versions) {
+  const releaseTag = typeof tag === "string" ? tag : "";
+  const tagVersion = parseReleaseTag(releaseTag);
   const entries = VERSION_SOURCES.map((source) => [source, versions[source]]);
   const missingSources = entries.filter(([, version]) => !version);
 
@@ -44,7 +50,6 @@ export function validateReleaseVersions(tag, versions) {
   }
 
   const version = entries[0][1];
-  const tagVersion = releaseTag.slice(1);
 
   if (tagVersion !== version) {
     throw new Error(

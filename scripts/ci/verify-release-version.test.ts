@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  parseReleaseTag,
   readRepositoryVersions,
   validateReleaseVersions,
 } from "./verify-release-version.mjs";
@@ -14,6 +15,28 @@ const consistentVersions = {
   "apps/desktop/src-tauri/tauri.conf.json": "0.1.0",
   "apps/desktop/src-tauri/Cargo.toml": "0.1.0",
 };
+
+describe("parseReleaseTag", () => {
+  test("返回合法发布标签中的版本号", () => {
+    expect(parseReleaseTag("v0.1.0")).toBe("0.1.0");
+  });
+
+  test("拒绝不符合 vX.Y.Z 的标签", () => {
+    for (const tag of ["0.1.0", "v1.2", "v1.2.3-beta"]) {
+      expect(() => parseReleaseTag(tag)).toThrow(
+        '发布标签 "' + tag + '" 格式无效，必须匹配 vX.Y.Z',
+      );
+    }
+  });
+
+  test("拒绝版本段中的前导零", () => {
+    for (const tag of ["v01.2.3", "v1.02.3", "v1.2.03"]) {
+      expect(() => parseReleaseTag(tag)).toThrow(
+        '发布标签 "' + tag + '" 格式无效，必须匹配 vX.Y.Z',
+      );
+    }
+  });
+});
 
 describe("validateReleaseVersions", () => {
   test("接受合法且一致的 v0.1.0", () => {

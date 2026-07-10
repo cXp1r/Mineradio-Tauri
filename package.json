@@ -22,6 +22,7 @@
     "sidecar:dev": "bun run --filter ./sidecars/api dev",
     "perf:compare": "node scripts/perf/compare-overhead.mjs",
     "release:verify-version": "node scripts/ci/verify-release-version.mjs",
+    "release:create-manifest": "node scripts/ci/create-updater-manifest.mjs",
     "typecheck": "bun run --filter ./packages/shared typecheck && bun run --filter ./packages/visual-engine typecheck && bun run --filter ./sidecars/api typecheck && bun run --filter ./apps/web typecheck",
     "test": "bun test packages/shared packages/visual-engine sidecars/api apps/web scripts/ci"
   }
