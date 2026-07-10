@@ -20,9 +20,6 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
-    concurrency:
-      group: mineradio-release-publish
-      cancel-in-progress: false
 
     steps:
       - name: Checkout tagged commit
@@ -325,6 +322,38 @@ jobs:
             return 0
           }
 
+          function Get-HighestPublishedReleaseTag {
+            param([Parameter(Mandatory)][string]$Repository)
+
+            $publishedTags = @(& gh api --paginate "repos/$Repository/releases?per_page=100" --jq ".[] | select(.draft == false and .prerelease == false) | .tag_name")
+            if ($LASTEXITCODE -ne 0) {
+              throw "读取已发布 Release 列表失败"
+            }
+
+            $highestTag = $null
+            $highestVersion = $null
+            foreach ($publishedTag in $publishedTags) {
+              $publishedReleaseVersion = ConvertTo-StrictReleaseVersion -ReleaseTag $publishedTag
+              if ($null -eq $publishedReleaseVersion) {
+                continue
+              }
+
+              if (
+                $null -eq $highestVersion -or
+                (Compare-ReleaseVersion -Left $publishedReleaseVersion -Right $highestVersion) -gt 0
+              ) {
+                $highestTag = $publishedTag
+                $highestVersion = $publishedReleaseVersion
+              }
+            }
+
+            if ($null -eq $highestVersion -or [string]::IsNullOrEmpty($highestTag)) {
+              throw "已发布 Release 中没有严格语义版本 tag"
+            }
+
+            return $highestTag
+          }
+
           $expectedSha = $env:GITHUB_SHA
           $repository = $env:GITHUB_REPOSITORY
           $tag = $env:GITHUB_REF_NAME
@@ -394,30 +423,6 @@ jobs:
             }
           }
 
-          $currentReleaseVersion = ConvertTo-StrictReleaseVersion -ReleaseTag $tag
-          if ($null -eq $currentReleaseVersion) {
-            throw "当前发布 tag 不是严格语义版本: $tag"
-          }
-
-          $publishedTags = @(& gh api --paginate "repos/$repository/releases?per_page=100" --jq ".[] | select(.draft == false and .prerelease == false) | .tag_name")
-          if ($LASTEXITCODE -ne 0) {
-            throw "读取已发布 Release 列表失败"
-          }
-
-          $makeLatest = $true
-          foreach ($publishedTag in $publishedTags) {
-            $publishedReleaseVersion = ConvertTo-StrictReleaseVersion -ReleaseTag $publishedTag
-            if ($null -eq $publishedReleaseVersion) {
-              continue
-            }
-
-            $versionComparison = Compare-ReleaseVersion -Left $publishedReleaseVersion -Right $currentReleaseVersion
-            if ($versionComparison -gt 0) {
-              $makeLatest = $false
-              break
-            }
-          }
-
           $finalRemoteTagOutput = @(& gh api "repos/$repository/commits/$tag" --jq ".sha")
           if ($LASTEXITCODE -ne 0) {
             throw "公开前最终解析远端 tag 提交失败"
@@ -428,14 +433,58 @@ jobs:
             throw "公开前远端 tag 提交 $finalRemoteTagSha 与触发提交 $expectedSha 不一致"
           }
 
-          if ($makeLatest) {
-            & gh release edit $tag --repo $repository --draft=false --latest
+          & gh release edit $tag --repo $repository --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) {
+            throw "公开非 Latest Release 失败；请检查草稿状态"
+          }
+
+          $maximumConvergenceAttempts = 10
+          $converged = $false
+          for ($attempt = 1; $attempt -le $maximumConvergenceAttempts; $attempt++) {
+            $candidateTag = Get-HighestPublishedReleaseTag -Repository $repository
+
+            & gh release edit $candidateTag --repo $repository --latest
             if ($LASTEXITCODE -ne 0) {
-              throw "公开并设为 Latest 失败；请检查草稿状态"
+              throw "将最高版本 Release 设为 Latest 失败: $candidateTag"
             }
-          } else {
-            & gh release edit $tag --repo $repository --draft=false --latest=false
+
+            $verifiedHighestTag = Get-HighestPublishedReleaseTag -Repository $repository
+            $latestReleaseJsonLines = @(& gh release view $verifiedHighestTag --repo $repository --json tagName,isDraft,isPrerelease)
             if ($LASTEXITCODE -ne 0) {
-              throw "公开非 Latest Release 失败；请检查草稿状态"
+              throw "读取最高版本 Release 状态失败: $verifiedHighestTag"
             }
+
+            $latestReleaseJson = $latestReleaseJsonLines -join "`n"
+            $latestRelease = $latestReleaseJson | ConvertFrom-Json
+
+            if ($latestRelease.tagName -cne $verifiedHighestTag) {
+              throw "Latest 校验返回的 tag 不匹配"
+            }
+
+            if ($latestRelease.isDraft -ne $false) {
+              throw "最高版本 Release 仍是草稿: $verifiedHighestTag"
+            }
+
+            if ($latestRelease.isPrerelease -ne $false) {
+              throw "最高版本 Release 被错误标记为预发布: $verifiedHighestTag"
+            }
+
+            $authoritativeLatestTagOutput = @(& gh api "repos/$repository/releases/latest" --jq ".tag_name")
+            if ($LASTEXITCODE -ne 0) {
+              throw "读取权威 Latest Release 失败"
+            }
+
+            $authoritativeLatestTag = ($authoritativeLatestTagOutput -join "").Trim()
+            if ($authoritativeLatestTag -ceq $verifiedHighestTag) {
+              $converged = $true
+              break
+            }
+
+            if ($attempt -lt $maximumConvergenceAttempts) {
+              Start-Sleep -Seconds 2
+            }
+          }
+
+          if (-not $converged) {
+            throw "Latest Release 在 $maximumConvergenceAttempts 次尝试后仍未收敛"
           }
