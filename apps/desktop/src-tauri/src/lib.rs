@@ -86,6 +86,8 @@ pub struct AppState {
 }
 
 impl AppState {
+    // 这些参数逐一对应应用启动阶段的配置、日志与数据库状态资源，显式签名便于核对装配关系。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         sidecar_base_url: String,
         app_data_dir: String,

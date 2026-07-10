@@ -121,7 +121,8 @@ fn set_kv(conn: &Connection, key: &str, value: &str) -> rusqlite::Result<()> {
 ///
 /// 当前未被任何 Tauri command 引用,保留 pub 是为后续"听歌统计上报"
 /// 留出入口,本次 issue 不接入前端。`#[allow]` 抑制 dead_code 警告。
-#[allow(dead_code)]
+// 这些参数逐一映射 listen_history 数据库列，显式签名便于核对写入顺序。
+#[allow(dead_code, clippy::too_many_arguments)]
 pub fn add_listen_history(
     conn: &Connection,
     song_key: &str,
@@ -235,8 +236,7 @@ mod tests {
     use super::*;
 
     fn fresh_db() -> Connection {
-        let conn = Connection::open_in_memory().unwrap();
-        conn
+        Connection::open_in_memory().unwrap()
     }
 
     #[test]
