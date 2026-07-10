@@ -534,24 +534,44 @@ test("Soda QR login routes return key image and poll status without exposing coo
 
 test("POST /providers/qq/session-cookie stores runtime cookie without echoing secrets", async () => {
   const secret = "uin=123; qqmusic_key=runtime-secret";
-  const r = await call("/providers/qq/session-cookie", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ cookie: secret })
+  const observedCookies: Array<string | undefined> = [];
+  const fakeQq: ProviderAdapter = {
+    ...providers.qq,
+    async loginStatus() {
+      observedCookies.push(getProviderCookie("qq"));
+      return { provider: "qq", loggedIn: false };
+    }
+  };
+  const handler = createRouteHandler({
+    providerAdapters: { ...providers, qq: fakeQq }
   });
+  const localCall = (path: string, init?: RequestInit) =>
+    handler(new Request(`http://127.0.0.1${path}`, init));
 
-  expect(r.status).toBe(200);
-  const b = await body(r);
-  expect(b).toEqual({ ok: true, data: { provider: "qq", stored: true } });
-  const serialized = JSON.stringify(b);
-  expect(serialized).not.toContain(secret);
-  expect(serialized).not.toContain("qqmusic_key");
+  try {
+    const r = await localCall("/providers/qq/session-cookie", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ cookie: secret })
+    });
 
-  const status = await body(await call("/providers/qq/login-status"));
-  expect(status.data).toMatchObject({ provider: "qq", loggedIn: false });
+    expect(r.status).toBe(200);
+    const b = await body(r);
+    expect(b).toEqual({ ok: true, data: { provider: "qq", stored: true } });
+    const serialized = JSON.stringify(b);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).not.toContain("qqmusic_key");
 
-  const cleared = await body(await call("/providers/qq/session-cookie", { method: "DELETE" }));
-  expect(cleared).toEqual({ ok: true, data: { provider: "qq", stored: false } });
+    const status = await body(await localCall("/providers/qq/login-status"));
+    expect(observedCookies).toEqual([secret]);
+    expect(status.data).toMatchObject({ provider: "qq", loggedIn: false });
+    expect(JSON.stringify(status)).not.toContain(secret);
+
+    const cleared = await body(await localCall("/providers/qq/session-cookie", { method: "DELETE" }));
+    expect(cleared).toEqual({ ok: true, data: { provider: "qq", stored: false } });
+  } finally {
+    await localCall("/providers/qq/session-cookie", { method: "DELETE" });
+  }
 });
 
 test("POST /providers/qq/logout clears runtime cookie before best-effort provider logout", async () => {
