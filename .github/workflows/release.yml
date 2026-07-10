@@ -20,6 +20,9 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+    concurrency:
+      group: mineradio-release-publish
+      cancel-in-progress: false
 
     steps:
       - name: Checkout tagged commit
@@ -287,6 +290,41 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
+          function ConvertTo-StrictReleaseVersion {
+            param([Parameter(Mandatory)][string]$ReleaseTag)
+
+            $match = [regex]::Match(
+              $ReleaseTag,
+              '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$',
+              [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+            )
+            if (-not $match.Success) {
+              return $null
+            }
+
+            return [PSCustomObject]@{
+              Major = [System.Numerics.BigInteger]::Parse($match.Groups[1].Value)
+              Minor = [System.Numerics.BigInteger]::Parse($match.Groups[2].Value)
+              Patch = [System.Numerics.BigInteger]::Parse($match.Groups[3].Value)
+            }
+          }
+
+          function Compare-ReleaseVersion {
+            param(
+              [Parameter(Mandatory)]$Left,
+              [Parameter(Mandatory)]$Right
+            )
+
+            foreach ($component in @("Major", "Minor", "Patch")) {
+              $comparison = $Left.$component.CompareTo($Right.$component)
+              if ($comparison -ne 0) {
+                return $comparison
+              }
+            }
+
+            return 0
+          }
+
           $expectedSha = $env:GITHUB_SHA
           $repository = $env:GITHUB_REPOSITORY
           $tag = $env:GITHUB_REF_NAME
@@ -356,7 +394,48 @@ jobs:
             }
           }
 
-          & gh release edit $tag --repo $repository --draft=false --latest
+          $currentReleaseVersion = ConvertTo-StrictReleaseVersion -ReleaseTag $tag
+          if ($null -eq $currentReleaseVersion) {
+            throw "当前发布 tag 不是严格语义版本: $tag"
+          }
+
+          $publishedTags = @(& gh api --paginate "repos/$repository/releases?per_page=100" --jq ".[] | select(.draft == false and .prerelease == false) | .tag_name")
           if ($LASTEXITCODE -ne 0) {
-            throw "公开 Release 失败；请检查草稿状态"
+            throw "读取已发布 Release 列表失败"
+          }
+
+          $makeLatest = $true
+          foreach ($publishedTag in $publishedTags) {
+            $publishedReleaseVersion = ConvertTo-StrictReleaseVersion -ReleaseTag $publishedTag
+            if ($null -eq $publishedReleaseVersion) {
+              continue
+            }
+
+            $versionComparison = Compare-ReleaseVersion -Left $publishedReleaseVersion -Right $currentReleaseVersion
+            if ($versionComparison -gt 0) {
+              $makeLatest = $false
+              break
+            }
+          }
+
+          $finalRemoteTagOutput = @(& gh api "repos/$repository/commits/$tag" --jq ".sha")
+          if ($LASTEXITCODE -ne 0) {
+            throw "公开前最终解析远端 tag 提交失败"
+          }
+
+          $finalRemoteTagSha = ($finalRemoteTagOutput -join "").Trim()
+          if ($finalRemoteTagSha -cne $expectedSha) {
+            throw "公开前远端 tag 提交 $finalRemoteTagSha 与触发提交 $expectedSha 不一致"
+          }
+
+          if ($makeLatest) {
+            & gh release edit $tag --repo $repository --draft=false --latest
+            if ($LASTEXITCODE -ne 0) {
+              throw "公开并设为 Latest 失败；请检查草稿状态"
+            }
+          } else {
+            & gh release edit $tag --repo $repository --draft=false --latest=false
+            if ($LASTEXITCODE -ne 0) {
+              throw "公开非 Latest Release 失败；请检查草稿状态"
+            }
           }
