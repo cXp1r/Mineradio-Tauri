@@ -4,7 +4,7 @@
 
 **Goal:** Make CI cover the Windows/Rust code path and make each public updater release provably correspond to its triggering semantic-version tag.
 
-**Architecture:** A tested Node/Bun version guard owns release-version validation. GitHub Actions call that guard before any privileged build, run language-specific validation in separate jobs, and publish Tauri assets as a draft before verifying and exposing the release.
+**Architecture:** Tested Node/Bun helpers own release-version validation and updater-manifest generation. GitHub Actions call those helpers before any privileged build, run language-specific validation in separate jobs, build with the repository-pinned Tauri CLI, and publish assets as a draft before verifying and exposing the release.
 
 **Tech Stack:** GitHub Actions, Bun 1.3.14, TypeScript/JavaScript, Rust 1.95.0, Tauri 2, PowerShell.
 
@@ -13,12 +13,12 @@
 ### Task 1: Deterministic release version guard
 
 **Files:**
-- Create: `scripts/release/verify-release-version.mjs`
-- Create: `scripts/release/verify-release-version.test.ts`
+- Create: `scripts/ci/verify-release-version.mjs`
+- Create: `scripts/ci/verify-release-version.test.ts`
 - Modify: `package.json`
 
 - [ ] Write tests for valid matching versions, invalid tag format, tag mismatch, and file-version mismatch.
-- [ ] Run `bun test scripts/release/verify-release-version.test.ts` and confirm the module is missing.
+- [ ] Run `bun test scripts/ci/verify-release-version.test.ts` and confirm the module is missing.
 - [ ] Implement pure parsing/validation helpers and the CLI entry point.
 - [ ] Run the focused test and `bun run release:verify-version -- v0.1.0`.
 
@@ -51,11 +51,14 @@
 - Modify: `.github/workflows/ci.yml`
 - Modify: `.github/workflows/release.yml`
 - Create: `.github/dependabot.yml`
+- Create: `scripts/ci/create-updater-manifest.mjs`
+- Create: `scripts/ci/create-updater-manifest.test.ts`
 
 - [ ] Update Actions to Node 24-compatible releases pinned by full SHA.
 - [ ] Split CI into Bun/Linux and Rust/Windows jobs with explicit timeouts and read-only permissions.
 - [ ] Restrict release to semantic-version tags, validate versions before build, disable persisted checkout credentials, and use a protected release environment name.
-- [ ] Publish as draft, verify required assets and `latest.json`, then publish via GitHub CLI.
+- [ ] Test and implement updater manifest generation for `windows-x86_64-nsis` and compatibility `windows-x86_64` entries.
+- [ ] Build signed NSIS artifacts with the pinned Tauri CLI, create a draft with GitHub CLI, verify required assets and `latest.json`, then publish it.
 - [ ] Add weekly npm, Cargo, and GitHub Actions dependency update checks.
 - [ ] Run actionlint against both workflow files.
 

@@ -9,7 +9,8 @@
 - Release 只能由 `vX.Y.Z` tag 触发，不再允许从普通分支手动发布。
 - tag 版本必须同时等于根 `package.json`、桌面 package、Tauri 配置和 Cargo package 版本。
 - 发布任务只 checkout 触发 tag，使用固定 Bun、Rust、runner 与 Action commit。
-- Tauri Action 先创建草稿 Release；安装包、 updater 签名和 `latest.json` 验证通过后才公开。
+- 发布任务直接调用固定版本 Tauri CLI 构建签名 NSIS，不再把签名密钥交给未固定的第三方发布 Action。
+- GitHub CLI 先创建草稿 Release；安装包、 updater 签名和 `latest.json` 验证通过后才公开。
 - 同一 tag 的重跑只能基于同一提交，避免源码归档与二进制来源不一致。
 
 ## CI 结构
@@ -31,7 +32,7 @@
 ## 安全边界
 
 - Checkout 不持久化 GitHub 凭据。
-- 特权发布 Action 固定到完整 commit SHA。
+- Checkout、cache 和 setup-bun 固定到完整 commit SHA；发布本身使用 runner 预装的 GitHub CLI。
 - updater 私钥仅传入发布步骤。
 - Release 先 draft 后公开，资产验证失败时不会成为 latest。
 
