@@ -117,5 +117,6 @@
 | Search concrete client dependency | `SearchShell` 仅依赖 `SearchExperiencePort`；其余搜索业务仍保留现状 | `bun test apps/web/src/components/shell/SearchShell.test.ts apps/web/src/components/shell/SearchShell.actions.test.tsx apps/web/src/app/App.test.tsx` | `c5804c9` |
 | Application service assembly | `AppServices` 与 `AppRuntimeProvider` 已建立；未迁移领域仍由 legacy adapters 委托 | `bun test apps/web/src/app/AppRuntimeProvider.test.tsx apps/web/src/app/App.test.tsx` | `5105427` |
 | Sidecar bootstrap and recovery | 配置加载、健康重试、能力同步、账户恢复、状态轮询和 timer cleanup 已由 `SidecarRecoveryRuntime` 持有 | `bun test apps/web/src/app/runtime apps/web/src/components/shell/SidecarRecoveryNotice.test.tsx apps/web/src/app/App.test.tsx` | `512c97c` |
+| PlayerController lifecycle | Audio 控制器创建、媒体事件订阅、音量同步和卸载清理由 `PlaybackRuntimeHost` 持有；播放事务仍保留在 App | `bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx apps/web/src/audio/player-controller.test.ts apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-runtime-boundary.test.ts` | `e375762`、`c320ae2`、`b394e60` |
 
-播放事务、二维码登录、Home、资料库、桌面运行时和 updater 的 effect 所有权仍在 `App.tsx`，不计入本批完成范围。
+播放 URL 解析与恢复事务、二维码登录、Home、资料库、桌面运行时和 updater 的 effect 所有权仍在 `App.tsx`，不计入本批完成范围。

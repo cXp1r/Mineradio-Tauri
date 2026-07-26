@@ -189,11 +189,11 @@ git commit -m "test: guard playback runtime ownership"
 - Modify: `docs/parity/capability-matrix.md`
 - Modify: `docs/superpowers/plans/2026-07-26-m1-playback-runtime-lifecycle.md`
 
-- [ ] **Step 1: Record only the verified lifecycle boundary**
+- [x] **Step 1: Record only the verified lifecycle boundary**
 
 记录 `PlaybackRuntimeHost` 的提交 SHA 和测试命令。`playback.resolve`、`playback.switch`、`playback.audio-start` 仍保持现有状态，不得标记为 M2 完成。
 
-- [ ] **Step 2: Run full repository verification**
+- [x] **Step 2: Run full repository verification**
 
 ```powershell
 bun run typecheck
@@ -206,7 +206,7 @@ node scripts/architecture/verify-convergence-baseline.mjs
 git diff --check
 ```
 
-- [ ] **Step 3: Re-audit the frozen API surface**
+- [x] **Step 3: Re-audit the frozen API surface**
 
 ```powershell
 git diff d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps/desktop/scripts/build-sidecar-binary.mjs apps/desktop/src-tauri/tauri.conf.json packages/shared
@@ -214,7 +214,7 @@ git diff d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs app
 
 Expected: empty diff.
 
-- [ ] **Step 4: Commit parity evidence**
+- [x] **Step 4: Commit parity evidence**
 
 ```powershell
 git add docs/parity docs/superpowers/plans/2026-07-26-m1-playback-runtime-lifecycle.md
