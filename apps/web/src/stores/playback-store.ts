@@ -5,6 +5,7 @@ export type PlaybackMode = "single" | "loop" | "queue" | "shuffle";
 
 export interface PlaybackState {
 	currentTrack: Track | null;
+	playbackIntentId: number;
 	isPlaying: boolean;
 	positionMs: number;
 	durationMs: number | null;
@@ -31,6 +32,10 @@ export interface PlaybackState {
 	previous: () => void;
 	ended: () => void;
 	clearQueue: () => void;
+}
+
+function nextPlaybackIntent(state: Pick<PlaybackState, "playbackIntentId">): number {
+	return state.playbackIntentId + 1;
 }
 
 export function trackRef(track: Track | null): string {
@@ -72,6 +77,7 @@ export function moveTrackToFront(queue: Track[], track: Track): Track[] {
 
 export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 	currentTrack: null,
+	playbackIntentId: 0,
 	isPlaying: false,
 	positionMs: 0,
 	durationMs: null,
@@ -80,9 +86,10 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 	mode: "loop",
 	queue: [],
 	setCurrentTrack: (track) =>
-		set({
+		set((s) => ({
 			...playbackPatchForTrack(track),
-		}),
+			playbackIntentId: nextPlaybackIntent(s),
+		})),
 	setPlaying: (playing) => set({ isPlaying: playing }),
 	togglePlay: () => set((s) => ({ isPlaying: !s.isPlaying })),
 	setPosition: (ms) => set({ positionMs: ms }),
@@ -126,6 +133,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 			const track = s.queue[index] ?? null;
 			return {
 				...playbackPatchForTrack(track),
+				playbackIntentId: nextPlaybackIntent(s),
 			};
 		}),
 	removeAt: (index) =>
@@ -140,6 +148,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 				queue: next,
 				...playbackPatchForTrack(nextCurrent),
 				...(nextCurrent ? {} : { isPlaying: false }),
+				playbackIntentId: nextPlaybackIntent(s),
 			};
 		}),
 	removeTrack: (track) =>
@@ -157,70 +166,82 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 				queue: next,
 				...playbackPatchForTrack(nextCurrent),
 				...(nextCurrent ? {} : { isPlaying: false }),
+				playbackIntentId: nextPlaybackIntent(s),
 			};
 		}),
 	clearQueue: () =>
-		set({
+		set((s) => ({
 			queue: [],
 			...stopPlaybackPatch(),
-		}),
-	previous: () => {
-		const { queue, currentTrack, mode } = get();
-		if (queue.length === 0) return;
-		const currentIdx = findTrackIndex(queue, currentTrack);
-		let prevIdx: number;
-		if (mode === "shuffle") {
-			const len = queue.length;
-			prevIdx = currentIdx >= 0 ? (currentIdx - 1 + len) % len : 0;
-		} else if (mode === "single") {
-			prevIdx = currentIdx >= 0 ? currentIdx : 0;
-		} else {
-			const len = queue.length;
-			prevIdx = currentIdx >= 0 ? (currentIdx - 1 + len) % len : 0;
-		}
-		const prevTrack = queue[prevIdx] ?? null;
-		set({
-			...playbackPatchForTrack(prevTrack),
-		});
-	},
-	next: () => {
-		const { queue, currentTrack, mode } = get();
-		if (queue.length === 0) {
-			set(stopPlaybackPatch());
-			return;
-		}
-		const currentIdx = findTrackIndex(queue, currentTrack);
-		let nextIdx: number;
-		if (mode === "shuffle") {
-			if (queue.length === 1) {
-				nextIdx = 0;
+			playbackIntentId: nextPlaybackIntent(s),
+		})),
+	previous: () =>
+		set((s) => {
+			if (s.queue.length === 0) return {};
+			const currentIdx = findTrackIndex(s.queue, s.currentTrack);
+			let prevIdx: number;
+			if (s.mode === "shuffle") {
+				const len = s.queue.length;
+				prevIdx = currentIdx >= 0 ? (currentIdx - 1 + len) % len : 0;
+			} else if (s.mode === "single") {
+				prevIdx = currentIdx >= 0 ? currentIdx : 0;
 			} else {
-				const randomIdx = Math.floor(Math.random() * (queue.length - 1));
-				nextIdx = currentIdx >= 0 && randomIdx >= currentIdx ? randomIdx + 1 : randomIdx;
+				const len = s.queue.length;
+				prevIdx = currentIdx >= 0 ? (currentIdx - 1 + len) % len : 0;
 			}
-		} else if (mode === "single") {
-			nextIdx = currentIdx >= 0 ? currentIdx : 0;
-		} else if (mode === "loop") {
-			nextIdx = (currentIdx + 1) % queue.length;
-		} else {
-			const candidate = currentIdx + 1;
-			if (candidate >= queue.length) {
-				set(stopPlaybackPatch());
-				return;
+			const prevTrack = s.queue[prevIdx] ?? null;
+			return {
+				...playbackPatchForTrack(prevTrack),
+				playbackIntentId: nextPlaybackIntent(s),
+			};
+		}),
+	next: () =>
+		set((s) => {
+			if (s.queue.length === 0) {
+				return {
+					...stopPlaybackPatch(),
+					playbackIntentId: nextPlaybackIntent(s),
+				};
 			}
-			nextIdx = candidate;
-		}
-		const nextTrack = queue[nextIdx] ?? null;
-		set({
-			...playbackPatchForTrack(nextTrack),
-		});
-	},
+			const currentIdx = findTrackIndex(s.queue, s.currentTrack);
+			let nextIdx: number;
+			if (s.mode === "shuffle") {
+				if (s.queue.length === 1) {
+					nextIdx = 0;
+				} else {
+					const randomIdx = Math.floor(Math.random() * (s.queue.length - 1));
+					nextIdx = currentIdx >= 0 && randomIdx >= currentIdx ? randomIdx + 1 : randomIdx;
+				}
+			} else if (s.mode === "single") {
+				nextIdx = currentIdx >= 0 ? currentIdx : 0;
+			} else if (s.mode === "loop") {
+				nextIdx = (currentIdx + 1) % s.queue.length;
+			} else {
+				const candidate = currentIdx + 1;
+				if (candidate >= s.queue.length) {
+					return {
+						...stopPlaybackPatch(),
+						playbackIntentId: nextPlaybackIntent(s),
+					};
+				}
+				nextIdx = candidate;
+			}
+			const nextTrack = s.queue[nextIdx] ?? null;
+			return {
+				...playbackPatchForTrack(nextTrack),
+				playbackIntentId: nextPlaybackIntent(s),
+			};
+		}),
 	ended: () => {
-		const { mode, currentTrack, queue } = get();
-		if (mode === "single") {
-			const currentIdx = findTrackIndex(queue, currentTrack);
-			const track = currentIdx >= 0 ? queue[currentIdx] : currentTrack;
-			set(playbackPatchForTrack(track));
+		if (get().mode === "single") {
+			set((s) => {
+				const currentIdx = findTrackIndex(s.queue, s.currentTrack);
+				const track = currentIdx >= 0 ? s.queue[currentIdx] : s.currentTrack;
+				return {
+					...playbackPatchForTrack(track),
+					playbackIntentId: nextPlaybackIntent(s),
+				};
+			});
 			return;
 		}
 		get().next();

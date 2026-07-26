@@ -19,6 +19,7 @@ function makeTrack(id: string): Track {
 function resetStore() {
 	usePlaybackStore.setState({
 		currentTrack: null,
+		playbackIntentId: 0,
 		isPlaying: false,
 		positionMs: 0,
 		durationMs: null,
@@ -241,4 +242,124 @@ test("moveTrackToFront dedupes by provider and id", () => {
 	const tracks = [makeTrack("a"), makeTrack("b"), makeTrack("a")];
 	const result = moveTrackToFront(tracks, makeTrack("a"));
 	expect(result.map((t) => t.id)).toEqual(["a", "b"]);
+});
+
+test("playback intent starts at zero and advances for every setCurrentTrack call", () => {
+	const track = makeTrack("a");
+	const store = usePlaybackStore.getState();
+	expect(store.playbackIntentId).toBe(0);
+	store.setCurrentTrack(track);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+	store.setCurrentTrack(track);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+	store.setCurrentTrack(null);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(3);
+});
+
+test("valid playAt and queue navigation advance playback intent", () => {
+	const tracks = [makeTrack("a"), makeTrack("b")];
+	const store = usePlaybackStore.getState();
+	store.setQueue(tracks);
+	store.playAt(0);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+	store.next();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+	store.previous();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(3);
+});
+
+test("single ended restarts playback with a new intent", () => {
+	const track = makeTrack("a");
+	const store = usePlaybackStore.getState();
+	store.setMode("single");
+	store.setQueue([track]);
+	store.playAt(0);
+	store.setPosition(1200);
+	store.ended();
+	expect(usePlaybackStore.getState().currentTrack).toBe(track);
+	expect(usePlaybackStore.getState().positionMs).toBe(0);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+});
+
+test("non-single ended delegates to next with exactly one new intent", () => {
+	const tracks = [makeTrack("a"), makeTrack("b")];
+	const store = usePlaybackStore.getState();
+	store.setQueue(tracks);
+	store.playAt(0);
+	store.ended();
+	expect(usePlaybackStore.getState().currentTrack).toBe(tracks[1]);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+});
+
+test("clearQueue emits a stop intent even when the queue is already empty", () => {
+	const store = usePlaybackStore.getState();
+	store.clearQueue();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+	store.clearQueue();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+});
+
+test("next emits stop intents for an empty queue and the end of queue mode", () => {
+	const store = usePlaybackStore.getState();
+	store.next();
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+
+	const track = makeTrack("a");
+	store.setMode("queue");
+	store.setQueue([track]);
+	store.playAt(0);
+	store.next();
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(3);
+});
+
+test("removing the current item advances intent while removing another item does not", () => {
+	const tracks = [makeTrack("a"), makeTrack("b"), makeTrack("c")];
+	const store = usePlaybackStore.getState();
+	store.setQueue(tracks);
+	store.playAt(1);
+	store.removeAt(0);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+	store.removeAt(0);
+	expect(usePlaybackStore.getState().currentTrack).toBe(tracks[2]);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+});
+
+test("removeTrack only advances intent when it removes the current track", () => {
+	const tracks = [makeTrack("a"), makeTrack("b")];
+	const store = usePlaybackStore.getState();
+	store.setQueue(tracks);
+	store.playAt(0);
+	store.removeTrack(tracks[1]);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(1);
+	store.removeTrack(tracks[0]);
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(2);
+});
+
+test("invalid playAt and previous without a queue do not advance intent", () => {
+	const store = usePlaybackStore.getState();
+	store.playAt(-1);
+	store.playAt(0);
+	store.previous();
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(0);
+});
+
+test("non-playback state and queue edits do not advance intent", () => {
+	const store = usePlaybackStore.getState();
+	const a = makeTrack("a");
+	const b = makeTrack("b");
+	store.setPlaying(true);
+	store.togglePlay();
+	store.setPosition(100);
+	store.setDuration(200);
+	store.setVolume(0.5);
+	store.toggleMute();
+	store.setMode("queue");
+	store.setQueue([a]);
+	store.enqueue(b);
+	store.insertAt(1, makeTrack("c"));
+	store.insertNext(makeTrack("d"));
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(0);
 });
