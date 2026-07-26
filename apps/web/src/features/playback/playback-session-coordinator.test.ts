@@ -3,6 +3,7 @@ import {
 	PlaybackSessionCoordinator,
 	type LoadedPlaybackSource,
 	type PlaybackLoadHandle,
+	type PlaybackReloadReason,
 } from "./playback-session-coordinator";
 
 const PLAYBACK_URL_FAR_FUTURE_MS = 1_000 + 20 * 60 * 1_000;
@@ -106,6 +107,26 @@ test("issued playback handles are frozen capabilities", () => {
 	expect(session.playbackToken).toBe(1);
 });
 
+test("snapshots cannot mutate coordinator machine state", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	const snapshot = coordinator.snapshot();
+	let mutationRejected = false;
+
+	try {
+		// @ts-expect-error 快照只允许只读观察
+		snapshot.phase = "playing";
+	} catch {
+		mutationRejected = true;
+	}
+
+	expect(Object.isFrozen(snapshot)).toBe(true);
+	expect(mutationRejected || snapshot.phase === "resolving").toBe(true);
+	expect(coordinator.snapshot().phase).toBe("resolving");
+	expect(coordinator.markPlaying(session)).toBe(false);
+	expect(coordinator.snapshot().phase).toBe("resolving");
+});
+
 test("markMediaFailed is handle-scoped and terminal after source acceptance", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first")!;
@@ -177,6 +198,25 @@ test("the current source advances through loading to playing", () => {
 	expect(coordinator.snapshot().phase).toBe("playing");
 });
 
+test("accepted source metadata is isolated from caller mutation", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	const source = remoteSource();
+	loadAndPlay(coordinator, session, source);
+
+	source.local = true;
+	source.trial = true;
+	source.resolvedAtMs = PLAYBACK_URL_FAR_FUTURE_MS;
+
+	const refreshReason = coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS);
+	const recoveryClaimed = coordinator.claimMediaErrorRecovery(
+		session,
+		"netease:first",
+		true,
+	);
+	expect([refreshReason, recoveryClaimed]).toEqual(["url-age", true]);
+});
+
 test("markPlaying resumes a paused current load", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
@@ -244,6 +284,32 @@ test("a media-error reload binds its reason and preserves the session", () => {
 	expect(reload.playbackSessionId).toBe(session.playbackSessionId);
 	expect(reload.playbackToken).toBeGreaterThan(session.playbackToken);
 	expect(coordinator.snapshot().phase).toBe("recovering");
+});
+
+test("beginReload accepts only public reload reasons", () => {
+	const reasons: readonly PlaybackReloadReason[] = [
+		"long-pause",
+		"url-age",
+		"media-error",
+	];
+	for (const reason of reasons) {
+		const coordinator = new PlaybackSessionCoordinator();
+		const session = coordinator.beginTrack("netease:first")!;
+		loadAndPlay(coordinator, session);
+
+		const reload = coordinator.beginReload(reason);
+		expect(reload?.reloadReason).toBe(reason);
+	}
+
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	const playing = coordinator.snapshot();
+
+	// @ts-expect-error quality 仅允许由音质失效流程内部触发
+	expect(coordinator.beginReload("quality")).toBeNull();
+	expect(coordinator.beginReload("quality" as any)).toBeNull();
+	expect(coordinator.snapshot()).toBe(playing);
 });
 
 test("clear returns to idle and invalidates all old work", () => {

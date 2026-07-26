@@ -10,13 +10,17 @@ import {
 export const LONG_PAUSE_PLAYBACK_URL_REFRESH_MS = 10 * 60 * 1_000;
 export const PLAYBACK_URL_MAX_AGE_MS = 20 * 60 * 1_000;
 
-export type PlaybackReloadReason = MachinePlaybackReloadReason;
+export type PlaybackLoadReason = MachinePlaybackReloadReason;
+export type PlaybackReloadReason = Extract<
+	PlaybackLoadReason,
+	"media-error" | "long-pause" | "url-age"
+>;
 
 export interface PlaybackLoadHandle {
 	readonly playbackSessionId: number;
 	readonly playbackToken: number;
 	readonly lyricToken: number;
-	readonly reloadReason?: PlaybackReloadReason;
+	readonly reloadReason?: PlaybackLoadReason;
 }
 
 export type PlaybackTrackSession = PlaybackLoadHandle;
@@ -36,15 +40,21 @@ interface PlaybackTransition {
 	accepted: boolean;
 }
 
+function freezeMachineState(state: PlaybackMachineState): PlaybackMachineState {
+	return Object.freeze(state);
+}
+
 export class PlaybackSessionCoordinator {
 	private readonly issuedHandles = new WeakSet<PlaybackLoadHandle>();
 	private trackKey = "";
 	private playbackToken = 0;
 	private lyricToken = 0;
-	private loadedSource: LoadedPlaybackSource | null = null;
+	private loadedSource: Readonly<LoadedPlaybackSource> | null = null;
 	private mediaErrorRecoveryTrackKey = "";
 	private pausedAtMs: number | null = null;
-	private machineState: PlaybackMachineState = createPlaybackState();
+	private machineState: PlaybackMachineState = freezeMachineState(
+		createPlaybackState(),
+	);
 	private nextPlaybackSessionId = 0;
 	private lastExplicitPlaybackIntentId = 0;
 	private hasExplicitPlaybackIntent = false;
@@ -52,7 +62,7 @@ export class PlaybackSessionCoordinator {
 	private qualityReloadLoad: PlaybackLoadHandle | null = null;
 	private pendingReloadCompletion: PlaybackLoadHandle | null = null;
 
-	snapshot(): PlaybackMachineState {
+	snapshot(): Readonly<PlaybackMachineState> {
 		return this.machineState;
 	}
 
@@ -97,7 +107,7 @@ export class PlaybackSessionCoordinator {
 		});
 		if (!transition.accepted) return;
 
-		this.machineState = transition.next;
+		this.machineState = freezeMachineState(transition.next);
 		this.nextPlaybackSessionId = nextPlaybackSessionId;
 		this.playbackToken = nextPlaybackToken;
 		this.lyricToken = nextLyricToken;
@@ -111,6 +121,13 @@ export class PlaybackSessionCoordinator {
 	}
 
 	beginReload(reason: PlaybackReloadReason): PlaybackLoadHandle | null {
+		if (
+			reason !== "long-pause" &&
+			reason !== "url-age" &&
+			reason !== "media-error"
+		) {
+			return null;
+		}
 		const playbackToken = this.playbackToken + 1;
 		const transition = this.reduce({
 			type: "BEGIN_RELOAD",
@@ -126,7 +143,7 @@ export class PlaybackSessionCoordinator {
 			lyricToken: this.lyricToken,
 			reloadReason: reason,
 		});
-		this.machineState = transition.next;
+		this.machineState = freezeMachineState(transition.next);
 		this.playbackToken = playbackToken;
 		this.pendingInvalidatedLoad = null;
 		this.qualityReloadLoad = null;
@@ -151,7 +168,7 @@ export class PlaybackSessionCoordinator {
 			lyricToken,
 			reloadReason: "quality",
 		});
-		this.machineState = transition.next;
+		this.machineState = freezeMachineState(transition.next);
 		this.playbackToken = playbackToken;
 		this.lyricToken = lyricToken;
 		this.loadedSource = null;
@@ -172,17 +189,19 @@ export class PlaybackSessionCoordinator {
 		});
 		if (!transition.accepted) return false;
 
-		this.machineState = transition.next;
-		this.loadedSource = source;
+		this.machineState = freezeMachineState(transition.next);
+		this.loadedSource = Object.freeze({ ...source });
 		if (this.pendingInvalidatedLoad === handle) {
 			this.pendingInvalidatedLoad = null;
 		}
 		if (this.qualityReloadLoad === handle) {
-			this.machineState = reducePlaybackState(this.machineState, {
-				type: "RESET_RECOVERY_BUDGET",
-				playbackSessionId: handle.playbackSessionId,
-				loadRequestId: handle.playbackToken,
-			});
+			this.machineState = freezeMachineState(
+				reducePlaybackState(this.machineState, {
+					type: "RESET_RECOVERY_BUDGET",
+					playbackSessionId: handle.playbackSessionId,
+					loadRequestId: handle.playbackToken,
+				}),
+			);
 			this.qualityReloadLoad = null;
 			if (this.pendingReloadCompletion === handle) {
 				this.pendingReloadCompletion = null;
@@ -275,7 +294,7 @@ export class PlaybackSessionCoordinator {
 
 	refreshReason(
 		nowMs: number,
-	): Exclude<PlaybackReloadReason, "media-error" | "quality"> | null {
+	): Exclude<PlaybackReloadReason, "media-error"> | null {
 		const loaded = this.loadedSource;
 		if (!loaded || loaded.local) return null;
 		if (
@@ -347,11 +366,13 @@ export class PlaybackSessionCoordinator {
 		}
 		this.pendingReloadCompletion = null;
 		if (pending.reloadReason !== "media-error") {
-			this.machineState = reducePlaybackState(this.machineState, {
-				type: "RESET_RECOVERY_BUDGET",
-				playbackSessionId: handle.playbackSessionId,
-				loadRequestId: handle.playbackToken,
-			});
+			this.machineState = freezeMachineState(
+				reducePlaybackState(this.machineState, {
+					type: "RESET_RECOVERY_BUDGET",
+					playbackSessionId: handle.playbackSessionId,
+					loadRequestId: handle.playbackToken,
+				}),
+			);
 			this.mediaErrorRecoveryTrackKey = "";
 		}
 		return true;
@@ -394,7 +415,7 @@ export class PlaybackSessionCoordinator {
 			playbackToken,
 			lyricToken,
 		});
-		this.machineState = transition.next;
+		this.machineState = freezeMachineState(transition.next);
 		this.nextPlaybackSessionId = playbackSessionId;
 		this.playbackToken = playbackToken;
 		this.lyricToken = lyricToken;
@@ -457,7 +478,9 @@ export class PlaybackSessionCoordinator {
 
 	private tryDispatch(event: PlaybackMachineEvent): PlaybackTransition {
 		const transition = this.reduce(event);
-		if (transition.accepted) this.machineState = transition.next;
+		if (transition.accepted) {
+			this.machineState = freezeMachineState(transition.next);
+		}
 		return transition;
 	}
 }
