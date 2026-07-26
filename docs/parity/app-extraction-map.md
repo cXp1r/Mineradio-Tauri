@@ -1,6 +1,6 @@
 # `App.tsx` 提取映射
 
-审计基线：`apps/web/src/app/App.tsx` 4960 行；当前为 4077 行。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
+审计基线：`apps/web/src/app/App.tsx` 4960 行；M1 完成时为 1571 行。当前文件主要保留 typed dependency assembly、controller/runtime 组合与跨 Surface 导航；领域 JSX 固定顺序由 `AppShell.tsx` 持有。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
 
 | symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -9,7 +9,7 @@
 | `SIDECAR_STATUS_READY_MAX_POLL_MS` | constant | pure | none | `app/runtime/sidecar-recovery-policy.ts` | recovery characterization | 1 |
 | `SIDECAR_STATUS_HIDDEN_MAX_POLL_MS` | constant | pure | none | `app/runtime/sidecar-recovery-policy.ts` | recovery characterization | 1 |
 | `SIDECAR_RECOVERED_NOTICE_MS` | constant | pure | none | `app/runtime/sidecar-recovery-policy.ts` | recovery characterization | 1 |
-| `PLAYBACK_QUALITY_STORE_KEY` | constant | pure | none | `features/playback/playback-preferences.ts` | playback preference tests | 4 |
+| `PLAYBACK_QUALITY_STORE_KEY` | constant | pure | none | `app/runtime/useShellPreferences.ts` | playback preference characterization | 4 |
 | `LONG_PAUSE_PLAYBACK_URL_REFRESH_MS` | constant | pure | none | `features/playback/playback-session-coordinator.ts` | coordinator refresh tests | 4 |
 | `PLAYBACK_URL_MAX_AGE_MS` | constant | pure | none | `features/playback/playback-session-coordinator.ts` | coordinator refresh tests | 4 |
 | `HOME_LISTEN_STATS_STORE_KEY` | constant | pure | none | `features/home/listen-history.ts` | home summary tests to add | 7 |
@@ -17,18 +17,18 @@
 | `PLAYLIST_PANEL_PIN_STORE_KEY` | constant | pure | none | `features/library/library-preferences.ts` | App UI tests | 7 |
 | `DIY_MODE_STORE_KEY` | constant | pure | none | `features/settings/player-preferences.ts` | App UI tests | 9 |
 | `DEFAULT_GLOBAL_HOTKEYS` | constant | pure | none | `features/desktop/global-hotkeys.ts` | global hotkey tests | 5 |
-| `AccountVipBadge` | type | pure | none | `features/accounts/account-view-model.ts` | TopRightControls tests | 6 |
-| `accountVipBadge` | function | pure | none | `features/accounts/account-view-model.ts` | add table test | 2 |
+| `AccountVipBadge` | type | pure | none | `features/accounts/AccountSurface.tsx` | App account smoke paths | 6 |
+| `accountVipBadge` | function | pure | none | `features/accounts/AccountSurface.tsx` | App account smoke paths | 2 |
 | `placeholderRuntimeConfig` | function | pure | none | `app/runtime/runtime-placeholders.ts` | runtime tests | 1 |
 | `audioElementSupported` | function | DOM | probes browser Audio | `features/playback/audio-capabilities.ts` | PlayerController tests | 4 |
 | `buildTrackLyricFallback` | function | pure | none | `features/playback/usePlaybackSessionRuntime.ts` | runtime fallback/stale lyric tests | 2 |
 | `mergeProviderPlaylists` | function | pure | none | `features/library/playlist-merge.ts` | existing App export tests | 2 |
 | `shouldUseCachedHomeDiscoverPlaylist` | function | pure | none | `features/home/home-cache-policy.ts` | existing App export tests | 2 |
 | `normalizePlaybackQualityPreference` | function | pure | none | `features/playback/playback-preferences.ts` | add preference test | 2 |
-| `readPlaybackQualityPreference` | function | browser-storage | reads localStorage | `adapters/storage/browser-preferences.ts` | App initialization tests | 4 |
-| `savePlaybackQualityPreference` | function | browser-storage | writes localStorage | `adapters/storage/browser-preferences.ts` | App quality tests | 4 |
-| `readBooleanPreference` | function | browser-storage | reads localStorage | `adapters/storage/browser-preferences.ts` | storage adapter tests | 2 |
-| `saveBooleanPreference` | function | browser-storage | writes localStorage | `adapters/storage/browser-preferences.ts` | storage adapter tests | 2 |
+| `readPlaybackQualityPreference` | function | browser-storage | reads localStorage | `app/runtime/useShellPreferences.ts` | App initialization tests | 4 |
+| `savePlaybackQualityPreference` | function | browser-storage | writes localStorage | `app/runtime/useShellPreferences.ts` | App quality tests | 4 |
+| `readBooleanPreference` | function | browser-storage | reads localStorage | `app/runtime/useShellPreferences.ts` | global shell boundary | 2 |
+| `saveBooleanPreference` | function | browser-storage | writes localStorage | `app/runtime/useShellPreferences.ts` | global shell boundary | 2 |
 | `clampNumber` | function | pure | none | shared local utility near consumer | App behavior tests | 2 |
 | `playbackKeyForTrack` | function | pure | none | `features/playback/usePlaybackSessionRuntime.ts` | playback session tests | 2 |
 | `DesktopLyricsPayloadContext` | interface | pure | none | `features/desktop/desktop-lyrics-payload.ts` | desktop snapshot tests | 5 |
@@ -86,7 +86,7 @@
 | `desktopLyricsBeatMapKey` | function | pure | none | `features/desktop/desktop-lyrics-payload.ts` | existing App export tests | 2 |
 | `desktopLyricsBeatMapContext` | function | pure | none | `features/desktop/desktop-lyrics-payload.ts` | beatmap tests | 2 |
 | `buildDesktopLyricsPayloadPatch` | function | pure | none | `features/desktop/desktop-lyrics-payload.ts` | existing App export tests | 2 |
-| `isHomeBlankDismissElement` | function | DOM | inspects event target | `features/home/home-surface-policy.ts` | existing App export tests | 3 |
+| `isHomeBlankDismissElement` | function | DOM | inspects event target | `app/runtime/GlobalShellRuntime.tsx` | existing App export tests | 3 |
 | `EmptyHomeStateInput` | interface | pure | none | `features/home/home-surface-policy.ts` | home tests | 3 |
 | `shouldShowEmptyHome` | function | pure | none | `features/home/home-surface-policy.ts` | existing App export tests | 3 |
 | `deriveSidecarRecoveryNoticeState` | function | pure | none | `app/runtime/sidecar-recovery-policy.ts` | existing App export tests | 1 |
@@ -94,13 +94,13 @@
 | `isDesktopWindowFullscreen` | function | pure | none | `features/desktop/window-state.ts` | existing App export tests | 2 |
 | `forceBottomControlsVisible` | function | DOM | dispatches pointer/UI state | `app/runtime/GlobalShellRuntime.tsx` | App UI tests | 8 |
 | `applyDesktopWindowShellState` | function | DOM | changes document classes | `features/desktop/window-shell.ts` | existing App export tests | 5 |
-| `DesktopTitlebar` | component | React-runtime | renders window chrome | `features/desktop/DesktopTitlebar.tsx` | App DOM tests | 8 |
+| `DesktopTitlebar` | component | React-runtime | renders window chrome | `app/AppShell.tsx` | App DOM tests | 8 |
 | `shouldUseSecondaryLeftDisplaySeamGuard` | function | pure | none | `features/desktop/window-state.ts` | existing App export tests | 2 |
 | `AppProps` | type | pure | none | `app/App.tsx` | test injection contract | 10 |
 | `DesktopLyricsRuntime` | type | pure | none | `ports/desktop-runtime-port.ts` | desktop adapter tests | 2 |
 | `defaultDesktopLyricsRuntime` | constant | Tauri | binds Tauri wrappers | `adapters/tauri/tauri-desktop-runtime.ts` | runtime tests | 5 |
-| `createDefaultSidecarClient` | function | sidecar | constructs concrete client | `adapters/sidecar/legacy-sidecar-services.ts` | client tests | 1 |
-| `App` | component | React-runtime | composition plus accounts/Home/library/desktop/updater orchestration | composition-only `app/App.tsx` | App characterization + architecture boundaries | 10 |
+| `createDefaultSidecarClient` | function | sidecar | constructs concrete client | `app/runtime/default-runtime-dependencies.ts` | client/bootstrap tests | 1 |
+| `App` | component | React-runtime | typed dependency assembly、controllers/runtimes 和跨 Surface 导航 | composition-only `app/App.tsx` | App characterization + architecture boundaries | 10 |
 
 ## 提取纪律
 
@@ -122,5 +122,13 @@
 | Current-track playback session | 请求 token、当前媒体源、长暂停/URL 年龄刷新、单次媒体恢复、local/remote 装载、歌词 fallback/stale guard、试听提示和 beatmap 协调由 `PlaybackSessionCoordinator` 与 `usePlaybackSessionRuntime` 持有 | `bun test apps/web/src/features/playback apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-session-boundary.test.ts` | `a2c34aa`、`c3818cf`、`e7a839b` |
 | Account QR login runtime | 三平台二维码生成 token、立即检查、1800ms polling、in-flight lease、兼容结果分类、成功同步和 timer cleanup 由 `LoginQrCoordinator` 与 `useLoginQrRuntime` 持有；Cookie、logout、账户下拉和 modal UI 仍在 App | `bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-qr-runtime-boundary.test.ts` | `eab8422`、`0d4a0b4`、`946f714` |
 | Account session controller | 三平台登录状态 map、状态刷新、Cookie 会话写入和 logout 由 `useAccountSessionController` 持有，并通过 `AccountPort` 与 QR/bootstrap 汇合；textarea、modal 和账户下拉仍在 App | `bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-session-boundary.test.ts` | `398432d`、`e5a2522`、`3ec372a` |
+| Desktop runtime | 桌面歌词窗口、payload gate、窗口状态监听、全局快捷键和 cleanup 由 `useDesktopRuntime` 持有 | `bun test apps/web/src/features/desktop apps/web/src/app/App.test.tsx scripts/architecture/desktop-runtime-boundary.test.ts` | `025bbda` |
+| Updater controller | 启动检查、交互刷新、开发预览、错误映射和安装动作由 `useUpdaterController` 持有 | `bun test apps/web/src/features/updater apps/web/src/app/App.test.tsx scripts/architecture/updater-controller-boundary.test.ts` | `4be9837` |
+| Likes controller | like 查询、optimistic mutation、rollback 和登录引导由 `useLikesController` 持有 | `bun test apps/web/src/features/likes apps/web/src/app/App.test.tsx scripts/architecture/likes-controller-boundary.test.ts` | `381bc51` |
+| Library controller | Provider 局部刷新、导入歌单、播客集合、详情、collect picker 和播放动作由 `useLibraryController` 持有 | `bun test apps/web/src/features/library apps/web/src/app/App.test.tsx scripts/architecture/library-controller-boundary.test.ts` | `08f8ce4` |
+| Home controller | discover/weather stale guard、详情、收听会话和 Home actions 由 `useHomeController` 持有 | `bun test apps/web/src/features/home apps/web/src/app/App.test.tsx scripts/architecture/home-controller-boundary.test.ts` | `d60de7b` |
+| Playback UI/customization | 本地文件 URL、媒体 UI 事件、队列动作、自定义歌词和封面由 Playback/Customization controllers 持有 | `bun test apps/web/src/features/playback apps/web/src/app/App.test.tsx scripts/architecture/playback-ui-boundary.test.ts` | `fe5b448` |
+| Global shell/preferences | document/body classes、全局 listener、toast、AI chip、空白 Home dismiss 和浏览器偏好持久化迁入 shell runtime/preferences | `bun test apps/web/src/app/App.test.tsx scripts/architecture/global-shell-boundary.test.ts` | `e252ee7` |
+| Feature surfaces/AppShell | Account、Home/Search、Library、Playback、Visual JSX 和 modal/overlay 顺序迁入 Surface；默认具体依赖迁出 App | `bun test apps/web/src/app/App.test.tsx scripts/architecture/app-composition-boundary.test.ts` | `989dd53` |
 
-M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及 accounts surfaces、Home、资料库、桌面运行时和 updater 的 effect 所有权仍未完成，不计入本批完成范围。
+M1 App Decomposition 已完成。M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及 M3+ Visual/Desktop parity 仍是后续里程碑；本批没有切换或嵌入开发中的 `MineRadio-api`。

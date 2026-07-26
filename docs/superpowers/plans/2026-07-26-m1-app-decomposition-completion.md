@@ -192,15 +192,15 @@ Customization controller 持有 modal、custom lyric、custom cover 和 current-
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/global-shell-boundary.test.ts`
 
-- [ ] **Step 1: Extract DOM/listener effects**
+- [x] **Step 1: Extract DOM/listener effects**
 
 Runtime owns body/root class synchronization、toast timeout、account dropdown outside click、mini queue outside click、capsule peek、stage-mode classes、empty-home blank dismiss 和 AI depth event cleanup。
 
-- [ ] **Step 2: Extract browser preferences**
+- [x] **Step 2: Extract browser preferences**
 
 `useShellPreferences` owns DIY、panel pin、capsule auto-hide and shelf/visual persistence through adapters；App 不再调用 `localStorage` helpers。
 
-- [ ] **Step 3: Integrate, verify and commit**
+- [x] **Step 3: Integrate, verify and commit**
 
 运行 App/shell tests、boundary、typecheck/build，提交 `refactor(web): extract global shell runtime`。
 
@@ -216,15 +216,15 @@ Runtime owns body/root class synchronization、toast timeout、account dropdown 
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/app-composition-boundary.test.ts`
 
-- [ ] **Step 1: Move JSX without behavior changes**
+- [x] **Step 1: Move JSX without behavior changes**
 
 每个 Surface 接收该领域 controller result 和窄跨领域 actions，保留全部 DOM id/class/文案。`AppShell` 只定义 DesktopChrome、Visual、Home、Search、Account、Library、Playback、Overlays 顺序。
 
-- [ ] **Step 2: Enforce composition boundary**
+- [x] **Step 2: Enforce composition boundary**
 
 边界测试断言 App 不导入 `SidecarClient`、`PlayerController`、`../tauri/runtime`，不包含 `useEffect(`，不调用 music/desktop methods，并包含 `AppShell` 与各 controller/runtime 组合。
 
-- [ ] **Step 3: Verify and commit**
+- [x] **Step 3: Verify and commit**
 
 运行全部 App/Surface tests、architecture tests、typecheck/build，提交 `refactor(web): converge App composition`。
 
@@ -236,11 +236,11 @@ Runtime owns body/root class synchronization、toast timeout、account dropdown 
 - Modify: `docs/superpowers/specs/2026-07-26-mineradio-2.0.2-tauri-convergence-design.md`
 - Modify: `docs/superpowers/plans/2026-07-26-m1-app-decomposition-completion.md`
 
-- [ ] **Step 1: Record exact ownership and remaining M2+ work**
+- [x] **Step 1: Record exact ownership and remaining M2+ work**
 
 只标记 M1 App Decomposition 完成；gapless、Audio Graph、Visual 2.0、Desktop parity 和 Rust API 嵌入仍保持后续里程碑。
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 ```powershell
 bun run typecheck
@@ -254,7 +254,7 @@ git diff --check
 git diff --exit-code d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps/desktop/scripts/build-sidecar-binary.mjs apps/desktop/src-tauri/tauri.conf.json packages/shared
 ```
 
-- [ ] **Step 3: Commit evidence**
+- [x] **Step 3: Commit evidence**
 
 ```powershell
 git commit -m "docs: complete M1 app decomposition"
@@ -262,9 +262,9 @@ git commit -m "docs: complete M1 app decomposition"
 
 ## Completion checkpoint
 
-- 所有 Task checkbox 完成；
-- `App.tsx` 是装配层且无领域 `useEffect`；
-- concrete Sidecar/Tauri/browser storage dependencies 位于 adapters/runtime；
-- 所有现有 API 和用户可见行为保持；
-- frozen API diff 为空；
-- M1 后续开发入口转入 M2 Playback 2.0。
+- [x] 所有 Task checkbox 完成；
+- [x] `App.tsx` 是装配层且无领域 `useEffect`；
+- [x] concrete Sidecar/Tauri/browser storage dependencies 位于 adapters/runtime；
+- [x] 所有现有 API 和用户可见行为保持；
+- [x] frozen API diff 为空；
+- [x] M1 后续开发入口转入 M2 Playback 2.0。
