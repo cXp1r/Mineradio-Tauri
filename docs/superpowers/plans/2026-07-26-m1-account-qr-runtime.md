@@ -143,11 +143,11 @@ git commit -m "refactor(web): extract login QR runtime"
 - Modify: `apps/web/src/app/App.test.tsx`
 - Create: `scripts/architecture/account-qr-runtime-boundary.test.ts`
 
-- [ ] **Step 1: Replace App-owned QR state and polling**
+- [x] **Step 1: Replace App-owned QR state and polling**
 
 删除 `LoginQrState`/status types、initial status constants、`loginQrRequestSeqRef`、三个 QR/state pairs、`refreshProviderLoginQr`、`resetProviderLoginQr` 和 QR polling effect。App 从 `useLoginQrRuntime()` 读取三平台 QR/status 与 refresh/reset callbacks。
 
-- [ ] **Step 2: Route QR transport through AccountPort**
+- [x] **Step 2: Route QR transport through AccountPort**
 
 runtime 只使用：
 
@@ -160,7 +160,7 @@ appServices?.music.accounts.loginStatus
 
 资料库与 Home 同步继续使用 App 注入回调，现有 Cookie/logout 路径保持不变。
 
-- [ ] **Step 3: Add the architecture source guard**
+- [x] **Step 3: Add the architecture source guard**
 
 断言 `App.tsx` 不再包含：
 
@@ -174,7 +174,7 @@ window.setInterval(() =>
 
 并断言 App 调用 `useLoginQrRuntime()`、runtime 不导入 `SidecarClient`。
 
-- [ ] **Step 4: Run account/App characterization**
+- [x] **Step 4: Run account/App characterization**
 
 ```powershell
 bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-qr-runtime-boundary.test.ts
@@ -182,7 +182,7 @@ bun run --filter ./apps/web typecheck
 bun run web:build
 ```
 
-- [ ] **Step 5: Commit integration**
+- [x] **Step 5: Commit integration**
 
 ```powershell
 git add apps/web/src/app/App.tsx apps/web/src/app/App.test.tsx scripts/architecture/account-qr-runtime-boundary.test.ts docs/superpowers/plans/2026-07-26-m1-account-qr-runtime.md

@@ -93,6 +93,12 @@ import {
   usePlaybackSessionRuntime,
   type CurrentBeatMapState,
 } from "../features/playback/usePlaybackSessionRuntime";
+import {
+  LOGIN_QR_PROVIDERS,
+  useLoginQrRuntime,
+  type LoginModalMode,
+  type LoginProviderId,
+} from "../features/accounts/useLoginQrRuntime";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
@@ -279,60 +285,12 @@ export interface DesktopLyricsPayloadContext {
   beatMap?: JsonValue | null;
 }
 
-interface LoginQrState {
-  key: string;
-  img: string;
-  completed: boolean;
-}
-
-type LoginQrTone = "idle" | "scan" | "fail" | "success" | "preview";
-
-interface LoginQrStatusState {
-  text: string;
-  tone: LoginQrTone;
-}
-
-type LoginModalMode = "full" | "add-account" | "single-provider";
-
-const LOGIN_PROVIDERS = ["netease", "qq", "soda"] as const satisfies readonly ProviderId[];
-
-const INITIAL_NETEASE_QR_STATUS: LoginQrStatusState = {
-  text: "正在生成二维码...",
-  tone: "idle",
-};
-
-const INITIAL_QQ_QR_STATUS: LoginQrStatusState = {
-  text: "正在生成二维码...",
-  tone: "idle",
-};
-
-const INITIAL_SODA_QR_STATUS: LoginQrStatusState = {
-  text: "正在生成二维码...",
-  tone: "idle",
-};
-
-function initialQrStatusForProvider(provider: ProviderId): LoginQrStatusState {
-  if (provider === "qq") return INITIAL_QQ_QR_STATUS;
-  if (provider === "soda") return INITIAL_SODA_QR_STATUS;
-  return INITIAL_NETEASE_QR_STATUS;
-}
+const LOGIN_PROVIDERS = LOGIN_QR_PROVIDERS;
 
 function providerLabelText(provider: ProviderId): string {
   if (provider === "netease") return "网易云";
   if (provider === "qq") return "QQ 音乐";
   return "汽水音乐";
-}
-
-function qrInstructionForProvider(provider: ProviderId): string {
-  if (provider === "qq") return "使用 QQ 音乐 App 扫码，然后在手机上确认登录";
-  if (provider === "soda") return "使用汽水音乐 App 扫码，然后在手机上确认登录";
-  return "使用网易云音乐 App 扫码，然后在手机上确认登录";
-}
-
-function qrScannedTextForProvider(provider: ProviderId): string {
-  if (provider === "qq") return "已扫码，请在 QQ 音乐 App 上确认登录";
-  if (provider === "soda") return "已扫码，请在汽水音乐 App 上确认登录";
-  return "已扫码，请在手机上确认登录";
 }
 
 function loginTitleForProvider(provider: ProviderId): string {
@@ -1015,19 +973,7 @@ export function App({
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
   const [loginModalOpen, setLoginModalOpen] = useState(false);
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("full");
-  const [loginProvider, setLoginProvider] = useState<ProviderId>("netease");
-  const [neteaseQr, setNeteaseQr] = useState<LoginQrState | null>(null);
-  const [neteaseQrStatus, setNeteaseQrStatus] = useState<LoginQrStatusState>(
-    INITIAL_NETEASE_QR_STATUS,
-  );
-  const [qqQr, setQqQr] = useState<LoginQrState | null>(null);
-  const [qqQrStatus, setQqQrStatus] = useState<LoginQrStatusState>(
-    INITIAL_QQ_QR_STATUS,
-  );
-  const [sodaQr, setSodaQr] = useState<LoginQrState | null>(null);
-  const [sodaQrStatus, setSodaQrStatus] = useState<LoginQrStatusState>(
-    INITIAL_SODA_QR_STATUS,
-  );
+  const [loginProvider, setLoginProvider] = useState<LoginProviderId>("netease");
   const [qqManualCookieOpen, setQqManualCookieOpen] = useState(false);
   const [neteaseStatus, setNeteaseStatus] =
     useState<ProviderLoginStatus | null>(null);
@@ -1173,7 +1119,6 @@ export function App({
   const lastRuntimeDurationRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const localAudioUrlsRef = useRef(new Map<string, string>());
-  const loginQrRequestSeqRef = useRef(0);
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1791,6 +1736,67 @@ export function App({
     [],
   );
 
+  const refreshHomeDiscover = useCallback(async () => {
+    const client = sidecarClient;
+    if (!client) {
+      setHomeDiscover(null);
+      setHomeDiscoverLoading(false);
+      return null;
+    }
+    const seq = ++homeDiscoverRequestSeqRef.current;
+    setHomeDiscoverLoading(true);
+    try {
+      const next = await client.discoverHome();
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
+      return next;
+    } catch {
+      const fallback: DiscoverHomeResponse = {
+        loggedIn: false,
+        user: null,
+        dailySongs: [],
+        playlists: [],
+        podcasts: [],
+        mode: "starter",
+        updatedAt: Date.now(),
+      };
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
+      return fallback;
+    } finally {
+      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
+    }
+  }, [sidecarClient]);
+
+  const syncProviderLoginLibrary = useCallback(
+    async (provider: LoginProviderId) => {
+      const client = sidecarClient;
+      if (!client) return;
+      await refreshProviderPlaylists(client, provider);
+      await refreshHomeDiscover();
+    },
+    [refreshHomeDiscover, refreshProviderPlaylists, sidecarClient],
+  );
+
+  const refreshLibraryAfterQrLoggedOut = useCallback(() => {
+    void refreshShelfPlaylists(sidecarClient);
+  }, [refreshShelfPlaylists, sidecarClient]);
+
+  const {
+    qrByProvider: loginQrByProvider,
+    statusByProvider: loginQrStatusByProvider,
+    refreshProviderLoginQr,
+    resetProviderLoginQr,
+  } = useLoginQrRuntime({
+    accounts: appServices?.music.accounts ?? null,
+    modalOpen: loginModalOpen,
+    modalMode: loginModalMode,
+    provider: loginProvider,
+    onProviderStatus: setProviderStatus,
+    syncProviderLibrary: syncProviderLoginLibrary,
+    refreshLibraryAfterLoggedOut: refreshLibraryAfterQrLoggedOut,
+    providerLabel,
+    showToast,
+  });
+
   const refreshProviderStatus = useCallback(
     async (provider: ProviderId) => {
       const client = sidecarClient;
@@ -1823,48 +1829,6 @@ export function App({
       sidecarClient,
     ],
   );
-
-  const refreshProviderLoginQr = useCallback(async (provider: ProviderId) => {
-    const client = sidecarClient;
-    const seq = ++loginQrRequestSeqRef.current;
-    const setQr = provider === "qq" ? setQqQr : provider === "soda" ? setSodaQr : setNeteaseQr;
-    const setQrStatus =
-      provider === "qq"
-        ? setQqQrStatus
-        : provider === "soda"
-          ? setSodaQrStatus
-          : setNeteaseQrStatus;
-    setQr(null);
-    setQrStatus(initialQrStatusForProvider(provider));
-    if (!client) {
-      setQrStatus({ text: "sidecar 未连接，稍后再试", tone: "fail" });
-      return;
-    }
-    try {
-      const key = await client.createProviderLoginQrKey(provider);
-      const image = await client.createProviderLoginQrImage(provider, key.key);
-      if (seq !== loginQrRequestSeqRef.current) return;
-      setQr({ key: image.key || key.key, img: image.img, completed: false });
-      setQrStatus({
-        text: qrInstructionForProvider(provider),
-        tone: "idle",
-      });
-    } catch (e) {
-      if (seq !== loginQrRequestSeqRef.current) return;
-      const message = e instanceof Error ? e.message : "二维码生成失败";
-      setQrStatus({ text: message, tone: "fail" });
-    }
-  }, [sidecarClient]);
-
-  const resetProviderLoginQr = useCallback(() => {
-    loginQrRequestSeqRef.current += 1;
-    setNeteaseQr(null);
-    setQqQr(null);
-    setSodaQr(null);
-    setNeteaseQrStatus(INITIAL_NETEASE_QR_STATUS);
-    setQqQrStatus(INITIAL_QQ_QR_STATUS);
-    setSodaQrStatus(INITIAL_SODA_QR_STATUS);
-  }, []);
 
   const openLoginModal = useCallback(() => {
     const statusByProvider: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
@@ -1933,162 +1897,6 @@ export function App({
     return () =>
       document.removeEventListener("pointerdown", closeOnPointerDown, true);
   }, [accountDropdownOpen]);
-
-  useEffect(() => {
-    if (!loginModalOpen) return;
-    if (loginModalMode === "add-account") return;
-    void refreshProviderLoginQr(loginProvider);
-  }, [loginModalMode, loginModalOpen, loginProvider, refreshProviderLoginQr]);
-
-  const refreshHomeDiscover = useCallback(async () => {
-    const client = sidecarClient;
-    if (!client) {
-      setHomeDiscover(null);
-      setHomeDiscoverLoading(false);
-      return null;
-    }
-    const seq = ++homeDiscoverRequestSeqRef.current;
-    setHomeDiscoverLoading(true);
-    try {
-      const next = await client.discoverHome();
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
-      return next;
-    } catch {
-      const fallback: DiscoverHomeResponse = {
-        loggedIn: false,
-        user: null,
-        dailySongs: [],
-        playlists: [],
-        podcasts: [],
-        mode: "starter",
-        updatedAt: Date.now(),
-      };
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
-      return fallback;
-    } finally {
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
-    }
-  }, [sidecarClient]);
-
-  useEffect(() => {
-    const activeQr =
-      loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
-    if (
-      !loginModalOpen ||
-      loginModalMode === "add-account" ||
-      !activeQr?.key ||
-      activeQr.completed ||
-      !sidecarClient
-    ) {
-      return;
-    }
-
-    let cancelled = false;
-    let checkInFlight = false;
-    const provider = loginProvider;
-    const setQr = provider === "qq" ? setQqQr : provider === "soda" ? setSodaQr : setNeteaseQr;
-    const setQrStatus =
-      provider === "qq"
-        ? setQqQrStatus
-        : provider === "soda"
-          ? setSodaQrStatus
-          : setNeteaseQrStatus;
-    const check = async () => {
-      if (checkInFlight) return;
-      checkInFlight = true;
-      try {
-        const result = await sidecarClient.checkProviderLoginQr(provider, activeQr.key);
-        if (cancelled) return;
-        if (result.stored || result.loggedIn) {
-          setQrStatus({ text: "登录成功，正在同步账号状态", tone: "success" });
-          let status: ProviderLoginStatus | null = null;
-          try {
-            status = await sidecarClient.loginStatus(provider);
-          } catch {
-            status = null;
-          }
-          if (cancelled) return;
-          const label = providerLabel(provider);
-          let providerPlaylistSyncFailed = false;
-          if (status) {
-            setProviderStatus(status);
-            if (status.loggedIn) {
-              setQrStatus({ text: "登录成功，正在同步歌单", tone: "success" });
-              try {
-                await refreshProviderPlaylists(sidecarClient, provider);
-                await refreshHomeDiscover();
-              } catch {
-                if (cancelled) return;
-                providerPlaylistSyncFailed = true;
-                setQrStatus({ text: "登录成功，歌单同步失败，可稍后刷新", tone: "success" });
-              }
-            } else {
-              void refreshShelfPlaylists(sidecarClient);
-            }
-          }
-          if (cancelled) return;
-          setQr((current) =>
-            current?.key === activeQr.key ? { ...current, completed: true } : current,
-          );
-          if (status?.loggedIn) {
-            setQrStatus({
-              text: providerPlaylistSyncFailed ? "登录成功，歌单同步失败，可稍后刷新" : "登录成功，歌单已同步",
-              tone: "success",
-            });
-            showToast(`${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`);
-          } else {
-            setQrStatus({ text: "登录成功，会话已保存，可刷新状态", tone: "success" });
-            showToast(`${label}会话已保存`);
-          }
-          return;
-        }
-        if (result.expired || result.code === 800 || result.code === 65) {
-          setQr((current) =>
-            current?.key === activeQr.key ? { ...current, completed: true } : current,
-          );
-          setQrStatus({ text: "二维码已过期，请刷新", tone: "fail" });
-          return;
-        }
-        if (result.scanned || result.code === 802 || result.code === 67) {
-          setQrStatus({ text: qrScannedTextForProvider(provider), tone: "scan" });
-          return;
-        }
-        setQrStatus({
-          text: qrInstructionForProvider(provider),
-          tone: "idle",
-        });
-      } catch {
-        if (!cancelled) setQrStatus({ text: "扫码状态读取失败", tone: "fail" });
-      } finally {
-        checkInFlight = false;
-      }
-    };
-    const timer = window.setInterval(() => {
-      void check();
-    }, 1800);
-    void check();
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [
-    loginModalMode,
-    loginModalOpen,
-    loginProvider,
-    neteaseQr?.completed,
-    neteaseQr?.key,
-    providerLabel,
-    qqQr?.completed,
-    qqQr?.key,
-    sodaQr?.completed,
-    sodaQr?.key,
-    refreshHomeDiscover,
-    refreshProviderPlaylists,
-    refreshShelfPlaylists,
-    setProviderStatus,
-    showToast,
-    sidecarClient,
-  ]);
 
   const refreshHomeWeatherRadio = useCallback(async () => {
     const client = sidecarClient;
@@ -3529,14 +3337,8 @@ export function App({
         ? sodaStatus
         : null;
   const topVipBadge = accountVipBadge(topAccountStatus);
-  const activeLoginQr =
-    loginProvider === "qq" ? qqQr : loginProvider === "soda" ? sodaQr : neteaseQr;
-  const activeLoginQrStatus =
-    loginProvider === "qq"
-      ? qqQrStatus
-      : loginProvider === "soda"
-        ? sodaQrStatus
-        : neteaseQrStatus;
+  const activeLoginQr = loginQrByProvider[loginProvider];
+  const activeLoginQrStatus = loginQrStatusByProvider[loginProvider];
   const activeLoginStatus = providerStatuses[loginProvider] ?? null;
   const activeCookieInputRef =
     loginProvider === "netease"
