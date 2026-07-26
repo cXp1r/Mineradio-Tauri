@@ -177,7 +177,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 		})),
 	previous: () =>
 		set((s) => {
-			if (s.queue.length === 0) return {};
+			if (s.queue.length === 0) return s;
 			const currentIdx = findTrackIndex(s.queue, s.currentTrack);
 			let prevIdx: number;
 			if (s.mode === "shuffle") {

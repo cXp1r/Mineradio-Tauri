@@ -346,6 +346,19 @@ test("invalid playAt and previous without a queue do not advance intent", () => 
 	expect(usePlaybackStore.getState().playbackIntentId).toBe(0);
 });
 
+test("previous without a queue does not notify subscribers", () => {
+	let notifications = 0;
+	const unsubscribe = usePlaybackStore.subscribe(() => {
+		notifications += 1;
+	});
+	try {
+		usePlaybackStore.getState().previous();
+		expect(notifications).toBe(0);
+	} finally {
+		unsubscribe();
+	}
+});
+
 test("non-playback state and queue edits do not advance intent", () => {
 	const store = usePlaybackStore.getState();
 	const a = makeTrack("a");
