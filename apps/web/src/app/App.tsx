@@ -264,6 +264,7 @@ export function App({
     tab: PlaylistPanelTab;
   } | null>(null);
   const currentTrack = usePlaybackStore((s) => s.currentTrack);
+  const playbackIntentId = usePlaybackStore((s) => s.playbackIntentId);
   const queue = usePlaybackStore((s) => s.queue);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
   const positionMs = usePlaybackStore((s) => s.positionMs);
@@ -481,9 +482,9 @@ export function App({
     shufflePlaylistPanelQueue,
     clearPlaylistPanelQueue,
     seekPlayback,
-    handleRuntimeTimeUpdate,
-    handleRuntimeDurationChange,
-    handleRuntimeEnded,
+    handleRuntimeTimeUpdate: handleUiRuntimeTimeUpdate,
+    handleRuntimeDurationChange: handleUiRuntimeDurationChange,
+    handleRuntimeEnded: handleUiRuntimeEnded,
   } = usePlaybackUiController({
     controllerRef,
     lyricsPayloadRef,
@@ -526,14 +527,18 @@ export function App({
     dismissTrialBanner,
     setPlaybackQuality,
     togglePlayback,
+    handleRuntimeTimeUpdate,
+    handleRuntimeDurationChange,
     handleRuntimePlay,
     handleRuntimePause,
+    handleRuntimeEnded,
     handleRuntimeError,
   } = usePlaybackSessionRuntime({
     appServices,
     controllerRef,
     localAudioUrlsRef,
     currentTrack,
+    playbackIntentId,
     positionMs,
     getPlaybackSnapshot: getPlaybackSessionSnapshot,
     setPlaying,
@@ -552,6 +557,9 @@ export function App({
     initialPlaybackQuality: readPlaybackQualityPreference(),
     persistPlaybackQuality: savePlaybackQualityPreference,
     onRuntimePause: recordHomeListenPause,
+    onRuntimeTimeUpdate: handleUiRuntimeTimeUpdate,
+    onRuntimeDurationChange: handleUiRuntimeDurationChange,
+    onRuntimeEnded: handleUiRuntimeEnded,
   });
   clearCurrentBeatMapRef.current = clearCurrentBeatMap;
   const {

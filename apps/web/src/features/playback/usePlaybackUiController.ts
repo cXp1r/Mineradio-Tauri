@@ -233,14 +233,7 @@ export function usePlaybackUiController({
 		current.finalizeListenSession(true);
 		current.setPositionMs(0);
 		usePlaybackStore.getState().ended();
-		if (
-			usePlaybackStore.getState().mode === "single" &&
-			controllerRef.current
-		) {
-			controllerRef.current.seek(0);
-			void controllerRef.current.play();
-		}
-	}, [controllerRef]);
+	}, []);
 
 	useEffect(
 		() => () => {

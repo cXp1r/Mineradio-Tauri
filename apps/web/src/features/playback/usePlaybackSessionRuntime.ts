@@ -18,6 +18,7 @@ import type {
 	ErrorPayload,
 	MediaEventPayload,
 	PlayerController,
+	TimeUpdatePayload,
 } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
 import { resolveLyricsForTrack } from "../../lyrics/custom-lyrics";
@@ -53,6 +54,7 @@ export interface PlaybackSessionRuntimeOptions {
 	controllerRef: RefObject<PlayerController | null>;
 	localAudioUrlsRef: RefObject<Map<string, string>>;
 	currentTrack: Track | null;
+	playbackIntentId: number;
 	positionMs: number;
 	getPlaybackSnapshot(): PlaybackSessionSnapshot;
 	setPlaying(playing: boolean): void;
@@ -72,6 +74,9 @@ export interface PlaybackSessionRuntimeOptions {
 	persistPlaybackQuality(quality: PlaybackQualityRequest): void;
 	now?: () => number;
 	onRuntimePause?: () => void;
+	onRuntimeTimeUpdate?(payload: TimeUpdatePayload): void;
+	onRuntimeDurationChange?(payload: TimeUpdatePayload): void;
+	onRuntimeEnded?(): void;
 }
 
 export interface PlaybackSessionRuntimeResult {
@@ -84,8 +89,11 @@ export interface PlaybackSessionRuntimeResult {
 	dismissTrialBanner(): void;
 	setPlaybackQuality(quality: PlaybackQualityRequest): void;
 	togglePlayback(): void;
+	handleRuntimeTimeUpdate(payload: TimeUpdatePayload): void;
+	handleRuntimeDurationChange(payload: TimeUpdatePayload): void;
 	handleRuntimePlay(payload: MediaEventPayload): void;
 	handleRuntimePause(payload: MediaEventPayload): void;
+	handleRuntimeEnded(payload: MediaEventPayload): void;
 	handleRuntimeError(payload: ErrorPayload): void;
 }
 
@@ -135,6 +143,7 @@ export function usePlaybackSessionRuntime({
 	controllerRef,
 	localAudioUrlsRef,
 	currentTrack,
+	playbackIntentId,
 	positionMs,
 	getPlaybackSnapshot,
 	setPlaying,
@@ -154,6 +163,9 @@ export function usePlaybackSessionRuntime({
 	persistPlaybackQuality,
 	now = Date.now,
 	onRuntimePause,
+	onRuntimeTimeUpdate,
+	onRuntimeDurationChange,
+	onRuntimeEnded,
 }: PlaybackSessionRuntimeOptions): PlaybackSessionRuntimeResult {
 	const [playbackQuality, setPlaybackQualityState] = useState(initialPlaybackQuality);
 	const [playbackQualityReloadHandle, setPlaybackQualityReloadHandle] =
@@ -296,6 +308,32 @@ export function usePlaybackSessionRuntime({
 		const handle = loadContext as PlaybackLoadHandle;
 		return coordinator.isPlaybackCurrent(handle) ? handle : null;
 	}, [coordinator]);
+	const runtimeLifecycleCallbacksRef = useRef({
+		onRuntimeTimeUpdate,
+		onRuntimeDurationChange,
+		onRuntimeEnded,
+	});
+	runtimeLifecycleCallbacksRef.current = {
+		onRuntimeTimeUpdate,
+		onRuntimeDurationChange,
+		onRuntimeEnded,
+	};
+
+	const handleRuntimeTimeUpdate = useCallback((payload: TimeUpdatePayload) => {
+		if (!currentEventLoad(payload)) return;
+		runtimeLifecycleCallbacksRef.current.onRuntimeTimeUpdate?.(payload);
+	}, [currentEventLoad]);
+
+	const handleRuntimeDurationChange = useCallback((payload: TimeUpdatePayload) => {
+		if (!currentEventLoad(payload)) return;
+		runtimeLifecycleCallbacksRef.current.onRuntimeDurationChange?.(payload);
+	}, [currentEventLoad]);
+
+	const handleRuntimeEnded = useCallback((payload: MediaEventPayload) => {
+		const boundLoad = currentEventLoad(payload);
+		if (!boundLoad || !coordinator.markEnded(boundLoad)) return;
+		runtimeLifecycleCallbacksRef.current.onRuntimeEnded?.();
+	}, [coordinator, currentEventLoad]);
 
 	const handleRuntimeErrorImpl = useCallback((payload: ErrorPayload) => {
 		const boundLoad = currentEventLoad(payload);
@@ -452,7 +490,7 @@ export function usePlaybackSessionRuntime({
 		if (!localAudioUrl && !services) return;
 		const session = coordinator.beginTrack(
 			key,
-			undefined,
+			playbackIntentId,
 			playbackQualityReloadHandle ?? undefined,
 		);
 		if (!session) return;
@@ -588,6 +626,7 @@ export function usePlaybackSessionRuntime({
 		loadBeatMap,
 		localAudioUrlsRef,
 		now,
+		playbackIntentId,
 		playbackQuality,
 		playbackQualityReloadHandle,
 		resetLyrics,
@@ -611,8 +650,11 @@ export function usePlaybackSessionRuntime({
 		dismissTrialBanner: () => setTrialBanner(null),
 		setPlaybackQuality,
 		togglePlayback,
+		handleRuntimeTimeUpdate,
+		handleRuntimeDurationChange,
 		handleRuntimePlay,
 		handleRuntimePause,
+		handleRuntimeEnded,
 		handleRuntimeError,
 	};
 }
