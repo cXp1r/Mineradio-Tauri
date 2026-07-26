@@ -71,7 +71,6 @@ import { useUiStore } from "../stores/ui-store";
 import { useUpdateStore } from "../stores/update-store";
 import { saveVisualFxToStorage, useVisualStore } from "../stores/visual-store";
 import type { JsonValue, RuntimeConfig, WindowState } from "../tauri/runtime";
-import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
 import { createTauriDesktopRuntime } from "../adapters/tauri/tauri-desktop-runtime";
 import type { DesktopRuntimePort } from "../ports/desktop-runtime-port";
 import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
@@ -87,6 +86,7 @@ import {
 } from "../features/accounts/useLoginQrRuntime";
 import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
 import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
+import { useUpdaterController } from "../features/updater/useUpdaterController";
 import {
   buildDesktopLyricsPayloadPatch,
   desktopLyricsBeatMapContext,
@@ -798,7 +798,6 @@ export function App({
     tone?: "good" | "fail";
   }>({ text: "" });
   const [customLyricVersion, setCustomLyricVersion] = useState(0);
-  const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [collectTarget, setCollectTarget] = useState<Track | null>(null);
   const [collectBusyPlaylistId, setCollectBusyPlaylistId] = useState<
     string | null
@@ -855,13 +854,17 @@ export function App({
   const toast = useUiStore((s) => s.toast);
   const showToast = useUiStore((s) => s.showToast);
   const clearToast = useUiStore((s) => s.clearToast);
+  const {
+    modalOpen: updateModalOpen,
+    setModalOpen: setUpdateModalOpen,
+    refresh: refreshUpdateStatus,
+    install: installAvailableUpdate,
+  } = useUpdaterController({ showToast });
   const [aiDepthChip, setAiDepthChip] = useState({
     visible: false,
     text: "AI 深度估计…",
   });
   const updateState = useUpdateStore();
-  const applyUpdateCheckResult = useUpdateStore((s) => s.applyCheckResult);
-  const setUpdateStatus = useUpdateStore((s) => s.setStatus);
 
   const lyricsPayload = useLyricsStore((s) => s.payload);
   const setLyricsPayload = useLyricsStore((s) => s.setPayload);
@@ -1380,51 +1383,6 @@ export function App({
     }
     if (coverFile) void applyCustomCoverImage(coverFile);
   }, [applyCustomCoverImage, clearCurrentBeatMap, enterPlaybackSurface, showToast]);
-
-  const refreshUpdateStatus = useCallback(
-    async (manual = false) => {
-      try {
-        if (manual) setUpdateStatus("checking");
-        const result = manual
-          ? await checkForUpdate()
-          : await getUpdaterStatus();
-        applyUpdateCheckResult(result);
-        if (manual) {
-          if (result.error) showToast(result.message || result.error);
-          else if (result.available)
-            showToast(
-              result.signatureGate
-                ? "发现新版本，签名密钥未配置"
-                : `发现新版本 v${result.version ?? ""}`,
-            );
-          else showToast("当前已是最新版本");
-        }
-      } catch (e) {
-        setUpdateStatus("error");
-        showToast(e instanceof Error ? e.message : "更新检测失败");
-      }
-    },
-    [applyUpdateCheckResult, setUpdateStatus, showToast],
-  );
-
-  const installAvailableUpdate = useCallback(async () => {
-    try {
-      setUpdateStatus("downloading");
-      showToast("开始下载更新");
-      setUpdateStatus("installing");
-      const result = await installUpdate();
-      applyUpdateCheckResult(result);
-      if (result.error) {
-        setUpdateStatus("error");
-        showToast(result.message || result.error);
-        return;
-      }
-      showToast("更新安装程序已启动");
-    } catch (e) {
-      setUpdateStatus("error");
-      showToast(e instanceof Error ? e.message : "更新安装失败");
-    }
-  }, [applyUpdateCheckResult, setUpdateStatus, showToast]);
 
   const providerLabel = useCallback(
     (provider: ProviderId) => providerLabelText(provider),
@@ -2816,11 +2774,6 @@ export function App({
     const timer = setTimeout(() => clearToast(), 2600);
     return () => clearTimeout(timer);
   }, [clearToast, toast]);
-
-  useEffect(() => {
-    void refreshUpdateStatus(false);
-    if (shouldOpenDevUpdatePreview()) setUpdateModalOpen(true);
-  }, [refreshUpdateStatus]);
 
   useEffect(() => {
     if (!miniQueueOpen || typeof document === "undefined") return;

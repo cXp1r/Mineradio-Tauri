@@ -74,7 +74,7 @@ git commit -m "refactor(web): extract desktop runtime"
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/updater-controller-boundary.test.ts`
 
-- [ ] **Step 1: Extract update state/actions**
+- [x] **Step 1: Extract update state/actions**
 
 ```ts
 export interface UpdaterControllerResult {
@@ -87,7 +87,7 @@ export interface UpdaterControllerResult {
 
 Controller owns startup check, dev preview, error/toast mapping and install state through the existing update store. Dependencies are injected wrappers for `checkForUpdate`、`getUpdaterStatus`、`installUpdate`、`shouldOpenDevUpdatePreview`。
 
-- [ ] **Step 2: Integrate, verify and commit**
+- [x] **Step 2: Integrate, verify and commit**
 
 App 删除 updater imports、effect 和 callbacks；运行 UpdateHost/App tests、typecheck/build，提交 `refactor(web): extract updater controller`。
 
