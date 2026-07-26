@@ -5,7 +5,6 @@ import {
   useState,
   type ReactElement,
 } from "react";
-import { SidecarClient } from "../api/sidecar-client";
 import { AppRuntimeProvider } from "./AppRuntimeProvider";
 import {
   createLegacyAppServices,
@@ -17,10 +16,14 @@ export {
   nextSidecarStatusPollDelayMs,
 } from "./runtime/sidecar-recovery-policy";
 import {
-  SidecarRecoveryRuntime,
+  type SidecarRecoveryRuntimeProps,
   type SidecarRuntimeConnection,
 } from "./runtime/SidecarRecoveryRuntime";
-import { PlayerController } from "../audio/player-controller";
+import { AppShell, type AppShellProps } from "./AppShell";
+import {
+  createDefaultSidecarClient,
+  defaultDesktopRuntime,
+} from "./runtime/default-runtime-dependencies";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useProviderStore } from "../stores/provider-store";
@@ -29,10 +32,11 @@ import { useShelfStore } from "../stores/shelf-store";
 import { useUiStore } from "../stores/ui-store";
 import { useUpdateStore } from "../stores/update-store";
 import { useVisualStore } from "../stores/visual-store";
-import type { JsonValue, RuntimeConfig, WindowState } from "../tauri/runtime";
-import { createTauriDesktopRuntime } from "../adapters/tauri/tauri-desktop-runtime";
-import type { DesktopRuntimePort } from "../ports/desktop-runtime-port";
-import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
+import type {
+  DesktopJsonValue,
+  DesktopRuntimePort,
+  DesktopWindowState,
+} from "../ports/desktop-runtime-port";
 import {
   usePlaybackSessionRuntime,
   type CurrentBeatMapState,
@@ -41,6 +45,7 @@ import {
   LOCAL_AUDIO_ACCEPT,
   usePlaybackUiController,
 } from "../features/playback/usePlaybackUiController";
+import type { PlaybackControllerRef } from "../features/playback/PlaybackSurface";
 import { useTrackCustomizationController } from "../features/customization/useTrackCustomizationController";
 import {
   LOGIN_QR_PROVIDERS,
@@ -75,25 +80,12 @@ export {
   buildDesktopLyricsPayloadPatch,
   desktopLyricsBeatMapKey,
 } from "../features/desktop/desktop-lyrics-payload";
-import { BottomControlsHost } from "../components/shell/BottomControlsHost";
-import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
-import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
-import { SearchDetailPage } from "../components/shell/SearchDetailPage";
-import { SearchShell, type SearchMode } from "../components/shell/SearchShell";
+import type { PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
+import type { SearchMode } from "../components/shell/SearchShell";
 import { buildDesktopLyricSnapshot } from "../desktop-lyrics/desktop-lyrics-snapshot";
-import {
-  SidecarRecoveryNotice,
-  type SidecarRecoveryNoticeState,
-} from "../components/shell/SidecarRecoveryNotice";
-import { TopRightControls, VipBadge } from "../components/shell/TopRightControls";
-import {
-  VisualGuideHost,
-  type VisualGuideStep,
-} from "../components/shell/VisualGuideHost";
-import { UpdateHost } from "../components/shell/UpdateHost";
-import { EmptyHomeHost } from "../home/EmptyHomeHost";
+import type { SidecarRecoveryNoticeState } from "../components/shell/SidecarRecoveryNotice";
+import type { VisualGuideStep } from "../components/shell/VisualGuideHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
-import { VisualControlPanelHost } from "../visual/VisualControlPanelHost";
 import {
   VisualEngineHost,
   type DesktopLyricsMotionSnapshot,
@@ -107,7 +99,6 @@ import {
 import {
   type ProviderId,
   type ProviderLoginStatus,
-  type ProviderVipIcon,
   type Track,
 } from "@mineradio/shared";
 import {
@@ -119,28 +110,6 @@ import { useGlobalShellRuntime } from "./runtime/GlobalShellRuntime";
 export { isHomeBlankDismissElement } from "./runtime/GlobalShellRuntime";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
-type AccountVipBadge = {
-  text: string;
-  icon?: ProviderVipIcon;
-  iconUrl?: string;
-};
-
-function accountVipBadge(status: ProviderLoginStatus | null | undefined): AccountVipBadge | null {
-  if (!status?.loggedIn) return null;
-  const text =
-    status.vipLabel?.trim() ||
-    (status.vipLevel === "svip"
-      ? "SVIP"
-      : status.vipLevel === "vip"
-        ? "VIP"
-        : "");
-  if (!text) return null;
-  return {
-    text,
-    icon: status.vipIcon,
-    iconUrl: status.vipIconUrl,
-  };
-}
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
@@ -159,29 +128,6 @@ function providerLabelText(provider: ProviderId): string {
   return "汽水音乐";
 }
 
-function loginTitleForProvider(provider: ProviderId): string {
-  if (provider === "netease") return "扫码登录网易云音乐";
-  if (provider === "qq") return "扫码登录 QQ 音乐";
-  return "扫码登录汽水音乐";
-}
-
-function loginDescriptionForProvider(provider: ProviderId): string {
-  if (provider === "netease") return "使用网易云音乐 App 扫码，可同步歌单、红心与播客。";
-  if (provider === "qq") return "使用 QQ 音乐 App 扫码，可同步歌单和播放授权。";
-  return "使用汽水音乐 App 扫码，可同步歌单、收藏与播放授权。";
-}
-
-function qrLoadingMarkForProvider(provider: ProviderId): string {
-  if (provider === "netease") return "NE";
-  if (provider === "qq") return "QQ";
-  return "SD";
-}
-
-function cookiePlaceholderForProvider(provider: ProviderId): string {
-  if (provider === "netease") return "MUSIC_U=...; __csrf=...";
-  if (provider === "qq") return "uin=...; qm_keyst=...; qqmusic_key=...";
-  return "sid_tt=...; sessionid=...";
-}
 
 function trackTitle(track: Track | null | undefined): string {
   return track?.title || "MineRadio-Tauri";
@@ -218,7 +164,7 @@ export function shouldShowEmptyHome(input: EmptyHomeStateInput): boolean {
   return true;
 }
 
-export function isDesktopWindowFullscreen(state: WindowState): boolean {
+export function isDesktopWindowFullscreen(state: DesktopWindowState): boolean {
   return !!(
     state.isFullScreen ||
     state.isNativeFullScreen ||
@@ -246,7 +192,7 @@ function forceBottomControlsVisible(awakeDurationMs = 900): void {
   }
 }
 
-export function applyDesktopWindowShellState(state: WindowState): void {
+export function applyDesktopWindowShellState(state: DesktopWindowState): void {
   if (typeof document === "undefined") return;
   document.documentElement.classList.add("desktop-shell-root");
   document.body.classList.add("desktop-shell");
@@ -257,101 +203,8 @@ export function applyDesktopWindowShellState(state: WindowState): void {
   );
 }
 
-function DesktopTitlebar({
-  maximized,
-  updateSlot,
-  onGuide,
-  onDiy,
-  diyActive,
-  onMinimize,
-  onToggleMaximize,
-  onClose,
-}: {
-  maximized?: boolean;
-  updateSlot: ReactElement | null;
-  onGuide: () => void;
-  onDiy: () => void;
-  diyActive: boolean;
-  onMinimize: () => void;
-  onToggleMaximize: () => void;
-  onClose: () => void;
-}): ReactElement {
-  return (
-    <div id="desktop-titlebar" aria-label="window controls" data-tauri-drag-region="true">
-      <div className="desktop-drag-region" data-tauri-drag-region="true">
-        <div className="desktop-app-mark" aria-hidden="true" />
-        <div className="desktop-app-title" aria-hidden="true" />
-      </div>
-      <div className="desktop-window-controls">
-        <button
-          id="visual-guide-btn"
-          className="icon-btn"
-          type="button"
-          onClick={onGuide}
-          title="查看使用引导"
-          aria-label="查看使用引导"
-        >
-          ?
-        </button>
-        {updateSlot}
-        <button
-          id="diy-mode-btn"
-          className={`desktop-mode-btn${diyActive ? " on" : ""}`}
-          type="button"
-          onClick={onDiy}
-          title={diyActive ? "关闭 DIY 玩家模式" : "开启 DIY 玩家模式"}
-          aria-label={diyActive ? "关闭 DIY 玩家模式" : "开启 DIY 玩家模式"}
-          aria-pressed={diyActive}
-        >
-          DIY
-        </button>
-        <button
-          className="desktop-window-btn"
-          type="button"
-          onClick={onMinimize}
-          title="最小化"
-          aria-label="最小化"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M3 8h10" />
-          </svg>
-        </button>
-        <button
-          className="desktop-window-btn"
-          type="button"
-          onClick={onToggleMaximize}
-          title={maximized ? "还原" : "最大化"}
-          aria-label={maximized ? "还原" : "最大化"}
-        >
-          {maximized ? (
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <path d="M5 3h8v8" />
-              <path d="M3 5h8v8H3z" />
-            </svg>
-          ) : (
-            <svg viewBox="0 0 16 16" aria-hidden="true">
-              <rect x="3.5" y="3.5" width="9" height="9" rx="1.5" />
-            </svg>
-          )}
-        </button>
-        <button
-          className="desktop-window-btn close"
-          type="button"
-          onClick={onClose}
-          title="关闭"
-          aria-label="关闭"
-        >
-          <svg viewBox="0 0 16 16" aria-hidden="true">
-            <path d="M4 4l8 8M12 4l-8 8" />
-          </svg>
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function shouldUseSecondaryLeftDisplaySeamGuard(
-  state: WindowState | null,
+  state: DesktopWindowState | null,
 ): boolean {
   return state?.isPrimaryDisplay === false && state.hasDisplayOnLeft;
 }
@@ -359,9 +212,9 @@ export function shouldUseSecondaryLeftDisplaySeamGuard(
 export type AppProps = {
   SplashComponent?: (props: SplashHostProps) => ReactElement | null;
   VisualComponent?: typeof VisualEngineHost;
-  createSidecarClient?: (cfg: RuntimeConfig) => SidecarClient;
+  createSidecarClient?: SidecarRecoveryRuntimeProps["createSidecarClient"];
   servicesFactory?: AppServicesFactory;
-  initialRuntimeConfig?: RuntimeConfig | null;
+  initialRuntimeConfig?: SidecarRuntimeConnection["config"] | null;
   desktopLyricsRuntime?: DesktopLyricsRuntime;
   desktopRuntime?: DesktopRuntimePort;
 };
@@ -369,14 +222,8 @@ export type AppProps = {
 export type DesktopLyricsRuntime = {
   showWindow: () => Promise<void>;
   closeWindow: () => Promise<void>;
-  updatePayload: (payload: JsonValue) => Promise<void>;
+  updatePayload: (payload: DesktopJsonValue) => Promise<void>;
 };
-
-const defaultDesktopRuntime = createTauriDesktopRuntime();
-
-function createDefaultSidecarClient(cfg: RuntimeConfig): SidecarClient {
-  return new SidecarClient(cfg.sidecarBaseUrl);
-}
 
 export function App({
   SplashComponent = SplashHost,
@@ -387,9 +234,9 @@ export function App({
   desktopLyricsRuntime,
   desktopRuntime = defaultDesktopRuntime,
 }: AppProps = {}): ReactElement {
-  const [sidecarClient, setSidecarClient] = useState<SidecarClient | null>(
-    null,
-  );
+  const [sidecarClient, setSidecarClient] = useState<
+    SidecarRuntimeConnection["client"] | null
+  >(null);
   const [appServices, setAppServices] = useState<AppServices | null>(null);
   const resolvedDesktopRuntime = useMemo<DesktopRuntimePort>(() => {
     if (!desktopLyricsRuntime) return desktopRuntime;
@@ -598,11 +445,11 @@ export function App({
   } = homeController;
 
   // 首次渲染时同步创建 Audio，确保视觉引擎先绑定同一个媒体元素，
-  // 随后再由 PlaybackRuntimeHost 接管 PlayerController 生命周期。
+  // 随后再由播放 Runtime 接管控制器生命周期。
   const audioRef = useRef<HTMLAudioElement | null>(
     typeof Audio !== "undefined" && audioElementSupported() ? new Audio() : null,
   );
-  const controllerRef = useRef<PlayerController | null>(null);
+  const controllerRef = useRef<PlaybackControllerRef["current"]>(null);
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -619,6 +466,7 @@ export function App({
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
   const clearCurrentBeatMapRef = useRef<() => void>(() => undefined);
+  const toggleWindowFullscreenRef = useRef<() => Promise<void>>(async () => {});
   const applyCustomCoverImageRef = useRef<
     (file: Blob, track?: Track) => Promise<void>
   >(async () => undefined);
@@ -792,31 +640,7 @@ export function App({
     [focusSearch, setSearchKeyword],
   );
 
-  const {
-    playlists: shelfPlaylists,
-    importedPlaylists,
-    podcastCollections: shelfPodcastCollections,
-    panelOpen: playlistPanelOpen,
-    panelTab: playlistPanelTab,
-    setPanelOpen: setPlaylistPanelOpen,
-    setPanelTab: setPlaylistPanelTab,
-    openPanelTab: openPlaylistPanelTab,
-    collectTarget,
-    collectBusyPlaylistId,
-    writableCollectPlaylists,
-    refresh: refreshShelfPlaylists,
-    refreshProvider: refreshProviderPlaylists,
-    openCollectPicker,
-    openCollectPickerForCurrent,
-    closeCollectPicker,
-    collectToPlaylist: addCollectTargetToPlaylist,
-    importSharedPlaylist: importSharedPlaylistFromText,
-    deleteImportedPlaylist,
-    loadPlaylistDetail: loadPlaylistPanelDetail,
-    playTracks: playPlaylistPanelTracks,
-    openPodcastCollection: openPlaylistPanelPodcastCollection,
-    playShelfPlaylist,
-  } = useLibraryController({
+  const libraryController = useLibraryController({
     library: appServices?.music.library ?? null,
     discover: appServices?.music.discover ?? null,
     getCurrentTrack: () => usePlaybackStore.getState().currentTrack,
@@ -831,7 +655,7 @@ export function App({
     setSearchError,
     showToast,
   });
-  libraryControllerRef.current = {
+  const {
     playlists: shelfPlaylists,
     importedPlaylists,
     podcastCollections: shelfPodcastCollections,
@@ -840,22 +664,18 @@ export function App({
     setPanelOpen: setPlaylistPanelOpen,
     setPanelTab: setPlaylistPanelTab,
     openPanelTab: openPlaylistPanelTab,
-    collectTarget,
-    collectBusyPlaylistId,
-    writableCollectPlaylists,
     refresh: refreshShelfPlaylists,
     refreshProvider: refreshProviderPlaylists,
     openCollectPicker,
     openCollectPickerForCurrent,
-    closeCollectPicker,
-    collectToPlaylist: addCollectTargetToPlaylist,
     importSharedPlaylist: importSharedPlaylistFromText,
     deleteImportedPlaylist,
     loadPlaylistDetail: loadPlaylistPanelDetail,
     playTracks: playPlaylistPanelTracks,
     openPodcastCollection: openPlaylistPanelPodcastCollection,
     playShelfPlaylist,
-  };
+  } = libraryController;
+  libraryControllerRef.current = libraryController;
 
   const toggleDiyMode = useCallback(() => {
     const next = !diyMode;
@@ -1305,9 +1125,9 @@ export function App({
     volumeUp: () => setVolume(usePlaybackStore.getState().volume + 0.05),
     volumeDown: () => setVolume(usePlaybackStore.getState().volume - 0.05),
     toggleFullscreen: () => {
-      void resolvedDesktopRuntime.toggleWindowFullscreen();
+      void toggleWindowFullscreenRef.current();
     },
-  }), [nextTrack, previousTrack, resolvedDesktopRuntime, setVolume, togglePlayback]);
+  }), [nextTrack, previousTrack, setVolume, togglePlayback]);
 
   const clearDesktopWindowShell = useCallback(() => {
     if (typeof document !== "undefined") {
@@ -1339,10 +1159,13 @@ export function App({
   ]);
 
   const {
-    desktopLyricsEnabled,
     desktopWindowState,
     toggleDesktopLyrics,
     setDesktopLyricsEnabled: setDesktopLyricsWindowEnabled,
+    minimizeWindow,
+    toggleWindowMaximize,
+    toggleWindowFullscreen,
+    closeWindow,
   } = useDesktopRuntime({
     desktop: resolvedDesktopRuntime,
     buildLyricsPayload: buildDesktopRuntimeLyricsPayload,
@@ -1352,13 +1175,14 @@ export function App({
     onWindowCleanup: clearDesktopWindowShell,
   });
   setDesktopLyricsWindowEnabledRef.current = setDesktopLyricsWindowEnabled;
+  toggleWindowFullscreenRef.current = toggleWindowFullscreen;
   const dismissEmptyHome = useCallback(() => {
     setHomeForcedOpen(false);
     setHomeSuppressed(true);
     setConsole(false);
     setMiniQueue(false);
   }, [setConsole, setHomeForcedOpen, setHomeSuppressed, setMiniQueue]);
-  const { userCapsulePeek, aiDepthChip } = useGlobalShellRuntime({
+  const { aiDepthChip } = useGlobalShellRuntime({
     diyMode,
     splashActive,
     emptyHomeActive,
@@ -1382,137 +1206,81 @@ export function App({
     showToast,
   });
 
-  const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
-    netease: neteaseStatus,
-    qq: qqStatus,
-    soda: sodaStatus,
-  };
-  const missingLoginProviders = LOGIN_PROVIDERS.filter(
-    (provider) => !providerStatuses[provider]?.loggedIn,
-  );
-  const loggedProviderStatuses = LOGIN_PROVIDERS
-    .map((provider) => {
-      const status = providerStatuses[provider];
-      return { provider, status };
-    })
-    .filter(
-      (entry): entry is { provider: (typeof LOGIN_PROVIDERS)[number]; status: ProviderLoginStatus } =>
-        entry.status?.loggedIn === true,
-    );
-  const loggedAccountSummaries = loggedProviderStatuses.map(
-    ({ provider, status }) =>
-      `${providerLabel(provider)} ${status.nickname ?? status.userId ?? "已登录"}`,
-  );
-  const providerLoginHint = (provider: ProviderId, fallback: string) => {
-    const status = providerStatuses[provider];
-    return status?.loggedIn === false ? "登录已失效" : fallback;
-  };
-  const topAccountStatus = neteaseStatus?.loggedIn
-    ? neteaseStatus
-    : qqStatus?.loggedIn
-      ? qqStatus
-      : sodaStatus?.loggedIn
-        ? sodaStatus
-        : null;
-  const topVipBadge = accountVipBadge(topAccountStatus);
-  const activeLoginQr = loginQrByProvider[loginProvider];
-  const activeLoginQrStatus = loginQrStatusByProvider[loginProvider];
-  const activeLoginStatus = providerStatuses[loginProvider] ?? null;
-  const activeCookieInputRef =
-    loginProvider === "netease"
-      ? neteaseCookieInputRef
-      : loginProvider === "soda"
-        ? sodaCookieInputRef
-        : qqCookieInputRef;
-
-  return (
-    <AppRuntimeProvider services={appServices}>
-    <SidecarRecoveryRuntime
-      initialRuntimeConfig={initialRuntimeConfig}
-      createSidecarClient={createSidecarClient}
-      servicesFactory={servicesFactory}
-      loginProviders={LOGIN_PROVIDERS}
-      onConnection={handleSidecarConnection}
-      onCapabilities={setMatrix}
-      onProviderStatus={acceptProviderStatus}
-      onRefreshLibrary={handleRuntimeLibraryRefresh}
-      onRecoveryState={handleRecoveryState}
-    />
-    <div id="desktop-window-shell">
-      <input
-        ref={fileInputRef}
-        type="file"
-        id="file-input"
-        accept={LOCAL_AUDIO_ACCEPT}
-        multiple
-        style={{ display: "none" }}
-        onChange={(event) => {
-          importLocalFiles(event.currentTarget.files);
-          event.currentTarget.value = "";
-        }}
-      />
-      <DesktopTitlebar
-        maximized={desktopWindowState?.isMaximized}
-        onGuide={openHomeProductGuide}
-        onDiy={toggleDiyMode}
-        diyActive={diyMode}
-        onMinimize={() => void resolvedDesktopRuntime.minimizeWindow()}
-        onToggleMaximize={() => void resolvedDesktopRuntime.toggleWindowMaximize()}
-        onClose={() => void resolvedDesktopRuntime.closeWindow()}
-        updateSlot={
-          <UpdateHost
-            state={updateState}
-            open={updateModalOpen}
-            onOpen={() => setUpdateModalOpen(true)}
-            onClose={() => setUpdateModalOpen(false)}
-            onCheck={() => void refreshUpdateStatus(true)}
-            onInstall={() => void installAvailableUpdate()}
-          />
-        }
-      />
-      {SHOW_SPLASH && splashActive && (
-        <SplashComponent onDismissed={() => setSplashActive(false)} />
-      )}
-      <VisualComponent
-        audioElementRef={audioRef}
-        controllerRef={controllerRef}
-        lyricsPayload={lyricsPayload}
-        positionMs={positionMs}
-        durationMs={durationMs}
-        isPlaying={isPlaying}
-        queue={queue}
-        playlists={shelfPlaylists}
-        podcastCollections={shelfPodcastCollections}
-        currentTrack={currentTrack}
-        currentCoverUrl={currentTrack?.coverUrl}
-        beatMapKey={currentBeatMapState?.key}
-        beatMap={currentBeatMapState?.map}
-        sidecarBaseUrl={sidecarBaseUrl}
-        coverResolution={visualFx.coverResolution}
-        fxState={visualFx}
-        shelfSettings={{
+  const shellProps: AppShellProps = {
+    sidecarRuntimeProps: {
+      initialRuntimeConfig,
+      createSidecarClient,
+      servicesFactory,
+      loginProviders: LOGIN_PROVIDERS,
+      onConnection: handleSidecarConnection,
+      onCapabilities: setMatrix,
+      onProviderStatus: acceptProviderStatus,
+      onRefreshLibrary: handleRuntimeLibraryRefresh,
+      onRecoveryState: handleRecoveryState,
+    },
+    fileInputRef,
+    localAudioAccept: LOCAL_AUDIO_ACCEPT,
+    onImportLocalFiles: importLocalFiles,
+    titlebar: {
+      maximized: desktopWindowState?.isMaximized,
+      onGuide: openHomeProductGuide,
+      onDiy: toggleDiyMode,
+      diyActive: diyMode,
+      onMinimize: () => void minimizeWindow(),
+      onToggleMaximize: () => void toggleWindowMaximize(),
+      onClose: () => void closeWindow(),
+      updateProps: {
+        state: updateState,
+        open: updateModalOpen,
+        onOpen: () => setUpdateModalOpen(true),
+        onClose: () => setUpdateModalOpen(false),
+        onCheck: () => void refreshUpdateStatus(true),
+        onInstall: () => void installAvailableUpdate(),
+      },
+    },
+    SplashComponent,
+    splashVisible: SHOW_SPLASH && splashActive,
+    onSplashDismissed: () => setSplashActive(false),
+    visual: {
+      VisualComponent,
+      engineProps: {
+        audioElementRef: audioRef,
+        controllerRef,
+        lyricsPayload,
+        positionMs,
+        durationMs,
+        isPlaying,
+        queue,
+        playlists: shelfPlaylists,
+        podcastCollections: shelfPodcastCollections,
+        currentTrack,
+        currentCoverUrl: currentTrack?.coverUrl,
+        beatMapKey: currentBeatMapState?.key,
+        beatMap: currentBeatMapState?.map,
+        sidecarBaseUrl,
+        coverResolution: visualFx.coverResolution,
+        fxState: visualFx,
+        shelfSettings: {
           mode: shelfMode,
           cameraMode: shelfCameraMode,
           presence: shelfPresence,
           showPodcasts: shelfShowPodcasts,
           mergeCollections: shelfMergeCollections,
-        }}
-        splashActive={splashActive}
-        homeActive={emptyHomeActive}
-        secondaryLeftDisplaySeamGuardActive={shouldUseSecondaryLeftDisplaySeamGuard(
-          desktopWindowState,
-        )}
-        onShelfModeChange={updateShelfMode}
-        onShelfPlayQueueIndex={(index) =>
-          usePlaybackStore.getState().playAt(index)
-        }
-        onShelfPlayPlaylist={(payload) => void playShelfPlaylist(payload)}
-        onShelfDetailRowClick={(payload) => {
+        },
+        splashActive,
+        homeActive: emptyHomeActive,
+        secondaryLeftDisplaySeamGuardActive:
+          shouldUseSecondaryLeftDisplaySeamGuard(desktopWindowState),
+        onShelfModeChange: updateShelfMode,
+        onShelfPlayQueueIndex: (index) =>
+          usePlaybackStore.getState().playAt(index),
+        onShelfPlayPlaylist: (payload) => void playShelfPlaylist(payload),
+        onShelfDetailRowClick: (payload) => {
           void handleShelfDetailRowAction({
             ...payload,
             client: sidecarClient,
             isLiked: () => false,
-            onResult: (message) => showToast(message),
+            onResult: showToast,
             onOpenCollect: openCollectPicker,
             onOpenPodcastRadio: (radioId, title) => {
               const loader = createShelfDetailContentLoader({
@@ -1525,699 +1293,279 @@ export function App({
               })(radioId, title);
             },
           });
-        }}
-        onShelfOpenDetailContent={(payload, contentList) => {
+        },
+        onShelfOpenDetailContent: (payload, contentList) => {
           shelfContentListRef.current = contentList;
           const loader = createShelfDetailContentLoader({
             client: sidecarClient,
             getContentList: () => contentList,
           });
           void loader(payload);
-        }}
-        onShelfOpenContentChange={setShelfDetailOpen}
-        desktopLyricsMotionRef={desktopLyricsMotionRef}
-      />
-      <GuideParticlesHost />
-      <div id="ai-depth-chip" className={aiDepthChip.visible ? "show" : ""}>
-        <div className="mini-spin" />
-        <span id="ai-depth-text">{aiDepthChip.text}</span>
-      </div>
-      <VisualControlPanelHost
-        preset={visualPreset}
-        intensity={visualIntensity}
-        settings={{
+        },
+        onShelfOpenContentChange: setShelfDetailOpen,
+        desktopLyricsMotionRef,
+      },
+      controlPanelProps: {
+        preset: visualPreset,
+        intensity: visualIntensity,
+        settings: {
           ...visualFx,
           shelf: shelfMode,
           shelfCameraMode,
           shelfPresence,
           shelfShowPodcasts,
           shelfMergeCollections,
-        }}
-        onPresetChange={updateVisualPreset}
-        onNumberSettingChange={updateVisualNumberSetting}
-        onBooleanSettingChange={updateVisualBooleanSetting}
-        onStringSettingChange={updateVisualStringSetting}
-        onFxPatchChange={updateVisualFxPatch}
-        onNotice={showNotice}
-      />
-      <EmptyHomeHost
-        discover={homeDiscover}
-        weatherRadio={homeWeatherRadio}
-        listenSummary={homeListenSummary}
-        playlistDetail={homePlaylistDetail}
-        active={emptyHomeActive}
-        loading={homeDiscoverLoading || homeWeatherRadioLoading}
-        isPlaying={isPlaying}
-        positionMs={positionMs}
-        durationMs={durationMs}
-        onSearchFocus={focusSearch}
-        onOpenLibrary={openHomeLibrary}
-        onOpenConsole={openHomePlayerConsole}
-        onSearchQuery={searchQuery}
-        onUpload={openLocalFileImport}
-        onGuide={openHomeProductGuide}
-        onOpenLogin={openLoginModal}
-        onPlayDaily={playHomeDaily}
-        onPlayPrivate={() => void playHomePrivate()}
-        onPlaySong={(index) => void playHomeDiscoverSongs(index)}
-        onOpenPlaylist={(index) => void openHomeDiscoverPlaylist(index)}
-        onOpenPodcast={(index) => void openHomeDiscoverPodcast(index)}
-        onOpenPodcastSearch={openHomePodcastSearch}
-        onOpenInsight={openHomeInsight}
-        onPlayRecent={playHomeRecent}
-        onPlayWeatherSong={(index) => void playHomeWeatherSong(index)}
-        onClosePlaylistDetail={closeHomePlaylistDetail}
-        onPlayPlaylistDetail={playHomePlaylistDetail}
-        onPlaylistDetailArtist={searchHomePlaylistDetailArtist}
-      />
-      <SearchShell
-        client={appServices?.music.search ?? null}
-        onFocus={focusSearch}
-        onUpload={openLocalFileImport}
-        onClearCustomCover={clearCustomCoverImage}
-        onResultPlay={enterPlaybackSurface}
-        onResultNext={insertSearchResultNext}
-        onResultLike={(track) => void toggleLikeTrack(track)}
-        onResultCollect={openCollectPicker}
-        onSharedPlaylistImport={importSharedPlaylistFromText}
-        onArtistSearch={searchArtistFromResult}
-        isResultLiked={isTrackLiked}
-        isResultLikeBusy={isTrackLikeBusy}
-        hasCustomCover={currentHasCustomCover}
-        peek={emptyHomeActive || searchKeyword.trim().length > 0}
-        requestedMode={searchModeRequest}
-      />
-      <SearchDetailPage
-        client={sidecarClient}
-        onClose={focusSearch}
-        onPlayResults={playSearchDetailTracks}
-        onAppendQueue={appendSearchResult}
-        onResultNext={insertSearchResultNext}
-        onResultLike={(track) => void toggleLikeTrack(track)}
-        onResultCollect={openCollectPicker}
-        onArtistSearch={searchArtistFromResult}
-        isResultLiked={isTrackLiked}
-        isResultLikeBusy={isTrackLikeBusy}
-      />
-      <TopRightControls
-        onHome={goHome}
-        onLogin={handleAccountButtonClick}
-        onHideCapsule={toggleUserCapsuleAutoHide}
-        capsuleAutoHide={userCapsuleAutoHide}
-        loggedIn={topAccountStatus !== null}
-        accountLabel={
-          topAccountStatus?.nickname ??
-          topAccountStatus?.userId ??
-          undefined
-        }
-        accountAvatarUrl={topAccountStatus?.avatarUrl}
-        accountVipLevel={topAccountStatus?.vipLevel}
-        accountVipLabel={topVipBadge?.text}
-        accountVipIcon={topVipBadge?.icon}
-        accountVipIconUrl={topVipBadge?.iconUrl}
-      />
-      {accountDropdownOpen && loggedProviderStatuses.length > 0 ? (
-        <div
-          id="account-dropdown"
-          className="account-dropdown"
-          role="menu"
-          aria-label="账号信息"
-        >
-          <div className="account-dropdown-title">账号信息</div>
-          <div className="account-dropdown-list">
-            {loggedProviderStatuses.map(({ provider, status }) => {
-              const displayName = status.nickname ?? status.userId ?? "已登录";
-              const vipBadge = accountVipBadge(status);
-              return (
-                <div
-                  key={provider}
-                  id={`account-dropdown-provider-${provider}`}
-                  className={`account-dropdown-row account-pill ${provider}`}
-                >
-                  {status.avatarUrl ? (
-                    <img
-                      className="account-dropdown-avatar"
-                      src={status.avatarUrl}
-                      alt=""
-                      aria-hidden="true"
-                    />
-                  ) : (
-                    <span className="account-dropdown-avatar fallback" aria-hidden="true">
-                      {displayName.trim().slice(0, 1) || "账"}
-                    </span>
-                  )}
-                  <div className="account-dropdown-main">
-                    <div className="account-dropdown-provider">
-                      {providerLabel(provider)}
-                      {vipBadge ? (
-                        <VipBadge text={vipBadge.text} icon={vipBadge.icon} iconUrl={vipBadge.iconUrl} />
-                      ) : null}
-                    </div>
-                    <div className="account-dropdown-name">{displayName}</div>
-                  </div>
-                  <div className="account-dropdown-actions">
-                    <button
-                      type="button"
-                      onClick={() => void refreshProviderStatus(provider)}
-                    >
-                      刷新
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void logoutProvider(provider)}
-                    >
-                      退出
-                    </button>
-                  </div>
-                </div>
-              );
-            })}
-            {missingLoginProviders.length > 0 ? (
-              <div className="account-dropdown-divider" />
-            ) : null}
-            {missingLoginProviders.map((provider) => (
-              <button
-                key={provider}
-                id={`account-add-provider-${provider}`}
-                className={`account-dropdown-add ${provider}`}
-                type="button"
-                onClick={() => openSingleProviderLogin(provider)}
-              >
-                <span>添加 {providerLabel(provider)}</span>
-                <span>{providerLoginHint(provider, "扫码登录")}</span>
-              </button>
-            ))}
-          </div>
-        </div>
-      ) : null}
-      <VisualGuideHost
-        open={visualGuideOpen}
-        onClose={closeVisualGuide}
-        onPrepareStep={prepareVisualGuideStep}
-      />
-      <PlaylistPanelHost
-        open={playlistPanelOpen || playlistPanelPinned}
-        pinned={playlistPanelPinned}
-        tab={playlistPanelTab}
-        queue={queue}
-        currentTrack={currentTrack}
-        mode={playbackMode}
-        playlists={shelfPlaylists}
-        importedPlaylists={importedPlaylists}
-        podcastCollections={shelfPodcastCollections}
-        onTabChange={openPlaylistPanelTab}
-        onPinToggle={togglePlaylistPanelPinned}
-        onShuffle={shufflePlaylistPanelQueue}
-        onCycleMode={cyclePlaylistPanelMode}
-        onClearQueue={clearPlaylistPanelQueue}
-        onRefresh={() => void refreshShelfPlaylists()}
-        onPlayQueueIndex={playQueueAt}
-        onQueueArtist={(artist) => searchQuery(artist, "song")}
-        onLikeQueueIndex={toggleLikeQueueIndex}
-        onCollectQueueIndex={collectQueueIndex}
-        onInsertQueueNext={insertMiniQueueNext}
-        onRemoveQueueIndex={removeQueueAt}
-        onLoadPlaylistDetail={loadPlaylistPanelDetail}
-        onPlayTracks={playPlaylistPanelTracks}
-        onDeleteImportedPlaylist={deleteImportedPlaylist}
-        onPodcastCollectionOpen={(collection) => void openPlaylistPanelPodcastCollection(collection)}
-      />
-      <BottomControlsHost
-        visible={consoleVisible}
-        onReveal={revealConsole}
-        onTogglePlay={togglePlayback}
-        onPrevious={previousTrack}
-        onNext={nextTrack}
-        onModeChange={setPlaybackMode}
-        onQueue={toggleMiniQueue}
-        onLyrics={() =>
+        },
+        onPresetChange: updateVisualPreset,
+        onNumberSettingChange: updateVisualNumberSetting,
+        onBooleanSettingChange: updateVisualBooleanSetting,
+        onStringSettingChange: updateVisualStringSetting,
+        onFxPatchChange: updateVisualFxPatch,
+        onNotice: showNotice,
+      },
+      aiDepthChip,
+    },
+    home: {
+      homeProps: {
+        discover: homeDiscover,
+        weatherRadio: homeWeatherRadio,
+        listenSummary: homeListenSummary,
+        playlistDetail: homePlaylistDetail,
+        active: emptyHomeActive,
+        loading: homeDiscoverLoading || homeWeatherRadioLoading,
+        isPlaying,
+        positionMs,
+        durationMs,
+        onSearchFocus: focusSearch,
+        onOpenLibrary: openHomeLibrary,
+        onOpenConsole: openHomePlayerConsole,
+        onSearchQuery: searchQuery,
+        onUpload: openLocalFileImport,
+        onGuide: openHomeProductGuide,
+        onOpenLogin: openLoginModal,
+        onPlayDaily: playHomeDaily,
+        onPlayPrivate: () => void playHomePrivate(),
+        onPlaySong: (index) => void playHomeDiscoverSongs(index),
+        onOpenPlaylist: (index) => void openHomeDiscoverPlaylist(index),
+        onOpenPodcast: (index) => void openHomeDiscoverPodcast(index),
+        onOpenPodcastSearch: openHomePodcastSearch,
+        onOpenInsight: openHomeInsight,
+        onPlayRecent: playHomeRecent,
+        onPlayWeatherSong: (index) => void playHomeWeatherSong(index),
+        onClosePlaylistDetail: closeHomePlaylistDetail,
+        onPlayPlaylistDetail: playHomePlaylistDetail,
+        onPlaylistDetailArtist: searchHomePlaylistDetailArtist,
+      },
+      searchProps: {
+        client: appServices?.music.search ?? null,
+        onFocus: focusSearch,
+        onUpload: openLocalFileImport,
+        onClearCustomCover: clearCustomCoverImage,
+        onResultPlay: enterPlaybackSurface,
+        onResultNext: insertSearchResultNext,
+        onResultLike: (track) => void toggleLikeTrack(track),
+        onResultCollect: openCollectPicker,
+        onSharedPlaylistImport: importSharedPlaylistFromText,
+        onArtistSearch: searchArtistFromResult,
+        isResultLiked: isTrackLiked,
+        isResultLikeBusy: isTrackLikeBusy,
+        hasCustomCover: currentHasCustomCover,
+        peek: emptyHomeActive || searchKeyword.trim().length > 0,
+        requestedMode: searchModeRequest,
+      },
+      searchDetailProps: {
+        client: sidecarClient,
+        onClose: focusSearch,
+        onPlayResults: playSearchDetailTracks,
+        onAppendQueue: appendSearchResult,
+        onResultNext: insertSearchResultNext,
+        onResultLike: (track) => void toggleLikeTrack(track),
+        onResultCollect: openCollectPicker,
+        onArtistSearch: searchArtistFromResult,
+        isResultLiked: isTrackLiked,
+        isResultLikeBusy: isTrackLikeBusy,
+      },
+    },
+    account: {
+      statuses: accountStatusByProvider,
+      dropdownOpen: accountDropdownOpen,
+      capsuleAutoHide: userCapsuleAutoHide,
+      onHome: goHome,
+      onAccountClick: handleAccountButtonClick,
+      onHideCapsule: toggleUserCapsuleAutoHide,
+      onRefreshStatus: (provider) => void refreshProviderStatus(provider),
+      onLogout: (provider) => void logoutProvider(provider),
+      onOpenSingleProvider: openSingleProviderLogin,
+    },
+    guide: {
+      open: visualGuideOpen,
+      onClose: closeVisualGuide,
+      onPrepareStep: prepareVisualGuideStep,
+    },
+    library: {
+      panelProps: {
+        open: playlistPanelOpen || playlistPanelPinned,
+        pinned: playlistPanelPinned,
+        tab: playlistPanelTab,
+        queue,
+        currentTrack,
+        mode: playbackMode,
+        playlists: shelfPlaylists,
+        importedPlaylists,
+        podcastCollections: shelfPodcastCollections,
+        onTabChange: openPlaylistPanelTab,
+        onPinToggle: togglePlaylistPanelPinned,
+        onShuffle: shufflePlaylistPanelQueue,
+        onCycleMode: cyclePlaylistPanelMode,
+        onClearQueue: clearPlaylistPanelQueue,
+        onRefresh: () => void refreshShelfPlaylists(),
+        onPlayQueueIndex: playQueueAt,
+        onQueueArtist: (artist) => searchQuery(artist, "song"),
+        onLikeQueueIndex: toggleLikeQueueIndex,
+        onCollectQueueIndex: collectQueueIndex,
+        onInsertQueueNext: insertMiniQueueNext,
+        onRemoveQueueIndex: removeQueueAt,
+        onLoadPlaylistDetail: loadPlaylistPanelDetail,
+        onPlayTracks: playPlaylistPanelTracks,
+        onDeleteImportedPlaylist: deleteImportedPlaylist,
+        onPodcastCollectionOpen: (collection) =>
+          void openPlaylistPanelPodcastCollection(collection),
+      },
+      collect: libraryController,
+    },
+    playback: {
+      controlsProps: {
+        visible: consoleVisible,
+        onReveal: revealConsole,
+        onTogglePlay: togglePlayback,
+        onPrevious: previousTrack,
+        onNext: nextTrack,
+        onModeChange: setPlaybackMode,
+        onQueue: toggleMiniQueue,
+        onLyrics: () =>
           showNotice(
             lyricsPayload ? "歌词已载入舞台层" : "播放歌曲后会自动加载歌词",
-          )
-        }
-        onLyricSourceChange={(mode) => {
+          ),
+        onLyricSourceChange: (mode) => {
           if (mode === "custom") chooseCustomLyrics();
           else applyOriginalLyrics();
-        }}
-        onOpenCustomLyrics={openCustomLyricModal}
-        onCollectCurrent={openCollectPickerForCurrent}
-        onToggleLikeCurrent={toggleLikeCurrent}
-        onClose={() => {
+        },
+        onOpenCustomLyrics: openCustomLyricModal,
+        onCollectCurrent: openCollectPickerForCurrent,
+        onToggleLikeCurrent: toggleLikeCurrent,
+        onClose: () => {
           setConsole(false);
           setMiniQueue(false);
-        }}
-        onNotice={showNotice}
-        onSeek={seekPlayback}
-        onVolumeChange={setVolume}
-        onToggleMute={toggleMute}
-        onQualityChange={setPlaybackQuality}
-        onShelfModeChange={updateShelfMode}
-        onShelfCameraModeChange={updateShelfCameraMode}
-        onShelfPresenceChange={updateShelfPresence}
-        onShelfShowPodcastsChange={updateShelfShowPodcasts}
-        onShelfMergeCollectionsChange={updateShelfMergeCollections}
-        deps={{
-          isHomeControlsLocked: () => homeControlsLocked,
-        }}
-        onPlayQueueIndex={playMiniQueueIndex}
-        onRemoveQueueIndex={removeQueueAt}
-        onInsertQueueNext={insertMiniQueueNext}
-        onMinimize={() => void resolvedDesktopRuntime.minimizeWindow()}
-        onToggleMaximize={() => void resolvedDesktopRuntime.toggleWindowMaximize()}
-        onToggleFullscreen={() => void resolvedDesktopRuntime.toggleWindowFullscreen()}
-        mode={playbackMode}
-        isPlaying={isPlaying}
-        currentTitle={currentTrack?.title}
-        currentArtist={currentTrack?.artists.join(" / ")}
-        currentCoverUrl={currentTrack?.coverUrl}
-        currentLiked={currentLiked}
-        currentLikeBusy={currentLikeBusy}
-        queue={queue}
-        currentTrack={currentTrack}
-        miniQueueOpen={miniQueueOpen}
-        positionMs={positionMs}
-        durationMs={durationMs}
-        volume={volume}
-        muted={muted}
-        playbackQuality={playbackQuality}
-        qualityOptions={trackQualityOptions}
-        shelfMode={shelfMode}
-        shelfCameraMode={shelfCameraMode}
-        shelfPresence={shelfPresence}
-        shelfShowPodcasts={shelfShowPodcasts}
-        shelfMergeCollections={shelfMergeCollections}
-        lyricSourceMode={
-          currentLyricPreference === "custom" ? "custom" : "original"
-        }
-        hasCustomLyric={!!currentCustomLyricText}
-      />
-      {sidecarRecoveryState ? (
-        <SidecarRecoveryNotice state={sidecarRecoveryState} />
-      ) : null}
-      {customLyricModalOpen ? (
-        <div
-          id="custom-lyric-modal"
-          className="modal-mask show"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget)
-              setCustomLyricModalOpen(false);
-          }}
-        >
-          <div
-            className="modal custom-lyric-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="custom-lyric-heading"
-          >
-            <h2 id="custom-lyric-heading">自定义歌词</h2>
-            <div className="custom-lyric-track">
-              <div id="custom-lyric-title" className="custom-lyric-title">
-                {currentTrack?.title ?? "当前歌曲"}
-              </div>
-              <div id="custom-lyric-sub" className="custom-lyric-sub">
-                {(currentTrack?.artists.join(" / ") || "") +
-                  (currentCustomLyricText
-                    ? " · 已保存自定义歌词"
-                    : " · 可粘贴 LRC 或逐行输入")}
-              </div>
-            </div>
-            <textarea
-              ref={customLyricInputRef}
-              id="custom-lyric-input"
-              className="custom-lyric-input"
-              spellCheck={false}
-              defaultValue={customLyricText}
-              placeholder={
-                "[00:12.00] 第一行歌词\n[00:16.50] 第二行歌词\n\n没有时间轴也可以，每一行会按歌曲时长自动铺开"
-              }
-              onChange={(event) =>
-                setCustomLyricText(event.currentTarget.value)
-              }
-            />
-            <div
-              id="custom-lyric-status"
-              className={`custom-lyric-status ${customLyricStatus.tone ?? ""}`.trim()}
-            >
-              {customLyricStatus.text}
-            </div>
-            <div className="btn-row">
-              <button
-                className="modal-btn"
-                type="button"
-                onClick={deleteCustomLyric}
-              >
-                删除
-              </button>
-              <button
-                className="modal-btn"
-                type="button"
-                onClick={() => setCustomLyricModalOpen(false)}
-              >
-                关闭
-              </button>
-              <button
-                id="custom-lyric-save"
-                className="modal-btn primary"
-                type="button"
-                onClick={saveCustomLyric}
-              >
-                保存使用
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {collectTarget ? (
-        <div
-          id="collect-modal"
-          className="modal-mask show"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) closeCollectPicker();
-          }}
-        >
-          <div
-            className="modal collect-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="collect-modal-title"
-          >
-            <h2 id="collect-modal-title">收藏到歌单</h2>
-            <div id="collect-current" className="collect-current">
-              {collectTarget.coverUrl ? (
-                <img src={collectTarget.coverUrl} alt="" />
-              ) : (
-                <div className="cover-placeholder" />
-              )}
-              <div className="collect-current-meta">
-                <div className="collect-title">{collectTarget.title}</div>
-                <div className="collect-sub">
-                  {collectTarget.artists.join(" / ")}
-                </div>
-              </div>
-            </div>
-            <div id="collect-list" className="collect-list">
-              {writableCollectPlaylists.length > 0 ? (
-                writableCollectPlaylists.map((playlist) => (
-                  <button
-                    key={`${playlist.provider}:${playlist.id}`}
-                    type="button"
-                    className={
-                      collectBusyPlaylistId === playlist.id
-                        ? "collect-item busy"
-                        : "collect-item"
-                    }
-                    data-collect-pid={playlist.id}
-                    onClick={() => void addCollectTargetToPlaylist(playlist.id)}
-                  >
-                    {playlist.coverUrl ? (
-                      <img src={playlist.coverUrl} alt="" />
-                    ) : (
-                      <div className="cover-placeholder" />
-                    )}
-                    <div className="collect-current-meta">
-                      <div className="collect-title">{playlist.name}</div>
-                      <div className="collect-sub">
-                        {playlist.trackCount ?? 0} 首
-                      </div>
-                    </div>
-                  </button>
-                ))
-              ) : (
-                <div className="collect-empty">还没有可写入的歌单</div>
-              )}
-            </div>
-            <div className="btn-row">
-              <button
-                className="modal-btn"
-                type="button"
-                onClick={closeCollectPicker}
-              >
-                关闭
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-      {loginModalOpen ? (
-        <div
-          id="login-modal"
-          className="modal-mask show"
-          role="presentation"
-          onClick={(event) => {
-            if (event.target === event.currentTarget) closeLoginModal();
-          }}
-        >
-          <div
-            className={`modal dual-login-modal${loginModalMode === "add-account" ? " add-account-modal" : ""}`}
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="login-modal-title"
-          >
-            {loginModalMode === "full" ? (
-              <div className="login-platform-tabs" id="login-platform-tabs">
-                {LOGIN_PROVIDERS.map((provider) => (
-                  <button
-                    key={provider}
-                    id={`login-provider-${provider}`}
-                    className={`${provider}${loginProvider === provider ? " active" : ""}`}
-                    type="button"
-                    onClick={() => {
-                      setLoginProvider(provider);
-                      setQqManualCookieOpen(false);
-                    }}
-                    aria-selected={loginProvider === provider}
-                  >
-                    {providerLabel(provider)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-            <div className="login-intro">
-              <div className="login-intro-kicker">Mineradio</div>
-              <div className="login-intro-title">音乐播放器，也是一座视觉舞台</div>
-              <div className="login-intro-body">
-                搜索或导入一首歌即可播放；登录后会同步歌单、红心和播客，登录态会保存在本机 sidecar 数据目录。
-              </div>
-            </div>
-            {loginModalMode === "add-account" ? (
-              <>
-                <h2 id="login-modal-title">
-                  {missingLoginProviders.length > 0 ? "添加账号" : "账号信息"}
-                </h2>
-                <div id="login-modal-desc" className="desc">
-                  {missingLoginProviders.length > 0
-                    ? `当前已登录 ${loggedAccountSummaries.join("、") || "一个音乐平台"}，选择要添加的平台。`
-                    : `当前已登录 ${loggedAccountSummaries.join("、") || "全部音乐平台"}，可刷新状态或退出账号。`}
-                </div>
-                <div id="login-add-account-panel" className="login-add-account-panel">
-                  {loggedProviderStatuses.map(({ provider, status }) => (
-                    <div
-                      key={provider}
-                      id={`logged-login-provider-${provider}`}
-                      className={`login-account-card ${provider}`}
-                    >
-                      <div className="login-account-card-main">
-                        <span className="login-add-provider-name">{providerLabel(provider)}</span>
-                        <span className="login-add-provider-meta">
-                          {status.nickname ?? status.userId ?? "已登录"}
-                        </span>
-                      </div>
-                      <div className="login-account-actions">
-                        <button
-                          className="modal-btn"
-                          type="button"
-                          onClick={() => void refreshProviderStatus(provider)}
-                        >
-                          刷新
-                        </button>
-                        <button
-                          className="modal-btn"
-                          type="button"
-                          onClick={() => void logoutProvider(provider)}
-                        >
-                          退出
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                  {missingLoginProviders.map((provider) => (
-                    <button
-                      key={provider}
-                      id={`add-login-provider-${provider}`}
-                      className={`login-add-provider-card ${provider}`}
-                      type="button"
-                      onClick={() => openSingleProviderLogin(provider)}
-                    >
-                      <span className="login-add-provider-name">{providerLabel(provider)}</span>
-                      <span className="login-add-provider-meta">{providerLoginHint(provider, "扫码添加这个账号")}</span>
-                    </button>
-                  ))}
-                </div>
-                <div className="btn-row">
-                  <button
-                    className="modal-btn"
-                    type="button"
-                    onClick={closeLoginModal}
-                  >
-                    关闭
-                  </button>
-                </div>
-              </>
-            ) : (
-              <>
-                <h2 id="login-modal-title">
-                  {loginTitleForProvider(loginProvider)}
-                </h2>
-                <div id="login-modal-desc" className="desc">
-                  {loginDescriptionForProvider(loginProvider)}
-                </div>
-                <div id="qr-shell" className="qr-shell">
-                  {activeLoginQr?.img ? (
-                    <img id="qr-img" src={activeLoginQr.img} alt={`${providerLabel(loginProvider)}登录二维码`} />
-                  ) : (
-                    <div className="qr-loading-mark" aria-hidden="true">
-                      {qrLoadingMarkForProvider(loginProvider)}
-                    </div>
-                  )}
-                </div>
-                <div id="qr-status" className={activeLoginQrStatus.tone}>
-                  {activeLoginQrStatus.text}
-                </div>
-                <div className="account-status-line">
-                  {activeLoginStatus?.loggedIn
-                    ? `已登录 ${activeLoginStatus.nickname ?? activeLoginStatus.userId ?? ""}`
-                    : "未确认登录"}
-                </div>
-                <div
-                  id="qq-cookie-panel"
-                  className={`qq-cookie-panel${qqManualCookieOpen ? " show" : ""}`}
-                >
-                  <textarea
-                    ref={activeCookieInputRef}
-                    id={`${loginProvider}-cookie-input`}
-                    className="qq-cookie-input"
-                    spellCheck={false}
-                    autoComplete="off"
-                    placeholder={cookiePlaceholderForProvider(loginProvider)}
-                  />
-                  <div className="qq-cookie-actions">
-                    <div className="qq-cookie-note">
-                      手动导入只会写入本机 sidecar 会话。
-                    </div>
-                    <button
-                      className="modal-btn primary"
-                      type="button"
-                      onClick={() => void importProviderCookie(loginProvider)}
-                    >
-                      保存
-                    </button>
-                  </div>
-                </div>
-                <div className="btn-row">
-                  <button
-                    className="modal-btn"
-                    type="button"
-                    onClick={closeLoginModal}
-                  >
-                    关闭
-                  </button>
-                  <button
-                    id="refresh-qr-btn"
-                    className="modal-btn primary"
-                    type="button"
-                    onClick={() => void refreshProviderLoginQr(loginProvider)}
-                  >
-                    刷新二维码
-                  </button>
-                  <button
-                    id="qq-cookie-toggle-btn"
-                    className="modal-btn show"
-                    type="button"
-                    onClick={() => setQqManualCookieOpen((open) => !open)}
-                  >
-                    手动导入
-                  </button>
-                  <button
-                    className="modal-btn"
-                    type="button"
-                    onClick={() => void refreshProviderStatus(loginProvider)}
-                  >
-                    刷新状态
-                  </button>
-                  <button
-                    className="modal-btn"
-                    type="button"
-                    onClick={() => void logoutProvider(loginProvider)}
-                  >
-                    退出
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      ) : null}
-      <div
-        id="trial-banner"
-        className={trialBanner ? "show" : ""}
-        data-provider={trialBanner?.provider ?? ""}
-      >
-        <svg
-          className="ic"
-          width="16"
-          height="16"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          viewBox="0 0 24 24"
-          aria-hidden="true"
-        >
-          <circle cx="12" cy="12" r="10" />
-          <line x1="12" y1="8" x2="12" y2="12" />
-          <line x1="12" y1="16" x2="12.01" y2="16" />
-        </svg>
-        <span id="trial-text">{trialBanner?.text ?? "仅播放试听片段"}</span>
-        <button
-          id="trial-login-btn"
-          className="login-link"
-          type="button"
-          style={{ display: trialBanner?.showLogin ? "" : "none" }}
-          onClick={openLoginModal}
-        >
-          扫码登录
-        </button>
-        <button
-          className="close"
-          type="button"
-          aria-label="关闭试听提醒"
-          onClick={dismissTrialBanner}
-        >
-          ×
-        </button>
-      </div>
-      <div
-        id="toast"
-        className={toast ? "show" : ""}
-        role="status"
-        aria-live="polite"
-      >
-        {toast ?? ""}
-      </div>
-    </div>
-    <PlaybackRuntimeHost
-      audioElementRef={audioRef}
-      controllerRef={controllerRef}
-      volume={volume}
-      muted={muted}
-      onTimeUpdate={handleRuntimeTimeUpdate}
-      onDurationChange={handleRuntimeDurationChange}
-      onPlay={handleRuntimePlay}
-      onPause={handleRuntimePause}
-      onEnded={handleRuntimeEnded}
-      onError={handleRuntimeError}
-    />
+        },
+        onNotice: showNotice,
+        onSeek: seekPlayback,
+        onVolumeChange: setVolume,
+        onToggleMute: toggleMute,
+        onQualityChange: setPlaybackQuality,
+        onShelfModeChange: updateShelfMode,
+        onShelfCameraModeChange: updateShelfCameraMode,
+        onShelfPresenceChange: updateShelfPresence,
+        onShelfShowPodcastsChange: updateShelfShowPodcasts,
+        onShelfMergeCollectionsChange: updateShelfMergeCollections,
+        deps: { isHomeControlsLocked: () => homeControlsLocked },
+        onPlayQueueIndex: playMiniQueueIndex,
+        onRemoveQueueIndex: removeQueueAt,
+        onInsertQueueNext: insertMiniQueueNext,
+        onMinimize: () => void minimizeWindow(),
+        onToggleMaximize: () => void toggleWindowMaximize(),
+        onToggleFullscreen: () => void toggleWindowFullscreen(),
+        mode: playbackMode,
+        isPlaying,
+        currentTitle: currentTrack?.title,
+        currentArtist: currentTrack?.artists.join(" / "),
+        currentCoverUrl: currentTrack?.coverUrl,
+        currentLiked,
+        currentLikeBusy,
+        queue,
+        currentTrack,
+        miniQueueOpen,
+        positionMs,
+        durationMs,
+        volume,
+        muted,
+        playbackQuality,
+        qualityOptions: trackQualityOptions,
+        shelfMode,
+        shelfCameraMode,
+        shelfPresence,
+        shelfShowPodcasts,
+        shelfMergeCollections,
+        lyricSourceMode:
+          currentLyricPreference === "custom" ? "custom" : "original",
+        hasCustomLyric: Boolean(currentCustomLyricText),
+      },
+      recoveryState: sidecarRecoveryState,
+    },
+    playbackCustomization: {
+      customization: {
+        customLyricModalOpen,
+        setCustomLyricModalOpen,
+        customLyricText,
+        setCustomLyricText,
+        customLyricStatus,
+        customLyricInputRef,
+        currentCustomLyricText,
+        saveCustomLyric,
+        deleteCustomLyric,
+      },
+      currentTrack,
+    },
+    libraryOverlay: { collect: libraryController },
+    accountOverlay: {
+      statuses: accountStatusByProvider,
+      modalOpen: loginModalOpen,
+      modalMode: loginModalMode,
+      provider: loginProvider,
+      manualCookieOpen: qqManualCookieOpen,
+      qrByProvider: loginQrByProvider,
+      qrStatusByProvider: loginQrStatusByProvider,
+      cookieInputRefs: {
+        netease: neteaseCookieInputRef,
+        qq: qqCookieInputRef,
+        soda: sodaCookieInputRef,
+      },
+      onClose: closeLoginModal,
+      onProviderChange: (provider) => {
+        setLoginProvider(provider);
+        setQqManualCookieOpen(false);
+      },
+      onManualCookieToggle: () => setQqManualCookieOpen((open) => !open),
+      onRefreshQr: (provider) => void refreshProviderLoginQr(provider),
+      onRefreshStatus: (provider) => void refreshProviderStatus(provider),
+      onImportCookie: (provider) => void importProviderCookie(provider),
+      onLogout: (provider) => void logoutProvider(provider),
+      onOpenSingleProvider: openSingleProviderLogin,
+    },
+    playbackNotices: {
+      trialBanner,
+      dismissTrialBanner,
+      toast,
+      onOpenLogin: openLoginModal,
+    },
+    playbackRuntime: {
+      runtimeProps: {
+        audioElementRef: audioRef,
+        controllerRef,
+        volume,
+        muted,
+        onTimeUpdate: handleRuntimeTimeUpdate,
+        onDurationChange: handleRuntimeDurationChange,
+        onPlay: handleRuntimePlay,
+        onPause: handleRuntimePause,
+        onEnded: handleRuntimeEnded,
+        onError: handleRuntimeError,
+      },
+    },
+  };
+
+  return (
+    <AppRuntimeProvider services={appServices}>
+      <AppShell {...shellProps} />
     </AppRuntimeProvider>
   );
 }

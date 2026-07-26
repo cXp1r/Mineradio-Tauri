@@ -79,7 +79,7 @@ test("shouldUseCachedHomeDiscoverPlaylist refreshes stale logged-out discover af
 });
 
 test("App mounts the baseline guide particle canvas host", async () => {
-	const source = await fetch(new URL("./App.tsx", import.meta.url)).then((response) => response.text());
+	const source = await fetch(new URL("../features/visual/VisualSurface.tsx", import.meta.url)).then((response) => response.text());
 	expect(source).toContain("GuideParticlesHost");
 });
 

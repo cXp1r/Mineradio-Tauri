@@ -35,6 +35,10 @@ export interface DesktopRuntimeResult {
 	desktopWindowState: DesktopWindowState | null;
 	toggleDesktopLyrics(): Promise<void>;
 	setDesktopLyricsEnabled(enabled: boolean): Promise<void>;
+	minimizeWindow(): Promise<void>;
+	toggleWindowMaximize(): Promise<void>;
+	toggleWindowFullscreen(): Promise<void>;
+	closeWindow(): Promise<void>;
 }
 
 export function useDesktopRuntime({
@@ -163,5 +167,9 @@ export function useDesktopRuntime({
 		desktopWindowState,
 		toggleDesktopLyrics,
 		setDesktopLyricsEnabled,
+		minimizeWindow: () => desktop.minimizeWindow(),
+		toggleWindowMaximize: () => desktop.toggleWindowMaximize(),
+		toggleWindowFullscreen: () => desktop.toggleWindowFullscreen(),
+		closeWindow: () => desktop.closeWindow(),
 	};
 }
