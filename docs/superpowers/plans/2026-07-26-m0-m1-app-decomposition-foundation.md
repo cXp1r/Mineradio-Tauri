@@ -240,7 +240,7 @@ git commit -m "refactor(web): define application ports"
 - Create: `apps/web/src/adapters/sidecar/legacy-media-url.ts`
 - Create: `apps/web/src/adapters/sidecar/legacy-media-url.test.ts`
 
-- [ ] **Step 1: Write delegation tests using a recording fake client**
+- [x] **Step 1: Write delegation tests using a recording fake client**
 
 Tests must prove:
 
@@ -250,7 +250,7 @@ Tests must prove:
 - returned `SidecarClientError` remains the same instance with `restriction`, `reason`, `qqCode`, `rawMessage` and `tried` intact;
 - media URL output is byte-for-byte identical to `audioProxyUrl`, `proxiedUrl` and `imageProxyUrl`.
 
-- [ ] **Step 2: Run the focused tests and verify missing adapter failures**
+- [x] **Step 2: Run the focused tests and verify missing adapter failures**
 
 ```powershell
 bun test apps/web/src/adapters/sidecar
@@ -258,7 +258,7 @@ bun test apps/web/src/adapters/sidecar
 
 Expected: FAIL because adapter modules do not exist.
 
-- [ ] **Step 3: Implement pure delegation adapters**
+- [x] **Step 3: Implement pure delegation adapters**
 
 The production factory must retain the concrete client only inside the adapter closure:
 
@@ -311,7 +311,7 @@ export function createLegacySidecarServices(client: SidecarClient): MusicService
 
 Do not catch and recreate errors in these adapters.
 
-- [ ] **Step 4: Run adapter conformance tests and existing client tests**
+- [x] **Step 4: Run adapter conformance tests and existing client tests**
 
 ```powershell
 bun test apps/web/src/adapters/sidecar apps/web/src/api/sidecar-client.test.ts
@@ -320,7 +320,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS with unchanged sidecar-client assertions.
 
-- [ ] **Step 5: Commit the legacy adapter**
+- [x] **Step 5: Commit the legacy adapter**
 
 ```powershell
 git add apps/web/src/adapters/sidecar
