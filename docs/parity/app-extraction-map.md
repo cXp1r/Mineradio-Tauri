@@ -1,6 +1,6 @@
 # `App.tsx` 提取映射
 
-审计基线：`apps/web/src/app/App.tsx` 4960 行；当前为 4355 行。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
+审计基线：`apps/web/src/app/App.tsx` 4960 行；当前为 4157 行。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
 
 | symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -37,15 +37,15 @@
 | `PlaybackReloadReason` | type | pure | none | `features/playback/playback-session-coordinator.ts` | reload policy tests | 4 |
 | `LoadedPlaybackUrlState` | interface | pure | none | `features/playback/playback-session-coordinator.ts` (`LoadedPlaybackSource`) | recovery/refresh tests | 4 |
 | `PlaybackReloadOptions` | interface | pure | none | `features/playback/usePlaybackSessionRuntime.ts` | runtime reload tests | 4 |
-| `LoginQrState` | interface | pure | none | `features/accounts/accounts-state.ts` | QR tests | 6 |
-| `LoginQrTone` | type | pure | none | `features/accounts/accounts-state.ts` | QR tests | 6 |
-| `LoginQrStatusState` | interface | pure | none | `features/accounts/accounts-state.ts` | QR tests | 6 |
-| `LoginModalMode` | type | pure | none | `features/accounts/accounts-state.ts` | account modal tests | 6 |
-| `LOGIN_PROVIDERS` | constant | pure | none | `features/accounts/provider-policy.ts` | provider tests | 2 |
-| `INITIAL_NETEASE_QR_STATUS` | constant | pure | none | `features/accounts/qr-view-model.ts` | provider table test | 2 |
-| `INITIAL_QQ_QR_STATUS` | constant | pure | none | `features/accounts/qr-view-model.ts` | provider table test | 2 |
-| `INITIAL_SODA_QR_STATUS` | constant | pure | none | `features/accounts/qr-view-model.ts` | provider table test | 2 |
-| `initialQrStatusForProvider` | function | pure | none | `features/accounts/qr-view-model.ts` | add provider table test | 2 |
+| `LoginQrState` | interface | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 6 |
+| `LoginQrTone` | type | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 6 |
+| `LoginQrStatusState` | interface | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 6 |
+| `LoginModalMode` | type | pure | none | `features/accounts/useLoginQrRuntime.ts` | account modal + QR runtime tests | 6 |
+| `LOGIN_PROVIDERS` | constant | pure | none | `features/accounts/useLoginQrRuntime.ts` (`LOGIN_QR_PROVIDERS`) | provider/QR tests | 2 |
+| `INITIAL_NETEASE_QR_STATUS` | constant | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 2 |
+| `INITIAL_QQ_QR_STATUS` | constant | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 2 |
+| `INITIAL_SODA_QR_STATUS` | constant | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 2 |
+| `initialQrStatusForProvider` | function | pure | none | `features/accounts/useLoginQrRuntime.ts` | QR runtime tests | 2 |
 | `providerLabelText` | function | pure | none | `features/accounts/provider-copy.ts` | add provider table test | 2 |
 | `qrInstructionForProvider` | function | pure | none | `features/accounts/provider-copy.ts` | add provider table test | 2 |
 | `qrScannedTextForProvider` | function | pure | none | `features/accounts/provider-copy.ts` | add provider table test | 2 |
@@ -120,5 +120,6 @@
 | PlayerController lifecycle | Audio 控制器创建、媒体事件订阅、音量同步和卸载清理由 `PlaybackRuntimeHost` 持有；播放事务仍保留在 App | `bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx apps/web/src/audio/player-controller.test.ts apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-runtime-boundary.test.ts` | `e375762`、`c320ae2`、`b394e60` |
 | Playback Port session boundary | 首次播放、URL 恢复、音质、歌词和 podcast beatmap 已通过 `AppServices` Ports；事务时序仍保留在 App | `bun test apps/web/src/features/playback apps/web/src/adapters/sidecar/legacy-media-url.test.ts apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-port-boundary.test.ts` | `6df23f7`、`6c60a6b`、`610b0de` |
 | Current-track playback session | 请求 token、当前媒体源、长暂停/URL 年龄刷新、单次媒体恢复、local/remote 装载、歌词 fallback/stale guard、试听提示和 beatmap 协调由 `PlaybackSessionCoordinator` 与 `usePlaybackSessionRuntime` 持有 | `bun test apps/web/src/features/playback apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-session-boundary.test.ts` | `a2c34aa`、`c3818cf`、`e7a839b` |
+| Account QR login runtime | 三平台二维码生成 token、立即检查、1800ms polling、in-flight lease、兼容结果分类、成功同步和 timer cleanup 由 `LoginQrCoordinator` 与 `useLoginQrRuntime` 持有；Cookie、logout、账户下拉和 modal UI 仍在 App | `bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-qr-runtime-boundary.test.ts` | `eab8422`、`0d4a0b4`、`946f714` |
 
-M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及二维码登录、Home、资料库、桌面运行时和 updater 的 effect 所有权仍未完成，不计入本批完成范围。
+M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及完整 accounts controller、Home、资料库、桌面运行时和 updater 的 effect 所有权仍未完成，不计入本批完成范围。
