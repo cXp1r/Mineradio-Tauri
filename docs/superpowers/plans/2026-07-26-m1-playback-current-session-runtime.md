@@ -28,7 +28,7 @@
 - Create: `apps/web/src/features/playback/playback-session-coordinator.ts`
 - Create: `apps/web/src/features/playback/playback-session-coordinator.test.ts`
 
-- [ ] **Step 1: Write the first failing stale-request test**
+- [x] **Step 1: Write the first failing stale-request test**
 
 测试通过 public methods 创建首个 track session，再切换 track，并断言首个 playback/lyric token 均已失效，第二个 token 有效。
 
@@ -41,7 +41,7 @@ expect(coordinator.isLyricCurrent(first!.lyricToken)).toBe(false);
 expect(coordinator.isPlaybackCurrent(second!.playbackToken)).toBe(true);
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/playback/playback-session-coordinator.test.ts
@@ -49,7 +49,7 @@ bun test apps/web/src/features/playback/playback-session-coordinator.test.ts
 
 Expected: FAIL because `playback-session-coordinator.ts` does not exist.
 
-- [ ] **Step 3: Implement token ownership minimally and verify GREEN**
+- [x] **Step 3: Implement token ownership minimally and verify GREEN**
 
 实现：
 
@@ -66,7 +66,7 @@ export class PlaybackSessionCoordinator {
 
 相同 `trackKey` 返回 `null`，保持原 `lastLoadedKeyRef` 去重行为。
 
-- [ ] **Step 4: Add recovery and refresh policy tests one behavior at a time**
+- [x] **Step 4: Add recovery and refresh policy tests one behavior at a time**
 
 依次用 RED→GREEN 覆盖：
 
@@ -78,7 +78,7 @@ export class PlaybackSessionCoordinator {
 6. `markPlaying()` 清除暂停时间；
 7. 非媒体错误原因的成功 reload 重置 recovery claim。
 
-- [ ] **Step 5: Run coordinator tests and commit**
+- [x] **Step 5: Run coordinator tests and commit**
 
 ```powershell
 bun test apps/web/src/features/playback/playback-session-coordinator.test.ts
