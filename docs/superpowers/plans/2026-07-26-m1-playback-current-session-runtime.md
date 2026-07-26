@@ -194,11 +194,11 @@ git commit -m "refactor(web): move current track session out of App"
 - Modify: `docs/parity/capability-matrix.md`
 - Modify: `docs/superpowers/plans/2026-07-26-m1-playback-current-session-runtime.md`
 
-- [ ] **Step 1: Record only M1 ownership progress**
+- [x] **Step 1: Record only M1 ownership progress**
 
 记录 current-track session 已迁出 `App.tsx`，但不得把 M2 playback 状态机、gapless/crossfade 或完整 playback parity 标为完成。
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 ```powershell
 bun run typecheck
@@ -212,7 +212,7 @@ git diff --check
 git diff d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps/desktop/scripts/build-sidecar-binary.mjs apps/desktop/src-tauri/tauri.conf.json packages/shared
 ```
 
-- [ ] **Step 3: Commit evidence**
+- [x] **Step 3: Commit evidence**
 
 ```powershell
 git add docs/parity docs/superpowers/plans/2026-07-26-m1-playback-current-session-runtime.md
