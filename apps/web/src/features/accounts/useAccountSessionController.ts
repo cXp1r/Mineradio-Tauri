@@ -89,7 +89,7 @@ export function useAccountSessionController({
 		try {
 			const status = await accountPort.loginStatus(provider);
 			acceptProviderStatus(status);
-			if (status.loggedIn) await dependencies.syncProviderPlaylists(provider);
+			if (status.loggedIn) void dependencies.syncProviderPlaylists(provider);
 			else void dependencies.refreshLibrary();
 			const label = dependencies.providerLabel(provider);
 			dependencies.showToast(
