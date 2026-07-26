@@ -1,6 +1,6 @@
 # `App.tsx` 提取映射
 
-审计基线：`apps/web/src/app/App.tsx` 4960 行；当前为 4157 行。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
+审计基线：`apps/web/src/app/App.tsx` 4960 行；当前为 4077 行。`purity` 使用 `pure`、`browser-storage`、`DOM`、`Tauri`、`sidecar`、`React-runtime` 六种分类。
 
 | symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -121,5 +121,6 @@
 | Playback Port session boundary | 首次播放、URL 恢复、音质、歌词和 podcast beatmap 已通过 `AppServices` Ports；事务时序仍保留在 App | `bun test apps/web/src/features/playback apps/web/src/adapters/sidecar/legacy-media-url.test.ts apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-port-boundary.test.ts` | `6df23f7`、`6c60a6b`、`610b0de` |
 | Current-track playback session | 请求 token、当前媒体源、长暂停/URL 年龄刷新、单次媒体恢复、local/remote 装载、歌词 fallback/stale guard、试听提示和 beatmap 协调由 `PlaybackSessionCoordinator` 与 `usePlaybackSessionRuntime` 持有 | `bun test apps/web/src/features/playback apps/web/src/app/App.test.tsx`；`bun test scripts/architecture/playback-session-boundary.test.ts` | `a2c34aa`、`c3818cf`、`e7a839b` |
 | Account QR login runtime | 三平台二维码生成 token、立即检查、1800ms polling、in-flight lease、兼容结果分类、成功同步和 timer cleanup 由 `LoginQrCoordinator` 与 `useLoginQrRuntime` 持有；Cookie、logout、账户下拉和 modal UI 仍在 App | `bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-qr-runtime-boundary.test.ts` | `eab8422`、`0d4a0b4`、`946f714` |
+| Account session controller | 三平台登录状态 map、状态刷新、Cookie 会话写入和 logout 由 `useAccountSessionController` 持有，并通过 `AccountPort` 与 QR/bootstrap 汇合；textarea、modal 和账户下拉仍在 App | `bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-session-boundary.test.ts` | `398432d`、`e5a2522`、`3ec372a` |
 
-M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及完整 accounts controller、Home、资料库、桌面运行时和 updater 的 effect 所有权仍未完成，不计入本批完成范围。
+M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及 accounts surfaces、Home、资料库、桌面运行时和 updater 的 effect 所有权仍未完成，不计入本批完成范围。

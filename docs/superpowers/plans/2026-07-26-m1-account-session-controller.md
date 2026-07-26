@@ -171,11 +171,11 @@ git commit -m "refactor(web): move account sessions out of App"
 - Modify: `docs/parity/capability-matrix.md`
 - Modify: `docs/superpowers/plans/2026-07-26-m1-account-session-controller.md`
 
-- [ ] **Step 1: Record session controller ownership**
+- [x] **Step 1: Record session controller ownership**
 
 记录 status、Cookie 和 logout 已迁移；账户 modal、dropdown、资料库/Home controller 仍未提取，`accounts.multi-provider` 继续保持 `baseline`。
 
-- [ ] **Step 2: Run full verification**
+- [x] **Step 2: Run full verification**
 
 ```powershell
 bun run typecheck
@@ -189,7 +189,7 @@ git diff --check
 git diff --exit-code d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps/desktop/scripts/build-sidecar-binary.mjs apps/desktop/src-tauri/tauri.conf.json packages/shared
 ```
 
-- [ ] **Step 3: Commit evidence**
+- [x] **Step 3: Commit evidence**
 
 ```powershell
 git add docs/parity docs/superpowers/plans/2026-07-26-m1-account-session-controller.md
