@@ -70,24 +70,10 @@ import {
 import { useUiStore } from "../stores/ui-store";
 import { useUpdateStore } from "../stores/update-store";
 import { saveVisualFxToStorage, useVisualStore } from "../stores/visual-store";
-import {
-  closeDesktopLyricsWindow,
-  configureGlobalHotkeys,
-  getWindowState,
-  listenWindowState,
-  listenGlobalHotkey,
-  closeWindow,
-  minimizeWindow,
-  showDesktopLyricsWindow,
-  toggleWindowMaximize,
-  toggleWindowFullscreen,
-  updateDesktopLyricsPayload,
-  type GlobalHotkeyBinding,
-  type JsonValue,
-  type RuntimeConfig,
-  type WindowState,
-} from "../tauri/runtime";
+import type { JsonValue, RuntimeConfig, WindowState } from "../tauri/runtime";
 import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
+import { createTauriDesktopRuntime } from "../adapters/tauri/tauri-desktop-runtime";
+import type { DesktopRuntimePort } from "../ports/desktop-runtime-port";
 import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
 import {
   usePlaybackSessionRuntime,
@@ -100,15 +86,21 @@ import {
   type LoginProviderId,
 } from "../features/accounts/useLoginQrRuntime";
 import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
+import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
+import {
+  buildDesktopLyricsPayloadPatch,
+  desktopLyricsBeatMapContext,
+  desktopLyricsBeatMapKey,
+} from "../features/desktop/desktop-lyrics-payload";
+export {
+  buildDesktopLyricsPayloadPatch,
+  desktopLyricsBeatMapKey,
+} from "../features/desktop/desktop-lyrics-payload";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
 import { SearchDetailPage } from "../components/shell/SearchDetailPage";
 import { SearchShell, type SearchMode } from "../components/shell/SearchShell";
-import {
-  createDesktopLyricsPushState,
-  shouldPushDesktopLyricsPayload,
-} from "../desktop-lyrics/desktop-lyrics-push";
 import { buildDesktopLyricSnapshot } from "../desktop-lyrics/desktop-lyrics-snapshot";
 import {
   SidecarRecoveryNotice,
@@ -157,7 +149,7 @@ import {
   type Track,
   type WeatherRadioResponse,
 } from "@mineradio/shared";
-import type { FxState, LyricPalette } from "@mineradio/visual-engine";
+import type { FxState } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
@@ -165,16 +157,6 @@ const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
 const USER_CAPSULE_AUTO_HIDE_STORE_KEY = "mineradio-user-capsule-auto-hide-v1";
 const PLAYLIST_PANEL_PIN_STORE_KEY = "mineradio-playlist-panel-pinned-v1";
 const DIY_MODE_STORE_KEY = "mineradio-diy-player-mode-v1";
-const DEFAULT_GLOBAL_HOTKEYS: GlobalHotkeyBinding[] = [
-  { action: "togglePlay", accelerator: "Control+Alt+Space" },
-  { action: "prevTrack", accelerator: "Control+Alt+ArrowLeft" },
-  { action: "nextTrack", accelerator: "Control+Alt+ArrowRight" },
-  { action: "volumeUp", accelerator: "Control+Alt+ArrowUp" },
-  { action: "volumeDown", accelerator: "Control+Alt+ArrowDown" },
-  { action: "toggleFullscreen", accelerator: "Control+Alt+KeyF" },
-  { action: "toggleDesktopLyrics", accelerator: "Control+Alt+KeyL" },
-];
-
 type AccountVipBadge = {
   text: string;
   icon?: ProviderVipIcon;
@@ -268,24 +250,6 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-export interface DesktopLyricsPayloadContext {
-  title?: string;
-  artist?: string;
-  playing?: boolean;
-  progressSpan?: number;
-  positionMs?: number;
-  durationMs?: number | null;
-  playbackRate?: number;
-  highBloom?: number;
-  beatGlow?: number;
-  beatPulse?: number;
-  bass?: number;
-  stageLyricPalette?: LyricPalette;
-  hasNativeKaraoke?: boolean;
-  beatMapKey?: string;
-  beatMap?: JsonValue | null;
-}
-
 const LOGIN_PROVIDERS = LOGIN_QR_PROVIDERS;
 
 function providerLabelText(provider: ProviderId): string {
@@ -332,56 +296,6 @@ interface HomeListenSession {
   lastPositionMs: number;
   listenMs: number;
   maxProgress: number;
-}
-
-const DESKTOP_LYRIC_FONT_STACKS: Record<string, string> = {
-  sans: 'Inter,"Noto Sans SC","PingFang SC","Microsoft YaHei",Arial,sans-serif',
-  hei: '"Noto Sans SC","Microsoft YaHei",SimHei,"PingFang SC",sans-serif',
-  song: '"Noto Serif SC","Source Han Serif SC",SimSun,"Songti SC",serif',
-  "bold-song":
-    '"Source Han Serif SC Heavy","Source Han Serif SC","Noto Serif SC Black","Noto Serif SC","STZhongsong","SimSun",serif',
-  "stone-song":
-    '"FZYaSongS-B-GB","FZCuSong-B09S","Source Han Serif SC Heavy","Noto Serif SC Black","STZhongsong","SimSun",serif',
-  "kai-song":
-    '"Kaiti SC","STKaiti","KaiTi","Source Han Serif SC","Noto Serif SC",serif',
-  "serif-en": 'Georgia,"Times New Roman","Noto Serif SC","Source Han Serif SC",serif',
-  gothic:
-    '"UnifrakturCook","UnifrakturMaguntia","Old English Text MT","Blackletter","Cinzel Decorative","Noto Serif SC",serif',
-  editorial:
-    '"Didot","Bodoni 72","Libre Baskerville",Georgia,"Noto Serif SC",serif',
-  humanist:
-    '"Avenir Next","Segoe UI","Inter","Noto Sans SC","PingFang SC",sans-serif',
-  round:
-    '"HarmonyOS Sans SC","Microsoft YaHei UI","PingFang SC","Noto Sans SC",sans-serif',
-  mono: '"JetBrains Mono",Consolas,"Noto Sans SC","Microsoft YaHei",monospace',
-  display: '"Alibaba PuHuiTi","Noto Sans SC","PingFang SC","Microsoft YaHei",sans-serif',
-};
-
-function normalizeDesktopLyricFontKey(key: unknown): string {
-  const value = String(key || "sans").trim().toLowerCase();
-  return Object.prototype.hasOwnProperty.call(DESKTOP_LYRIC_FONT_STACKS, value)
-    ? value
-    : "sans";
-}
-
-function desktopLyricFontStackForKey(key: unknown): string {
-  return DESKTOP_LYRIC_FONT_STACKS[normalizeDesktopLyricFontKey(key)];
-}
-
-function desktopLyricFontWeightValue(fx: FxState): number {
-  if (normalizeDesktopLyricFontKey(fx.lyricFont) === "stone-song") return 900;
-  return Math.round(
-    clampNumber(Number(fx.lyricWeight) || 900, 500, 900) / 50,
-  ) * 50;
-}
-
-function desktopOverlayColorValue(value: unknown, fallback: string): string {
-  const raw = String(value || "").trim();
-  if (/^#[0-9a-f]{3}$/i.test(raw) || /^#[0-9a-f]{6}$/i.test(raw)) {
-    return raw;
-  }
-  if (/^rgba?\(/i.test(raw) || /^hsla?\(/i.test(raw)) return raw;
-  return fallback;
 }
 
 function trackTitle(track: Track | null | undefined): string {
@@ -584,141 +498,6 @@ function isLoginRequiredError(error: unknown): boolean {
     error instanceof SidecarClientError ||
     (typeof error === "object" && error !== null && "code" in error)
   ) && (error as { code?: unknown }).code === "LOGIN_REQUIRED";
-}
-
-function beatMapArrayLength(map: Record<string, JsonValue>, key: string): number {
-  const value = map[key];
-  return Array.isArray(value) ? value.length : 0;
-}
-
-function beatMapNumber(map: Record<string, JsonValue>, key: string): number {
-  const value = map[key];
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
-}
-
-function beatMapString(map: Record<string, JsonValue>, key: string, fallback: string): string {
-  const value = map[key];
-  return typeof value === "string" && value ? value : fallback;
-}
-
-export function desktopLyricsBeatMapKey(map: JsonValue | null, source = "mr"): string {
-  if (!map || typeof map !== "object" || Array.isArray(map)) return "none";
-  const record = map as Record<string, JsonValue>;
-  const cameraCount =
-    beatMapArrayLength(record, "cameraBeats") ||
-    beatMapArrayLength(record, "beats") ||
-    beatMapArrayLength(record, "kicks");
-  const pulseCount =
-    beatMapArrayLength(record, "pulseBeats") ||
-    beatMapArrayLength(record, "kicks");
-  const duration = beatMapNumber(record, "duration");
-  const partialUntil = beatMapNumber(record, "partialUntilSec");
-  return [
-    source,
-    beatMapNumber(record, "analyzedAt"),
-    cameraCount,
-    pulseCount,
-    Math.round(duration * 10),
-    Math.round(partialUntil * 10),
-    beatMapString(record, "tempoSource", "local"),
-  ].join("|");
-}
-
-function desktopLyricsBeatMapContext(
-  state: CurrentBeatMapState | null,
-  force: boolean,
-  lastKeyRef: { current: string },
-): Pick<DesktopLyricsPayloadContext, "beatMapKey" | "beatMap"> {
-  const key = state?.key ?? "none";
-  const shouldSendMap = force || key !== lastKeyRef.current;
-  lastKeyRef.current = key;
-  return {
-    beatMapKey: key,
-    ...(shouldSendMap ? { beatMap: state?.map ?? null } : {}),
-  };
-}
-
-export function buildDesktopLyricsPayloadPatch(
-  fx: FxState,
-  text: string,
-  progress: number,
-  context: DesktopLyricsPayloadContext = {},
-) {
-  const size = clampNumber(fx.desktopLyricsSize, 0.72, 1.55);
-  const yRatio = clampNumber(fx.desktopLyricsY, 0.08, 0.92);
-  const durationSeconds = Math.max(0, Number(context.durationMs ?? 0) / 1000);
-  const timeSeconds = Math.max(0, Number(context.positionMs ?? 0) / 1000);
-  const fps =
-    fx.desktopLyricsFps === 24 ||
-    fx.desktopLyricsFps === 30 ||
-    fx.desktopLyricsFps === 60 ||
-    fx.desktopLyricsFps === 120
-      ? fx.desktopLyricsFps
-      : 60;
-  return {
-    enabled: true,
-    text,
-    progress: clampNumber(progress, 0, 1),
-    progressSpan: clampNumber(Number(context.progressSpan ?? 4.8), 0, 60),
-    title: context.title || "MineRadio-Tauri",
-    artist: context.artist || "",
-    playing: context.playing === true,
-    size,
-    y: yRatio,
-    frameRate: fps,
-    opacity: clampNumber(fx.desktopLyricsOpacity, 0.28, 1),
-    position: { x: 80, y: Math.round(yRatio * 1000) },
-    clickThrough: fx.desktopLyricsClickThrough,
-    lyricGlowParticles: fx.lyricGlowParticles,
-    cinema: fx.desktopLyricsCinema !== false,
-    highlightFollow: fx.desktopLyricsHighlight === true,
-    fontFamily: desktopLyricFontStackForKey(fx.lyricFont),
-    fontWeight: desktopLyricFontWeightValue(fx),
-    letterSpacing: clampNumber(Number(fx.lyricLetterSpacing) || 0, -0.04, 0.18),
-    lineHeight: clampNumber(Number(fx.lyricLineHeight) || 1, 0.86, 1.35),
-    lyricScale: clampNumber(Number(fx.lyricScale) || 1, 0.35, 1.65),
-    feather: context.hasNativeKaraoke ? 0.03 : 0.055,
-    beatMapKey: context.beatMapKey || "",
-    ...(Object.prototype.hasOwnProperty.call(context, "beatMap")
-      ? { beatMap: context.beatMap ?? null }
-      : {}),
-    colors: {
-      primary: desktopOverlayColorValue(context.stageLyricPalette?.primary ?? fx.lyricColor, "#d6f8ff"),
-      secondary: desktopOverlayColorValue(context.stageLyricPalette?.secondary ?? fx.visualTintColor, "#9cffdf"),
-      background: "rgba(0, 0, 0, 0.22)",
-      highlight: desktopOverlayColorValue(context.stageLyricPalette?.highlight ?? fx.lyricHighlightColor, "#fff0b8"),
-      glow: desktopOverlayColorValue(context.stageLyricPalette?.glowColor ?? fx.lyricGlowColor, "#9cffdf"),
-    },
-    font: {
-      family: desktopLyricFontStackForKey(fx.lyricFont),
-      weight: desktopLyricFontWeightValue(fx),
-      fit: {
-        minPx: Math.round(18 * size),
-        maxPx: Math.round(64 * size),
-        stepPx: 1,
-        maxLines: 1,
-      },
-    },
-    motion: {
-      fps,
-      reduceMotion: false,
-      smoothingMs: 120,
-      lyricGlow: fx.lyricGlow,
-      lyricGlowBeat: fx.lyricGlowBeat,
-      lyricGlowStrength: fx.lyricGlow
-        ? clampNumber(Number(fx.lyricGlowStrength) || 0, 0, 0.85)
-        : 0,
-      highBloom: clampNumber(Number(context.highBloom ?? 0), 0, 1.45),
-      beatGlow: clampNumber(Number(context.beatGlow ?? 0), 0, 1.7),
-      beatPulse: clampNumber(Number(context.beatPulse ?? 0), 0, 1.4),
-      bass: clampNumber(Number(context.bass ?? 0), 0, 1.2),
-    },
-    playback: {
-      time: timeSeconds,
-      duration: durationSeconds,
-      rate: clampNumber(Number(context.playbackRate ?? 1), 0.25, 4),
-    },
-  };
 }
 
 export function isHomeBlankDismissElement(target: EventTarget | null): boolean {
@@ -938,6 +717,7 @@ export type AppProps = {
   servicesFactory?: AppServicesFactory;
   initialRuntimeConfig?: RuntimeConfig | null;
   desktopLyricsRuntime?: DesktopLyricsRuntime;
+  desktopRuntime?: DesktopRuntimePort;
 };
 
 export type DesktopLyricsRuntime = {
@@ -946,11 +726,7 @@ export type DesktopLyricsRuntime = {
   updatePayload: (payload: JsonValue) => Promise<void>;
 };
 
-const defaultDesktopLyricsRuntime: DesktopLyricsRuntime = {
-  showWindow: showDesktopLyricsWindow,
-  closeWindow: closeDesktopLyricsWindow,
-  updatePayload: updateDesktopLyricsPayload,
-};
+const defaultDesktopRuntime = createTauriDesktopRuntime();
 
 function createDefaultSidecarClient(cfg: RuntimeConfig): SidecarClient {
   return new SidecarClient(cfg.sidecarBaseUrl);
@@ -962,12 +738,22 @@ export function App({
   createSidecarClient = createDefaultSidecarClient,
   servicesFactory = createLegacyAppServices,
   initialRuntimeConfig = null,
-  desktopLyricsRuntime = defaultDesktopLyricsRuntime,
+  desktopLyricsRuntime,
+  desktopRuntime = defaultDesktopRuntime,
 }: AppProps = {}): ReactElement {
   const [sidecarClient, setSidecarClient] = useState<SidecarClient | null>(
     null,
   );
   const [appServices, setAppServices] = useState<AppServices | null>(null);
+  const resolvedDesktopRuntime = useMemo<DesktopRuntimePort>(() => {
+    if (!desktopLyricsRuntime) return desktopRuntime;
+    return {
+      ...desktopRuntime,
+      showDesktopLyricsWindow: desktopLyricsRuntime.showWindow,
+      closeDesktopLyricsWindow: desktopLyricsRuntime.closeWindow,
+      updateDesktopLyricsPayload: desktopLyricsRuntime.updatePayload,
+    };
+  }, [desktopLyricsRuntime, desktopRuntime]);
   const [sidecarBaseUrl, setSidecarBaseUrl] = useState("");
   const [splashActive, setSplashActive] = useState<boolean>(SHOW_SPLASH);
   const [searchModeRequest, setSearchModeRequest] = useState<SearchMode>("song");
@@ -1012,7 +798,6 @@ export function App({
     tone?: "good" | "fail";
   }>({ text: "" });
   const [customLyricVersion, setCustomLyricVersion] = useState(0);
-  const [desktopLyricsEnabled, setDesktopLyricsEnabled] = useState(false);
   const [updateModalOpen, setUpdateModalOpen] = useState(false);
   const [collectTarget, setCollectTarget] = useState<Track | null>(null);
   const [collectBusyPlaylistId, setCollectBusyPlaylistId] = useState<
@@ -1020,8 +805,6 @@ export function App({
   >(null);
   const [likedSongMap, setLikedSongMap] = useState<Record<string, boolean>>({});
   const [likeBusyMap, setLikeBusyMap] = useState<Record<string, boolean>>({});
-  const [desktopWindowState, setDesktopWindowState] =
-    useState<WindowState | null>(null);
   const [homeDiscover, setHomeDiscover] =
     useState<DiscoverHomeResponse | null>(null);
   const [homeWeatherRadio, setHomeWeatherRadio] =
@@ -1123,7 +906,6 @@ export function App({
   const shelfContentListRef = useRef<ShelfDetailContentListController | null>(
     null,
   );
-  const desktopLyricsPushStateRef = useRef(createDesktopLyricsPushState());
   const desktopLyricsBeatMapKeyRef = useRef("none");
   const desktopLyricsMotionRef = useRef<DesktopLyricsMotionSnapshot>({
     highBloom: 0,
@@ -2846,22 +2628,17 @@ export function App({
     return buildDesktopLyricSnapshot(payload, playback.positionMs, fallback);
   }, []);
 
-  const setDesktopLyricsWindowEnabled = useCallback(async (enabled: boolean) => {
-    if (!enabled) {
-      await desktopLyricsRuntime.closeWindow();
-      setDesktopLyricsEnabled(false);
-      return;
-    }
+  const buildDesktopRuntimeLyricsPayload = useCallback((force: boolean) => {
     const playback = usePlaybackStore.getState();
     const duration = playback.durationMs ?? 0;
     const snapshot = currentDesktopLyricSnapshot();
     const motion = desktopLyricsMotionRef.current;
     const beatMapContext = desktopLyricsBeatMapContext(
       currentBeatMapState,
-      true,
+      force,
       desktopLyricsBeatMapKeyRef,
     );
-    const payload = buildDesktopLyricsPayloadPatch(
+    return buildDesktopLyricsPayloadPatch(
       useVisualStore.getState().fx,
       snapshot.text,
       snapshot.progress,
@@ -2881,105 +2658,62 @@ export function App({
         ...beatMapContext,
       },
     );
-    if (
-      shouldPushDesktopLyricsPayload(
-        desktopLyricsPushStateRef.current,
-        payload,
-        performance.now(),
-        true,
-      )
-    ) {
-      await desktopLyricsRuntime.updatePayload(payload);
-    }
-    await desktopLyricsRuntime.showWindow();
-    setDesktopLyricsEnabled(true);
-  }, [currentBeatMapState, currentDesktopLyricSnapshot, desktopLyricsRuntime]);
-  setDesktopLyricsWindowEnabledRef.current = setDesktopLyricsWindowEnabled;
+  }, [currentBeatMapState, currentDesktopLyricSnapshot]);
 
-  const toggleDesktopLyrics = useCallback(async () => {
-    await setDesktopLyricsWindowEnabled(!desktopLyricsEnabled);
-  }, [desktopLyricsEnabled, setDesktopLyricsWindowEnabled]);
-
-  const executeGlobalHotkeyAction = useCallback(
-    (action: string) => {
-      switch (action) {
-        case "togglePlay":
-          togglePlayback();
-          break;
-        case "prevTrack":
-          previousTrack();
-          break;
-        case "nextTrack":
-          nextTrack();
-          break;
-        case "volumeUp":
-          setVolume(usePlaybackStore.getState().volume + 0.05);
-          break;
-        case "volumeDown":
-          setVolume(usePlaybackStore.getState().volume - 0.05);
-          break;
-        case "toggleFullscreen":
-          void toggleWindowFullscreen();
-          break;
-        case "toggleDesktopLyrics":
-          void toggleDesktopLyrics();
-          break;
-        default:
-          break;
-      }
+  const desktopHotkeyActions = useMemo(() => ({
+    togglePlay: togglePlayback,
+    prevTrack: previousTrack,
+    nextTrack,
+    volumeUp: () => setVolume(usePlaybackStore.getState().volume + 0.05),
+    volumeDown: () => setVolume(usePlaybackStore.getState().volume - 0.05),
+    toggleFullscreen: () => {
+      void resolvedDesktopRuntime.toggleWindowFullscreen();
     },
-    [nextTrack, previousTrack, setVolume, toggleDesktopLyrics, togglePlayback],
-  );
+  }), [nextTrack, previousTrack, resolvedDesktopRuntime, setVolume, togglePlayback]);
 
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void configureGlobalHotkeys(DEFAULT_GLOBAL_HOTKEYS);
-    void listenGlobalHotkey((payload) => {
-      if (!disposed && payload?.action)
-        executeGlobalHotkeyAction(payload.action);
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-      void configureGlobalHotkeys([]);
-    };
-  }, [executeGlobalHotkeyAction]);
-
-  useEffect(() => {
-    let disposed = false;
-    let unlisten: (() => void) | null = null;
-    void getWindowState().then((state) => {
-      if (!disposed) {
-        setDesktopWindowState(state);
-        applyDesktopWindowShellState(state);
-      }
-    });
-    void listenWindowState((state) => {
-      if (!disposed) {
-        setDesktopWindowState(state);
-        applyDesktopWindowShellState(state);
-      }
-    }).then((dispose) => {
-      if (disposed) dispose();
-      else unlisten = dispose;
-    });
-    return () => {
-      disposed = true;
-      unlisten?.();
-      if (typeof document !== "undefined") {
-        document.documentElement.classList.remove("desktop-shell-root");
-        document.body.classList.remove(
-          "desktop-shell",
-          "desktop-maximized",
-          "desktop-fullscreen",
-        );
-      }
-    };
+  const clearDesktopWindowShell = useCallback(() => {
+    if (typeof document !== "undefined") {
+      document.documentElement.classList.remove("desktop-shell-root");
+      document.body.classList.remove(
+        "desktop-shell",
+        "desktop-maximized",
+        "desktop-fullscreen",
+      );
+    }
   }, []);
+
+  const desktopLyricsPayloadVersion = useMemo(() => ({
+    currentTrack,
+    isPlaying,
+    positionMs,
+    durationMs,
+    lyricsPayload,
+    currentBeatMapState,
+    visualFx,
+  }), [
+    currentBeatMapState,
+    currentTrack,
+    durationMs,
+    isPlaying,
+    lyricsPayload,
+    positionMs,
+    visualFx,
+  ]);
+
+  const {
+    desktopLyricsEnabled,
+    desktopWindowState,
+    toggleDesktopLyrics,
+    setDesktopLyricsEnabled: setDesktopLyricsWindowEnabled,
+  } = useDesktopRuntime({
+    desktop: resolvedDesktopRuntime,
+    buildLyricsPayload: buildDesktopRuntimeLyricsPayload,
+    lyricsPayloadVersion: desktopLyricsPayloadVersion,
+    hotkeyActions: desktopHotkeyActions,
+    onWindowState: applyDesktopWindowShellState,
+    onWindowCleanup: clearDesktopWindowShell,
+  });
+  setDesktopLyricsWindowEnabledRef.current = setDesktopLyricsWindowEnabled;
 
   useEffect(() => {
     if (typeof document === "undefined") return;
@@ -3087,59 +2821,6 @@ export function App({
     void refreshUpdateStatus(false);
     if (shouldOpenDevUpdatePreview()) setUpdateModalOpen(true);
   }, [refreshUpdateStatus]);
-
-  useEffect(() => {
-    if (!desktopLyricsEnabled) return;
-    const snapshot = currentDesktopLyricSnapshot();
-    const motion = desktopLyricsMotionRef.current;
-    const beatMapContext = desktopLyricsBeatMapContext(
-      currentBeatMapState,
-      false,
-      desktopLyricsBeatMapKeyRef,
-    );
-    const payload = buildDesktopLyricsPayloadPatch(
-      visualFx,
-      snapshot.text,
-      snapshot.progress,
-      {
-        title: trackTitle(currentTrack),
-        artist: trackArtist(currentTrack),
-        playing: isPlaying,
-        progressSpan: snapshot.progressSpan,
-        positionMs,
-        durationMs,
-        playbackRate: audioRef.current?.playbackRate,
-        highBloom: motion.highBloom,
-        beatGlow: motion.beatGlow,
-        beatPulse: motion.beatPulse,
-        bass: motion.bass,
-        stageLyricPalette: motion.palette,
-        ...beatMapContext,
-      },
-    );
-    if (
-      !shouldPushDesktopLyricsPayload(
-        desktopLyricsPushStateRef.current,
-        payload,
-        performance.now(),
-        false,
-      )
-    ) {
-      return;
-    }
-    void desktopLyricsRuntime.updatePayload(payload);
-  }, [
-    currentDesktopLyricSnapshot,
-    desktopLyricsEnabled,
-    durationMs,
-    currentTrack,
-    isPlaying,
-    lyricsPayload,
-    positionMs,
-    currentBeatMapState,
-    visualFx,
-    desktopLyricsRuntime,
-  ]);
 
   useEffect(() => {
     if (!miniQueueOpen || typeof document === "undefined") return;
@@ -3298,9 +2979,9 @@ export function App({
         onGuide={openHomeProductGuide}
         onDiy={toggleDiyMode}
         diyActive={diyMode}
-        onMinimize={() => void minimizeWindow()}
-        onToggleMaximize={() => void toggleWindowMaximize()}
-        onClose={() => void closeWindow()}
+        onMinimize={() => void resolvedDesktopRuntime.minimizeWindow()}
+        onToggleMaximize={() => void resolvedDesktopRuntime.toggleWindowMaximize()}
+        onClose={() => void resolvedDesktopRuntime.closeWindow()}
         updateSlot={
           <UpdateHost
             state={updateState}
@@ -3636,9 +3317,9 @@ export function App({
         onPlayQueueIndex={playMiniQueueIndex}
         onRemoveQueueIndex={removeQueueAt}
         onInsertQueueNext={insertMiniQueueNext}
-        onMinimize={() => void minimizeWindow()}
-        onToggleMaximize={() => void toggleWindowMaximize()}
-        onToggleFullscreen={() => void toggleWindowFullscreen()}
+        onMinimize={() => void resolvedDesktopRuntime.minimizeWindow()}
+        onToggleMaximize={() => void resolvedDesktopRuntime.toggleWindowMaximize()}
+        onToggleFullscreen={() => void resolvedDesktopRuntime.toggleWindowFullscreen()}
         mode={playbackMode}
         isPlaying={isPlaying}
         currentTitle={currentTrack?.title}

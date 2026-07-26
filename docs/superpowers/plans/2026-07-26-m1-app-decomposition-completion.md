@@ -29,11 +29,11 @@
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/desktop-runtime-boundary.test.ts`
 
-- [ ] **Step 1: Characterize desktop lyric enable/disable and hotkey cleanup**
+- [x] **Step 1: Characterize desktop lyric enable/disable and hotkey cleanup**
 
 通过 fake `DesktopRuntimePort` 渲染 Hook，断言：启用时先推送 force payload 再 show；禁用时 close；注册默认 hotkeys；unmount 时 unlisten 并清空 hotkeys。
 
-- [ ] **Step 2: Implement the public runtime**
+- [x] **Step 2: Implement the public runtime**
 
 ```ts
 export interface DesktopRuntimeResult {
@@ -53,11 +53,11 @@ export function useDesktopRuntime(options: {
 
 Hook 持有 window state listener、global hotkey listener、desktop lyrics push gate 和 cleanup。纯 payload helpers 移入 `desktop-lyrics-payload.ts`，App 临时 re-export 兼容现有测试。
 
-- [ ] **Step 3: Integrate and guard**
+- [x] **Step 3: Integrate and guard**
 
 App 删除 desktop lyrics/window/hotkey effects 与直接 Tauri imports。边界测试断言 App 不包含 `listenWindowState(`、`listenGlobalHotkey(`、`configureGlobalHotkeys(`、`desktopLyricsPushStateRef`。
 
-- [ ] **Step 4: Verify and commit**
+- [x] **Step 4: Verify and commit**
 
 ```powershell
 bun test apps/web/src/features/desktop apps/web/src/app/App.test.tsx scripts/architecture/desktop-runtime-boundary.test.ts
