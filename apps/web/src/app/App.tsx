@@ -30,7 +30,6 @@ import {
 } from "../audio/local-audio-import";
 import {
   PlayerController,
-  type ErrorPayload,
   type TimeUpdatePayload,
 } from "../audio/player-controller";
 import {
@@ -90,7 +89,10 @@ import {
 } from "../tauri/runtime";
 import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
 import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
-import { resolvePlayableAudio } from "../features/playback/resolve-playable-audio";
+import {
+  usePlaybackSessionRuntime,
+  type CurrentBeatMapState,
+} from "../features/playback/usePlaybackSessionRuntime";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
@@ -135,7 +137,6 @@ import {
 import type { ShelfPlayPlaylistPayload } from "../visual/shelf-pointer-interactions";
 import { isPlayable } from "../components/search/play-search-result";
 import {
-  ensureLyricFallbackPayload,
   ProviderIdSchema,
   type DiscoverHomeResponse,
   type PlaybackQualityRequest,
@@ -146,17 +147,13 @@ import {
   type ProviderId,
   type ProviderLoginStatus,
   type ProviderVipIcon,
-  type SongUrlResult,
   type Track,
-  type TrackQualityOption,
   type WeatherRadioResponse,
 } from "@mineradio/shared";
 import type { FxState, LyricPalette } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
-const LONG_PAUSE_PLAYBACK_URL_REFRESH_MS = 10 * 60 * 1000;
-const PLAYBACK_URL_MAX_AGE_MS = 20 * 60 * 1000;
 const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
 const USER_CAPSULE_AUTO_HIDE_STORE_KEY = "mineradio-user-capsule-auto-hide-v1";
 const PLAYLIST_PANEL_PIN_STORE_KEY = "mineradio-playlist-panel-pinned-v1";
@@ -196,16 +193,6 @@ function accountVipBadge(status: ProviderLoginStatus | null | undefined): Accoun
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
-}
-
-function buildTrackLyricFallback(track: Track) {
-  return ensureLyricFallbackPayload({
-    provider: track.provider,
-    trackId: track.id,
-    lines: [],
-    hasTranslation: false,
-    isWordByWord: false,
-  }, track);
 }
 
 export function mergeProviderPlaylists(
@@ -274,10 +261,6 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
-function playbackKeyForTrack(track: Track | null | undefined): string {
-  return track ? `${track.provider}:${track.id}` : "";
-}
-
 export interface DesktopLyricsPayloadContext {
   title?: string;
   artist?: string;
@@ -294,34 +277,6 @@ export interface DesktopLyricsPayloadContext {
   hasNativeKaraoke?: boolean;
   beatMapKey?: string;
   beatMap?: JsonValue | null;
-}
-
-interface CurrentBeatMapState {
-  key: string;
-  map: JsonValue;
-}
-
-interface TrialBannerState {
-  text: string;
-  provider: ProviderId;
-  showLogin: boolean;
-}
-
-type PlaybackReloadReason = "long-pause" | "url-age" | "media-error";
-
-interface LoadedPlaybackUrlState {
-  trackKey: string;
-  quality: PlaybackQualityRequest;
-  resolvedAtMs: number;
-  audioUrl: string;
-  rawUrl: string;
-  local: boolean;
-  trial: boolean;
-}
-
-interface PlaybackReloadOptions {
-  preservePosition: boolean;
-  reason: PlaybackReloadReason;
 }
 
 interface LoginQrState {
@@ -670,30 +625,6 @@ function isLoginRequiredError(error: unknown): boolean {
     error instanceof SidecarClientError ||
     (typeof error === "object" && error !== null && "code" in error)
   ) && (error as { code?: unknown }).code === "LOGIN_REQUIRED";
-}
-
-function trialBannerText(result: SongUrlResult): string {
-  if (result.message?.trim()) return result.message.trim();
-  if (result.loggedIn && result.vipLevel === "svip")
-    return "此歌曲需要单曲、专辑购买或更高权限";
-  if (result.loggedIn && result.vipLevel === "vip")
-    return "此歌曲需要 SVIP 或购买 · 当前仅播放试听片段";
-  if (result.loggedIn) return "此歌曲需 VIP · 当前仅播放试听片段";
-  return "当前未登录 · 仅播放试听片段";
-}
-
-function toJsonValue(value: unknown): JsonValue | null {
-  if (value == null) return null;
-  try {
-    return JSON.parse(JSON.stringify(value)) as JsonValue;
-  } catch {
-    return null;
-  }
-}
-
-function isPodcastTrack(track: Track | null | undefined): boolean {
-  const record = track as unknown as Record<string, unknown> | null | undefined;
-  return record?.type === "podcast" || record?.source === "podcast";
 }
 
 function beatMapArrayLength(map: Record<string, JsonValue>, key: string): number {
@@ -1078,9 +1009,6 @@ export function App({
     null,
   );
   const [appServices, setAppServices] = useState<AppServices | null>(null);
-  const [currentBeatMapState, setCurrentBeatMapState] =
-    useState<CurrentBeatMapState | null>(null);
-  const [trialBanner, setTrialBanner] = useState<TrialBannerState | null>(null);
   const [sidecarBaseUrl, setSidecarBaseUrl] = useState("");
   const [splashActive, setSplashActive] = useState<boolean>(SHOW_SPLASH);
   const [searchModeRequest, setSearchModeRequest] = useState<SearchMode>("song");
@@ -1125,10 +1053,6 @@ export function App({
   const [shelfDetailOpen, setShelfDetailOpen] = useState(false);
   const [sidecarRecoveryState, setSidecarRecoveryState] =
     useState<SidecarRecoveryNoticeState | null>(null);
-  const [playbackQuality, setPlaybackQualityState] = useState<PlaybackQualityRequest>(
-    readPlaybackQualityPreference,
-  );
-  const [trackQualityOptions, setTrackQualityOptions] = useState<TrackQualityOption[]>([]);
   const [userCapsuleAutoHide, setUserCapsuleAutoHide] = useState(() =>
     readBooleanPreference(USER_CAPSULE_AUTO_HIDE_STORE_KEY, false),
   );
@@ -1138,7 +1062,6 @@ export function App({
     open: boolean;
     tab: PlaylistPanelTab;
   } | null>(null);
-  const [playbackQualityReloadSeq, setPlaybackQualityReloadSeq] = useState(0);
   const [customLyricModalOpen, setCustomLyricModalOpen] = useState(false);
   const [customLyricText, setCustomLyricText] = useState("");
   const [customLyricStatus, setCustomLyricStatus] = useState<{
@@ -1250,16 +1173,6 @@ export function App({
   const lastRuntimeDurationRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const localAudioUrlsRef = useRef(new Map<string, string>());
-  const lastLoadedKeyRef = useRef<string>("");
-  const loadedPlaybackUrlRef = useRef<LoadedPlaybackUrlState | null>(null);
-  const pausedAtMsRef = useRef<number | null>(null);
-  const mediaErrorRecoveryTrackKeyRef = useRef("");
-  const playbackRequestSeqRef = useRef(0);
-  const lyricRequestSeqRef = useRef(0);
-  const reloadCurrentTrackAndPlayRef = useRef<
-    (options: PlaybackReloadOptions) => Promise<boolean>
-  >(async () => false);
-  const handlePlaybackErrorRef = useRef<(payload: ErrorPayload) => void>(() => {});
   const loginQrRequestSeqRef = useRef(0);
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1286,11 +1199,64 @@ export function App({
   const lastHomeListenKeyRef = useRef("");
   const homeListenSessionRef = useRef<HomeListenSession | null>(null);
 
-  const positionRef = useRef(positionMs);
-  positionRef.current = positionMs;
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
-  const originalLyricsPayloadRef = useRef(lyricsPayload);
+
+  const getPlaybackSessionSnapshot = useCallback(() => {
+    const state = usePlaybackStore.getState();
+    return {
+      currentTrack: state.currentTrack,
+      positionMs: state.positionMs,
+      durationMs: state.durationMs,
+      isPlaying: state.isPlaying,
+    };
+  }, []);
+  const recordHomeListenPause = useCallback(() => {
+    homeListenSessionRef.current = updateHomeListenSession(
+      homeListenSessionRef.current,
+      usePlaybackStore.getState().positionMs,
+      usePlaybackStore.getState().durationMs,
+      Date.now(),
+      true,
+    );
+  }, []);
+  const {
+    playbackQuality,
+    trackQualityOptions,
+    trialBanner,
+    currentBeatMapState,
+    originalLyricsPayloadRef,
+    clearCurrentBeatMap,
+    dismissTrialBanner,
+    setPlaybackQuality,
+    togglePlayback,
+    handleRuntimePlay,
+    handleRuntimePause,
+    handleRuntimeError,
+  } = usePlaybackSessionRuntime({
+    appServices,
+    controllerRef,
+    localAudioUrlsRef,
+    currentTrack,
+    positionMs,
+    getPlaybackSnapshot: getPlaybackSessionSnapshot,
+    setPlaying,
+    setPositionMs,
+    togglePlayFallback: togglePlay,
+    setSearchError,
+    showToast,
+    setHomeForcedOpen,
+    setHomeSuppressed,
+    setLyricsPayload,
+    setLyricsLoading,
+    setLyricsError,
+    resetLyrics: lyricsReset,
+    beatMapKeyForMap: desktopLyricsBeatMapKey,
+    initialLyricsPayload: lyricsPayload,
+    initialPlaybackQuality: readPlaybackQualityPreference(),
+    persistPlaybackQuality: savePlaybackQualityPreference,
+    onRuntimePause: recordHomeListenPause,
+  });
 
   const emptyHomeCoreAllowed = shouldShowEmptyHome({
     splashActive: false,
@@ -1683,13 +1649,13 @@ export function App({
       usePlaybackStore.getState().setQueue([track]);
       usePlaybackStore.getState().playAt(0);
       enterPlaybackSurface();
-      setCurrentBeatMapState(null);
+      clearCurrentBeatMap();
       showToast(track.title);
       if (coverFile) void applyCustomCoverImage(coverFile, track);
       return;
     }
     if (coverFile) void applyCustomCoverImage(coverFile);
-  }, [applyCustomCoverImage, enterPlaybackSurface, showToast]);
+  }, [applyCustomCoverImage, clearCurrentBeatMap, enterPlaybackSurface, showToast]);
 
   const refreshUpdateStatus = useCallback(
     async (manual = false) => {
@@ -2775,179 +2741,6 @@ export function App({
     ],
   );
 
-  const reloadCurrentTrackAndPlay = useCallback(
-    async ({ preservePosition, reason }: PlaybackReloadOptions): Promise<boolean> => {
-      const controller = controllerRef.current;
-      const services = appServices;
-      const track = usePlaybackStore.getState().currentTrack;
-      if (!controller || !services || !track) return false;
-
-      const key = playbackKeyForTrack(track);
-      if (!key || localAudioUrlsRef.current.has(key)) return false;
-
-      const seq = playbackRequestSeqRef.current + 1;
-      playbackRequestSeqRef.current = seq;
-      const resumeAt = preservePosition
-        ? Math.max(0, usePlaybackStore.getState().positionMs)
-        : 0;
-
-      try {
-        const { result, audioUrl } = await resolvePlayableAudio({
-          playback: services.music.playback,
-          mediaUrl: services.mediaUrl,
-          track,
-          quality: playbackQuality,
-        });
-        if (playbackRequestSeqRef.current !== seq) return false;
-        if (result.trial) {
-          setTrialBanner({
-            text: trialBannerText(result),
-            provider: track.provider,
-            showLogin: !result.loggedIn,
-          });
-        } else {
-          setTrialBanner(null);
-        }
-        controller.load(audioUrl);
-        loadedPlaybackUrlRef.current = {
-          trackKey: key,
-          quality: playbackQuality,
-          resolvedAtMs: Date.now(),
-          audioUrl,
-          rawUrl: result.url,
-          local: false,
-          trial: result.trial === true,
-        };
-        if (reason !== "media-error") mediaErrorRecoveryTrackKeyRef.current = "";
-        if (isPodcastTrack(track)) {
-          void Promise.resolve().then(() => (
-            services.music.discover.podcastDjBeatmap(
-              result.url,
-              Math.max(
-                0,
-                Number(
-                  track.durationMs ??
-                    usePlaybackStore.getState().durationMs ??
-                    0,
-                ) / 1000,
-              ),
-              0,
-            )
-          )).then((beatmap) => {
-            if (playbackRequestSeqRef.current !== seq) return;
-            const map = toJsonValue(beatmap.map);
-            setCurrentBeatMapState(map ? {
-              key: desktopLyricsBeatMapKey(map, "dj"),
-              map,
-            } : null);
-          }).catch(() => {
-            if (playbackRequestSeqRef.current === seq) {
-              setCurrentBeatMapState(null);
-            }
-          });
-        }
-        if (resumeAt > 0) {
-          setPositionMs(resumeAt);
-          controller.seek(resumeAt);
-        }
-        await controller.play();
-        if (playbackRequestSeqRef.current !== seq) return false;
-        setHomeForcedOpen(false);
-        setHomeSuppressed(true);
-        return true;
-      } catch (e) {
-        if (playbackRequestSeqRef.current !== seq) return false;
-        const message = e instanceof Error ? e.message : "playback error";
-        setTrialBanner(null);
-        setPlaying(false);
-        setSearchError(message);
-        showToast(message);
-        return false;
-      }
-    },
-    [
-      playbackQuality,
-      appServices,
-      setPlaying,
-      setPositionMs,
-      setSearchError,
-      showToast,
-    ],
-  );
-  reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
-
-  const handlePlaybackError = useCallback(
-    (payload: ErrorPayload) => {
-      const message = payload.message || "音频播放失败";
-      const track = usePlaybackStore.getState().currentTrack;
-      const key = playbackKeyForTrack(track);
-      const loaded = loadedPlaybackUrlRef.current;
-      const canResolveSongUrl = !!appServices?.music.playback;
-      if (
-        key &&
-        loaded &&
-        loaded.trackKey === key &&
-        !loaded.local &&
-        !loaded.trial &&
-        canResolveSongUrl &&
-        mediaErrorRecoveryTrackKeyRef.current !== key
-      ) {
-        mediaErrorRecoveryTrackKeyRef.current = key;
-        setTrialBanner(null);
-        void reloadCurrentTrackAndPlayRef.current({
-          preservePosition: true,
-          reason: "media-error",
-        });
-        return;
-      }
-      setTrialBanner(null);
-      setSearchError(message);
-      showToast(message);
-    },
-    [appServices, setSearchError, showToast],
-  );
-  handlePlaybackErrorRef.current = handlePlaybackError;
-
-  const togglePlayback = useCallback(() => {
-    if (!usePlaybackStore.getState().currentTrack) {
-      showToast("先搜索或打开歌单选择一首歌");
-      return;
-    }
-    const controller = controllerRef.current;
-    if (!controller) {
-      togglePlay();
-      return;
-    }
-    if (usePlaybackStore.getState().isPlaying) {
-      controller.pause();
-      return;
-    }
-    const now = Date.now();
-    const loaded = loadedPlaybackUrlRef.current;
-    const pausedAt = pausedAtMsRef.current;
-    const pauseAgeMs = pausedAt === null ? 0 : now - pausedAt;
-    const urlAgeMs = loaded ? now - loaded.resolvedAtMs : 0;
-    const shouldRefresh =
-      loaded &&
-      !loaded.local &&
-      (
-        pauseAgeMs >= LONG_PAUSE_PLAYBACK_URL_REFRESH_MS ||
-        urlAgeMs >= PLAYBACK_URL_MAX_AGE_MS
-      );
-    if (shouldRefresh) {
-      const reason: PlaybackReloadReason =
-        pauseAgeMs >= LONG_PAUSE_PLAYBACK_URL_REFRESH_MS
-          ? "long-pause"
-          : "url-age";
-      void reloadCurrentTrackAndPlayRef.current({
-        preservePosition: true,
-        reason,
-      });
-      return;
-    }
-    void controller.play();
-  }, [showToast, togglePlay]);
-
   const playMiniQueueIndex = useCallback(
     (index: number) => {
       playQueueAt(index);
@@ -3316,27 +3109,6 @@ export function App({
     applyVisualThemeToRoot(document.documentElement, visualFx);
   }, [visualFx]);
 
-  const setPlaybackQuality = useCallback(
-    (quality: PlaybackQualityRequest) => {
-      setPlaybackQualityState(quality);
-      savePlaybackQualityPreference(quality);
-      if (!usePlaybackStore.getState().currentTrack) {
-        showToast("音质偏好已保存，下次播放生效");
-        return;
-      }
-      const resumeAt = controllerRef.current
-        ? usePlaybackStore.getState().positionMs
-        : 0;
-      if (resumeAt > 0) controllerRef.current?.pause();
-      lastLoadedKeyRef.current = "";
-      playbackRequestSeqRef.current += 1;
-      setPositionMs(resumeAt);
-      setPlaybackQualityReloadSeq((seq) => seq + 1);
-      showToast("正在切换音质");
-    },
-    [setPositionMs, showToast],
-  );
-
   const currentDesktopLyricSnapshot = useCallback(() => {
     const payload = useLyricsStore.getState().payload;
     const playback = usePlaybackStore.getState();
@@ -3683,23 +3455,6 @@ export function App({
     [setDurationMs],
   );
 
-  const handleRuntimePlay = useCallback(() => {
-    pausedAtMsRef.current = null;
-    setPlaying(true);
-  }, [setPlaying]);
-
-  const handleRuntimePause = useCallback(() => {
-    pausedAtMsRef.current = Date.now();
-    homeListenSessionRef.current = updateHomeListenSession(
-      homeListenSessionRef.current,
-      usePlaybackStore.getState().positionMs,
-      usePlaybackStore.getState().durationMs,
-      Date.now(),
-      true,
-    );
-    setPlaying(false);
-  }, [setPlaying]);
-
   const handleRuntimeEnded = useCallback(() => {
     finalizeHomeListenSession(true);
     setPositionMs(0);
@@ -3713,42 +3468,12 @@ export function App({
     }
   }, [finalizeHomeListenSession, setPositionMs]);
 
-  const handleRuntimeError = useCallback((payload: ErrorPayload) => {
-    handlePlaybackErrorRef.current(payload);
-  }, []);
-
   useEffect(() => {
     if (!currentTrack) return;
     const hydrated = withStoredCustomCover(currentTrack);
     if (hydrated === currentTrack || hydrated.coverUrl === currentTrack.coverUrl) return;
     patchCustomCoverTrack(currentTrack, hydrated);
   }, [currentTrack, patchCustomCoverTrack]);
-
-  useEffect(() => {
-    const track = currentTrack;
-    const playback = appServices?.music.playback;
-    const key = playbackKeyForTrack(track);
-    if (!track || !playback || !key || localAudioUrlsRef.current.has(key)) {
-      setTrackQualityOptions([]);
-      return;
-    }
-    let cancelled = false;
-    void Promise.resolve().then(() => playback.trackQualities(track)).then((availability) => {
-      if (cancelled) return;
-      const qualities = availability.qualities;
-      setTrackQualityOptions(qualities);
-      const selectedAvailable = qualities.some((quality) => quality.requestQuality === playbackQuality);
-      const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
-      if (!selectedAvailable && fallbackQuality) {
-        setPlaybackQuality(fallbackQuality);
-      }
-    }).catch(() => {
-      if (!cancelled) setTrackQualityOptions([]);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [appServices, currentTrack, playbackQuality, setPlaybackQuality]);
 
   useEffect(() => {
     const track = currentTrack;
@@ -3770,189 +3495,6 @@ export function App({
       // 红心状态只影响按钮高亮，失败不能阻断播放 UI。
     });
   }, [currentTrack, sidecarClient]);
-
-  useEffect(() => {
-    const controller = controllerRef.current;
-    const services = appServices;
-    if (!controller) return;
-    if (!currentTrack) {
-      lastLoadedKeyRef.current = "";
-      loadedPlaybackUrlRef.current = null;
-      pausedAtMsRef.current = null;
-      mediaErrorRecoveryTrackKeyRef.current = "";
-      playbackRequestSeqRef.current += 1;
-      lyricRequestSeqRef.current += 1;
-      setCurrentBeatMapState(null);
-      setTrialBanner(null);
-      controller.pause();
-      lyricsReset();
-      return;
-    }
-    const key = playbackKeyForTrack(currentTrack);
-    const localAudioUrl = localAudioUrlsRef.current.get(key);
-    if (!localAudioUrl && !services) return;
-    if (key === lastLoadedKeyRef.current) return;
-    lastLoadedKeyRef.current = key;
-    mediaErrorRecoveryTrackKeyRef.current = "";
-    const playbackSeq = playbackRequestSeqRef.current + 1;
-    playbackRequestSeqRef.current = playbackSeq;
-    const lyricSeq = lyricRequestSeqRef.current + 1;
-    lyricRequestSeqRef.current = lyricSeq;
-    setCurrentBeatMapState(null);
-    setTrialBanner(null);
-    const fallbackLyric = buildTrackLyricFallback(currentTrack);
-    originalLyricsPayloadRef.current = fallbackLyric;
-    const resolvedFallbackLyric = resolveLyricsForTrack({
-      track: currentTrack,
-      original: fallbackLyric,
-      durationMs:
-        usePlaybackStore.getState().durationMs ?? currentTrack.durationMs,
-    });
-    setLyricsPayload(resolvedFallbackLyric.payload);
-
-    if (localAudioUrl) {
-      void (async () => {
-        try {
-          controller.load(localAudioUrl);
-          loadedPlaybackUrlRef.current = {
-            trackKey: key,
-            quality: playbackQuality,
-            resolvedAtMs: Date.now(),
-            audioUrl: localAudioUrl,
-            rawUrl: localAudioUrl,
-            local: true,
-            trial: false,
-          };
-          if (positionRef.current > 0) controller.seek(positionRef.current);
-          await controller.play();
-          if (playbackRequestSeqRef.current !== playbackSeq) return;
-          setLyricsLoading(false);
-          setHomeForcedOpen(false);
-          setHomeSuppressed(true);
-        } catch (e) {
-          if (playbackRequestSeqRef.current !== playbackSeq) return;
-          const message = e instanceof Error ? e.message : "playback error";
-          setPlaying(false);
-          setSearchError(message);
-          showToast(message);
-        }
-      })();
-      return;
-    }
-
-    if (!services) return;
-
-    void (async () => {
-      try {
-        const { result, audioUrl } = await resolvePlayableAudio({
-          playback: services.music.playback,
-          mediaUrl: services.mediaUrl,
-          track: currentTrack,
-          quality: playbackQuality,
-        });
-        if (playbackRequestSeqRef.current !== playbackSeq) return;
-        if (result.trial) {
-          setTrialBanner({
-            text: trialBannerText(result),
-            provider: currentTrack.provider,
-            showLogin: !result.loggedIn,
-          });
-        } else {
-          setTrialBanner(null);
-        }
-        controller.load(audioUrl);
-        loadedPlaybackUrlRef.current = {
-          trackKey: key,
-          quality: playbackQuality,
-          resolvedAtMs: Date.now(),
-          audioUrl,
-          rawUrl: result.url,
-          local: false,
-          trial: result.trial === true,
-        };
-        if (isPodcastTrack(currentTrack)) {
-          void Promise.resolve().then(() => (
-            services.music.discover.podcastDjBeatmap(
-              result.url,
-              Math.max(
-                0,
-                Number(
-                  currentTrack.durationMs ??
-                    usePlaybackStore.getState().durationMs ??
-                    0,
-                ) / 1000,
-              ),
-              0,
-            )
-          )).then((beatmap) => {
-            if (playbackRequestSeqRef.current !== playbackSeq) return;
-            const map = toJsonValue(beatmap.map);
-            setCurrentBeatMapState(map ? {
-              key: desktopLyricsBeatMapKey(map, "dj"),
-              map,
-            } : null);
-          }).catch(() => {
-            if (playbackRequestSeqRef.current === playbackSeq) {
-              setCurrentBeatMapState(null);
-            }
-          });
-        }
-        if (positionRef.current > 0) controller.seek(positionRef.current);
-        await controller.play();
-        if (playbackRequestSeqRef.current !== playbackSeq) return;
-        setHomeForcedOpen(false);
-        setHomeSuppressed(true);
-      } catch (e) {
-        if (playbackRequestSeqRef.current !== playbackSeq) return;
-        const message = e instanceof Error ? e.message : "playback error";
-        setTrialBanner(null);
-        setPlaying(false);
-        setSearchError(message);
-        showToast(message);
-      }
-      try {
-        setLyricsLoading(true);
-        const lyric = ensureLyricFallbackPayload(
-          await services.music.lyrics.lyric(currentTrack),
-          currentTrack,
-        );
-        if (lyricRequestSeqRef.current !== lyricSeq) return;
-        originalLyricsPayloadRef.current = lyric;
-        const resolvedLyric = resolveLyricsForTrack({
-          track: currentTrack,
-          original: lyric,
-          durationMs:
-            usePlaybackStore.getState().durationMs ?? currentTrack.durationMs,
-        });
-        setLyricsPayload(resolvedLyric.payload);
-      } catch (e) {
-        if (lyricRequestSeqRef.current !== lyricSeq) return;
-        const message = e instanceof Error ? e.message : "lyrics failed";
-        const fallbackLyric = buildTrackLyricFallback(currentTrack);
-        originalLyricsPayloadRef.current = fallbackLyric;
-        const resolvedLyric = resolveLyricsForTrack({
-          track: currentTrack,
-          original: fallbackLyric,
-          durationMs:
-            usePlaybackStore.getState().durationMs ?? currentTrack.durationMs,
-        });
-        setLyricsPayload(resolvedLyric.payload);
-        setLyricsError(message);
-      }
-    })();
-  }, [
-    currentTrack,
-    playbackQuality,
-    playbackQualityReloadSeq,
-    appServices,
-    setLyricsError,
-    setLyricsLoading,
-    setLyricsPayload,
-    setPlaying,
-    setSearchError,
-    showToast,
-    lyricsReset,
-  ]);
 
   const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
     netease: neteaseStatus,
@@ -4782,7 +4324,7 @@ export function App({
           className="close"
           type="button"
           aria-label="关闭试听提醒"
-          onClick={() => setTrialBanner(null)}
+          onClick={dismissTrialBanner}
         >
           ×
         </button>

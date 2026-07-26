@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-test("App playback session depends on application ports instead of SidecarClient methods", () => {
+test("App delegates current-track session ownership to the playback runtime", () => {
 	const appSource = readFileSync(
 		fileURLToPath(new URL("../../apps/web/src/app/App.tsx", import.meta.url)),
 		"utf8",
@@ -12,11 +12,23 @@ test("App playback session depends on application ports instead of SidecarClient
 		"utf8",
 	);
 
-	expect(appSource).not.toContain("client.resolveSongUrl(");
-	expect(appSource).not.toContain("client.audioProxyUrl(");
-	expect(appSource).not.toContain("client.lyric(currentTrack)");
-	expect(appSource).not.toContain("sidecarClient?.resolveSongUrl");
 	expect(appSource).toContain("usePlaybackSessionRuntime({");
+	for (const forbidden of [
+		"playbackRequestSeqRef",
+		"lyricRequestSeqRef",
+		"mediaErrorRecoveryTrackKeyRef",
+		"loadedPlaybackUrlRef",
+		"pausedAtMsRef",
+		"resolvePlayableAudio({",
+		"trackQualities(",
+		"music.lyrics.lyric(",
+		"podcastDjBeatmap(",
+	]) {
+		expect(appSource).not.toContain(forbidden);
+	}
+
+	expect(runtimeSource).toContain("new PlaybackSessionCoordinator()");
 	expect(runtimeSource).toContain("resolvePlayableAudio({");
 	expect(runtimeSource).toContain("services.music.lyrics.lyric(currentTrack)");
+	expect(runtimeSource).toContain("services.music.discover.podcastDjBeatmap(");
 });

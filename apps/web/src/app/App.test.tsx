@@ -1476,8 +1476,10 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 			playableState: "unknown",
 		});
 
+		let resolveCount = 0;
 		const fakeClient = {
 			async resolveSongUrl() {
+				resolveCount += 1;
 				return { url: rawProviderUrl, quality: "standard", proxied: false };
 			},
 			audioProxyUrl(url: string) {
@@ -1509,6 +1511,7 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
 
+		expect(resolveCount).toBe(1);
 		expect(appStubAudioInstances[0]?.src).toBe(proxiedUrl);
 		expect(appStubAudioInstances[0]?.src).toContain("/audio-proxy?url=");
 		expect(appStubAudioInstances[0]?.src).not.toBe(rawProviderUrl);

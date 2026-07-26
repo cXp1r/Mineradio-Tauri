@@ -156,15 +156,15 @@ git commit -m "refactor(web): extract playback session runtime"
 - Modify: `apps/web/src/app/App.test.tsx`
 - Create: `scripts/architecture/playback-session-boundary.test.ts`
 
-- [ ] **Step 1: Replace App-owned session state and refs**
+- [x] **Step 1: Replace App-owned session state and refs**
 
 删除 App 内的播放 session types/constants/helpers、播放质量/试听/beatmap state、session refs、reload/error/toggle callbacks、质量查询 effect 和 current-track load effect。调用 `usePlaybackSessionRuntime()` 并保持现有变量名供 UI 与 `PlaybackRuntimeHost` 消费。
 
-- [ ] **Step 2: Preserve custom lyric and runtime callback integration**
+- [x] **Step 2: Preserve custom lyric and runtime callback integration**
 
 App 继续使用 runtime 返回的 `originalLyricsPayloadRef`；`handleRuntimePlay`、`handleRuntimePause`、`handleRuntimeError` 与 `togglePlayback` 直接来自 runtime。`handleRuntimeEnded`、timeupdate 和 durationchange 暂留 App，避免扩大本批范围。
 
-- [ ] **Step 3: Add the source ownership guard**
+- [x] **Step 3: Add the source ownership guard**
 
 断言 `App.tsx`：
 
@@ -172,7 +172,7 @@ App 继续使用 runtime 返回的 `originalLyricsPayloadRef`；`handleRuntimePl
 - 不再包含 `playbackRequestSeqRef`、`lyricRequestSeqRef`、`mediaErrorRecoveryTrackKeyRef`、`loadedPlaybackUrlRef`、`pausedAtMsRef`；
 - 不再直接调用 `resolvePlayableAudio`、`trackQualities()`、`music.lyrics.lyric()` 或 `podcastDjBeatmap()`。
 
-- [ ] **Step 4: Run App characterization and architecture tests**
+- [x] **Step 4: Run App characterization and architecture tests**
 
 ```powershell
 bun test apps/web/src/features/playback apps/web/src/app/App.test.tsx scripts/architecture/playback-port-boundary.test.ts scripts/architecture/playback-session-boundary.test.ts
@@ -180,7 +180,7 @@ bun run --filter ./apps/web typecheck
 bun run web:build
 ```
 
-- [ ] **Step 5: Commit integration**
+- [x] **Step 5: Commit integration**
 
 ```powershell
 git add apps/web/src/app/App.tsx apps/web/src/app/App.test.tsx scripts/architecture/playback-session-boundary.test.ts docs/superpowers/plans/2026-07-26-m1-playback-current-session-runtime.md
