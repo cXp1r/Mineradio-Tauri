@@ -144,11 +144,11 @@ git commit -m "test: guard playback port boundary"
 - Modify: `docs/parity/capability-matrix.md`
 - Modify: `docs/superpowers/plans/2026-07-26-m1-playback-port-session-boundary.md`
 
-- [ ] **Step 1: Record verified Port migration only**
+- [x] **Step 1: Record verified Port migration only**
 
 不得把 `playback.resolve` 或 `playback.switch` 标为完成；只记录 concrete client dependency 已移除。
 
-- [ ] **Step 2: Run full verification and frozen API audit**
+- [x] **Step 2: Run full verification and frozen API audit**
 
 ```powershell
 bun run typecheck
@@ -162,7 +162,7 @@ git diff --check
 git diff d33dc6e..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps/desktop/scripts/build-sidecar-binary.mjs apps/desktop/src-tauri/tauri.conf.json packages/shared
 ```
 
-- [ ] **Step 3: Commit evidence**
+- [x] **Step 3: Commit evidence**
 
 ```powershell
 git add docs/parity docs/superpowers/plans/2026-07-26-m1-playback-port-session-boundary.md
