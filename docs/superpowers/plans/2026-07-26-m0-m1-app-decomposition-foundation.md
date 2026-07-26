@@ -335,11 +335,11 @@ git commit -m "refactor(web): adapt legacy sidecar services"
 - Create: `apps/web/src/adapters/tauri/tauri-desktop-runtime.ts`
 - Create: `apps/web/src/adapters/tauri/tauri-desktop-runtime.test.ts`
 
-- [ ] **Step 1: Implement adapters with injected function tables**
+- [x] **Step 1: Implement adapters with injected function tables**
 
 Avoid module mocking. Each adapter factory accepts a dependency object whose defaults are the current functions.
 
-- [ ] **Step 2: Add focused delegation tests**
+- [x] **Step 2: Add focused delegation tests**
 
 ```powershell
 bun test apps/web/src/adapters/sidecar/legacy-api-runtime.test.ts apps/web/src/adapters/tauri/tauri-desktop-runtime.test.ts
@@ -347,11 +347,11 @@ bun test apps/web/src/adapters/sidecar/legacy-api-runtime.test.ts apps/web/src/a
 
 Tests inject recorders and assert exact arguments and return objects.
 
-- [ ] **Step 3: Verify lossless wrappers**
+- [x] **Step 3: Verify lossless wrappers**
 
 `createLegacyApiRuntime()` delegates `getRuntimeConfig`, `getSidecarStatus`, `health` and `capabilities`. `createTauriDesktopRuntime()` delegates existing window, desktop lyrics and hotkey functions without changing command names or payloads.
 
-- [ ] **Step 4: Run adapter, runtime and desktop lyrics tests**
+- [x] **Step 4: Run adapter, runtime and desktop lyrics tests**
 
 ```powershell
 bun test apps/web/src/adapters apps/web/src/tauri/runtime.test.ts apps/web/src/desktop-lyrics
@@ -360,7 +360,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit runtime adapters**
+- [x] **Step 5: Commit runtime adapters**
 
 ```powershell
 git add apps/web/src/adapters apps/web/src/ports
