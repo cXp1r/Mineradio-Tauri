@@ -321,7 +321,14 @@ test("repeated media errors start at most one automatic source recovery", async 
 
 	runtimeRef.current!.handleRuntimeError({ code: 2, message: "media failed" });
 	runtimeRef.current!.handleRuntimeError({ code: 2, message: "media failed again" });
-	for (let i = 0; i < 8 && resolveCount < 2; i += 1) {
+	for (let i = 0; i < 8 && (resolveCount < 2 || loadCount < 2); i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	runtimeRef.current!.handleRuntimeError({
+		code: 2,
+		message: "media failed after recovery",
+	});
+	for (let i = 0; i < 4; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
 

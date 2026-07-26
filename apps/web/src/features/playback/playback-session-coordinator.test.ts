@@ -1,12 +1,16 @@
 import { expect, test } from "bun:test";
-import { PlaybackSessionCoordinator } from "./playback-session-coordinator";
+import {
+	PlaybackSessionCoordinator,
+	type LoadedPlaybackSource,
+	type PlaybackLoadHandle,
+} from "./playback-session-coordinator";
 
 const PLAYBACK_URL_FAR_FUTURE_MS = 1_000 + 20 * 60 * 1_000;
 
-function remoteSource(trackKey = "netease:first") {
+function remoteSource(trackKey = "netease:first"): LoadedPlaybackSource {
 	return {
 		trackKey,
-		quality: "standard" as const,
+		quality: "standard",
 		resolvedAtMs: 1_000,
 		audioUrl: "http://127.0.0.1/audio-proxy",
 		rawUrl: "https://media.example/first.mp3",
@@ -15,72 +19,81 @@ function remoteSource(trackKey = "netease:first") {
 	};
 }
 
+function load(
+	coordinator: PlaybackSessionCoordinator,
+	handle: PlaybackLoadHandle,
+	source = remoteSource(),
+): void {
+	expect(coordinator.markLoaded(handle, source)).toBe(true);
+}
+
+function play(
+	coordinator: PlaybackSessionCoordinator,
+	handle: PlaybackLoadHandle,
+): void {
+	expect(coordinator.markPlaying(handle)).toBe(true);
+}
+
+function loadAndPlay(
+	coordinator: PlaybackSessionCoordinator,
+	handle: PlaybackLoadHandle,
+	source = remoteSource(),
+): void {
+	load(coordinator, handle, source);
+	play(coordinator, handle);
+}
+
 test("switching tracks invalidates stale playback and lyric work", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const first = coordinator.beginTrack("netease:first");
-	const second = coordinator.beginTrack("netease:second");
+	const first = coordinator.beginTrack("netease:first")!;
+	const second = coordinator.beginTrack("netease:second")!;
 
-	expect(first).not.toBeNull();
-	expect(second).not.toBeNull();
-	expect(coordinator.isPlaybackCurrent(first!.playbackToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(first!.lyricToken)).toBe(false);
-	expect(coordinator.isPlaybackCurrent(second!.playbackToken)).toBe(true);
-	expect(coordinator.isLyricCurrent(second!.lyricToken)).toBe(true);
+	expect(coordinator.isPlaybackCurrent(first)).toBe(false);
+	expect(coordinator.isLyricCurrent(first)).toBe(false);
+	expect(coordinator.isPlaybackCurrent(second)).toBe(true);
+	expect(coordinator.isLyricCurrent(second)).toBe(true);
 });
 
 test("legacy track changes do not advance the explicit intent watermark", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const legacy = coordinator.beginTrack("netease:first");
-	const explicit = coordinator.beginTrack("netease:second", 1);
+	const legacy = coordinator.beginTrack("netease:first")!;
+	const explicit = coordinator.beginTrack("netease:second", 1)!;
 
-	expect(legacy).not.toBeNull();
-	expect(explicit).not.toBeNull();
-	expect(explicit!.playbackSessionId).toBeGreaterThan(
-		legacy!.playbackSessionId,
-	);
+	expect(explicit.playbackSessionId).toBeGreaterThan(legacy.playbackSessionId);
 });
 
-test("a newer explicit intent creates a fresh session even for the same track", () => {
+test("a newer explicit intent creates a fresh session for the same track", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const first = coordinator.beginTrack("netease:first", 1);
-	const second = coordinator.beginTrack("netease:first", 2);
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	const second = coordinator.beginTrack("netease:first", 2)!;
 
-	expect(first).not.toBeNull();
-	expect(second).not.toBeNull();
-	expect(second!.playbackSessionId).toBeGreaterThan(first!.playbackSessionId);
-	expect(second!.playbackToken).toBeGreaterThan(first!.playbackToken);
-	expect(second!.lyricToken).toBeGreaterThan(first!.lyricToken);
-	expect(coordinator.isPlaybackCurrent(first!.playbackToken)).toBe(false);
+	expect(second.playbackSessionId).toBeGreaterThan(first.playbackSessionId);
+	expect(second.playbackToken).toBeGreaterThan(first.playbackToken);
+	expect(second.lyricToken).toBeGreaterThan(first.lyricToken);
+	expect(coordinator.isPlaybackCurrent(first)).toBe(false);
 	expect(coordinator.snapshot().phase).toBe("resolving");
-	expect(coordinator.snapshot().playbackSessionId).toBe(
-		second!.playbackSessionId,
-	);
-	expect(coordinator.snapshot().loadRequestId).toBe(second!.playbackToken);
-	expect(coordinator.snapshot().trackKey).toBe("netease:first");
+	expect(coordinator.snapshot().loadRequestId).toBe(second.playbackToken);
 });
 
 test("the same or an older explicit intent cannot create a session", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const current = coordinator.beginTrack("netease:first", 2);
+	const current = coordinator.beginTrack("netease:first", 2)!;
 
-	expect(current).not.toBeNull();
 	expect(coordinator.beginTrack("netease:first", 2)).toBeNull();
 	expect(coordinator.beginTrack("netease:second", 1)).toBeNull();
 	expect(coordinator.snapshot().playbackSessionId).toBe(
-		current!.playbackSessionId,
+		current.playbackSessionId,
 	);
 });
 
-test("a stale load cannot write the source or advance the resolving state", () => {
+test("a stale load cannot write the source or advance resolving state", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const first = coordinator.beginTrack("netease:first", 1)!;
 	coordinator.beginTrack("netease:first", 2);
 	const resolving = coordinator.snapshot();
 
-	coordinator.markLoaded(remoteSource(), first.playbackToken);
-
+	expect(coordinator.markLoaded(first, remoteSource())).toBe(false);
 	expect(coordinator.snapshot()).toBe(resolving);
-	expect(coordinator.snapshot().phase).toBe("resolving");
 	expect(coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS)).toBeNull();
 });
 
@@ -88,82 +101,82 @@ test("the current source advances through loading to playing", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
 
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
+	load(coordinator, session);
 	expect(coordinator.snapshot().phase).toBe("loading");
-
-	coordinator.markPlaying();
+	play(coordinator, session);
 	expect(coordinator.snapshot().phase).toBe("playing");
 });
 
-test("markPlaying resumes a paused current session", () => {
+test("markPlaying resumes a paused current load", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
-	coordinator.markPlaying();
-	coordinator.markPaused(2_000);
+	loadAndPlay(coordinator, session);
+	expect(coordinator.markPaused(session, 2_000)).toBe(true);
 	expect(coordinator.snapshot().phase).toBe("paused");
 
-	coordinator.markPlaying();
-
+	expect(coordinator.markPlaying(session)).toBe(true);
 	expect(coordinator.snapshot().phase).toBe("playing");
 });
 
 test("claiming current remote media recovery advances the machine", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
-	coordinator.markPlaying();
+	loadAndPlay(coordinator, session);
 
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(true);
 	expect(coordinator.snapshot().phase).toBe("recovering");
 	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(false);
 	expect(coordinator.snapshot().phase).toBe("failed");
 });
 
 test("rejecting media recovery while resolving fails the current load", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first", 1);
+	const session = coordinator.beginTrack("netease:first", 1)!;
 
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(false);
 	expect(coordinator.snapshot().phase).toBe("failed");
 });
 
 test("media recovery is claimed only when the current load accepts failure", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
-	coordinator.markPlaying();
-	const reloadToken = coordinator.beginReload("url-age");
+	loadAndPlay(coordinator, session);
+	const reload = coordinator.beginReload("url-age")!;
 	const resolving = coordinator.snapshot();
 
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(reload, "netease:first", true),
+	).toBe(false);
 	expect(coordinator.snapshot()).toBe(resolving);
 
-	coordinator.markLoaded(remoteSource(), reloadToken);
-	coordinator.markPlaying();
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	loadAndPlay(coordinator, reload);
+	expect(
+		coordinator.claimMediaErrorRecovery(reload, "netease:first", true),
+	).toBe(true);
 });
 
-test("a media-error reload keeps the session while starting a new load", () => {
+test("a media-error reload binds its reason and preserves the session", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
-	coordinator.markPlaying();
-	coordinator.claimMediaErrorRecovery("netease:first", true);
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
 
-	const playbackToken = coordinator.beginReload("media-error");
+	const reload = coordinator.beginReload("media-error")!;
 
-	expect(playbackToken).toBeGreaterThan(session.playbackToken);
+	expect(reload.reloadReason).toBe("media-error");
+	expect(reload.playbackSessionId).toBe(session.playbackSessionId);
+	expect(reload.playbackToken).toBeGreaterThan(session.playbackToken);
 	expect(coordinator.snapshot().phase).toBe("recovering");
-	expect(coordinator.snapshot().playbackSessionId).toBe(
-		session.playbackSessionId,
-	);
-	expect(coordinator.snapshot().loadRequestId).toBe(playbackToken);
-	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
 });
 
-test("clear returns to idle and invalidates all work from the old session", () => {
+test("clear returns to idle and invalidates all old work", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
 
@@ -171,268 +184,371 @@ test("clear returns to idle and invalidates all work from the old session", () =
 
 	expect(coordinator.snapshot().phase).toBe("idle");
 	expect(coordinator.snapshot().trackKey).toBe("");
-	expect(coordinator.snapshot().playbackSessionId).toBeGreaterThan(
-		session.playbackSessionId,
+	expect(coordinator.isPlaybackCurrent(session)).toBe(false);
+	expect(coordinator.isLyricCurrent(session)).toBe(false);
+});
+
+test("idle reload attempts are rejected without committing fields", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const idle = coordinator.snapshot();
+
+	expect(coordinator.beginReload("url-age")).toBeNull();
+	expect(coordinator.invalidateCurrentTrackLoad()).toBeNull();
+	expect(coordinator.snapshot()).toBe(idle);
+	const first = coordinator.beginTrack("netease:first")!;
+	expect(first.playbackSessionId).toBe(1);
+	expect(first.playbackToken).toBe(1);
+	expect(first.lyricToken).toBe(1);
+});
+
+test("ended reload attempts preserve the current source policy", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, session);
+	expect(coordinator.markEnded(session)).toBe(true);
+	const ended = coordinator.snapshot();
+	const refreshReason = coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS);
+
+	expect(coordinator.beginReload("url-age")).toBeNull();
+	expect(coordinator.invalidateCurrentTrackLoad()).toBeNull();
+	expect(coordinator.snapshot()).toBe(ended);
+	expect(coordinator.isPlaybackCurrent(session)).toBe(true);
+	expect(coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS)).toBe(
+		refreshReason,
 	);
-	expect(coordinator.isPlaybackCurrent(session.playbackToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(session.lyricToken)).toBe(false);
+});
+
+test("markLoaded cannot replace a source in an illegal current phase", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, session);
+	const playing = coordinator.snapshot();
+
+	expect(
+		coordinator.markLoaded(session, { ...remoteSource(), local: true }),
+	).toBe(false);
+	expect(coordinator.snapshot()).toBe(playing);
+	expect(coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS)).toBe("url-age");
+});
+
+test("a superseding reload invalidates the pending quality handle", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	coordinator.beginTrack("netease:first", 1);
+	const quality = coordinator.invalidateCurrentTrackLoad()!;
+	const reload = coordinator.beginReload("url-age")!;
+
+	expect(coordinator.isPlaybackCurrent(quality)).toBe(false);
+	expect(coordinator.isPlaybackCurrent(reload)).toBe(true);
+	expect(coordinator.beginTrack("netease:first", 1)).toBeNull();
+});
+
+test("old-session lifecycle events cannot mutate the current load", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, first);
+	const second = coordinator.beginTrack("netease:second", 2)!;
+	load(coordinator, second, remoteSource("netease:second"));
+	const loading = coordinator.snapshot();
+
+	expect(coordinator.markPlaying(first)).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	play(coordinator, second);
+	const playing = coordinator.snapshot();
+	expect(coordinator.markPaused(first, 5_000)).toBe(false);
+	expect(coordinator.markEnded(first)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(first, "netease:second", true),
+	).toBe(false);
+	expect(coordinator.markRecoveryExhausted(first, "stale")).toBe(false);
+	expect(coordinator.snapshot()).toBe(playing);
+	expect(
+		coordinator.claimMediaErrorRecovery(second, "netease:second", true),
+	).toBe(true);
+});
+
+test("old-load lifecycle events cannot mutate a newer load in the same session", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, first);
+	const reload = coordinator.beginReload("url-age")!;
+	load(coordinator, reload);
+	const loading = coordinator.snapshot();
+
+	expect(coordinator.markPlaying(first)).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	play(coordinator, reload);
+	const playing = coordinator.snapshot();
+	expect(coordinator.markPaused(first, 5_000)).toBe(false);
+	expect(coordinator.markEnded(first)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(first, "netease:first", true),
+	).toBe(false);
+	expect(coordinator.markRecoveryExhausted(first, "stale")).toBe(false);
+	expect(coordinator.snapshot()).toBe(playing);
 });
 
 test("stale reload completion cannot restore the recovery budget", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), session.playbackToken);
-	coordinator.markPlaying();
-	coordinator.claimMediaErrorRecovery("netease:first", true);
-	const reloadToken = coordinator.beginReload("url-age");
-	coordinator.markLoaded(remoteSource(), reloadToken);
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
+	const firstReload = coordinator.beginReload("url-age")!;
+	const currentReload = coordinator.beginReload("url-age")!;
+	load(coordinator, currentReload);
 	const loading = coordinator.snapshot();
 
-	coordinator.completeReload("url-age", session.playbackToken);
-
+	expect(coordinator.completeReload(firstReload)).toBe(false);
 	expect(coordinator.snapshot()).toBe(loading);
 	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+});
+
+test("reload completion rejects forged metadata without internal authority", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, session);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(true);
+	const forged: PlaybackLoadHandle = {
+		...session,
+		reloadReason: "url-age",
+	};
+
+	expect(coordinator.completeReload(forged)).toBe(false);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+});
+
+test("reload completion uses the coordinator-bound reason", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
+	const reload = coordinator.beginReload("media-error")!;
+	load(coordinator, reload);
+	const tampered = reload as { reloadReason?: string };
+	tampered.reloadReason = "url-age";
+
+	expect(coordinator.completeReload(reload)).toBe(true);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+});
+
+test("reload completion authority is consumed once", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
+	const reload = coordinator.beginReload("url-age")!;
+	load(coordinator, reload);
+	expect(coordinator.completeReload(reload)).toBe(true);
+	play(coordinator, reload);
+	expect(
+		coordinator.claimMediaErrorRecovery(reload, "netease:first", true),
+	).toBe(true);
+
+	expect(coordinator.completeReload(reload)).toBe(false);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
 });
 
 test("terminal helpers reject stale loads and advance current work", () => {
 	const resolvingCoordinator = new PlaybackSessionCoordinator();
-	const resolvingSession = resolvingCoordinator.beginTrack("netease:first", 1)!;
+	const first = resolvingCoordinator.beginTrack("netease:first", 1)!;
+	const current = resolvingCoordinator.beginReload("url-age")!;
 	const resolving = resolvingCoordinator.snapshot();
-	resolvingCoordinator.markResolveFailed(
-		resolvingSession.playbackToken - 1,
-		"stale",
-	);
+	expect(resolvingCoordinator.markResolveFailed(first, "stale")).toBe(false);
 	expect(resolvingCoordinator.snapshot()).toBe(resolving);
-	resolvingCoordinator.markResolveFailed(
-		resolvingSession.playbackToken,
-		"no-source",
-	);
-	expect(resolvingCoordinator.snapshot().phase).toBe("failed");
+	expect(
+		resolvingCoordinator.markResolveFailed(current, "no-source"),
+	).toBe(true);
 	expect(resolvingCoordinator.snapshot().failureReason).toBe("no-source");
 
 	const playingCoordinator = new PlaybackSessionCoordinator();
-	const playingSession = playingCoordinator.beginTrack("netease:first", 1)!;
-	playingCoordinator.markLoaded(remoteSource(), playingSession.playbackToken);
-	playingCoordinator.markPlaying();
-	playingCoordinator.markEnded();
+	const playing = playingCoordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(playingCoordinator, playing);
+	expect(playingCoordinator.markEnded(playing)).toBe(true);
 	expect(playingCoordinator.snapshot().phase).toBe("ended");
 
 	const recoveringCoordinator = new PlaybackSessionCoordinator();
-	const recoveringSession = recoveringCoordinator.beginTrack("netease:first", 1)!;
-	recoveringCoordinator.markLoaded(remoteSource(), recoveringSession.playbackToken);
-	recoveringCoordinator.markPlaying();
-	recoveringCoordinator.claimMediaErrorRecovery("netease:first", true);
-	recoveringCoordinator.markRecoveryExhausted("retry-failed");
-	expect(recoveringCoordinator.snapshot().phase).toBe("failed");
+	const recovering = recoveringCoordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(recoveringCoordinator, recovering);
+	recoveringCoordinator.claimMediaErrorRecovery(
+		recovering,
+		"netease:first",
+		true,
+	);
+	expect(
+		recoveringCoordinator.markRecoveryExhausted(recovering, "retry-failed"),
+	).toBe(true);
 	expect(recoveringCoordinator.snapshot().failureReason).toBe("retry-failed");
 });
 
 test("a remote non-trial track receives only one automatic media recovery", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
 
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(true);
+	expect(
+		coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+	).toBe(false);
 });
 
-test("a long pause refreshes the remote source while preserving the long-pause reason", () => {
+test("a long pause refreshes the remote source", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
-	coordinator.markPaused(5_000);
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	expect(coordinator.markPaused(session, 5_000)).toBe(true);
 
 	expect(coordinator.refreshReason(5_000 + 10 * 60 * 1_000)).toBe("long-pause");
 });
 
-test("an old remote URL refreshes even without a recorded pause", () => {
+test("an old remote URL refreshes without a recorded pause", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
+	const session = coordinator.beginTrack("netease:first")!;
+	load(coordinator, session);
 
-	expect(coordinator.refreshReason(1_000 + 20 * 60 * 1_000)).toBe("url-age");
+	expect(coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS)).toBe("url-age");
 });
 
 test("resuming playback clears the long-pause refresh clock", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
-	coordinator.markPaused(5_000);
-	coordinator.markPlaying();
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	coordinator.markPaused(session, 5_000);
+	coordinator.markPlaying(session);
 
 	expect(coordinator.refreshReason(5_000 + 10 * 60 * 1_000)).toBeNull();
 });
 
-test("a successful non-error refresh restores the media recovery budget", () => {
+test("a successful non-error refresh restores media recovery", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
+	const reload = coordinator.beginReload("url-age")!;
+	load(coordinator, reload);
+	expect(coordinator.completeReload(reload)).toBe(true);
+	play(coordinator, reload);
 
-	coordinator.completeReload("url-age");
-
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	expect(
+		coordinator.claimMediaErrorRecovery(reload, "netease:first", true),
+	).toBe(true);
 });
 
-test("quality invalidation allows the same track to start a new load session", () => {
+test("quality invalidation reuses the same session with fresh tokens", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const first = coordinator.beginTrack("netease:first");
-	expect(coordinator.beginTrack("netease:first")).toBeNull();
+	const first = coordinator.beginTrack("netease:first")!;
+	const invalidated = coordinator.invalidateCurrentTrackLoad()!;
+	const reloaded = coordinator.beginTrack(
+		"netease:first",
+		undefined,
+		invalidated,
+	)!;
 
-	coordinator.invalidateCurrentTrackLoad();
-	const reloaded = coordinator.beginTrack("netease:first");
-
-	expect(reloaded).not.toBeNull();
-	expect(reloaded!.playbackSessionId).toBe(first!.playbackSessionId);
-	expect(coordinator.isPlaybackCurrent(first!.playbackToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(first!.lyricToken)).toBe(false);
+	expect(reloaded).toBe(invalidated);
+	expect(reloaded.playbackSessionId).toBe(first.playbackSessionId);
+	expect(coordinator.isPlaybackCurrent(first)).toBe(false);
+	expect(coordinator.isLyricCurrent(first)).toBe(false);
 });
 
-test("explicit quality invalidation reuses one current-intent load handle", () => {
+test("explicit quality invalidation returns its original one-shot handle", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const first = coordinator.beginTrack("netease:first", 1)!;
+	const invalidated = coordinator.invalidateCurrentTrackLoad()!;
 
-	coordinator.invalidateCurrentTrackLoad();
-	const invalidatedLoadRequestId = coordinator.snapshot().loadRequestId;
-	const invalidatedLyricToken = first.lyricToken + 1;
-	expect(coordinator.isPlaybackCurrent(first.playbackToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(first.lyricToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(invalidatedLyricToken)).toBe(true);
 	expect(coordinator.beginTrack("netease:first", 0)).toBeNull();
-	const reloaded = coordinator.beginTrack("netease:first", 1);
+	const reloaded = coordinator.beginTrack("netease:first", 1, invalidated)!;
 
-	expect(reloaded).not.toBeNull();
-	expect(reloaded!.playbackSessionId).toBe(first.playbackSessionId);
-	expect(reloaded!.playbackToken).toBeGreaterThan(first.playbackToken);
-	expect(reloaded!.playbackToken).toBe(invalidatedLoadRequestId);
-	expect(reloaded!.lyricToken).toBeGreaterThan(first.lyricToken);
-	expect(reloaded!.lyricToken).toBe(invalidatedLyricToken);
-	expect(coordinator.isPlaybackCurrent(first.playbackToken)).toBe(false);
-	expect(coordinator.isLyricCurrent(first.lyricToken)).toBe(false);
-	expect(coordinator.snapshot().playbackSessionId).toBe(first.playbackSessionId);
-	expect(coordinator.snapshot().loadRequestId).toBe(reloaded!.playbackToken);
+	expect(reloaded).toBe(invalidated);
+	expect(reloaded.playbackSessionId).toBe(first.playbackSessionId);
+	expect(reloaded.playbackToken).toBeGreaterThan(first.playbackToken);
+	expect(reloaded.lyricToken).toBeGreaterThan(first.lyricToken);
 	expect(coordinator.beginTrack("netease:first", 1)).toBeNull();
 });
 
-test("a successful quality reload restores media recovery for the current load", () => {
+test("quality invalidation can only be claimed with its exact handle", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	const first = coordinator.beginTrack("netease:first", 1)!;
-	coordinator.markLoaded(remoteSource(), first.playbackToken);
-	coordinator.markPlaying();
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	coordinator.beginTrack("netease:first", 1);
+	const stale = coordinator.invalidateCurrentTrackLoad()!;
+	const current = coordinator.invalidateCurrentTrackLoad()!;
 
-	const mediaReloadToken = coordinator.beginReload("media-error");
-	coordinator.markLoaded(remoteSource(), mediaReloadToken);
-	coordinator.markPlaying();
-	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
-
-	coordinator.invalidateCurrentTrackLoad();
-	const qualityReload = coordinator.beginTrack("netease:first", 1)!;
-	expect(qualityReload.playbackSessionId).toBe(first.playbackSessionId);
-	coordinator.markLoaded(remoteSource(), mediaReloadToken);
-	expect(coordinator.snapshot().phase).toBe("resolving");
-	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
-
-	coordinator.markLoaded(remoteSource(), qualityReload.playbackToken);
-	expect(coordinator.snapshot().recoveryAttempts).toBe(0);
-	coordinator.markPlaying();
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
-	expect(coordinator.snapshot().phase).toBe("recovering");
+	expect(coordinator.beginTrack("netease:first", 1, stale)).toBeNull();
+	expect(coordinator.beginTrack("netease:first", 1, current)).toBe(current);
 });
 
-test("local and trial media never claim automatic media recovery", () => {
+test("a successful quality reload restores recovery for its current load", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, first);
+	coordinator.claimMediaErrorRecovery(first, "netease:first", true);
+	const mediaReload = coordinator.beginReload("media-error")!;
+	loadAndPlay(coordinator, mediaReload);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+
+	const quality = coordinator.invalidateCurrentTrackLoad()!;
+	const claimed = coordinator.beginTrack("netease:first", 1, quality)!;
+	expect(claimed).toBe(quality);
+	expect(coordinator.markLoaded(mediaReload, remoteSource())).toBe(false);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+	load(coordinator, quality);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(0);
+	play(coordinator, quality);
+
+	expect(
+		coordinator.claimMediaErrorRecovery(quality, "netease:first", true),
+	).toBe(true);
+});
+
+test("a failed quality source does not reset recovery", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	loadAndPlay(coordinator, first);
+	coordinator.claimMediaErrorRecovery(first, "netease:first", true);
+	const mediaReload = coordinator.beginReload("media-error")!;
+	loadAndPlay(coordinator, mediaReload);
+	const quality = coordinator.invalidateCurrentTrackLoad()!;
+
+	expect(coordinator.markResolveFailed(quality, "quality-failed")).toBe(true);
+	expect(coordinator.snapshot().phase).toBe("failed");
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+});
+
+test("local and trial media never claim automatic recovery", () => {
 	for (const source of [
 		{ local: true, trial: false },
 		{ local: false, trial: true },
 	]) {
 		const coordinator = new PlaybackSessionCoordinator();
-		coordinator.beginTrack("netease:first");
-		coordinator.markLoaded({
-			trackKey: "netease:first",
-			quality: "standard",
-			resolvedAtMs: 1_000,
-			audioUrl: "http://127.0.0.1/audio-proxy",
-			rawUrl: "https://media.example/first.mp3",
-			...source,
-		});
+		const session = coordinator.beginTrack("netease:first")!;
+		loadAndPlay(coordinator, session, { ...remoteSource(), ...source });
 
-		expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+		expect(
+			coordinator.claimMediaErrorRecovery(session, "netease:first", true),
+		).toBe(false);
 	}
 });
 
-test("long-pause takes priority when the pause and URL age thresholds both expire", () => {
+test("long-pause takes priority when pause and URL age both expire", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
-	coordinator.markPaused(5_000);
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	coordinator.markPaused(session, 5_000);
 
-	expect(coordinator.refreshReason(1_000 + 20 * 60 * 1_000)).toBe("long-pause");
+	expect(coordinator.refreshReason(PLAYBACK_URL_FAR_FUTURE_MS)).toBe("long-pause");
 });
 
-test("a media-error reload keeps the one-shot recovery budget consumed", () => {
+test("a media-error reload keeps the one-shot budget consumed", () => {
 	const coordinator = new PlaybackSessionCoordinator();
-	coordinator.beginTrack("netease:first");
-	coordinator.markLoaded({
-		trackKey: "netease:first",
-		quality: "standard",
-		resolvedAtMs: 1_000,
-		audioUrl: "http://127.0.0.1/audio-proxy",
-		rawUrl: "https://media.example/first.mp3",
-		local: false,
-		trial: false,
-	});
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
+	const reload = coordinator.beginReload("media-error")!;
+	load(coordinator, reload);
+	expect(coordinator.completeReload(reload)).toBe(true);
+	play(coordinator, reload);
 
-	coordinator.completeReload("media-error");
-
-	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(
+		coordinator.claimMediaErrorRecovery(reload, "netease:first", true),
+	).toBe(false);
 });

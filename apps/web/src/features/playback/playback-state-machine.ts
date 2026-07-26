@@ -52,8 +52,16 @@ export type PlaybackMachineEvent =
 			playbackSessionId: number;
 			loadRequestId: number;
 	  }
-	| { type: "PAUSE"; playbackSessionId: number }
-	| { type: "RESUME"; playbackSessionId: number }
+	| {
+			type: "PAUSE";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "RESUME";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
 	| {
 			type: "MEDIA_ENDED";
 			playbackSessionId: number;
@@ -75,6 +83,7 @@ export type PlaybackMachineEvent =
 	| {
 			type: "RECOVERY_EXHAUSTED";
 			playbackSessionId: number;
+			loadRequestId: number;
 			reason: string;
 	  }
 	| {
@@ -174,7 +183,11 @@ export function reducePlaybackState(
 
 		case "PAUSE":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				state.phase !== "playing"
 			) {
 				return state;
@@ -183,7 +196,11 @@ export function reducePlaybackState(
 
 		case "RESUME":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				state.phase !== "paused"
 			) {
 				return state;
@@ -241,7 +258,11 @@ export function reducePlaybackState(
 
 		case "RECOVERY_EXHAUSTED":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				state.phase !== "recovering"
 			) {
 				return state;

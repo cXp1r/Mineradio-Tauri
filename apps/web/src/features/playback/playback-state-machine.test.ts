@@ -83,14 +83,38 @@ test("playing media can pause and resume", () => {
 	const paused = reducePlaybackState(playing, {
 		type: "PAUSE",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 	const resumed = reducePlaybackState(paused, {
 		type: "RESUME",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 
 	expect(paused.phase).toBe("paused");
 	expect(resumed.phase).toBe("playing");
+});
+
+test("pause and resume ignore an old load within the current session", () => {
+	const playing = playingState();
+	const stalePause = reducePlaybackState(playing, {
+		type: "PAUSE",
+		playbackSessionId: 1,
+		loadRequestId: 0,
+	});
+	const paused = reducePlaybackState(playing, {
+		type: "PAUSE",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+	const staleResume = reducePlaybackState(paused, {
+		type: "RESUME",
+		playbackSessionId: 1,
+		loadRequestId: 0,
+	});
+
+	expect(stalePause).toBe(playing);
+	expect(staleResume).toBe(paused);
 });
 
 test("a recoverable media failure consumes one recovery before exhaustion fails", () => {
@@ -104,6 +128,7 @@ test("a recoverable media failure consumes one recovery before exhaustion fails"
 	const failed = reducePlaybackState(recovering, {
 		type: "RECOVERY_EXHAUSTED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 		reason: "retry-failed",
 	});
 
@@ -112,6 +137,30 @@ test("a recoverable media failure consumes one recovery before exhaustion fails"
 	expect(recovering.failureReason).toBeNull();
 	expect(failed.phase).toBe("failed");
 	expect(failed.failureReason).toBe("retry-failed");
+});
+
+test("recovery exhaustion ignores an old load within the current session", () => {
+	const recovering = reducePlaybackState(playingState(), {
+		type: "MEDIA_FAILED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		recoverable: true,
+		reason: "network",
+	});
+	const reloading = reducePlaybackState(recovering, {
+		type: "BEGIN_RELOAD",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+		reason: "media-error",
+	});
+	const stale = reducePlaybackState(reloading, {
+		type: "RECOVERY_EXHAUSTED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		reason: "old-retry-failed",
+	});
+
+	expect(stale).toBe(reloading);
 });
 
 test("switching tracks invalidates events from the old session", () => {
@@ -166,6 +215,7 @@ test("an event that is illegal in the current phase preserves state identity", (
 	const result = reducePlaybackState(resolving, {
 		type: "PAUSE",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 
 	expect(result).toBe(resolving);

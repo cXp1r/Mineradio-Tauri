@@ -4,18 +4,22 @@ import {
 	reducePlaybackState,
 	type PlaybackMachineEvent,
 	type PlaybackMachineState,
+	type PlaybackReloadReason as MachinePlaybackReloadReason,
 } from "./playback-state-machine";
 
 export const LONG_PAUSE_PLAYBACK_URL_REFRESH_MS = 10 * 60 * 1_000;
 export const PLAYBACK_URL_MAX_AGE_MS = 20 * 60 * 1_000;
 
-export type PlaybackReloadReason = "long-pause" | "url-age" | "media-error";
+export type PlaybackReloadReason = MachinePlaybackReloadReason;
 
-export interface PlaybackTrackSession {
-	playbackSessionId: number;
-	playbackToken: number;
-	lyricToken: number;
+export interface PlaybackLoadHandle {
+	readonly playbackSessionId: number;
+	readonly playbackToken: number;
+	readonly lyricToken: number;
+	readonly reloadReason?: PlaybackReloadReason;
 }
+
+export type PlaybackTrackSession = PlaybackLoadHandle;
 
 export interface LoadedPlaybackSource {
 	trackKey: string;
@@ -25,6 +29,17 @@ export interface LoadedPlaybackSource {
 	rawUrl: string;
 	local: boolean;
 	trial: boolean;
+}
+
+interface PlaybackTransition {
+	next: PlaybackMachineState;
+	accepted: boolean;
+}
+
+interface PendingReloadCompletion {
+	readonly playbackSessionId: number;
+	readonly playbackToken: number;
+	readonly reason: PlaybackReloadReason;
 }
 
 export class PlaybackSessionCoordinator {
@@ -38,8 +53,9 @@ export class PlaybackSessionCoordinator {
 	private nextPlaybackSessionId = 0;
 	private lastExplicitPlaybackIntentId = 0;
 	private hasExplicitPlaybackIntent = false;
-	private currentTrackLoadInvalidated = false;
-	private qualityReloadLoadRequestId: number | null = null;
+	private pendingInvalidatedLoad: PlaybackLoadHandle | null = null;
+	private qualityReloadLoad: PlaybackLoadHandle | null = null;
+	private pendingReloadCompletion: PendingReloadCompletion | null = null;
 
 	snapshot(): PlaybackMachineState {
 		return this.machineState;
@@ -48,185 +64,208 @@ export class PlaybackSessionCoordinator {
 	beginTrack(
 		trackKey: string,
 		playbackIntentId?: number,
+		expectedInvalidatedLoad?: PlaybackLoadHandle,
 	): PlaybackTrackSession | null {
 		if (playbackIntentId !== undefined) {
 			if (this.hasExplicitPlaybackIntent) {
 				if (playbackIntentId < this.lastExplicitPlaybackIntentId) return null;
 				if (playbackIntentId === this.lastExplicitPlaybackIntentId) {
-					return this.claimInvalidatedLoadHandle(trackKey);
+					return this.claimInvalidatedLoadHandle(
+						trackKey,
+						expectedInvalidatedLoad,
+					);
 				}
 			}
+			const session = this.startTrackSession(trackKey);
+			if (!session) return null;
 			this.hasExplicitPlaybackIntent = true;
 			this.lastExplicitPlaybackIntentId = playbackIntentId;
-			return this.startTrackSession(trackKey);
+			return session;
 		}
 
-		const invalidatedHandle = this.claimInvalidatedLoadHandle(trackKey);
+		const invalidatedHandle = this.claimInvalidatedLoadHandle(
+			trackKey,
+			expectedInvalidatedLoad,
+		);
 		if (invalidatedHandle) return invalidatedHandle;
 		if (trackKey === this.trackKey) return null;
 		return this.startTrackSession(trackKey);
 	}
 
-	private startTrackSession(trackKey: string): PlaybackTrackSession {
-		const eventType = this.machineState.phase === "idle"
-			? "PLAY_TRACK"
-			: "SWITCH_TRACK";
-		this.trackKey = trackKey;
-		this.loadedSource = null;
-		this.pausedAtMs = null;
-		this.mediaErrorRecoveryTrackKey = "";
-		this.currentTrackLoadInvalidated = false;
-		this.qualityReloadLoadRequestId = null;
-		this.playbackToken += 1;
-		this.lyricToken += 1;
-		this.nextPlaybackSessionId += 1;
-		this.dispatch({
-			type: eventType,
-			playbackSessionId: this.nextPlaybackSessionId,
-			loadRequestId: this.playbackToken,
-			trackKey,
-		});
-		return {
-			playbackSessionId: this.nextPlaybackSessionId,
-			playbackToken: this.playbackToken,
-			lyricToken: this.lyricToken,
-		};
-	}
-
-	private claimInvalidatedLoadHandle(
-		trackKey: string,
-	): PlaybackTrackSession | null {
-		if (!this.currentTrackLoadInvalidated || trackKey !== this.trackKey) {
-			return null;
-		}
-		this.currentTrackLoadInvalidated = false;
-		return {
-			playbackSessionId: this.machineState.playbackSessionId,
-			playbackToken: this.playbackToken,
-			lyricToken: this.lyricToken,
-		};
-	}
-
 	clear(): void {
+		const nextPlaybackSessionId = this.nextPlaybackSessionId + 1;
+		const nextPlaybackToken = this.playbackToken + 1;
+		const nextLyricToken = this.lyricToken + 1;
+		const transition = this.reduce({
+			type: "STOP",
+			playbackSessionId: nextPlaybackSessionId,
+		});
+		if (!transition.accepted) return;
+
+		this.machineState = transition.next;
+		this.nextPlaybackSessionId = nextPlaybackSessionId;
+		this.playbackToken = nextPlaybackToken;
+		this.lyricToken = nextLyricToken;
 		this.trackKey = "";
 		this.loadedSource = null;
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
-		this.currentTrackLoadInvalidated = false;
-		this.qualityReloadLoadRequestId = null;
-		this.playbackToken += 1;
-		this.lyricToken += 1;
-		this.nextPlaybackSessionId += 1;
-		this.dispatch({
-			type: "STOP",
-			playbackSessionId: this.nextPlaybackSessionId,
-		});
+		this.pendingInvalidatedLoad = null;
+		this.qualityReloadLoad = null;
+		this.pendingReloadCompletion = null;
 	}
 
-	beginReload(reason: PlaybackReloadReason = "url-age"): number {
-		this.qualityReloadLoadRequestId = null;
-		this.playbackToken += 1;
-		this.dispatch({
+	beginReload(reason: PlaybackReloadReason): PlaybackLoadHandle | null {
+		const playbackToken = this.playbackToken + 1;
+		const transition = this.reduce({
 			type: "BEGIN_RELOAD",
 			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: this.playbackToken,
+			loadRequestId: playbackToken,
 			reason,
 		});
-		return this.playbackToken;
+		if (!transition.accepted) return null;
+
+		const handle: PlaybackLoadHandle = {
+			playbackSessionId: transition.next.playbackSessionId,
+			playbackToken,
+			lyricToken: this.lyricToken,
+			reloadReason: reason,
+		};
+		this.machineState = transition.next;
+		this.playbackToken = playbackToken;
+		this.pendingInvalidatedLoad = null;
+		this.qualityReloadLoad = null;
+		this.pendingReloadCompletion = {
+			playbackSessionId: handle.playbackSessionId,
+			playbackToken: handle.playbackToken,
+			reason,
+		};
+		return handle;
 	}
 
-	invalidateCurrentTrackLoad(): void {
+	invalidateCurrentTrackLoad(): PlaybackLoadHandle | null {
+		const playbackToken = this.playbackToken + 1;
+		const lyricToken = this.lyricToken + 1;
+		const transition = this.reduce({
+			type: "BEGIN_RELOAD",
+			playbackSessionId: this.machineState.playbackSessionId,
+			loadRequestId: playbackToken,
+			reason: "quality",
+		});
+		if (!transition.accepted) return null;
+
+		const handle: PlaybackLoadHandle = {
+			playbackSessionId: transition.next.playbackSessionId,
+			playbackToken,
+			lyricToken,
+			reloadReason: "quality",
+		};
+		this.machineState = transition.next;
+		this.playbackToken = playbackToken;
+		this.lyricToken = lyricToken;
 		this.loadedSource = null;
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
-		this.playbackToken += 1;
-		this.lyricToken += 1;
-		this.currentTrackLoadInvalidated = true;
-		this.qualityReloadLoadRequestId = this.playbackToken;
-		this.dispatch({
-			type: "BEGIN_RELOAD",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: this.playbackToken,
+		this.pendingInvalidatedLoad = handle;
+		this.qualityReloadLoad = handle;
+		this.pendingReloadCompletion = {
+			playbackSessionId: handle.playbackSessionId,
+			playbackToken: handle.playbackToken,
 			reason: "quality",
-		});
+		};
+		return handle;
 	}
 
-	markLoaded(
-		source: LoadedPlaybackSource,
-		playbackToken = this.playbackToken,
-	): void {
-		if (!this.isPlaybackCurrent(playbackToken)) return;
-		this.loadedSource = source;
-		const previousState = this.machineState;
-		const nextState = this.dispatch({
+	markLoaded(handle: PlaybackLoadHandle, source: LoadedPlaybackSource): boolean {
+		const transition = this.reduce({
 			type: "SOURCE_READY",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: playbackToken,
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
 		});
-		if (
-			playbackToken === this.qualityReloadLoadRequestId &&
-			nextState !== previousState &&
-			nextState.phase === "loading"
-		) {
-			this.dispatch({
+		if (!transition.accepted) return false;
+
+		this.machineState = transition.next;
+		this.loadedSource = source;
+		if (this.isSameLoad(this.pendingInvalidatedLoad, handle)) {
+			this.pendingInvalidatedLoad = null;
+		}
+		if (this.isSameLoad(this.qualityReloadLoad, handle)) {
+			this.machineState = reducePlaybackState(this.machineState, {
 				type: "RESET_RECOVERY_BUDGET",
-				playbackSessionId: nextState.playbackSessionId,
-				loadRequestId: playbackToken,
+				playbackSessionId: handle.playbackSessionId,
+				loadRequestId: handle.playbackToken,
 			});
-			this.qualityReloadLoadRequestId = null;
+			this.qualityReloadLoad = null;
+			if (this.isSameLoad(this.pendingReloadCompletion, handle)) {
+				this.pendingReloadCompletion = null;
+			}
 		}
+		return true;
 	}
 
-	markPaused(nowMs: number): void {
-		this.pausedAtMs = nowMs;
-		this.dispatch({
+	markPaused(handle: PlaybackLoadHandle, nowMs: number): boolean {
+		const transition = this.tryDispatch({
 			type: "PAUSE",
-			playbackSessionId: this.machineState.playbackSessionId,
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
 		});
+		if (!transition.accepted) return false;
+		this.pausedAtMs = nowMs;
+		return true;
 	}
 
-	markPlaying(): void {
-		this.pausedAtMs = null;
-		if (this.machineState.phase === "paused") {
-			this.dispatch({
+	markPlaying(handle: PlaybackLoadHandle): boolean {
+		const transition = this.machineState.phase === "paused"
+			? this.tryDispatch({
 				type: "RESUME",
-				playbackSessionId: this.machineState.playbackSessionId,
-			});
-		} else {
-			this.dispatch({
+				playbackSessionId: handle.playbackSessionId,
+				loadRequestId: handle.playbackToken,
+			})
+			: this.tryDispatch({
 				type: "MEDIA_PLAYING",
-				playbackSessionId: this.machineState.playbackSessionId,
-				loadRequestId: this.playbackToken,
+				playbackSessionId: handle.playbackSessionId,
+				loadRequestId: handle.playbackToken,
 			});
-		}
+		if (!transition.accepted) return false;
+		this.pausedAtMs = null;
+		return true;
 	}
 
-	markEnded(): void {
-		this.dispatch({
+	markEnded(handle: PlaybackLoadHandle): boolean {
+		const accepted = this.tryDispatch({
 			type: "MEDIA_ENDED",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: this.playbackToken,
-		});
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
+		}).accepted;
+		if (accepted) this.clearPendingLoad(handle);
+		return accepted;
 	}
 
-	markResolveFailed(playbackToken: number, reason: string): void {
-		this.dispatch({
+	markResolveFailed(handle: PlaybackLoadHandle, reason: string): boolean {
+		const accepted = this.tryDispatch({
 			type: "RESOLVE_FAILED",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: playbackToken,
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
 			reason,
-		});
+		}).accepted;
+		if (accepted) this.clearPendingLoad(handle);
+		return accepted;
 	}
 
-	markRecoveryExhausted(reason: string): void {
-		this.dispatch({
+	markRecoveryExhausted(handle: PlaybackLoadHandle, reason: string): boolean {
+		const accepted = this.tryDispatch({
 			type: "RECOVERY_EXHAUSTED",
-			playbackSessionId: this.machineState.playbackSessionId,
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
 			reason,
-		});
+		}).accepted;
+		if (accepted) this.clearPendingLoad(handle);
+		return accepted;
 	}
 
-	refreshReason(nowMs: number): Exclude<PlaybackReloadReason, "media-error"> | null {
+	refreshReason(
+		nowMs: number,
+	): Exclude<PlaybackReloadReason, "media-error" | "quality"> | null {
 		const loaded = this.loadedSource;
 		if (!loaded || loaded.local) return null;
 		if (
@@ -240,7 +279,11 @@ export class PlaybackSessionCoordinator {
 			: null;
 	}
 
-	claimMediaErrorRecovery(trackKey: string, canResolveSongUrl: boolean): boolean {
+	claimMediaErrorRecovery(
+		handle: PlaybackLoadHandle,
+		trackKey: string,
+		canResolveSongUrl: boolean,
+	): boolean {
 		const loaded = this.loadedSource;
 		const canRecover = !!(
 			canResolveSongUrl &&
@@ -254,69 +297,162 @@ export class PlaybackSessionCoordinator {
 
 		if (!canRecover) {
 			if (this.machineState.phase === "recovering") {
-				this.markRecoveryExhausted("media-error-recovery-exhausted");
+				this.markRecoveryExhausted(
+					handle,
+					"media-error-recovery-exhausted",
+				);
 			} else if (this.machineState.phase === "resolving") {
 				this.markResolveFailed(
-					this.playbackToken,
+					handle,
 					"media-error-recovery-unavailable",
 				);
 			} else {
-				this.dispatch({
+				const transition = this.tryDispatch({
 					type: "MEDIA_FAILED",
-					playbackSessionId: this.machineState.playbackSessionId,
-					loadRequestId: this.playbackToken,
+					playbackSessionId: handle.playbackSessionId,
+					loadRequestId: handle.playbackToken,
 					recoverable: false,
 					reason: "media-error-recovery-unavailable",
 				});
+				if (transition.accepted) this.clearPendingLoad(handle);
 			}
 			return false;
 		}
 
-		const previousState = this.machineState;
-		const nextState = this.dispatch({
+		const transition = this.tryDispatch({
 			type: "MEDIA_FAILED",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: this.playbackToken,
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
 			recoverable: true,
 			reason: "media-error",
 		});
-		if (nextState === previousState || nextState.phase !== "recovering") {
+		if (!transition.accepted || transition.next.phase !== "recovering") {
 			return false;
 		}
+		this.clearPendingLoad(handle);
 		this.mediaErrorRecoveryTrackKey = trackKey;
 		return true;
 	}
 
-	completeReload(
-		reason: PlaybackReloadReason,
-		playbackToken = this.playbackToken,
-	): void {
-		if (!this.isPlaybackCurrent(playbackToken)) return;
-		if (reason !== "media-error") {
-			this.mediaErrorRecoveryTrackKey = "";
-			this.dispatch({
-				type: "SOURCE_READY",
-				playbackSessionId: this.machineState.playbackSessionId,
-				loadRequestId: playbackToken,
-			});
-			this.dispatch({
+	completeReload(handle: PlaybackLoadHandle): boolean {
+		const pending = this.pendingReloadCompletion;
+		if (
+			!pending ||
+			!this.isSameLoad(pending, handle) ||
+			!this.isPlaybackCurrent(handle) ||
+			this.machineState.phase !== "loading"
+		) {
+			return false;
+		}
+		this.pendingReloadCompletion = null;
+		if (pending.reason !== "media-error") {
+			this.machineState = reducePlaybackState(this.machineState, {
 				type: "RESET_RECOVERY_BUDGET",
-				playbackSessionId: this.machineState.playbackSessionId,
-				loadRequestId: playbackToken,
+				playbackSessionId: handle.playbackSessionId,
+				loadRequestId: handle.playbackToken,
 			});
+			this.mediaErrorRecoveryTrackKey = "";
+		}
+		return true;
+	}
+
+	isPlaybackCurrent(handle: PlaybackLoadHandle): boolean {
+		return (
+			handle.playbackSessionId === this.machineState.playbackSessionId &&
+			handle.playbackToken === this.machineState.loadRequestId &&
+			handle.playbackToken === this.playbackToken
+		);
+	}
+
+	isLyricCurrent(handle: PlaybackLoadHandle): boolean {
+		return (
+			handle.playbackSessionId === this.machineState.playbackSessionId &&
+			handle.lyricToken === this.lyricToken
+		);
+	}
+
+	private startTrackSession(trackKey: string): PlaybackTrackSession | null {
+		const eventType = this.machineState.phase === "idle"
+			? "PLAY_TRACK"
+			: "SWITCH_TRACK";
+		const playbackSessionId = this.nextPlaybackSessionId + 1;
+		const playbackToken = this.playbackToken + 1;
+		const lyricToken = this.lyricToken + 1;
+		const transition = this.reduce({
+			type: eventType,
+			playbackSessionId,
+			loadRequestId: playbackToken,
+			trackKey,
+		});
+		if (!transition.accepted) return null;
+
+		const handle: PlaybackTrackSession = {
+			playbackSessionId,
+			playbackToken,
+			lyricToken,
+		};
+		this.machineState = transition.next;
+		this.nextPlaybackSessionId = playbackSessionId;
+		this.playbackToken = playbackToken;
+		this.lyricToken = lyricToken;
+		this.trackKey = trackKey;
+		this.loadedSource = null;
+		this.pausedAtMs = null;
+		this.mediaErrorRecoveryTrackKey = "";
+		this.pendingInvalidatedLoad = null;
+		this.qualityReloadLoad = null;
+		this.pendingReloadCompletion = null;
+		return handle;
+	}
+
+	private claimInvalidatedLoadHandle(
+		trackKey: string,
+		expectedInvalidatedLoad?: PlaybackLoadHandle,
+	): PlaybackTrackSession | null {
+		const pending = this.pendingInvalidatedLoad;
+		if (
+			!pending ||
+			pending !== expectedInvalidatedLoad ||
+			trackKey !== this.trackKey ||
+			!this.isPlaybackCurrent(pending)
+		) {
+			return null;
+		}
+		this.pendingInvalidatedLoad = null;
+		return pending;
+	}
+
+	private clearPendingLoad(handle: PlaybackLoadHandle): void {
+		if (this.isSameLoad(this.pendingInvalidatedLoad, handle)) {
+			this.pendingInvalidatedLoad = null;
+		}
+		if (this.isSameLoad(this.qualityReloadLoad, handle)) {
+			this.qualityReloadLoad = null;
+		}
+		if (this.isSameLoad(this.pendingReloadCompletion, handle)) {
+			this.pendingReloadCompletion = null;
 		}
 	}
 
-	isPlaybackCurrent(token: number): boolean {
-		return token === this.playbackToken;
+	private isSameLoad(
+		left: Pick<PlaybackLoadHandle, "playbackSessionId" | "playbackToken"> | null,
+		right: Pick<PlaybackLoadHandle, "playbackSessionId" | "playbackToken">,
+	): boolean {
+		return !!(
+			left &&
+			left.playbackSessionId === right.playbackSessionId &&
+			left.playbackToken === right.playbackToken
+		);
 	}
 
-	isLyricCurrent(token: number): boolean {
-		return token === this.lyricToken;
+	private reduce(event: PlaybackMachineEvent): PlaybackTransition {
+		const next = reducePlaybackState(this.machineState, event);
+		return { next, accepted: next !== this.machineState };
 	}
 
-	private dispatch(event: PlaybackMachineEvent): PlaybackMachineState {
-		this.machineState = reducePlaybackState(this.machineState, event);
-		return this.machineState;
+	private tryDispatch(event: PlaybackMachineEvent): PlaybackTransition {
+		const transition = this.reduce(event);
+		if (transition.accepted) this.machineState = transition.next;
+		return transition;
 	}
 }
