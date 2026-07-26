@@ -35,7 +35,7 @@
 - Create: `apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx`
 - Create: `apps/web/src/features/playback/PlaybackRuntimeHost.tsx`
 
-- [ ] **Step 1: Write failing lifecycle tests**
+- [x] **Step 1: Write failing lifecycle tests**
 
 使用 fake controller factory 和现有 happy-dom preload。测试必须验证：
 
@@ -54,7 +54,7 @@ expect(receivedEvents).toEqual([
 
 重新渲染 `muted=true` 后断言音量变成 `0`；unmount 后断言所有 `on()` 返回的取消函数执行、`controllerRef.current` 和 `audioElementRef.current` 均为 `null`。
 
-- [ ] **Step 2: Run the test and verify the missing module failure**
+- [x] **Step 2: Run the test and verify the missing module failure**
 
 ```powershell
 bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx
@@ -62,7 +62,7 @@ bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx
 
 Expected: FAIL because `PlaybackRuntimeHost.tsx` does not exist.
 
-- [ ] **Step 3: Implement the transport-free runtime host**
+- [x] **Step 3: Implement the transport-free runtime host**
 
 导出：
 
@@ -88,7 +88,7 @@ export interface PlaybackRuntimeHostProps extends PlaybackRuntimeCallbacks {
 
 `PlayerControllerLike` 只描述 `setVolume()` 与六个 `on()` overload。默认 factory 仍执行 `new PlayerController(audio)`。Host 返回 `null`，不得读取任何 Store。
 
-- [ ] **Step 4: Run lifecycle tests and web typecheck**
+- [x] **Step 4: Run lifecycle tests and web typecheck**
 
 ```powershell
 bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx
@@ -97,7 +97,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the runtime host**
+- [x] **Step 5: Commit the runtime host**
 
 ```powershell
 git add apps/web/src/features/playback
