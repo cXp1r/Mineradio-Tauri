@@ -99,11 +99,11 @@ App 删除 updater imports、effect 和 callbacks；运行 UpdateHost/App tests�
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/likes-controller-boundary.test.ts`
 
-- [ ] **Step 1: Test mutation rollback**
+- [x] **Step 1: Test mutation rollback**
 
 fake mutation port 下先 optimistic update；reject 时恢复旧值并保留当前中文失败提示；LOGIN_REQUIRED 调用 `openProviderLogin()`。
 
-- [ ] **Step 2: Implement controller**
+- [x] **Step 2: Implement controller**
 
 ```ts
 export interface LikesControllerResult {
@@ -118,7 +118,7 @@ export interface LikesControllerResult {
 
 先建立窄 `LikesPort` 并由 legacy adapter 委托现有 SidecarClient；App 不再调用 `checkSongLikes` 或 `likeSong`。
 
-- [ ] **Step 3: Integrate, verify and commit**
+- [x] **Step 3: Integrate, verify and commit**
 
 运行 likes/App tests、boundary、typecheck/build，提交 `refactor(web): extract likes controller`。
 

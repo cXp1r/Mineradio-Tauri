@@ -87,6 +87,8 @@ import {
 import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
 import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
 import { useUpdaterController } from "../features/updater/useUpdaterController";
+import { useLikesController } from "../features/likes/useLikesController";
+export { isNeteaseLikeSupported } from "../features/likes/likes-policy";
 import {
   buildDesktopLyricsPayloadPatch,
   desktopLyricsBeatMapContext,
@@ -311,10 +313,6 @@ function trackLikeKey(track: Track | null | undefined): string {
   return track?.provider && id ? `${track.provider}:${id}` : "";
 }
 
-function trackProviderLikeId(track: Track | null | undefined): string {
-  return String(track?.sourceId || track?.id || "").trim();
-}
-
 function updateHomeListenHistory(
   history: HomeListenHistoryRecord[],
   track: Track | null,
@@ -445,20 +443,6 @@ function buildHomeListenSummary(history: HomeListenHistoryRecord[]): HomeListenS
   };
 }
 
-function isProviderLikeSupported(track: Track | null | undefined): track is Track {
-  if (!track || !trackProviderLikeId(track)) return false;
-  const record = track as unknown as Record<string, unknown>;
-  if (isImportOnlyTrack(track)) return false;
-  if (track.id.startsWith("local:")) return false;
-  if (record.type === "local" || record.source === "local") return false;
-  if (record.type === "podcast" || record.source === "podcast") return false;
-  return track.provider === "netease" || track.provider === "soda";
-}
-
-export function isNeteaseLikeSupported(track: Track | null | undefined): track is Track {
-  return isProviderLikeSupported(track) && track.provider === "netease";
-}
-
 export function isCollectSupportedTrack(track: Track | null | undefined): track is Track {
   if (!track?.id) return false;
   const record = track as unknown as Record<string, unknown>;
@@ -469,35 +453,11 @@ export function isCollectSupportedTrack(track: Track | null | undefined): track 
   return track.provider === "netease" || track.provider === "qq";
 }
 
-function likeUnsupportedMessage(track: Track | null | undefined): string {
-  const record = track as unknown as Record<string, unknown> | null | undefined;
-  if (isImportOnlyTrack(track)) {
-    return "导入曲目暂不支持红心同步";
-  }
-  if (
-    track?.provider === "qq" ||
-    record?.provider === "qq" ||
-    record?.source === "qq" ||
-    record?.type === "qq"
-  ) {
-    return "QQ 音乐红心同步待登录接口接入";
-  }
-  if (track?.provider === "soda") return "汽水音乐红心同步暂不可用";
-  return "本地文件暂不支持红心同步";
-}
-
 function collectUnsupportedMessage(track: Track | null | undefined): string {
   if (isImportOnlyTrack(track)) {
     return "导入曲目暂不支持收藏到歌单";
   }
   return "当前来源暂不支持收藏到歌单";
-}
-
-function isLoginRequiredError(error: unknown): boolean {
-  return (
-    error instanceof SidecarClientError ||
-    (typeof error === "object" && error !== null && "code" in error)
-  ) && (error as { code?: unknown }).code === "LOGIN_REQUIRED";
 }
 
 export function isHomeBlankDismissElement(target: EventTarget | null): boolean {
@@ -802,8 +762,6 @@ export function App({
   const [collectBusyPlaylistId, setCollectBusyPlaylistId] = useState<
     string | null
   >(null);
-  const [likedSongMap, setLikedSongMap] = useState<Record<string, boolean>>({});
-  const [likeBusyMap, setLikeBusyMap] = useState<Record<string, boolean>>({});
   const [homeDiscover, setHomeDiscover] =
     useState<DiscoverHomeResponse | null>(null);
   const [homeWeatherRadio, setHomeWeatherRadio] =
@@ -860,6 +818,16 @@ export function App({
     refresh: refreshUpdateStatus,
     install: installAvailableUpdate,
   } = useUpdaterController({ showToast });
+  const {
+    isLiked: isTrackLiked,
+    isBusy: isTrackLikeBusy,
+    toggle: toggleLikeTrack,
+  } = useLikesController({
+    likes: appServices?.music.likes ?? null,
+    currentTrack,
+    showToast,
+    openProviderLogin: () => setLoginModalOpen(true),
+  });
   const [aiDepthChip, setAiDepthChip] = useState({
     visible: false,
     text: "AI 深度估计…",
@@ -916,11 +884,6 @@ export function App({
     beatPulse: 0,
     bass: 0,
   });
-  const likedSongMapRef = useRef(likedSongMap);
-  likedSongMapRef.current = likedSongMap;
-  const likeBusyMapRef = useRef(likeBusyMap);
-  likeBusyMapRef.current = likeBusyMap;
-  const likeStatusRequestSeqRef = useRef(0);
   const homeDiscoverRequestSeqRef = useRef(0);
   const homeWeatherRadioRequestSeqRef = useRef(0);
   const lastHomeListenKeyRef = useRef("");
@@ -1014,9 +977,8 @@ export function App({
     emptyHomeCoreAllowed;
   const currentLyricPreference = getCustomLyricPreferenceForTrack(currentTrack);
   const currentCustomLyricText = getCustomLyricTextForTrack(currentTrack);
-  const currentLikeKey = trackLikeKey(currentTrack);
-  const currentLiked = currentLikeKey ? likedSongMap[currentLikeKey] === true : false;
-  const currentLikeBusy = currentLikeKey ? likeBusyMap[currentLikeKey] === true : false;
+  const currentLiked = isTrackLiked(currentTrack);
+  const currentLikeBusy = isTrackLikeBusy(currentTrack);
   const currentHasCustomCover = hasCustomCoverForTrack(currentTrack);
   const homeListenSummary = useMemo(
     () => buildHomeListenSummary(homeListenHistory),
@@ -2135,47 +2097,6 @@ export function App({
     ],
   );
 
-  const toggleLikeTrack = useCallback(async (track: Track | null | undefined) => {
-    if (!isProviderLikeSupported(track)) {
-      showToast(likeUnsupportedMessage(track));
-      return;
-    }
-    const client = sidecarClient;
-    const key = trackLikeKey(track);
-    const trackId = trackProviderLikeId(track);
-    if (!client || !key || likeBusyMapRef.current[key]) {
-      if (!client) showToast("红心操作失败");
-      return;
-    }
-
-    const previous = likedSongMapRef.current[key] === true;
-    const next = !previous;
-    setLikeBusyMap((map) => ({ ...map, [key]: true }));
-    setLikedSongMap((map) => ({ ...map, [key]: next }));
-    try {
-      const ack = await client.likeSong(track.provider, trackId, next);
-      setLikedSongMap((map) => ({
-        ...map,
-        [key]: ack.liked === true,
-      }));
-      showToast(next ? "已加入红心喜欢" : "已取消红心");
-    } catch (e) {
-      setLikedSongMap((map) => ({ ...map, [key]: previous }));
-      if (isLoginRequiredError(e)) {
-        showToast(`登录后可同步到${providerLabelText(track.provider)}`);
-        setLoginModalOpen(true);
-      } else {
-        showToast("红心操作失败");
-      }
-    } finally {
-      setLikeBusyMap((map) => {
-        const nextMap = { ...map };
-        delete nextMap[key];
-        return nextMap;
-      });
-    }
-  }, [showToast, sidecarClient]);
-
   const toggleLikeCurrent = useCallback(async () => {
     await toggleLikeTrack(usePlaybackStore.getState().currentTrack);
   }, [toggleLikeTrack]);
@@ -2837,27 +2758,6 @@ export function App({
     patchCustomCoverTrack(currentTrack, hydrated);
   }, [currentTrack, patchCustomCoverTrack]);
 
-  useEffect(() => {
-    const track = currentTrack;
-    const client = sidecarClient;
-    if (!client || !isProviderLikeSupported(track)) return;
-    const checkSongLikes = (client as { checkSongLikes?: SidecarClient["checkSongLikes"] }).checkSongLikes;
-    if (typeof checkSongLikes !== "function") return;
-    const key = trackLikeKey(track);
-    const trackId = trackProviderLikeId(track);
-    if (!key) return;
-    const token = ++likeStatusRequestSeqRef.current;
-    void checkSongLikes.call(client, track.provider, [trackId]).then((ack) => {
-      if (token !== likeStatusRequestSeqRef.current) return;
-      setLikedSongMap((map) => ({
-        ...map,
-        [key]: ack.liked[trackId] === true,
-      }));
-    }).catch(() => {
-      // 红心状态只影响按钮高亮，失败不能阻断播放 UI。
-    });
-  }, [currentTrack, sidecarClient]);
-
   const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
     netease: neteaseStatus,
     qq: qqStatus,
@@ -3077,14 +2977,8 @@ export function App({
         onResultCollect={openCollectPicker}
         onSharedPlaylistImport={importSharedPlaylistFromText}
         onArtistSearch={searchArtistFromResult}
-        isResultLiked={(track) => {
-          const key = trackLikeKey(track);
-          return key ? likedSongMap[key] === true : false;
-        }}
-        isResultLikeBusy={(track) => {
-          const key = trackLikeKey(track);
-          return key ? likeBusyMap[key] === true : false;
-        }}
+        isResultLiked={isTrackLiked}
+        isResultLikeBusy={isTrackLikeBusy}
         hasCustomCover={currentHasCustomCover}
         peek={emptyHomeActive || searchKeyword.trim().length > 0}
         requestedMode={searchModeRequest}
@@ -3098,14 +2992,8 @@ export function App({
         onResultLike={(track) => void toggleLikeTrack(track)}
         onResultCollect={openCollectPicker}
         onArtistSearch={searchArtistFromResult}
-        isResultLiked={(track) => {
-          const key = trackLikeKey(track);
-          return key ? likedSongMap[key] === true : false;
-        }}
-        isResultLikeBusy={(track) => {
-          const key = trackLikeKey(track);
-          return key ? likeBusyMap[key] === true : false;
-        }}
+        isResultLiked={isTrackLiked}
+        isResultLikeBusy={isTrackLikeBusy}
       />
       <TopRightControls
         onHome={goHome}
