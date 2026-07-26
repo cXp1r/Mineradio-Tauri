@@ -39,6 +39,7 @@ export class PlaybackSessionCoordinator {
 	private lastExplicitPlaybackIntentId = 0;
 	private hasExplicitPlaybackIntent = false;
 	private currentTrackLoadInvalidated = false;
+	private qualityReloadLoadRequestId: number | null = null;
 
 	snapshot(): PlaybackMachineState {
 		return this.machineState;
@@ -75,6 +76,7 @@ export class PlaybackSessionCoordinator {
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
 		this.currentTrackLoadInvalidated = false;
+		this.qualityReloadLoadRequestId = null;
 		this.playbackToken += 1;
 		this.lyricToken += 1;
 		this.nextPlaybackSessionId += 1;
@@ -111,6 +113,7 @@ export class PlaybackSessionCoordinator {
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
 		this.currentTrackLoadInvalidated = false;
+		this.qualityReloadLoadRequestId = null;
 		this.playbackToken += 1;
 		this.lyricToken += 1;
 		this.nextPlaybackSessionId += 1;
@@ -121,6 +124,7 @@ export class PlaybackSessionCoordinator {
 	}
 
 	beginReload(reason: PlaybackReloadReason = "url-age"): number {
+		this.qualityReloadLoadRequestId = null;
 		this.playbackToken += 1;
 		this.dispatch({
 			type: "BEGIN_RELOAD",
@@ -138,6 +142,7 @@ export class PlaybackSessionCoordinator {
 		this.playbackToken += 1;
 		this.lyricToken += 1;
 		this.currentTrackLoadInvalidated = true;
+		this.qualityReloadLoadRequestId = this.playbackToken;
 		this.dispatch({
 			type: "BEGIN_RELOAD",
 			playbackSessionId: this.machineState.playbackSessionId,
@@ -152,11 +157,24 @@ export class PlaybackSessionCoordinator {
 	): void {
 		if (!this.isPlaybackCurrent(playbackToken)) return;
 		this.loadedSource = source;
-		this.dispatch({
+		const previousState = this.machineState;
+		const nextState = this.dispatch({
 			type: "SOURCE_READY",
 			playbackSessionId: this.machineState.playbackSessionId,
 			loadRequestId: playbackToken,
 		});
+		if (
+			playbackToken === this.qualityReloadLoadRequestId &&
+			nextState !== previousState &&
+			nextState.phase === "loading"
+		) {
+			this.dispatch({
+				type: "RESET_RECOVERY_BUDGET",
+				playbackSessionId: nextState.playbackSessionId,
+				loadRequestId: playbackToken,
+			});
+			this.qualityReloadLoadRequestId = null;
+		}
 	}
 
 	markPaused(nowMs: number): void {

@@ -355,6 +355,32 @@ test("explicit quality invalidation reuses one current-intent load handle", () =
 	expect(coordinator.beginTrack("netease:first", 1)).toBeNull();
 });
 
+test("a successful quality reload restores media recovery for the current load", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+	coordinator.markLoaded(remoteSource(), first.playbackToken);
+	coordinator.markPlaying();
+	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+
+	const mediaReloadToken = coordinator.beginReload("media-error");
+	coordinator.markLoaded(remoteSource(), mediaReloadToken);
+	coordinator.markPlaying();
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+
+	coordinator.invalidateCurrentTrackLoad();
+	const qualityReload = coordinator.beginTrack("netease:first", 1)!;
+	expect(qualityReload.playbackSessionId).toBe(first.playbackSessionId);
+	coordinator.markLoaded(remoteSource(), mediaReloadToken);
+	expect(coordinator.snapshot().phase).toBe("resolving");
+	expect(coordinator.snapshot().recoveryAttempts).toBe(1);
+
+	coordinator.markLoaded(remoteSource(), qualityReload.playbackToken);
+	expect(coordinator.snapshot().recoveryAttempts).toBe(0);
+	coordinator.markPlaying();
+	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
+	expect(coordinator.snapshot().phase).toBe("recovering");
+});
+
 test("local and trial media never claim automatic media recovery", () => {
 	for (const source of [
 		{ local: true, trial: false },
