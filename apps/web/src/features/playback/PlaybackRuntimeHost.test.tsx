@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type {
 	ErrorPayload,
 	HandlerForEvent,
+	MediaEventPayload,
 	PlayerController,
 	PlayerEventName,
 	TimeUpdatePayload,
@@ -39,8 +40,11 @@ class FakePlayerController {
 
 	emit(event: "timeupdate" | "durationchange", payload: TimeUpdatePayload): void;
 	emit(event: "error", payload: ErrorPayload): void;
-	emit(event: "play" | "pause" | "ended"): void;
-	emit(event: PlayerEventName, payload?: TimeUpdatePayload | ErrorPayload): void {
+	emit(event: "play" | "pause" | "ended", payload: MediaEventPayload): void;
+	emit(
+		event: PlayerEventName,
+		payload: MediaEventPayload | TimeUpdatePayload | ErrorPayload,
+	): void {
 		for (const listener of this.listeners.get(event) ?? []) {
 			listener(payload as never);
 		}
@@ -63,6 +67,11 @@ test("PlaybackRuntimeHost owns controller events, volume and cleanup", async () 
 	audioElementRef.current = audio;
 	const controller = new FakePlayerController();
 	const receivedEvents: string[] = [];
+	const loadContext = { load: "host" };
+	const source = {
+		loadContext,
+		sourceUrl: "https://media.example/host.mp3",
+	};
 	let factoryAudio: HTMLAudioElement | null = null;
 	const host = document.createElement("div");
 	document.body.appendChild(host);
@@ -77,9 +86,13 @@ test("PlaybackRuntimeHost owns controller events, volume and cleanup", async () 
 	const onDurationChange = (payload: TimeUpdatePayload) => {
 		receivedEvents.push(`duration:${payload.positionMs}:${payload.durationMs}`);
 	};
-	const onPlay = () => { receivedEvents.push("play"); };
+	const onPlay = (payload: MediaEventPayload) => {
+		receivedEvents.push(`play:${payload.loadContext === loadContext}:${payload.sourceUrl}`);
+	};
 	const onPause = () => { receivedEvents.push("pause"); };
-	const onEnded = () => { receivedEvents.push("ended"); };
+	const onEnded = (payload: MediaEventPayload) => {
+		receivedEvents.push(`ended:${payload.loadContext === loadContext}`);
+	};
 	const onError = (payload: ErrorPayload) => {
 		receivedEvents.push(`error:${payload.code}:${payload.message}`);
 	};
@@ -109,18 +122,18 @@ test("PlaybackRuntimeHost owns controller events, volume and cleanup", async () 
 		expect(audio.preload).toBe("metadata");
 		expect(controller.volume).toBe(0.35);
 
-		controller.emit("timeupdate", { positionMs: 1200, durationMs: 9000 });
-		controller.emit("durationchange", { positionMs: 1200, durationMs: 9000 });
-		controller.emit("play");
-		controller.emit("pause");
-		controller.emit("ended");
-		controller.emit("error", { code: 4, message: "network" });
+		controller.emit("timeupdate", { ...source, positionMs: 1200, durationMs: 9000 });
+		controller.emit("durationchange", { ...source, positionMs: 1200, durationMs: 9000 });
+		controller.emit("play", source);
+		controller.emit("pause", source);
+		controller.emit("ended", source);
+		controller.emit("error", { ...source, code: 4, message: "network" });
 		expect(receivedEvents).toEqual([
 			"time:1200:9000",
 			"duration:1200:9000",
-			"play",
+			"play:true:https://media.example/host.mp3",
 			"pause",
-			"ended",
+			"ended:true",
 			"error:4:network",
 		]);
 

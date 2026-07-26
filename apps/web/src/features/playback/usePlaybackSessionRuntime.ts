@@ -16,6 +16,7 @@ import {
 } from "@mineradio/shared";
 import type {
 	ErrorPayload,
+	MediaEventPayload,
 	PlayerController,
 } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
@@ -83,8 +84,8 @@ export interface PlaybackSessionRuntimeResult {
 	dismissTrialBanner(): void;
 	setPlaybackQuality(quality: PlaybackQualityRequest): void;
 	togglePlayback(): void;
-	handleRuntimePlay(): void;
-	handleRuntimePause(): void;
+	handleRuntimePlay(payload: MediaEventPayload): void;
+	handleRuntimePause(payload: MediaEventPayload): void;
 	handleRuntimeError(payload: ErrorPayload): void;
 }
 
@@ -166,7 +167,6 @@ export function usePlaybackSessionRuntime({
 		coordinatorRef.current = providedCoordinator ?? new PlaybackSessionCoordinator();
 	}
 	const coordinator = coordinatorRef.current;
-	const controllerBoundLoadHandleRef = useRef<PlaybackLoadHandle | null>(null);
 	const positionRef = useRef(positionMs);
 	positionRef.current = positionMs;
 	const originalLyricsPayloadRef = useRef<LyricPayload | null>(initialLyricsPayload);
@@ -247,8 +247,7 @@ export function usePlaybackSessionRuntime({
 				trial: result.trial === true,
 			})) return false;
 			sourceAccepted = true;
-			controllerBoundLoadHandleRef.current = reload;
-			controller.load(audioUrl);
+			controller.load(audioUrl, reload);
 			coordinator.completeReload(reload);
 			loadBeatMap(services, track, result.url, reload);
 			if (resumeAt > 0) {
@@ -257,7 +256,7 @@ export function usePlaybackSessionRuntime({
 			}
 			await controller.play();
 			if (!coordinator.isPlaybackCurrent(reload)) return false;
-			coordinator.markPlaying(reload);
+			if (coordinator.markPlaying(reload)) setPlaying(true);
 			setHomeForcedOpen(false);
 			setHomeSuppressed(true);
 			return true;
@@ -291,10 +290,16 @@ export function usePlaybackSessionRuntime({
 		showToast,
 	]);
 	reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
+	const currentEventLoad = useCallback((payload: MediaEventPayload) => {
+		const loadContext = payload.loadContext;
+		if (!loadContext) return null;
+		const handle = loadContext as PlaybackLoadHandle;
+		return coordinator.isPlaybackCurrent(handle) ? handle : null;
+	}, [coordinator]);
 
 	const handleRuntimeErrorImpl = useCallback((payload: ErrorPayload) => {
-		const boundLoad = controllerBoundLoadHandleRef.current;
-		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
+		const boundLoad = currentEventLoad(payload);
+		if (!boundLoad) return;
 		const message = payload.message || "音频播放失败";
 		const track = getPlaybackSnapshot().currentTrack;
 		const key = playbackKeyForTrack(track);
@@ -317,7 +322,14 @@ export function usePlaybackSessionRuntime({
 		setTrialBanner(null);
 		setSearchError(message);
 		showToast(message);
-	}, [appServices, coordinator, getPlaybackSnapshot, setSearchError, showToast]);
+	}, [
+		appServices,
+		coordinator,
+		currentEventLoad,
+		getPlaybackSnapshot,
+		setSearchError,
+		showToast,
+	]);
 	const handleRuntimeErrorRef = useRef(handleRuntimeErrorImpl);
 	handleRuntimeErrorRef.current = handleRuntimeErrorImpl;
 	const handleRuntimeError = useCallback((payload: ErrorPayload) => {
@@ -350,20 +362,20 @@ export function usePlaybackSessionRuntime({
 		void controller.play();
 	}, [controllerRef, coordinator, getPlaybackSnapshot, now, showToast, togglePlayFallback]);
 
-	const handleRuntimePlay = useCallback(() => {
-		const boundLoad = controllerBoundLoadHandleRef.current;
-		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
+	const handleRuntimePlay = useCallback((payload: MediaEventPayload) => {
+		const boundLoad = currentEventLoad(payload);
+		if (!boundLoad) return;
 		if (!coordinator.markPlaying(boundLoad)) return;
 		setPlaying(true);
-	}, [coordinator, setPlaying]);
+	}, [coordinator, currentEventLoad, setPlaying]);
 
-	const handleRuntimePause = useCallback(() => {
-		const boundLoad = controllerBoundLoadHandleRef.current;
-		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
+	const handleRuntimePause = useCallback((payload: MediaEventPayload) => {
+		const boundLoad = currentEventLoad(payload);
+		if (!boundLoad) return;
 		if (!coordinator.markPaused(boundLoad, now())) return;
 		onRuntimePause?.();
 		setPlaying(false);
-	}, [coordinator, now, onRuntimePause, setPlaying]);
+	}, [coordinator, currentEventLoad, now, onRuntimePause, setPlaying]);
 
 	const setPlaybackQuality = useCallback((quality: PlaybackQualityRequest) => {
 		setPlaybackQualityState(quality);
@@ -428,7 +440,6 @@ export function usePlaybackSessionRuntime({
 		if (!controller) return;
 		if (!currentTrack) {
 			coordinator.clear();
-			controllerBoundLoadHandleRef.current = null;
 			setCurrentBeatMapState(null);
 			setTrialBanner(null);
 			controller.pause();
@@ -470,12 +481,11 @@ export function usePlaybackSessionRuntime({
 						trial: false,
 					})) return;
 					sourceAccepted = true;
-					controllerBoundLoadHandleRef.current = session;
-					controller.load(localAudioUrl);
+					controller.load(localAudioUrl, session);
 					if (positionRef.current > 0) controller.seek(positionRef.current);
 					await controller.play();
 					if (!coordinator.isPlaybackCurrent(session)) return;
-					coordinator.markPlaying(session);
+					if (coordinator.markPlaying(session)) setPlaying(true);
 					setLyricsLoading(false);
 					setHomeForcedOpen(false);
 					setHomeSuppressed(true);
@@ -518,15 +528,14 @@ export function usePlaybackSessionRuntime({
 					rawUrl: result.url,
 					local: false,
 					trial: result.trial === true,
-				})) return;
-				sourceAccepted = true;
-				controllerBoundLoadHandleRef.current = session;
-				controller.load(audioUrl);
+			})) return;
+			sourceAccepted = true;
+			controller.load(audioUrl, session);
 				loadBeatMap(services, currentTrack, result.url, session);
 				if (positionRef.current > 0) controller.seek(positionRef.current);
-				await controller.play();
-				if (!coordinator.isPlaybackCurrent(session)) return;
-				coordinator.markPlaying(session);
+			await controller.play();
+			if (!coordinator.isPlaybackCurrent(session)) return;
+			if (coordinator.markPlaying(session)) setPlaying(true);
 				setHomeForcedOpen(false);
 				setHomeSuppressed(true);
 			} catch (error) {

@@ -3,7 +3,11 @@ import React from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { LyricPayload, Track } from "@mineradio/shared";
-import type { PlayerController } from "../../audio/player-controller";
+import {
+	PlayerController,
+	type ErrorPayload,
+	type MediaEventPayload,
+} from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
 import { PlaybackSessionCoordinator } from "./playback-session-coordinator";
 import {
@@ -30,6 +34,60 @@ function deferred<T>() {
 		resolve = resolvePromise;
 	});
 	return { promise, resolve };
+}
+
+function mediaEventPayload(
+	loadContext: object | null,
+	sourceUrl = "https://media.example/test.mp3",
+): MediaEventPayload {
+	return { loadContext, sourceUrl };
+}
+
+function errorEventPayload(
+	loadContext: object | null,
+	message: string,
+	sourceUrl = "https://media.example/test.mp3",
+): ErrorPayload {
+	return { ...mediaEventPayload(loadContext, sourceUrl), code: 2, message };
+}
+
+class RuntimeAudioElement extends EventTarget {
+	currentTime = 0;
+	duration = 60;
+	src = "";
+	currentSrc = "";
+	crossOrigin: string | null = null;
+	volume = 1;
+	paused = true;
+	error: { code: number; message: string } | null = null;
+	loadCalled = 0;
+	playCalled = 0;
+	private resolvePendingPlay!: () => void;
+	private readonly pendingPlay = new Promise<void>((resolve) => {
+		this.resolvePendingPlay = resolve;
+	});
+
+	load(): void {
+		this.loadCalled += 1;
+	}
+
+	play(): Promise<void> {
+		this.playCalled += 1;
+		this.paused = false;
+		return this.playCalled === 1 ? Promise.resolve() : this.pendingPlay;
+	}
+
+	pause(): void {
+		this.paused = true;
+	}
+
+	releasePendingPlay(): void {
+		this.resolvePendingPlay();
+	}
+}
+
+function asHtmlAudioElement(audio: RuntimeAudioElement): HTMLAudioElement {
+	return audio as unknown as HTMLAudioElement;
 }
 
 test("the playback session publishes fallback lyrics before loading and resuming remote audio", async () => {
@@ -430,14 +488,18 @@ test("old controller events stay silent while the next track URL is pending", as
 	const toasts: string[] = [];
 	let runtimePauseCount = 0;
 	let loadCount = 0;
+	let loadedContext: object | null = null;
+	let loadedSourceUrl = "";
 	let secondResolveStarted = false;
 	let activeTrack = TRACK;
 	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
 		current: null,
 	};
 	const controller = {
-		load() {
+		load(url: string, loadContext?: object) {
 			loadCount += 1;
+			loadedContext = loadContext ?? null;
+			loadedSourceUrl = url;
 		},
 		seek() {},
 		async play() {},
@@ -527,6 +589,8 @@ test("old controller events stay silent while the next track URL is pending", as
 		pause: runtimeRef.current!.handleRuntimePause,
 		error: runtimeRef.current!.handleRuntimeError,
 	};
+	const oldLoadContext = loadedContext;
+	const oldSourceUrl = loadedSourceUrl;
 	flushSync(() => root.render(<Harness track={secondTrack} />));
 	for (
 		let i = 0;
@@ -544,9 +608,9 @@ test("old controller events stay silent while the next track URL is pending", as
 	expect(secondResolveStarted).toBe(true);
 	expect(loadCount).toBe(1);
 
-	oldEvents.play();
-	oldEvents.pause();
-	oldEvents.error({ code: 2, message: "old media failed" });
+	oldEvents.play(mediaEventPayload(oldLoadContext, oldSourceUrl));
+	oldEvents.pause(mediaEventPayload(oldLoadContext, oldSourceUrl));
+	oldEvents.error(errorEventPayload(oldLoadContext, "old media failed", oldSourceUrl));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	expect(coordinator.snapshot()).toBe(resolving);
@@ -560,14 +624,173 @@ test("old controller events stay silent while the next track URL is pending", as
 	host.remove();
 });
 
+test("native events are accepted only after currentSrc matches the newly loaded source", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const coordinator = new PlaybackSessionCoordinator();
+	const audio = new RuntimeAudioElement();
+	const controller = new PlayerController(asHtmlAudioElement(audio));
+	const controllerRef = { current: controller as PlayerController | null };
+	const localAudioUrlsRef = { current: new Map<string, string>() };
+	const recoveryUrl = deferred<{
+		url: string;
+		quality: string;
+		proxied: boolean;
+	}>();
+	const secondTrack: Track = {
+		...TRACK,
+		id: "session-bound",
+		sourceId: "session-bound",
+		title: "Bound Song",
+	};
+	const playing: boolean[] = [];
+	const searchErrors: string[] = [];
+	const toasts: string[] = [];
+	let resolveCount = 0;
+	let activeTrack = TRACK;
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+	const services = {
+		music: {
+			playback: {
+				async resolveSongUrl(track: Track) {
+					resolveCount += 1;
+					if (resolveCount >= 3) return await recoveryUrl.promise;
+					return {
+						url: `https://media.example/${track.id}.mp3`,
+						quality: "standard",
+						proxied: false,
+					};
+				},
+			},
+			lyrics: {
+				async lyric() {
+					return await new Promise<LyricPayload>(() => undefined);
+				},
+			},
+			discover: {},
+		},
+		mediaUrl: {
+			audioProxyUrl: (url: string) => url,
+			playableUrl: (url: string) => url,
+		},
+	} as unknown as AppServices;
+
+	function Harness({ track }: { track: Track }) {
+		activeTrack = track;
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: services,
+			coordinator,
+			controllerRef,
+			localAudioUrlsRef,
+			currentTrack: track,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: activeTrack,
+				positionMs: 0,
+				durationMs: 60_000,
+				isPlaying: false,
+			}),
+			setPlaying: (value) => playing.push(value),
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: (message) => searchErrors.push(message),
+			showToast: (message) => toasts.push(message),
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "dj:test",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => undefined,
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness track={TRACK} />));
+	for (let i = 0; i < 12 && coordinator.snapshot().phase !== "playing"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	audio.currentSrc = audio.src;
+	const firstSourceUrl = audio.currentSrc;
+	const unsubscribe = [
+		controller.on("play", (payload) => runtimeRef.current?.handleRuntimePlay(payload)),
+		controller.on("error", (payload) => runtimeRef.current?.handleRuntimeError(payload)),
+	];
+
+	flushSync(() => root.render(<Harness track={secondTrack} />));
+	for (
+		let i = 0;
+		i < 12 &&
+		(audio.playCalled < 2 ||
+			audio.src === firstSourceUrl ||
+			coordinator.snapshot().phase !== "loading");
+		i += 1
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	const newSourceUrl = audio.src;
+	const loading = coordinator.snapshot();
+	const playingCount = playing.length;
+	const resolveCountBeforeOldEvents = resolveCount;
+	audio.error = { code: 2, message: "late old source event" };
+
+	audio.dispatchEvent(new Event("play"));
+	audio.dispatchEvent(new Event("error"));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(audio.currentSrc).toBe(firstSourceUrl);
+	expect(newSourceUrl).not.toBe(firstSourceUrl);
+	expect(coordinator.snapshot()).toBe(loading);
+	expect(playing.length).toBe(playingCount);
+	expect(resolveCount).toBe(resolveCountBeforeOldEvents);
+	expect(searchErrors).toEqual([]);
+	expect(toasts).toEqual([]);
+
+	audio.currentSrc = newSourceUrl;
+	audio.dispatchEvent(new Event("play"));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(coordinator.snapshot().phase).toBe("playing");
+	expect(playing.at(-1)).toBe(true);
+	const acceptedPlaying = coordinator.snapshot();
+
+	audio.error = { code: 2, message: "current source event" };
+	audio.dispatchEvent(new Event("error"));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(resolveCount).toBe(3);
+	expect(coordinator.snapshot()).not.toBe(acceptedPlaying);
+	expect(coordinator.snapshot().phase).toBe("recovering");
+
+	audio.releasePendingPlay();
+	recoveryUrl.resolve({
+		url: "https://media.example/session-bound-recovery.mp3",
+		quality: "standard",
+		proxied: false,
+	});
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	for (const off of unsubscribe) off();
+	root.unmount();
+	host.remove();
+});
+
 test("repeated media errors start at most one automatic source recovery", async () => {
 	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	let resolveCount = 0;
 	let loadCount = 0;
+	let loadedContext: object | null = null;
+	let loadedSourceUrl = "";
 	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = { current: null };
 	const controller = {
-		load() {
+		load(url: string, loadContext?: object) {
 			loadCount += 1;
+			loadedContext = loadContext ?? null;
+			loadedSourceUrl = url;
 		},
 		seek() {},
 		async play() {},
@@ -645,15 +868,22 @@ test("repeated media errors start at most one automatic source recovery", async 
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
 
-	runtimeRef.current!.handleRuntimeError({ code: 2, message: "media failed" });
-	runtimeRef.current!.handleRuntimeError({ code: 2, message: "media failed again" });
+	const firstLoadContext = loadedContext;
+	const firstSourceUrl = loadedSourceUrl;
+	runtimeRef.current!.handleRuntimeError(
+		errorEventPayload(firstLoadContext, "media failed", firstSourceUrl),
+	);
+	runtimeRef.current!.handleRuntimeError(
+		errorEventPayload(firstLoadContext, "media failed again", firstSourceUrl),
+	);
 	for (let i = 0; i < 8 && (resolveCount < 2 || loadCount < 2); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
-	runtimeRef.current!.handleRuntimeError({
-		code: 2,
-		message: "media failed after recovery",
-	});
+	runtimeRef.current!.handleRuntimeError(errorEventPayload(
+		loadedContext,
+		"media failed after recovery",
+		loadedSourceUrl,
+	));
 	for (let i = 0; i < 4; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
@@ -668,10 +898,14 @@ test("a trial media error clears the banner without resolving another source", a
 	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	let resolveCount = 0;
 	let loadCount = 0;
+	let loadedContext: object | null = null;
+	let loadedSourceUrl = "";
 	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = { current: null };
 	const controller = {
-		load() {
+		load(url: string, loadContext?: object) {
 			loadCount += 1;
+			loadedContext = loadContext ?? null;
+			loadedSourceUrl = url;
 		},
 		seek() {},
 		async play() {},
@@ -752,7 +986,11 @@ test("a trial media error clears the banner without resolving another source", a
 	}
 
 	expect(runtimeRef.current?.trialBanner?.text).toBe("当前未登录 · 仅播放试听片段");
-	runtimeRef.current!.handleRuntimeError({ code: 2, message: "trial media failed" });
+	runtimeRef.current!.handleRuntimeError(errorEventPayload(
+		loadedContext,
+		"trial media failed",
+		loadedSourceUrl,
+	));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	expect(resolveCount).toBe(1);

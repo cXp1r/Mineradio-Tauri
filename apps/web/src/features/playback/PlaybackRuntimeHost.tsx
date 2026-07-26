@@ -2,15 +2,16 @@ import { useEffect, type ReactElement, type RefObject } from "react";
 import {
 	PlayerController,
 	type ErrorPayload,
+	type MediaEventPayload,
 	type TimeUpdatePayload,
 } from "../../audio/player-controller";
 
 export interface PlaybackRuntimeCallbacks {
 	onTimeUpdate(payload: TimeUpdatePayload): void;
 	onDurationChange(payload: TimeUpdatePayload): void;
-	onPlay(): void;
-	onPause(): void;
-	onEnded(): void;
+	onPlay(payload: MediaEventPayload): void;
+	onPause(payload: MediaEventPayload): void;
+	onEnded(payload: MediaEventPayload): void;
 	onError(payload: ErrorPayload): void;
 }
 

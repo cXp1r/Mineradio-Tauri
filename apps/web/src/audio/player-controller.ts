@@ -6,21 +6,28 @@ export type PlayerEventName =
 	| "ended"
 	| "error";
 
-export type TimeUpdatePayload = {
+export type MediaEventPayload = {
+	readonly loadContext: object | null;
+	readonly sourceUrl: string;
+};
+
+export type TimeUpdatePayload = MediaEventPayload & {
 	positionMs: number;
 	durationMs: number | null;
 };
 
-export type ErrorPayload = {
+export type ErrorPayload = MediaEventPayload & {
 	code: number;
 	message: string;
 };
 
-export type Listener = (payload?: TimeUpdatePayload | ErrorPayload | void) => void;
+export type Listener = (
+	payload: MediaEventPayload | TimeUpdatePayload | ErrorPayload,
+) => void;
 
 export type HandlerForEvent<E extends PlayerEventName> =
 	E extends "play" | "pause" | "ended"
-		? () => void
+		? (payload: MediaEventPayload) => void
 		: E extends "timeupdate" | "durationchange"
 			? (payload: TimeUpdatePayload) => void
 			: E extends "error"
@@ -32,6 +39,11 @@ const MINERADIO_AUDIO_CONTEXT_KEY = "_mineradioAudioCtx";
 type MineradioAudioElement = HTMLAudioElement & {
 	[MINERADIO_AUDIO_CONTEXT_KEY]?: AudioContext;
 };
+
+interface SourceBinding {
+	readonly loadContext: object | null;
+	readonly sourceUrl: string;
+}
 
 function timeMsFromSeconds(seconds: number): number {
 	return Math.max(0, Math.floor(seconds * 1000));
@@ -67,6 +79,7 @@ export class PlayerController {
 	private readonly audio: HTMLAudioElement | null;
 	private readonly listeners = new Map<PlayerEventName, Set<Listener>>();
 	private readonly boundRelays: Record<PlayerEventName, EventListener>;
+	private sourceBinding: SourceBinding | null = null;
 
 	constructor(audio?: HTMLAudioElement) {
 		if (audio) {
@@ -77,11 +90,11 @@ export class PlayerController {
 		if (this.audio) configureAudioElement(this.audio);
 
 		this.boundRelays = {
-			play: () => this.emit("play"),
-			pause: () => this.emit("pause"),
+			play: () => this.emitMediaEvent("play"),
+			pause: () => this.emitMediaEvent("pause"),
 			timeupdate: () => this.emitTimeUpdate(),
 			durationchange: () => this.emitDurationChange(),
-			ended: () => this.emit("ended"),
+			ended: () => this.emitMediaEvent("ended"),
 			error: () => this.emitError(),
 		};
 
@@ -100,10 +113,14 @@ export class PlayerController {
 		return this.audio;
 	}
 
-	load(url: string): void {
+	load(url: string, loadContext?: object): void {
 		const audio = this.requireAudio();
 		configureAudioElement(audio);
 		audio.src = url;
+		this.sourceBinding = Object.freeze({
+			loadContext: loadContext ?? null,
+			sourceUrl: audio.src,
+		});
 		audio.load();
 	}
 
@@ -147,17 +164,31 @@ export class PlayerController {
 		};
 	}
 
-	private emit(event: PlayerEventName): void {
+	private emitMediaEvent(event: "play" | "pause" | "ended"): void {
+		const payload = this.mediaEventPayload();
 		const set = this.listeners.get(event);
 		if (!set) return;
 		for (const handler of set) {
-			handler();
+			handler(payload);
 		}
+	}
+
+	private mediaEventPayload(): MediaEventPayload {
+		const audio = this.requireAudio();
+		const sourceUrl = audio.currentSrc || audio.src;
+		const binding = this.sourceBinding;
+		return {
+			loadContext: binding?.sourceUrl === sourceUrl
+				? binding.loadContext
+				: null,
+			sourceUrl,
+		};
 	}
 
 	private emitTimeUpdate(): void {
 		const audio = this.requireAudio();
 		const payload: TimeUpdatePayload = {
+			...this.mediaEventPayload(),
 			positionMs: timeMsFromSeconds(audio.currentTime),
 			durationMs: durationMsOrNull(audio.duration),
 		};
@@ -171,6 +202,7 @@ export class PlayerController {
 	private emitDurationChange(): void {
 		const audio = this.requireAudio();
 		const payload: TimeUpdatePayload = {
+			...this.mediaEventPayload(),
 			positionMs: timeMsFromSeconds(audio.currentTime),
 			durationMs: durationMsOrNull(audio.duration),
 		};
@@ -185,6 +217,7 @@ export class PlayerController {
 		const audio = this.requireAudio();
 		const mediaError = audio.error;
 		const payload: ErrorPayload = {
+			...this.mediaEventPayload(),
 			code: mediaError ? mediaError.code : 0,
 			message: mediaError?.message ?? "playback error",
 		};
