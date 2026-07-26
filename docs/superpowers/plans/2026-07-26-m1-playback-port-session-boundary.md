@@ -116,7 +116,7 @@ git commit -m "refactor(web): route playback through application ports"
 **Files:**
 - Create: `scripts/architecture/playback-port-boundary.test.ts`
 
-- [ ] **Step 1: Add source assertions**
+- [x] **Step 1: Add source assertions**
 
 断言 `App.tsx` 不再包含：
 
@@ -129,7 +129,7 @@ sidecarClient?.resolveSongUrl
 
 同时断言 App 导入并调用 `resolvePlayableAudio`。
 
-- [ ] **Step 2: Run and commit the guard**
+- [x] **Step 2: Run and commit the guard**
 
 ```powershell
 bun test scripts/architecture/playback-port-boundary.test.ts
