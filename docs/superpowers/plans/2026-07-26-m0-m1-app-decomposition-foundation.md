@@ -32,6 +32,10 @@
 - 不改 sidecar endpoint、HTTP method、请求体、响应 schema、错误字段和代理 URL；
 - 不重写播放、登录或歌词流程。
 
+## Verification policy
+
+严格 TDD 只用于会直接影响用户数据、播放连续性或故障恢复的核心流程：播放事务与媒体恢复、sidecar recovery、二维码登录轮询、持久化迁移、媒体 URL 与错误字段一致性。类型声明、纯委托 adapter、React context 和目录装配不强制制造失败测试；这些结构性变更使用现有 characterization tests、补充的契约断言、类型检查和完整回归验证。
+
 ## Target file map
 
 | 文件 | 单一职责 |
@@ -157,11 +161,11 @@ git commit -m "docs: establish Mineradio parity baseline"
 - Create: `apps/web/src/ports/desktop-runtime-port.ts`
 - Create: `apps/web/src/ports/ports.test.ts`
 
-- [ ] **Step 1: Write a compile-time and runtime Port fixture test**
+- [x] **Step 1: Write a compile-time and runtime Port fixture test**
 
 The test creates a `MusicServices` object with fake methods, invokes search, lyrics and playlist methods, and asserts recorded arguments. Use `satisfies MusicServices` so TypeScript validates the complete interface without type casts.
 
-- [ ] **Step 2: Run the focused test and verify imports fail**
+- [x] **Step 2: Run the focused test and verify imports fail**
 
 Run:
 
@@ -171,7 +175,7 @@ bun test apps/web/src/ports/ports.test.ts
 
 Expected: FAIL because the Port modules do not exist.
 
-- [ ] **Step 3: Add the narrow Port interfaces**
+- [x] **Step 3: Add the narrow Port interfaces**
 
 Use existing `@mineradio/shared` request and response types. The key signatures are:
 
@@ -210,7 +214,7 @@ export interface MediaUrlPort {
 
 No Port may expose `baseUrl`, endpoint paths, `fetch`, Tauri command names, `SidecarClient`, or Axum concepts.
 
-- [ ] **Step 4: Run Port tests and web typecheck**
+- [x] **Step 4: Run Port tests and web typecheck**
 
 Run:
 
@@ -221,7 +225,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit the Port contracts**
+- [x] **Step 5: Commit the Port contracts**
 
 ```powershell
 git add apps/web/src/ports
@@ -331,19 +335,19 @@ git commit -m "refactor(web): adapt legacy sidecar services"
 - Create: `apps/web/src/adapters/tauri/tauri-desktop-runtime.ts`
 - Create: `apps/web/src/adapters/tauri/tauri-desktop-runtime.test.ts`
 
-- [ ] **Step 1: Write adapter tests with injected function tables**
+- [ ] **Step 1: Implement adapters with injected function tables**
 
-Avoid module mocking. Each adapter factory accepts a dependency object whose defaults are the current functions. Tests inject recorders and assert exact arguments and return objects.
+Avoid module mocking. Each adapter factory accepts a dependency object whose defaults are the current functions.
 
-- [ ] **Step 2: Run focused tests and verify missing modules**
+- [ ] **Step 2: Add focused delegation tests**
 
 ```powershell
 bun test apps/web/src/adapters/sidecar/legacy-api-runtime.test.ts apps/web/src/adapters/tauri/tauri-desktop-runtime.test.ts
 ```
 
-Expected: FAIL because modules do not exist.
+Tests inject recorders and assert exact arguments and return objects.
 
-- [ ] **Step 3: Implement lossless wrappers**
+- [ ] **Step 3: Verify lossless wrappers**
 
 `createLegacyApiRuntime()` delegates `getRuntimeConfig`, `getSidecarStatus`, `health` and `capabilities`. `createTauriDesktopRuntime()` delegates existing window, desktop lyrics and hotkey functions without changing command names or payloads.
 
@@ -371,19 +375,19 @@ git commit -m "refactor(web): add runtime adapters"
 - Create: `apps/web/src/app/AppRuntimeProvider.test.tsx`
 - Modify: `apps/web/src/app/App.tsx`
 
-- [ ] **Step 1: Write provider tests**
+- [ ] **Step 1: Implement service assembly and provider**
 
-Render a probe inside `AppRuntimeProvider`, assert it receives the exact injected service object, and assert `useAppServices()` throws a Chinese diagnostic outside the provider.
+Implement the context and legacy service factory without changing the existing `AppProps.createSidecarClient` test hook.
 
-- [ ] **Step 2: Run the focused provider test and verify failure**
+- [ ] **Step 2: Add provider boundary tests**
 
 ```powershell
 bun test apps/web/src/app/AppRuntimeProvider.test.tsx
 ```
 
-Expected: FAIL because the provider does not exist.
+Render a probe inside `AppRuntimeProvider`, assert it receives the exact injected service object, and assert `useAppServices()` throws a Chinese diagnostic outside the provider.
 
-- [ ] **Step 3: Implement service assembly and provider**
+- [ ] **Step 3: Verify service assembly compatibility**
 
 ```ts
 export interface AppServices {
