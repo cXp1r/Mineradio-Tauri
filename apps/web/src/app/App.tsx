@@ -7,6 +7,12 @@ import {
   type ReactElement,
 } from "react";
 import { SidecarClient, SidecarClientError } from "../api/sidecar-client";
+import { AppRuntimeProvider } from "./AppRuntimeProvider";
+import {
+  createLegacyAppServices,
+  type AppServices,
+  type AppServicesFactory,
+} from "./app-services";
 import {
   LOCAL_AUDIO_ACCEPT,
   createLocalAudioTrack,
@@ -1077,6 +1083,7 @@ export type AppProps = {
   SplashComponent?: (props: SplashHostProps) => ReactElement | null;
   VisualComponent?: typeof VisualEngineHost;
   createSidecarClient?: (cfg: RuntimeConfig) => SidecarClient;
+  servicesFactory?: AppServicesFactory;
   initialRuntimeConfig?: RuntimeConfig | null;
   desktopLyricsRuntime?: DesktopLyricsRuntime;
 };
@@ -1101,12 +1108,14 @@ export function App({
   SplashComponent = SplashHost,
   VisualComponent = VisualEngineHost,
   createSidecarClient = createDefaultSidecarClient,
+  servicesFactory = createLegacyAppServices,
   initialRuntimeConfig = null,
   desktopLyricsRuntime = defaultDesktopLyricsRuntime,
 }: AppProps = {}): ReactElement {
   const [sidecarClient, setSidecarClient] = useState<SidecarClient | null>(
     null,
   );
+  const [appServices, setAppServices] = useState<AppServices | null>(null);
   const [currentBeatMapState, setCurrentBeatMapState] =
     useState<CurrentBeatMapState | null>(null);
   const [trialBanner, setTrialBanner] = useState<TrialBannerState | null>(null);
@@ -1327,10 +1336,11 @@ export function App({
     (cfg: RuntimeConfig) => {
       const client = createSidecarClient(cfg);
       setSidecarClient(client);
+      setAppServices(servicesFactory(cfg, client));
       setSidecarBaseUrl(cfg.sidecarBaseUrl);
       return client;
     },
-    [createSidecarClient],
+    [createSidecarClient, servicesFactory],
   );
 
   const emptyHomeCoreAllowed = shouldShowEmptyHome({
@@ -4176,6 +4186,7 @@ export function App({
         : qqCookieInputRef;
 
   return (
+    <AppRuntimeProvider services={appServices}>
     <div id="desktop-window-shell">
       <input
         ref={fileInputRef}
@@ -4956,5 +4967,6 @@ export function App({
         {toast ?? ""}
       </div>
     </div>
+    </AppRuntimeProvider>
   );
 }

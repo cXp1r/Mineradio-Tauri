@@ -375,11 +375,11 @@ git commit -m "refactor(web): add runtime adapters"
 - Create: `apps/web/src/app/AppRuntimeProvider.test.tsx`
 - Modify: `apps/web/src/app/App.tsx`
 
-- [ ] **Step 1: Implement service assembly and provider**
+- [x] **Step 1: Implement service assembly and provider**
 
 Implement the context and legacy service factory without changing the existing `AppProps.createSidecarClient` test hook.
 
-- [ ] **Step 2: Add provider boundary tests**
+- [x] **Step 2: Add provider boundary tests**
 
 ```powershell
 bun test apps/web/src/app/AppRuntimeProvider.test.tsx
@@ -387,7 +387,7 @@ bun test apps/web/src/app/AppRuntimeProvider.test.tsx
 
 Render a probe inside `AppRuntimeProvider`, assert it receives the exact injected service object, and assert `useAppServices()` throws a Chinese diagnostic outside the provider.
 
-- [ ] **Step 3: Verify service assembly compatibility**
+- [x] **Step 3: Verify service assembly compatibility**
 
 ```ts
 export interface AppServices {
@@ -409,7 +409,7 @@ export function createLegacyAppServices(config: RuntimeConfig, client: SidecarCl
 
 Keep the existing `AppProps.createSidecarClient` hook. Add optional `servicesFactory` for tests, but default it to `createLegacyAppServices`; this preserves all existing fake-client tests.
 
-- [ ] **Step 4: Run provider and full App characterization tests**
+- [x] **Step 4: Run provider and full App characterization tests**
 
 ```powershell
 bun test apps/web/src/app/AppRuntimeProvider.test.tsx apps/web/src/app/App.test.tsx
@@ -418,7 +418,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS with no DOM ID, class or copy changes.
 
-- [ ] **Step 5: Commit dependency assembly**
+- [x] **Step 5: Commit dependency assembly**
 
 ```powershell
 git add apps/web/src/app
