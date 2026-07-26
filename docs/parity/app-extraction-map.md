@@ -131,4 +131,12 @@
 | Global shell/preferences | document/body classes、全局 listener、toast、AI chip、空白 Home dismiss 和浏览器偏好持久化迁入 shell runtime/preferences | `bun test apps/web/src/app/App.test.tsx scripts/architecture/global-shell-boundary.test.ts` | `e252ee7` |
 | Feature surfaces/AppShell | Account、Home/Search、Library、Playback、Visual JSX 和 modal/overlay 顺序迁入 Surface；默认具体依赖迁出 App | `bun test apps/web/src/app/App.test.tsx scripts/architecture/app-composition-boundary.test.ts` | `989dd53` |
 
-M1 App Decomposition 已完成。M2 播放状态机、Audio Graph、gapless/crossfade、输出设备路由，以及 M3+ Visual/Desktop parity 仍是后续里程碑；本批没有切换或嵌入开发中的 `MineRadio-api`。
+## M2 playback session-state foundation
+
+| boundary | result | evidence | commit |
+| --- | --- | --- | --- |
+| Explicit session/load authority | `PlaybackPhase`、`playbackSessionId`、`loadRequestId` 与 recovery state 由 reducer/coordinator 显式持有；单调 `playbackIntentId` 使同曲重播创建新 session，旧 URL/歌词/load 结果与非原始 handle 被拒绝 | `playback-state-machine.test.ts`、`playback-session-coordinator.test.ts`、`usePlaybackSessionRuntime.test.tsx`、`playback-store.test.ts` | `bbfa5a7` 至 `da01812` |
+| Source-bound media lifecycle | `PlayerController` 以 `currentSrc` 优先、`src` fallback 归一化 source，并仅为匹配 source 暴露精确 load handle；`timeupdate`、`durationchange`、`ended` 经 authority guard，重复 ended 只接受一次，single ended 只触发一次 replacement load/play | `player-controller.test.ts`、`usePlaybackSessionRuntime.test.tsx`、`App.test.tsx` | `2f02465`、`1b78ad3`、`8dd2262`、`da01812` |
+| Preserved current policies | 保留远程非试听 source 的单次媒体恢复、long-pause/URL-age 刷新、trial/local 分支和 quality reload；quality reload 复用 session、更新 load token，并只在当前成功 load 后恢复 recovery budget | `playback-session-coordinator.test.ts`、`usePlaybackSessionRuntime.test.tsx` | `887b0cf`、`5090e7f`、`0083c20` |
+
+M1 App Decomposition 已完成，M2 仅完成上述 playback session-state foundation。pending/committed audio owner separation、gapless、crossfade、Audio Graph recovery、stalled probes、输出路由/设备、fades 与 dual deck 仍是后续工作，不能视为已迁移；相关能力状态不变。Sidecar API 继续冻结为 `legacy-frozen`，本批没有切换或嵌入开发中的 `MineRadio-api` / Rust API。
