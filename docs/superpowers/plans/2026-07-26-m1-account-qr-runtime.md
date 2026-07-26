@@ -27,7 +27,7 @@
 - Create: `apps/web/src/features/accounts/login-qr-coordinator.ts`
 - Create: `apps/web/src/features/accounts/login-qr-coordinator.test.ts`
 
-- [ ] **Step 1: Write the failing stale-generation test**
+- [x] **Step 1: Write the failing stale-generation test**
 
 ```ts
 const coordinator = new LoginQrCoordinator();
@@ -37,7 +37,7 @@ expect(coordinator.isGenerationCurrent(first)).toBe(false);
 expect(coordinator.isGenerationCurrent(second)).toBe(true);
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/accounts/login-qr-coordinator.test.ts
@@ -45,7 +45,7 @@ bun test apps/web/src/features/accounts/login-qr-coordinator.test.ts
 
 Expected: FAIL because the coordinator module does not exist.
 
-- [ ] **Step 3: Implement generation ownership and verify GREEN**
+- [x] **Step 3: Implement generation ownership and verify GREEN**
 
 ```ts
 export class LoginQrCoordinator {
@@ -57,7 +57,7 @@ export class LoginQrCoordinator {
 }
 ```
 
-- [ ] **Step 4: Add polling lease and result classification tests incrementally**
+- [x] **Step 4: Add polling lease and result classification tests incrementally**
 
 逐个 RED→GREEN 覆盖：
 
@@ -68,7 +68,7 @@ export class LoginQrCoordinator {
 5. `scanned`、code `802/67` 分类为 `scanned`；
 6. 其他结果分类为 `waiting`。
 
-- [ ] **Step 5: Run and commit**
+- [x] **Step 5: Run and commit**
 
 ```powershell
 bun test apps/web/src/features/accounts/login-qr-coordinator.test.ts
