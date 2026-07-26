@@ -99,6 +99,7 @@ import {
   type LoginModalMode,
   type LoginProviderId,
 } from "../features/accounts/useLoginQrRuntime";
+import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
@@ -975,10 +976,6 @@ export function App({
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("full");
   const [loginProvider, setLoginProvider] = useState<LoginProviderId>("netease");
   const [qqManualCookieOpen, setQqManualCookieOpen] = useState(false);
-  const [neteaseStatus, setNeteaseStatus] =
-    useState<ProviderLoginStatus | null>(null);
-  const [qqStatus, setQqStatus] = useState<ProviderLoginStatus | null>(null);
-  const [sodaStatus, setSodaStatus] = useState<ProviderLoginStatus | null>(null);
   const [shelfPlaylists, setShelfPlaylists] = useState<PlaylistSummary[]>([]);
   const [importedPlaylists, setImportedPlaylists] = useState(
     readImportedPlaylistsFromStorage,
@@ -1647,12 +1644,6 @@ export function App({
     }
   }, [applyUpdateCheckResult, setUpdateStatus, showToast]);
 
-  const setProviderStatus = useCallback((status: ProviderLoginStatus) => {
-    if (status.provider === "netease") setNeteaseStatus(status);
-    else if (status.provider === "qq") setQqStatus(status);
-    else setSodaStatus(status);
-  }, []);
-
   const providerLabel = useCallback(
     (provider: ProviderId) => providerLabelText(provider),
     [],
@@ -1776,9 +1767,36 @@ export function App({
     [refreshHomeDiscover, refreshProviderPlaylists, sidecarClient],
   );
 
-  const refreshLibraryAfterQrLoggedOut = useCallback(() => {
+  const syncAccountProviderPlaylists = useCallback(
+    async (provider: LoginProviderId) => {
+      const client = sidecarClient;
+      if (!client) return;
+      await refreshProviderPlaylists(client, provider);
+    },
+    [refreshProviderPlaylists, sidecarClient],
+  );
+
+  const refreshAccountLibrary = useCallback(() => {
     void refreshShelfPlaylists(sidecarClient);
   }, [refreshShelfPlaylists, sidecarClient]);
+
+  const {
+    statusByProvider: accountStatusByProvider,
+    acceptProviderStatus,
+    refreshProviderStatus,
+    importProviderCookie: importProviderSessionCookie,
+    logoutProvider,
+  } = useAccountSessionController({
+    accounts: appServices?.music.accounts ?? null,
+    syncProviderPlaylists: syncAccountProviderPlaylists,
+    refreshHome: refreshHomeDiscover,
+    refreshLibrary: refreshAccountLibrary,
+    providerLabel,
+    showToast,
+  });
+  const neteaseStatus = accountStatusByProvider.netease;
+  const qqStatus = accountStatusByProvider.qq;
+  const sodaStatus = accountStatusByProvider.soda;
 
   const {
     qrByProvider: loginQrByProvider,
@@ -1790,45 +1808,12 @@ export function App({
     modalOpen: loginModalOpen,
     modalMode: loginModalMode,
     provider: loginProvider,
-    onProviderStatus: setProviderStatus,
+    onProviderStatus: acceptProviderStatus,
     syncProviderLibrary: syncProviderLoginLibrary,
-    refreshLibraryAfterLoggedOut: refreshLibraryAfterQrLoggedOut,
+    refreshLibraryAfterLoggedOut: refreshAccountLibrary,
     providerLabel,
     showToast,
   });
-
-  const refreshProviderStatus = useCallback(
-    async (provider: ProviderId) => {
-      const client = sidecarClient;
-      if (!client) {
-        showToast("sidecar 未连接，稍后再试");
-        return;
-      }
-      try {
-        const status = await client.loginStatus(provider);
-        setProviderStatus(status);
-        if (status.loggedIn) void refreshProviderPlaylists(client, provider);
-        else void refreshShelfPlaylists(client);
-        const label = providerLabel(provider);
-        showToast(
-          status.loggedIn
-            ? `${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`
-            : `${label}未登录`,
-        );
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "登录状态读取失败";
-        showToast(message);
-      }
-    },
-    [
-      providerLabel,
-      refreshProviderPlaylists,
-      refreshShelfPlaylists,
-      setProviderStatus,
-      showToast,
-      sidecarClient,
-    ],
-  );
 
   const openLoginModal = useCallback(() => {
     const statusByProvider: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
@@ -2466,8 +2451,7 @@ export function App({
   }, [resetProviderLoginQr]);
 
   const importProviderCookie = useCallback(
-    async (provider: ProviderId) => {
-      const client = sidecarClient;
+    async (provider: LoginProviderId) => {
       const input =
         provider === "netease"
           ? neteaseCookieInputRef.current
@@ -2475,78 +2459,14 @@ export function App({
             ? sodaCookieInputRef.current
             : qqCookieInputRef.current;
       const cookie = input?.value.trim() ?? "";
-      const label = providerLabel(provider);
-      if (!client) {
-        showToast("sidecar 未连接，稍后再试");
-        return;
-      }
-      if (!cookie) {
-        showToast(`请粘贴${label} cookie`);
-        return;
-      }
-      try {
-        await client.setProviderSessionCookie(provider, cookie);
-        if (input) input.value = "";
-        setQqManualCookieOpen(false);
-        const status = await client.loginStatus(provider);
-        setProviderStatus(status);
-        if (status.loggedIn) {
-          try {
-            await refreshProviderPlaylists(client, provider);
-            await refreshHomeDiscover();
-          } catch {
-            showToast(`${label}已登录，歌单同步失败，可稍后刷新`);
-          }
-        } else {
-          void refreshShelfPlaylists(client);
-        }
-        showToast(
-          status.loggedIn
-            ? `${label}已登录: ${status.nickname ?? status.userId ?? "账号"}`
-            : `${label}会话已保存，但账号态未确认`,
-        );
-      } catch (e) {
-        if (input) input.value = "";
-        const message = e instanceof Error ? e.message : "手动导入失败";
-        showToast(message);
-      }
+      await importProviderSessionCookie(provider, cookie, {
+        onStored: () => setQqManualCookieOpen(false),
+        onFinished: () => {
+          if (input) input.value = "";
+        },
+      });
     },
-    [
-      providerLabel,
-      refreshHomeDiscover,
-      refreshProviderPlaylists,
-      refreshShelfPlaylists,
-      setProviderStatus,
-      showToast,
-      sidecarClient,
-    ],
-  );
-
-  const logoutProvider = useCallback(
-    async (provider: ProviderId) => {
-      const client = sidecarClient;
-      const label = providerLabel(provider);
-      if (!client) {
-        showToast("sidecar 未连接，稍后再试");
-        return;
-      }
-      try {
-        await client.logout(provider);
-        setProviderStatus({ provider, loggedIn: false });
-        void refreshShelfPlaylists(client);
-        showToast(`${label}会话已清除`);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "退出登录失败";
-        showToast(message);
-      }
-    },
-    [
-      providerLabel,
-      refreshShelfPlaylists,
-      setProviderStatus,
-      showToast,
-      sidecarClient,
-    ],
+    [importProviderSessionCookie],
   );
 
   const playMiniQueueIndex = useCallback(
@@ -3356,7 +3276,7 @@ export function App({
       loginProviders={LOGIN_PROVIDERS}
       onConnection={handleSidecarConnection}
       onCapabilities={setMatrix}
-      onProviderStatus={setProviderStatus}
+      onProviderStatus={acceptProviderStatus}
       onRefreshLibrary={handleRuntimeLibraryRefresh}
       onRecoveryState={handleRecoveryState}
     />

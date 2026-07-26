@@ -108,11 +108,11 @@ git commit -m "refactor(web): add account session controller"
 - Modify: `apps/web/src/app/App.test.tsx`
 - Create: `scripts/architecture/account-session-boundary.test.ts`
 
-- [ ] **Step 1: Replace App-owned provider status state**
+- [x] **Step 1: Replace App-owned provider status state**
 
 删除三组 `neteaseStatus`、`qqStatus`、`sodaStatus` state，以及 App 内的 `setProviderStatus`、`refreshProviderStatus`、Cookie 业务流程和 logout 业务流程。App 从 controller 读取 `statusByProvider`，并派生现有三个局部 status 变量以保持 JSX 变化最小。
 
-- [ ] **Step 2: Preserve textarea and modal lifecycle in App**
+- [x] **Step 2: Preserve textarea and modal lifecycle in App**
 
 App 保留薄 wrapper：
 
@@ -134,7 +134,7 @@ const importProviderCookie = useCallback(async (provider: LoginProviderId) => {
 
 `useLoginQrRuntime.onProviderStatus` 和 `SidecarRecoveryRuntime.onProviderStatus` 改为 `acceptProviderStatus`。
 
-- [ ] **Step 3: Add the architecture guard**
+- [x] **Step 3: Add the architecture guard**
 
 断言 App 不再包含：
 
@@ -149,7 +149,7 @@ setProviderSessionCookie(
 
 并断言 App 使用 `useAccountSessionController({`，controller 依赖 `AccountPort` 且不导入 `SidecarClient`。
 
-- [ ] **Step 4: Run characterization and build**
+- [x] **Step 4: Run characterization and build**
 
 ```powershell
 bun test apps/web/src/features/accounts apps/web/src/app/App.test.tsx scripts/architecture/account-session-boundary.test.ts
@@ -157,7 +157,7 @@ bun run --filter ./apps/web typecheck
 bun run web:build
 ```
 
-- [ ] **Step 5: Commit integration**
+- [x] **Step 5: Commit integration**
 
 ```powershell
 git add apps/web/src/app/App.tsx apps/web/src/app/App.test.tsx scripts/architecture/account-session-boundary.test.ts docs/superpowers/plans/2026-07-26-m1-account-session-controller.md
