@@ -434,11 +434,11 @@ git commit -m "refactor(web): assemble app services"
 - Modify: `apps/web/src/app/App.tsx`
 - Test: `apps/web/src/app/App.test.tsx`
 
-- [ ] **Step 1: Add a source-boundary characterization test**
+- [x] **Step 1: Add a source-boundary characterization test**
 
 Read `SearchShell.tsx` as UTF-8 and assert it imports `SearchExperiencePort` and does not contain `api/sidecar-client` or `SidecarClient`.
 
-- [ ] **Step 2: Run the focused test and verify it fails against the current import**
+- [x] **Step 2: Run the focused test and verify it fails against the current import**
 
 ```powershell
 bun test apps/web/src/components/shell/SearchShell.test.ts
@@ -446,11 +446,11 @@ bun test apps/web/src/components/shell/SearchShell.test.ts
 
 Expected: FAIL on the source-boundary assertion.
 
-- [ ] **Step 3: Replace the concrete client type**
+- [x] **Step 3: Replace the concrete client type**
 
 Change `SearchShellProps.client` to `SearchExperiencePort | null`, change `searchTracksForMode` to `SearchPort`, and remove all casts to `Pick<SidecarClient, ...>`. In `App.tsx`, pass `appServices?.music.search ?? null` after legacy services are created.
 
-- [ ] **Step 4: Run search and App characterization tests**
+- [x] **Step 4: Run search and App characterization tests**
 
 ```powershell
 bun test apps/web/src/components/shell/SearchShell.test.ts apps/web/src/components/shell/SearchShell.actions.test.tsx apps/web/src/app/App.test.tsx
@@ -459,7 +459,7 @@ bun run --filter ./apps/web typecheck
 
 Expected: PASS; URL, error and UI assertions remain unchanged.
 
-- [ ] **Step 5: Commit the first UI boundary migration**
+- [x] **Step 5: Commit the first UI boundary migration**
 
 ```powershell
 git add apps/web/src/components/shell/SearchShell.tsx apps/web/src/components/shell/SearchShell*.test.ts* apps/web/src/app/App.tsx

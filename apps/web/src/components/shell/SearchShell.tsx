@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
 import type { ProviderId, PodcastProgram, PodcastRadio, Track } from "@mineradio/shared";
-import { SidecarClient } from "../../api/sidecar-client";
+import type {
+	SearchExperiencePort,
+	SearchPort,
+} from "../../ports/music/search-port";
 import { isPlayable, playSearchResult } from "../search/play-search-result";
 import { isSharedPlaylistCandidateText } from "../../shared-playlist/imported-playlists";
 import { useSearchStore, type SearchMode } from "../../stores/search-store";
@@ -9,7 +12,7 @@ import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list
 export type { SearchMode } from "../../stores/search-store";
 
 export interface SearchShellProps {
-	client: SidecarClient | null;
+	client: SearchExperiencePort | null;
 	onFocus?: () => void;
 	onUpload?: () => void;
 	onClearCustomCover?: () => void;
@@ -66,7 +69,7 @@ function virtualListStyle(window: VirtualListWindow): CSSProperties | undefined 
 }
 
 export async function searchTracksForMode(
-	client: Pick<SidecarClient, "search" | "searchAll">,
+	client: SearchPort,
 	mode: SearchMode,
 	keyword: string,
 	limit: number,
@@ -197,10 +200,9 @@ export function SearchShell({
 				setLoading(true);
 				setError(null);
 				try {
-					const podcastClient = client as Pick<SidecarClient, "podcastSearch" | "podcastHot">;
 					const detail = trimmed
-						? await podcastClient.podcastSearch(trimmed, 30)
-						: await podcastClient.podcastHot(18, 0);
+						? await client.podcastSearch(trimmed, 30)
+						: await client.podcastHot(18, 0);
 					if (searchSeqRef.current === seq) {
 						setPodcastResults(detail.podcasts);
 						setLoading(false);
@@ -342,7 +344,7 @@ export function SearchShell({
 		setLoading(true);
 		setError(null);
 		try {
-			const detail = await (client as Pick<SidecarClient, "podcastPrograms">).podcastPrograms(id, 36, 0);
+			const detail = await client.podcastPrograms(id, 36, 0);
 			if (searchSeqRef.current !== seq || modeRef.current !== "podcast") return;
 			setPodcastCurrentRadio({ ...radio, ...detail.radio, id, rid: radio.rid || id });
 			setPodcastProgramScrollTop(0);

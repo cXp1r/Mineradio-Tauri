@@ -4340,7 +4340,7 @@ export function App({
         onPlaylistDetailArtist={searchHomePlaylistDetailArtist}
       />
       <SearchShell
-        client={sidecarClient}
+        client={appServices?.music.search ?? null}
         onFocus={focusSearch}
         onUpload={openLocalFileImport}
         onClearCustomCover={clearCustomCoverImage}
