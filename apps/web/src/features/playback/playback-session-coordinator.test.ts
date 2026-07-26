@@ -28,6 +28,18 @@ test("switching tracks invalidates stale playback and lyric work", () => {
 	expect(coordinator.isLyricCurrent(second!.lyricToken)).toBe(true);
 });
 
+test("legacy track changes do not advance the explicit intent watermark", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const legacy = coordinator.beginTrack("netease:first");
+	const explicit = coordinator.beginTrack("netease:second", 1);
+
+	expect(legacy).not.toBeNull();
+	expect(explicit).not.toBeNull();
+	expect(explicit!.playbackSessionId).toBeGreaterThan(
+		legacy!.playbackSessionId,
+	);
+});
+
 test("a newer explicit intent creates a fresh session even for the same track", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const first = coordinator.beginTrack("netease:first", 1);
@@ -83,6 +95,19 @@ test("the current source advances through loading to playing", () => {
 	expect(coordinator.snapshot().phase).toBe("playing");
 });
 
+test("markPlaying resumes a paused current session", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	coordinator.markLoaded(remoteSource(), session.playbackToken);
+	coordinator.markPlaying();
+	coordinator.markPaused(2_000);
+	expect(coordinator.snapshot().phase).toBe("paused");
+
+	coordinator.markPlaying();
+
+	expect(coordinator.snapshot().phase).toBe("playing");
+});
+
 test("claiming current remote media recovery advances the machine", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first", 1)!;
@@ -102,6 +127,22 @@ test("rejecting media recovery while resolving fails the current load", () => {
 
 	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
 	expect(coordinator.snapshot().phase).toBe("failed");
+});
+
+test("media recovery is claimed only when the current load accepts failure", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first", 1)!;
+	coordinator.markLoaded(remoteSource(), session.playbackToken);
+	coordinator.markPlaying();
+	const reloadToken = coordinator.beginReload("url-age");
+	const resolving = coordinator.snapshot();
+
+	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(false);
+	expect(coordinator.snapshot()).toBe(resolving);
+
+	coordinator.markLoaded(remoteSource(), reloadToken);
+	coordinator.markPlaying();
+	expect(coordinator.claimMediaErrorRecovery("netease:first", true)).toBe(true);
 });
 
 test("a media-error reload keeps the session while starting a new load", () => {
@@ -283,7 +324,35 @@ test("quality invalidation allows the same track to start a new load session", (
 	const reloaded = coordinator.beginTrack("netease:first");
 
 	expect(reloaded).not.toBeNull();
+	expect(reloaded!.playbackSessionId).toBe(first!.playbackSessionId);
 	expect(coordinator.isPlaybackCurrent(first!.playbackToken)).toBe(false);
+	expect(coordinator.isLyricCurrent(first!.lyricToken)).toBe(false);
+});
+
+test("explicit quality invalidation reuses one current-intent load handle", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const first = coordinator.beginTrack("netease:first", 1)!;
+
+	coordinator.invalidateCurrentTrackLoad();
+	const invalidatedLoadRequestId = coordinator.snapshot().loadRequestId;
+	const invalidatedLyricToken = first.lyricToken + 1;
+	expect(coordinator.isPlaybackCurrent(first.playbackToken)).toBe(false);
+	expect(coordinator.isLyricCurrent(first.lyricToken)).toBe(false);
+	expect(coordinator.isLyricCurrent(invalidatedLyricToken)).toBe(true);
+	expect(coordinator.beginTrack("netease:first", 0)).toBeNull();
+	const reloaded = coordinator.beginTrack("netease:first", 1);
+
+	expect(reloaded).not.toBeNull();
+	expect(reloaded!.playbackSessionId).toBe(first.playbackSessionId);
+	expect(reloaded!.playbackToken).toBeGreaterThan(first.playbackToken);
+	expect(reloaded!.playbackToken).toBe(invalidatedLoadRequestId);
+	expect(reloaded!.lyricToken).toBeGreaterThan(first.lyricToken);
+	expect(reloaded!.lyricToken).toBe(invalidatedLyricToken);
+	expect(coordinator.isPlaybackCurrent(first.playbackToken)).toBe(false);
+	expect(coordinator.isLyricCurrent(first.lyricToken)).toBe(false);
+	expect(coordinator.snapshot().playbackSessionId).toBe(first.playbackSessionId);
+	expect(coordinator.snapshot().loadRequestId).toBe(reloaded!.playbackToken);
+	expect(coordinator.beginTrack("netease:first", 1)).toBeNull();
 });
 
 test("local and trial media never claim automatic media recovery", () => {

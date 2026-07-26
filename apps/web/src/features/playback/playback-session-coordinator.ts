@@ -36,8 +36,9 @@ export class PlaybackSessionCoordinator {
 	private pausedAtMs: number | null = null;
 	private machineState: PlaybackMachineState = createPlaybackState();
 	private nextPlaybackSessionId = 0;
-	private playbackIntentId = 0;
-	private legacyTrackInvalidated = false;
+	private lastExplicitPlaybackIntentId = 0;
+	private hasExplicitPlaybackIntent = false;
+	private currentTrackLoadInvalidated = false;
 
 	snapshot(): PlaybackMachineState {
 		return this.machineState;
@@ -48,13 +49,24 @@ export class PlaybackSessionCoordinator {
 		playbackIntentId?: number,
 	): PlaybackTrackSession | null {
 		if (playbackIntentId !== undefined) {
-			if (playbackIntentId <= this.playbackIntentId) return null;
-			this.playbackIntentId = playbackIntentId;
-		} else {
-			if (!this.legacyTrackInvalidated && trackKey === this.trackKey) return null;
-			this.playbackIntentId += 1;
+			if (this.hasExplicitPlaybackIntent) {
+				if (playbackIntentId < this.lastExplicitPlaybackIntentId) return null;
+				if (playbackIntentId === this.lastExplicitPlaybackIntentId) {
+					return this.claimInvalidatedLoadHandle(trackKey);
+				}
+			}
+			this.hasExplicitPlaybackIntent = true;
+			this.lastExplicitPlaybackIntentId = playbackIntentId;
+			return this.startTrackSession(trackKey);
 		}
 
+		const invalidatedHandle = this.claimInvalidatedLoadHandle(trackKey);
+		if (invalidatedHandle) return invalidatedHandle;
+		if (trackKey === this.trackKey) return null;
+		return this.startTrackSession(trackKey);
+	}
+
+	private startTrackSession(trackKey: string): PlaybackTrackSession {
 		const eventType = this.machineState.phase === "idle"
 			? "PLAY_TRACK"
 			: "SWITCH_TRACK";
@@ -62,7 +74,7 @@ export class PlaybackSessionCoordinator {
 		this.loadedSource = null;
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
-		this.legacyTrackInvalidated = false;
+		this.currentTrackLoadInvalidated = false;
 		this.playbackToken += 1;
 		this.lyricToken += 1;
 		this.nextPlaybackSessionId += 1;
@@ -79,12 +91,26 @@ export class PlaybackSessionCoordinator {
 		};
 	}
 
+	private claimInvalidatedLoadHandle(
+		trackKey: string,
+	): PlaybackTrackSession | null {
+		if (!this.currentTrackLoadInvalidated || trackKey !== this.trackKey) {
+			return null;
+		}
+		this.currentTrackLoadInvalidated = false;
+		return {
+			playbackSessionId: this.machineState.playbackSessionId,
+			playbackToken: this.playbackToken,
+			lyricToken: this.lyricToken,
+		};
+	}
+
 	clear(): void {
 		this.trackKey = "";
 		this.loadedSource = null;
 		this.pausedAtMs = null;
 		this.mediaErrorRecoveryTrackKey = "";
-		this.legacyTrackInvalidated = false;
+		this.currentTrackLoadInvalidated = false;
 		this.playbackToken += 1;
 		this.lyricToken += 1;
 		this.nextPlaybackSessionId += 1;
@@ -106,8 +132,12 @@ export class PlaybackSessionCoordinator {
 	}
 
 	invalidateCurrentTrackLoad(): void {
+		this.loadedSource = null;
+		this.pausedAtMs = null;
+		this.mediaErrorRecoveryTrackKey = "";
 		this.playbackToken += 1;
-		this.legacyTrackInvalidated = true;
+		this.lyricToken += 1;
+		this.currentTrackLoadInvalidated = true;
 		this.dispatch({
 			type: "BEGIN_RELOAD",
 			playbackSessionId: this.machineState.playbackSessionId,
@@ -139,11 +169,18 @@ export class PlaybackSessionCoordinator {
 
 	markPlaying(): void {
 		this.pausedAtMs = null;
-		this.dispatch({
-			type: "MEDIA_PLAYING",
-			playbackSessionId: this.machineState.playbackSessionId,
-			loadRequestId: this.playbackToken,
-		});
+		if (this.machineState.phase === "paused") {
+			this.dispatch({
+				type: "RESUME",
+				playbackSessionId: this.machineState.playbackSessionId,
+			});
+		} else {
+			this.dispatch({
+				type: "MEDIA_PLAYING",
+				playbackSessionId: this.machineState.playbackSessionId,
+				loadRequestId: this.playbackToken,
+			});
+		}
 	}
 
 	markEnded(): void {
@@ -217,14 +254,18 @@ export class PlaybackSessionCoordinator {
 			return false;
 		}
 
-		this.mediaErrorRecoveryTrackKey = trackKey;
-		this.dispatch({
+		const previousState = this.machineState;
+		const nextState = this.dispatch({
 			type: "MEDIA_FAILED",
 			playbackSessionId: this.machineState.playbackSessionId,
 			loadRequestId: this.playbackToken,
 			recoverable: true,
 			reason: "media-error",
 		});
+		if (nextState === previousState || nextState.phase !== "recovering") {
+			return false;
+		}
+		this.mediaErrorRecoveryTrackKey = trackKey;
 		return true;
 	}
 
@@ -235,6 +276,11 @@ export class PlaybackSessionCoordinator {
 		if (!this.isPlaybackCurrent(playbackToken)) return;
 		if (reason !== "media-error") {
 			this.mediaErrorRecoveryTrackKey = "";
+			this.dispatch({
+				type: "SOURCE_READY",
+				playbackSessionId: this.machineState.playbackSessionId,
+				loadRequestId: playbackToken,
+			});
 			this.dispatch({
 				type: "RESET_RECOVERY_BUDGET",
 				playbackSessionId: this.machineState.playbackSessionId,
@@ -251,7 +297,8 @@ export class PlaybackSessionCoordinator {
 		return token === this.lyricToken;
 	}
 
-	private dispatch(event: PlaybackMachineEvent): void {
+	private dispatch(event: PlaybackMachineEvent): PlaybackMachineState {
 		this.machineState = reducePlaybackState(this.machineState, event);
+		return this.machineState;
 	}
 }
