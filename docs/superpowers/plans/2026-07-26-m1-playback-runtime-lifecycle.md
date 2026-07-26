@@ -156,7 +156,7 @@ git commit -m "refactor(web): move player lifecycle out of App"
 - Create: `scripts/architecture/playback-runtime-boundary.test.ts`
 - Modify: `package.json` only if architecture tests are no longer included by the root test script
 
-- [ ] **Step 1: Add the source assertion**
+- [x] **Step 1: Add the source assertion**
 
 读取 UTF-8 源码并断言：
 
@@ -167,7 +167,7 @@ expect(appSource).not.toContain('controller.on("error"');
 expect(runtimeSource).toContain("export function PlaybackRuntimeHost");
 ```
 
-- [ ] **Step 2: Run the architecture test**
+- [x] **Step 2: Run the architecture test**
 
 ```powershell
 bun test scripts/architecture/playback-runtime-boundary.test.ts
@@ -175,7 +175,7 @@ bun test scripts/architecture/playback-runtime-boundary.test.ts
 
 Expected: PASS after Task 2; this is a structural boundary check, not a new behavior TDD cycle.
 
-- [ ] **Step 3: Commit the guard**
+- [x] **Step 3: Commit the guard**
 
 ```powershell
 git add scripts/architecture/playback-runtime-boundary.test.ts
