@@ -93,7 +93,7 @@ git commit -m "refactor(web): add playback session coordinator"
 - Create: `apps/web/src/features/playback/usePlaybackSessionRuntime.test.tsx`
 - Modify: `apps/web/src/features/playback/playback-session-coordinator.ts`
 
-- [ ] **Step 1: Write a failing runtime characterization test**
+- [x] **Step 1: Write a failing runtime characterization test**
 
 使用 fake Ports、fake `PlayerController` 和注入的 state/view callbacks 渲染最小 host。断言设置远程 track 后：
 
@@ -102,7 +102,7 @@ git commit -m "refactor(web): add playback session coordinator"
 - 原位置被 `seek()`；
 - `play()` 成功后调用首页隐藏 callbacks。
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/playback/usePlaybackSessionRuntime.test.tsx
@@ -110,7 +110,7 @@ bun test apps/web/src/features/playback/usePlaybackSessionRuntime.test.tsx
 
 Expected: FAIL because the runtime hook does not exist.
 
-- [ ] **Step 3: Implement the minimal injected runtime**
+- [x] **Step 3: Implement the minimal injected runtime**
 
 公开接口：
 
@@ -131,7 +131,7 @@ export interface PlaybackSessionRuntimeResult {
 
 依赖必须显式注入：`AppServices | null`、`controllerRef`、`localAudioUrlsRef`、当前播放 snapshot/getter、播放与歌词 setters、toast/search/home callbacks、偏好读写函数和 `now()`。hook 不得导入 `SidecarClient`。
 
-- [ ] **Step 4: Add stale lyric and single-recovery runtime tests**
+- [x] **Step 4: Add stale lyric and single-recovery runtime tests**
 
 逐个 RED→GREEN：
 
@@ -140,7 +140,7 @@ export interface PlaybackSessionRuntimeResult {
 3. trial media error 清除 banner 且不重新解析；
 4. local track 不访问 playback/media Ports。
 
-- [ ] **Step 5: Run focused tests and commit**
+- [x] **Step 5: Run focused tests and commit**
 
 ```powershell
 bun test apps/web/src/features/playback/usePlaybackSessionRuntime.test.tsx apps/web/src/features/playback/playback-session-coordinator.test.ts apps/web/src/features/playback/resolve-playable-audio.test.ts

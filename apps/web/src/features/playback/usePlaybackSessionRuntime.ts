@@ -1,0 +1,558 @@
+import {
+	useCallback,
+	useEffect,
+	useRef,
+	useState,
+	type RefObject,
+} from "react";
+import {
+	ensureLyricFallbackPayload,
+	type LyricPayload,
+	type PlaybackQualityRequest,
+	type ProviderId,
+	type SongUrlResult,
+	type Track,
+	type TrackQualityOption,
+} from "@mineradio/shared";
+import type {
+	ErrorPayload,
+	PlayerController,
+} from "../../audio/player-controller";
+import type { AppServices } from "../../app/app-services";
+import { resolveLyricsForTrack } from "../../lyrics/custom-lyrics";
+import type { JsonValue } from "../../tauri/runtime";
+import {
+	PlaybackSessionCoordinator,
+	type PlaybackReloadReason,
+} from "./playback-session-coordinator";
+import { resolvePlayableAudio } from "./resolve-playable-audio";
+
+export interface CurrentBeatMapState {
+	key: string;
+	map: JsonValue;
+}
+
+export interface TrialBannerState {
+	text: string;
+	provider: ProviderId;
+	showLogin: boolean;
+}
+
+export interface PlaybackSessionSnapshot {
+	currentTrack: Track | null;
+	positionMs: number;
+	durationMs: number | null;
+	isPlaying: boolean;
+}
+
+export interface PlaybackSessionRuntimeOptions {
+	appServices: AppServices | null;
+	controllerRef: RefObject<PlayerController | null>;
+	localAudioUrlsRef: RefObject<Map<string, string>>;
+	currentTrack: Track | null;
+	positionMs: number;
+	getPlaybackSnapshot(): PlaybackSessionSnapshot;
+	setPlaying(playing: boolean): void;
+	setPositionMs(positionMs: number): void;
+	togglePlayFallback(): void;
+	setSearchError(message: string): void;
+	showToast(message: string): void;
+	setHomeForcedOpen(open: boolean): void;
+	setHomeSuppressed(suppressed: boolean): void;
+	setLyricsPayload(payload: LyricPayload): void;
+	setLyricsLoading(loading: boolean): void;
+	setLyricsError(message: string): void;
+	resetLyrics(): void;
+	beatMapKeyForMap(map: JsonValue, source: string): string;
+	initialLyricsPayload: LyricPayload | null;
+	initialPlaybackQuality: PlaybackQualityRequest;
+	persistPlaybackQuality(quality: PlaybackQualityRequest): void;
+	now?: () => number;
+	onRuntimePause?: () => void;
+}
+
+export interface PlaybackSessionRuntimeResult {
+	playbackQuality: PlaybackQualityRequest;
+	trackQualityOptions: TrackQualityOption[];
+	trialBanner: TrialBannerState | null;
+	currentBeatMapState: CurrentBeatMapState | null;
+	originalLyricsPayloadRef: RefObject<LyricPayload | null>;
+	clearCurrentBeatMap(): void;
+	dismissTrialBanner(): void;
+	setPlaybackQuality(quality: PlaybackQualityRequest): void;
+	togglePlayback(): void;
+	handleRuntimePlay(): void;
+	handleRuntimePause(): void;
+	handleRuntimeError(payload: ErrorPayload): void;
+}
+
+function playbackKeyForTrack(track: Track | null | undefined): string {
+	return track ? `${track.provider}:${track.id}` : "";
+}
+
+function buildTrackLyricFallback(track: Track): LyricPayload {
+	return ensureLyricFallbackPayload({
+		provider: track.provider,
+		trackId: track.id,
+		lines: [],
+		hasTranslation: false,
+		isWordByWord: false,
+	}, track);
+}
+
+function trialBannerText(result: SongUrlResult): string {
+	if (result.message?.trim()) return result.message.trim();
+	if (result.loggedIn && result.vipLevel === "svip") {
+		return "此歌曲需要单曲、专辑购买或更高权限";
+	}
+	if (result.loggedIn && result.vipLevel === "vip") {
+		return "此歌曲需要 SVIP 或购买 · 当前仅播放试听片段";
+	}
+	if (result.loggedIn) return "此歌曲需 VIP · 当前仅播放试听片段";
+	return "当前未登录 · 仅播放试听片段";
+}
+
+function toJsonValue(value: unknown): JsonValue | null {
+	if (value == null) return null;
+	try {
+		return JSON.parse(JSON.stringify(value)) as JsonValue;
+	} catch {
+		return null;
+	}
+}
+
+function isPodcastTrack(track: Track | null | undefined): boolean {
+	const record = track as unknown as Record<string, unknown> | null | undefined;
+	return record?.type === "podcast" || record?.source === "podcast";
+}
+
+export function usePlaybackSessionRuntime({
+	appServices,
+	controllerRef,
+	localAudioUrlsRef,
+	currentTrack,
+	positionMs,
+	getPlaybackSnapshot,
+	setPlaying,
+	setPositionMs,
+	togglePlayFallback,
+	setSearchError,
+	showToast,
+	setHomeForcedOpen,
+	setHomeSuppressed,
+	setLyricsPayload,
+	setLyricsLoading,
+	setLyricsError,
+	resetLyrics,
+	beatMapKeyForMap,
+	initialLyricsPayload,
+	initialPlaybackQuality,
+	persistPlaybackQuality,
+	now = Date.now,
+	onRuntimePause,
+}: PlaybackSessionRuntimeOptions): PlaybackSessionRuntimeResult {
+	const [playbackQuality, setPlaybackQualityState] = useState(initialPlaybackQuality);
+	const [playbackQualityReloadSeq, setPlaybackQualityReloadSeq] = useState(0);
+	const [trackQualityOptions, setTrackQualityOptions] = useState<TrackQualityOption[]>([]);
+	const [trialBanner, setTrialBanner] = useState<TrialBannerState | null>(null);
+	const [currentBeatMapState, setCurrentBeatMapState] =
+		useState<CurrentBeatMapState | null>(null);
+	const coordinatorRef = useRef<PlaybackSessionCoordinator | null>(null);
+	if (!coordinatorRef.current) {
+		coordinatorRef.current = new PlaybackSessionCoordinator();
+	}
+	const coordinator = coordinatorRef.current;
+	const positionRef = useRef(positionMs);
+	positionRef.current = positionMs;
+	const originalLyricsPayloadRef = useRef<LyricPayload | null>(initialLyricsPayload);
+	const reloadCurrentTrackAndPlayRef = useRef<
+		(options: { preservePosition: boolean; reason: PlaybackReloadReason }) => Promise<boolean>
+	>(async () => false);
+
+	const loadBeatMap = useCallback((
+		services: AppServices,
+		track: Track,
+		rawUrl: string,
+		playbackToken: number,
+	) => {
+		if (!isPodcastTrack(track)) return;
+		void Promise.resolve().then(() => services.music.discover.podcastDjBeatmap(
+			rawUrl,
+			Math.max(
+				0,
+				Number(track.durationMs ?? getPlaybackSnapshot().durationMs ?? 0) / 1_000,
+			),
+			0,
+		)).then((beatmap) => {
+			if (!coordinator.isPlaybackCurrent(playbackToken)) return;
+			const map = toJsonValue(beatmap.map);
+			setCurrentBeatMapState(map ? {
+				key: beatMapKeyForMap(map, "dj"),
+				map,
+			} : null);
+		}).catch(() => {
+			if (coordinator.isPlaybackCurrent(playbackToken)) {
+				setCurrentBeatMapState(null);
+			}
+		});
+	}, [beatMapKeyForMap, coordinator, getPlaybackSnapshot]);
+
+	const reloadCurrentTrackAndPlay = useCallback(async ({
+		preservePosition,
+		reason,
+	}: {
+		preservePosition: boolean;
+		reason: PlaybackReloadReason;
+	}): Promise<boolean> => {
+		const controller = controllerRef.current;
+		const services = appServices;
+		const track = getPlaybackSnapshot().currentTrack;
+		if (!controller || !services || !track) return false;
+
+		const key = playbackKeyForTrack(track);
+		if (!key || localAudioUrlsRef.current.has(key)) return false;
+
+		const playbackToken = coordinator.beginReload();
+		const resumeAt = preservePosition
+			? Math.max(0, getPlaybackSnapshot().positionMs)
+			: 0;
+
+		try {
+			const { result, audioUrl } = await resolvePlayableAudio({
+				playback: services.music.playback,
+				mediaUrl: services.mediaUrl,
+				track,
+				quality: playbackQuality,
+			});
+			if (!coordinator.isPlaybackCurrent(playbackToken)) return false;
+			setTrialBanner(result.trial ? {
+				text: trialBannerText(result),
+				provider: track.provider,
+				showLogin: !result.loggedIn,
+			} : null);
+			controller.load(audioUrl);
+			coordinator.markLoaded({
+				trackKey: key,
+				quality: playbackQuality,
+				resolvedAtMs: now(),
+				audioUrl,
+				rawUrl: result.url,
+				local: false,
+				trial: result.trial === true,
+			});
+			coordinator.completeReload(reason);
+			loadBeatMap(services, track, result.url, playbackToken);
+			if (resumeAt > 0) {
+				setPositionMs(resumeAt);
+				controller.seek(resumeAt);
+			}
+			await controller.play();
+			if (!coordinator.isPlaybackCurrent(playbackToken)) return false;
+			setHomeForcedOpen(false);
+			setHomeSuppressed(true);
+			return true;
+		} catch (error) {
+			if (!coordinator.isPlaybackCurrent(playbackToken)) return false;
+			const message = error instanceof Error ? error.message : "playback error";
+			setTrialBanner(null);
+			setPlaying(false);
+			setSearchError(message);
+			showToast(message);
+			return false;
+		}
+	}, [
+		appServices,
+		controllerRef,
+		coordinator,
+		getPlaybackSnapshot,
+		loadBeatMap,
+		localAudioUrlsRef,
+		now,
+		playbackQuality,
+		setHomeForcedOpen,
+		setHomeSuppressed,
+		setPlaying,
+		setPositionMs,
+		setSearchError,
+		showToast,
+	]);
+	reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
+
+	const handleRuntimeErrorImpl = useCallback((payload: ErrorPayload) => {
+		const message = payload.message || "音频播放失败";
+		const track = getPlaybackSnapshot().currentTrack;
+		const key = playbackKeyForTrack(track);
+		if (coordinator.claimMediaErrorRecovery(key, !!appServices?.music.playback)) {
+			setTrialBanner(null);
+			void reloadCurrentTrackAndPlayRef.current({
+				preservePosition: true,
+				reason: "media-error",
+			});
+			return;
+		}
+		setTrialBanner(null);
+		setSearchError(message);
+		showToast(message);
+	}, [appServices, coordinator, getPlaybackSnapshot, setSearchError, showToast]);
+	const handleRuntimeErrorRef = useRef(handleRuntimeErrorImpl);
+	handleRuntimeErrorRef.current = handleRuntimeErrorImpl;
+	const handleRuntimeError = useCallback((payload: ErrorPayload) => {
+		handleRuntimeErrorRef.current(payload);
+	}, []);
+
+	const togglePlayback = useCallback(() => {
+		const snapshot = getPlaybackSnapshot();
+		if (!snapshot.currentTrack) {
+			showToast("先搜索或打开歌单选择一首歌");
+			return;
+		}
+		const controller = controllerRef.current;
+		if (!controller) {
+			togglePlayFallback();
+			return;
+		}
+		if (snapshot.isPlaying) {
+			controller.pause();
+			return;
+		}
+		const reason = coordinator.refreshReason(now());
+		if (reason) {
+			void reloadCurrentTrackAndPlayRef.current({
+				preservePosition: true,
+				reason,
+			});
+			return;
+		}
+		void controller.play();
+	}, [controllerRef, coordinator, getPlaybackSnapshot, now, showToast, togglePlayFallback]);
+
+	const handleRuntimePlay = useCallback(() => {
+		coordinator.markPlaying();
+		setPlaying(true);
+	}, [coordinator, setPlaying]);
+
+	const handleRuntimePause = useCallback(() => {
+		coordinator.markPaused(now());
+		onRuntimePause?.();
+		setPlaying(false);
+	}, [coordinator, now, onRuntimePause, setPlaying]);
+
+	const setPlaybackQuality = useCallback((quality: PlaybackQualityRequest) => {
+		setPlaybackQualityState(quality);
+		persistPlaybackQuality(quality);
+		const snapshot = getPlaybackSnapshot();
+		if (!snapshot.currentTrack) {
+			showToast("音质偏好已保存，下次播放生效");
+			return;
+		}
+		const resumeAt = controllerRef.current ? snapshot.positionMs : 0;
+		if (resumeAt > 0) controllerRef.current?.pause();
+		coordinator.invalidateCurrentTrackLoad();
+		setPositionMs(resumeAt);
+		setPlaybackQualityReloadSeq((sequence) => sequence + 1);
+		showToast("正在切换音质");
+	}, [
+		controllerRef,
+		coordinator,
+		getPlaybackSnapshot,
+		persistPlaybackQuality,
+		setPositionMs,
+		showToast,
+	]);
+
+	useEffect(() => {
+		const track = currentTrack;
+		const playback = appServices?.music.playback;
+		const key = playbackKeyForTrack(track);
+		if (!track || !playback || !key || localAudioUrlsRef.current.has(key)) {
+			setTrackQualityOptions([]);
+			return;
+		}
+		let cancelled = false;
+		void Promise.resolve().then(() => playback.trackQualities(track)).then((availability) => {
+			if (cancelled) return;
+			const qualities = availability.qualities;
+			setTrackQualityOptions(qualities);
+			const selectedAvailable = qualities.some(
+				(quality) => quality.requestQuality === playbackQuality,
+			);
+			const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
+			if (!selectedAvailable && fallbackQuality) setPlaybackQuality(fallbackQuality);
+		}).catch(() => {
+			if (!cancelled) setTrackQualityOptions([]);
+		});
+		return () => {
+			cancelled = true;
+		};
+	}, [
+		appServices,
+		currentTrack,
+		localAudioUrlsRef,
+		playbackQuality,
+		setPlaybackQuality,
+	]);
+
+	useEffect(() => {
+		const controller = controllerRef.current;
+		const services = appServices;
+		if (!controller) return;
+		if (!currentTrack) {
+			coordinator.clear();
+			setCurrentBeatMapState(null);
+			setTrialBanner(null);
+			controller.pause();
+			resetLyrics();
+			return;
+		}
+
+		const key = playbackKeyForTrack(currentTrack);
+		const localAudioUrl = localAudioUrlsRef.current.get(key);
+		if (!localAudioUrl && !services) return;
+		const session = coordinator.beginTrack(key);
+		if (!session) return;
+		setCurrentBeatMapState(null);
+		setTrialBanner(null);
+		const fallbackLyric = buildTrackLyricFallback(currentTrack);
+		originalLyricsPayloadRef.current = fallbackLyric;
+		const resolvedFallbackLyric = resolveLyricsForTrack({
+			track: currentTrack,
+			original: fallbackLyric,
+			durationMs: getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
+		});
+		setLyricsPayload(resolvedFallbackLyric.payload);
+
+		if (localAudioUrl) {
+			void (async () => {
+				try {
+					controller.load(localAudioUrl);
+					coordinator.markLoaded({
+						trackKey: key,
+						quality: playbackQuality,
+						resolvedAtMs: now(),
+						audioUrl: localAudioUrl,
+						rawUrl: localAudioUrl,
+						local: true,
+						trial: false,
+					});
+					if (positionRef.current > 0) controller.seek(positionRef.current);
+					await controller.play();
+					if (!coordinator.isPlaybackCurrent(session.playbackToken)) return;
+					setLyricsLoading(false);
+					setHomeForcedOpen(false);
+					setHomeSuppressed(true);
+				} catch (error) {
+					if (!coordinator.isPlaybackCurrent(session.playbackToken)) return;
+					const message = error instanceof Error ? error.message : "playback error";
+					setPlaying(false);
+					setSearchError(message);
+					showToast(message);
+				}
+			})();
+			return;
+		}
+
+		if (!services) return;
+		void (async () => {
+			try {
+				const { result, audioUrl } = await resolvePlayableAudio({
+					playback: services.music.playback,
+					mediaUrl: services.mediaUrl,
+					track: currentTrack,
+					quality: playbackQuality,
+				});
+				if (!coordinator.isPlaybackCurrent(session.playbackToken)) return;
+				setTrialBanner(result.trial ? {
+					text: trialBannerText(result),
+					provider: currentTrack.provider,
+					showLogin: !result.loggedIn,
+				} : null);
+				controller.load(audioUrl);
+				coordinator.markLoaded({
+					trackKey: key,
+					quality: playbackQuality,
+					resolvedAtMs: now(),
+					audioUrl,
+					rawUrl: result.url,
+					local: false,
+					trial: result.trial === true,
+				});
+				loadBeatMap(services, currentTrack, result.url, session.playbackToken);
+				if (positionRef.current > 0) controller.seek(positionRef.current);
+				await controller.play();
+				if (!coordinator.isPlaybackCurrent(session.playbackToken)) return;
+				setHomeForcedOpen(false);
+				setHomeSuppressed(true);
+			} catch (error) {
+				if (!coordinator.isPlaybackCurrent(session.playbackToken)) return;
+				const message = error instanceof Error ? error.message : "playback error";
+				setTrialBanner(null);
+				setPlaying(false);
+				setSearchError(message);
+				showToast(message);
+			}
+
+			try {
+				setLyricsLoading(true);
+				const lyric = ensureLyricFallbackPayload(
+					await services.music.lyrics.lyric(currentTrack),
+					currentTrack,
+				);
+				if (!coordinator.isLyricCurrent(session.lyricToken)) return;
+				originalLyricsPayloadRef.current = lyric;
+				const resolvedLyric = resolveLyricsForTrack({
+					track: currentTrack,
+					original: lyric,
+					durationMs: getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
+				});
+				setLyricsPayload(resolvedLyric.payload);
+			} catch (error) {
+				if (!coordinator.isLyricCurrent(session.lyricToken)) return;
+				const message = error instanceof Error ? error.message : "lyrics failed";
+				const fallback = buildTrackLyricFallback(currentTrack);
+				originalLyricsPayloadRef.current = fallback;
+				const resolvedLyric = resolveLyricsForTrack({
+					track: currentTrack,
+					original: fallback,
+					durationMs: getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
+				});
+				setLyricsPayload(resolvedLyric.payload);
+				setLyricsError(message);
+			}
+		})();
+	}, [
+		appServices,
+		controllerRef,
+		coordinator,
+		currentTrack,
+		getPlaybackSnapshot,
+		loadBeatMap,
+		localAudioUrlsRef,
+		now,
+		playbackQuality,
+		playbackQualityReloadSeq,
+		resetLyrics,
+		setHomeForcedOpen,
+		setHomeSuppressed,
+		setLyricsError,
+		setLyricsLoading,
+		setLyricsPayload,
+		setPlaying,
+		setSearchError,
+		showToast,
+	]);
+
+	return {
+		playbackQuality,
+		trackQualityOptions,
+		trialBanner,
+		currentBeatMapState,
+		originalLyricsPayloadRef,
+		clearCurrentBeatMap: () => setCurrentBeatMapState(null),
+		dismissTrialBanner: () => setTrialBanner(null),
+		setPlaybackQuality,
+		togglePlayback,
+		handleRuntimePlay,
+		handleRuntimePause,
+		handleRuntimeError,
+	};
+}
