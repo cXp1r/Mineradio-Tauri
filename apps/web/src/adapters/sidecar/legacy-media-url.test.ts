@@ -16,3 +16,14 @@ test("legacy media adapter returns byte-for-byte current SidecarClient URLs", ()
 	expect(media.imageUrl(image, { cacheBust: true, now: 1234 }))
 		.toBe(client.imageProxyUrl(image, true, 1234));
 });
+
+test("legacy media adapter preserves the App fallback when proxiedUrl is unavailable", () => {
+	const client = {
+		audioProxyUrl: (url: string) => `audio:${url}`,
+		imageProxyUrl: (url: string) => `image:${url}`,
+	};
+	const media = createLegacyMediaUrl(client);
+	const providerProxyPath = "/providers/soda/audio-proxy?id=track-1";
+
+	expect(media.playableUrl(providerProxyPath)).toBe(providerProxyPath);
+});

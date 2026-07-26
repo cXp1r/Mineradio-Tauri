@@ -90,6 +90,7 @@ import {
 } from "../tauri/runtime";
 import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
 import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
+import { resolvePlayableAudio } from "../features/playback/resolve-playable-audio";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
@@ -2777,9 +2778,9 @@ export function App({
   const reloadCurrentTrackAndPlay = useCallback(
     async ({ preservePosition, reason }: PlaybackReloadOptions): Promise<boolean> => {
       const controller = controllerRef.current;
-      const client = sidecarClient;
+      const services = appServices;
       const track = usePlaybackStore.getState().currentTrack;
-      if (!controller || !client || !track) return false;
+      if (!controller || !services || !track) return false;
 
       const key = playbackKeyForTrack(track);
       if (!key || localAudioUrlsRef.current.has(key)) return false;
@@ -2791,15 +2792,13 @@ export function App({
         : 0;
 
       try {
-        const result = await client.resolveSongUrl(track, playbackQuality);
+        const { result, audioUrl } = await resolvePlayableAudio({
+          playback: services.music.playback,
+          mediaUrl: services.mediaUrl,
+          track,
+          quality: playbackQuality,
+        });
         if (playbackRequestSeqRef.current !== seq) return false;
-        if (!result.url) {
-          throw new Error(result.message || "播放地址不可用");
-        }
-        const proxiedUrl = (client as { proxiedUrl?: (url: string) => string }).proxiedUrl;
-        const audioUrl = result.proxied
-          ? (proxiedUrl ? proxiedUrl.call(client, result.url) : result.url)
-          : client.audioProxyUrl(result.url);
         if (result.trial) {
           setTrialBanner({
             text: trialBannerText(result),
@@ -2820,20 +2819,21 @@ export function App({
           trial: result.trial === true,
         };
         if (reason !== "media-error") mediaErrorRecoveryTrackKeyRef.current = "";
-        const beatmapResolver = client.podcastDjBeatmap?.bind(client);
-        if (beatmapResolver && isPodcastTrack(track)) {
-          void beatmapResolver(
-            result.url,
-            Math.max(
+        if (isPodcastTrack(track)) {
+          void Promise.resolve().then(() => (
+            services.music.discover.podcastDjBeatmap(
+              result.url,
+              Math.max(
+                0,
+                Number(
+                  track.durationMs ??
+                    usePlaybackStore.getState().durationMs ??
+                    0,
+                ) / 1000,
+              ),
               0,
-              Number(
-                track.durationMs ??
-                  usePlaybackStore.getState().durationMs ??
-                  0,
-              ) / 1000,
-            ),
-            0,
-          ).then((beatmap) => {
+            )
+          )).then((beatmap) => {
             if (playbackRequestSeqRef.current !== seq) return;
             const map = toJsonValue(beatmap.map);
             setCurrentBeatMapState(map ? {
@@ -2867,11 +2867,11 @@ export function App({
     },
     [
       playbackQuality,
+      appServices,
       setPlaying,
       setPositionMs,
       setSearchError,
       showToast,
-      sidecarClient,
     ],
   );
   reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
@@ -2882,7 +2882,7 @@ export function App({
       const track = usePlaybackStore.getState().currentTrack;
       const key = playbackKeyForTrack(track);
       const loaded = loadedPlaybackUrlRef.current;
-      const canResolveSongUrl = typeof sidecarClient?.resolveSongUrl === "function";
+      const canResolveSongUrl = !!appServices?.music.playback;
       if (
         key &&
         loaded &&
@@ -2904,7 +2904,7 @@ export function App({
       setSearchError(message);
       showToast(message);
     },
-    [setSearchError, showToast, sidecarClient],
+    [appServices, setSearchError, showToast],
   );
   handlePlaybackErrorRef.current = handlePlaybackError;
 
@@ -3726,19 +3726,14 @@ export function App({
 
   useEffect(() => {
     const track = currentTrack;
-    const client = sidecarClient;
+    const playback = appServices?.music.playback;
     const key = playbackKeyForTrack(track);
-    if (!track || !client || !key || localAudioUrlsRef.current.has(key)) {
-      setTrackQualityOptions([]);
-      return;
-    }
-    const trackQualities = (client as { trackQualities?: SidecarClient["trackQualities"] }).trackQualities;
-    if (typeof trackQualities !== "function") {
+    if (!track || !playback || !key || localAudioUrlsRef.current.has(key)) {
       setTrackQualityOptions([]);
       return;
     }
     let cancelled = false;
-    void trackQualities.call(client, track).then((availability) => {
+    void Promise.resolve().then(() => playback.trackQualities(track)).then((availability) => {
       if (cancelled) return;
       const qualities = availability.qualities;
       setTrackQualityOptions(qualities);
@@ -3753,7 +3748,7 @@ export function App({
     return () => {
       cancelled = true;
     };
-  }, [currentTrack, playbackQuality, setPlaybackQuality, sidecarClient]);
+  }, [appServices, currentTrack, playbackQuality, setPlaybackQuality]);
 
   useEffect(() => {
     const track = currentTrack;
@@ -3778,7 +3773,7 @@ export function App({
 
   useEffect(() => {
     const controller = controllerRef.current;
-    const client = sidecarClient;
+    const services = appServices;
     if (!controller) return;
     if (!currentTrack) {
       lastLoadedKeyRef.current = "";
@@ -3795,7 +3790,7 @@ export function App({
     }
     const key = playbackKeyForTrack(currentTrack);
     const localAudioUrl = localAudioUrlsRef.current.get(key);
-    if (!localAudioUrl && !client) return;
+    if (!localAudioUrl && !services) return;
     if (key === lastLoadedKeyRef.current) return;
     lastLoadedKeyRef.current = key;
     mediaErrorRecoveryTrackKeyRef.current = "";
@@ -3845,22 +3840,17 @@ export function App({
       return;
     }
 
-    if (!client) return;
+    if (!services) return;
 
     void (async () => {
       try {
-        const result = await client.resolveSongUrl(
-          currentTrack,
-          playbackQuality,
-        );
+        const { result, audioUrl } = await resolvePlayableAudio({
+          playback: services.music.playback,
+          mediaUrl: services.mediaUrl,
+          track: currentTrack,
+          quality: playbackQuality,
+        });
         if (playbackRequestSeqRef.current !== playbackSeq) return;
-        if (!result.url) {
-          throw new Error(result.message || "播放地址不可用");
-        }
-        const proxiedUrl = (client as { proxiedUrl?: (url: string) => string }).proxiedUrl;
-        const audioUrl = result.proxied
-          ? (proxiedUrl ? proxiedUrl.call(client, result.url) : result.url)
-          : client.audioProxyUrl(result.url);
         if (result.trial) {
           setTrialBanner({
             text: trialBannerText(result),
@@ -3880,20 +3870,21 @@ export function App({
           local: false,
           trial: result.trial === true,
         };
-        const beatmapResolver = client.podcastDjBeatmap?.bind(client);
-        if (beatmapResolver && isPodcastTrack(currentTrack)) {
-          void beatmapResolver(
-            result.url,
-            Math.max(
+        if (isPodcastTrack(currentTrack)) {
+          void Promise.resolve().then(() => (
+            services.music.discover.podcastDjBeatmap(
+              result.url,
+              Math.max(
+                0,
+                Number(
+                  currentTrack.durationMs ??
+                    usePlaybackStore.getState().durationMs ??
+                    0,
+                ) / 1000,
+              ),
               0,
-              Number(
-                currentTrack.durationMs ??
-                  usePlaybackStore.getState().durationMs ??
-                  0,
-              ) / 1000,
-            ),
-            0,
-          ).then((beatmap) => {
+            )
+          )).then((beatmap) => {
             if (playbackRequestSeqRef.current !== playbackSeq) return;
             const map = toJsonValue(beatmap.map);
             setCurrentBeatMapState(map ? {
@@ -3921,7 +3912,10 @@ export function App({
       }
       try {
         setLyricsLoading(true);
-        const lyric = ensureLyricFallbackPayload(await client.lyric(currentTrack), currentTrack);
+        const lyric = ensureLyricFallbackPayload(
+          await services.music.lyrics.lyric(currentTrack),
+          currentTrack,
+        );
         if (lyricRequestSeqRef.current !== lyricSeq) return;
         originalLyricsPayloadRef.current = lyric;
         const resolvedLyric = resolveLyricsForTrack({
@@ -3950,7 +3944,7 @@ export function App({
     currentTrack,
     playbackQuality,
     playbackQualityReloadSeq,
-    sidecarClient,
+    appServices,
     setLyricsError,
     setLyricsLoading,
     setLyricsPayload,

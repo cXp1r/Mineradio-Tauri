@@ -75,7 +75,7 @@ git commit -m "refactor(web): add playable audio use case"
 - Modify: `apps/web/src/app/App.tsx`
 - Test: `apps/web/src/app/App.test.tsx`
 
-- [ ] **Step 1: Replace reload path dependencies**
+- [x] **Step 1: Replace reload path dependencies**
 
 `reloadCurrentTrackAndPlay` 使用：
 
@@ -87,7 +87,7 @@ appServices.music.discover
 
 并调用 `resolvePlayableAudio()`。`handlePlaybackError` 只检查 playback Port 是否存在，不读取 `sidecarClient.resolveSongUrl`。
 
-- [ ] **Step 2: Replace current-track effect dependencies**
+- [x] **Step 2: Replace current-track effect dependencies**
 
 - 音质查询：`appServices.music.playback.trackQualities()`；
 - 首次 URL：`resolvePlayableAudio()`；
@@ -96,7 +96,7 @@ appServices.music.discover
 
 保留所有 request sequence 和取消判断。
 
-- [ ] **Step 3: Run core playback characterization**
+- [x] **Step 3: Run core playback characterization**
 
 ```powershell
 bun test apps/web/src/features/playback apps/web/src/adapters/sidecar/legacy-media-url.test.ts apps/web/src/app/App.test.tsx
@@ -104,7 +104,7 @@ bun run --filter ./apps/web typecheck
 bun run web:build
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```powershell
 git add apps/web/src/app/App.tsx docs/superpowers/plans/2026-07-26-m1-playback-port-session-boundary.md
