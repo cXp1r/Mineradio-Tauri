@@ -82,11 +82,19 @@ import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
 import { useUpdaterController } from "../features/updater/useUpdaterController";
 import { useLikesController } from "../features/likes/useLikesController";
 export { isNeteaseLikeSupported } from "../features/likes/likes-policy";
-import { useLibraryController } from "../features/library/useLibraryController";
+import {
+  useLibraryController,
+  type LibraryControllerResult,
+} from "../features/library/useLibraryController";
 export {
   isCollectSupportedTrack,
   mergeProviderPlaylists,
 } from "../features/library/library-policy";
+import {
+  useHomeController,
+  type HomeControllerResult,
+} from "../features/home/useHomeController";
+export { shouldUseCachedHomeDiscoverPlaylist } from "../features/home/home-policy";
 import {
   buildDesktopLyricsPayloadPatch,
   desktopLyricsBeatMapContext,
@@ -113,7 +121,7 @@ import {
   type VisualGuideStep,
 } from "../components/shell/VisualGuideHost";
 import { UpdateHost } from "../components/shell/UpdateHost";
-import { EmptyHomeHost, type HomeListenRecord, type HomeListenSummary, type HomePlaylistDetailView } from "../home/EmptyHomeHost";
+import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
 import {
   AI_DEPTH_STATUS_EVENT,
@@ -132,19 +140,16 @@ import {
   type ShelfDetailContentListController,
 } from "../visual/shelf-detail-data";
 import {
-  type DiscoverHomeResponse,
   type PlaybackQualityRequest,
   type ProviderId,
   type ProviderLoginStatus,
   type ProviderVipIcon,
   type Track,
-  type WeatherRadioResponse,
 } from "@mineradio/shared";
 import type { FxState } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
-const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
 const USER_CAPSULE_AUTO_HIDE_STORE_KEY = "mineradio-user-capsule-auto-hide-v1";
 const PLAYLIST_PANEL_PIN_STORE_KEY = "mineradio-playlist-panel-pinned-v1";
 const DIY_MODE_STORE_KEY = "mineradio-diy-player-mode-v1";
@@ -173,13 +178,6 @@ function accountVipBadge(status: ProviderLoginStatus | null | undefined): Accoun
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
-}
-
-export function shouldUseCachedHomeDiscoverPlaylist(
-  discover: DiscoverHomeResponse | null | undefined,
-  hasProviderLogin: boolean,
-): boolean {
-  return !!discover?.loggedIn || (!hasProviderLogin && (discover?.playlists.length ?? 0) > 0);
 }
 
 function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
@@ -256,163 +254,12 @@ function cookiePlaceholderForProvider(provider: ProviderId): string {
   return "sid_tt=...; sessionid=...";
 }
 
-interface HomeListenHistoryRecord extends HomeListenRecord {
-  lastPlayedAt: number;
-  listenMs: number;
-  completed: number;
-}
-
-interface HomeListenSession {
-  key: string;
-  track: Track;
-  startedAt: number;
-  lastWallAt: number;
-  lastPositionMs: number;
-  listenMs: number;
-  maxProgress: number;
-}
-
 function trackTitle(track: Track | null | undefined): string {
   return track?.title || "MineRadio-Tauri";
 }
 
 function trackArtist(track: Track | null | undefined): string {
   return track?.artists?.join(" / ") || track?.album || "";
-}
-
-function trackLikeKey(track: Track | null | undefined): string {
-  const id = track?.sourceId || track?.id || "";
-  return track?.provider && id ? `${track.provider}:${id}` : "";
-}
-
-function updateHomeListenHistory(
-  history: HomeListenHistoryRecord[],
-  track: Track | null,
-  now: number,
-  listenMs = 0,
-  completed = false,
-): HomeListenHistoryRecord[] {
-  if (!track?.id || !track.title) return history;
-  const key = trackLikeKey(track) || `${track.provider}:${track.sourceId || track.title}`;
-  const existing = history.find((record) => {
-    const recordKey = trackLikeKey(record.track) || `${record.track.provider}:${record.track.sourceId || record.track.title}`;
-    return recordKey === key;
-  });
-  const nextRecord: HomeListenHistoryRecord = {
-    track,
-    plays: (existing?.plays ?? 0) + 1,
-    lastPlayedAt: now,
-    listenMs: (existing?.listenMs ?? 0) + Math.round(listenMs),
-    completed: (existing?.completed ?? 0) + (completed ? 1 : 0),
-  };
-  return [nextRecord, ...history.filter((record) => record !== existing)].slice(0, 24);
-}
-
-function readHomeListenHistory(): HomeListenHistoryRecord[] {
-  if (typeof localStorage === "undefined") return [];
-  try {
-    const parsed = JSON.parse(localStorage.getItem(HOME_LISTEN_STATS_STORE_KEY) || "{}") as { history?: unknown };
-    const rawHistory = Array.isArray(parsed.history) ? parsed.history : [];
-    return rawHistory.slice(0, 24).flatMap((item): HomeListenHistoryRecord[] => {
-      if (!item || typeof item !== "object") return [];
-      const record = item as Record<string, unknown>;
-      const track = record.track as Track | undefined;
-      if (!track?.id || !track.title) return [];
-      return [{
-        track,
-        plays: Math.max(1, Number(record.plays) || 1),
-        lastPlayedAt: Math.max(0, Number(record.lastPlayedAt) || 0),
-        listenMs: Math.max(0, Number(record.listenMs) || 0),
-        completed: Math.max(0, Number(record.completed) || 0),
-      }];
-    });
-  } catch {
-    return [];
-  }
-}
-
-function writeHomeListenHistory(history: HomeListenHistoryRecord[]): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(HOME_LISTEN_STATS_STORE_KEY, JSON.stringify({
-      history: history.slice(0, 24),
-      updatedAt: Date.now(),
-    }));
-  } catch {
-  }
-}
-
-function beginHomeListenSession(track: Track | null, now: number, positionMs = 0): HomeListenSession | null {
-  const key = trackLikeKey(track);
-  if (!track || !key) return null;
-  return {
-    key,
-    track,
-    startedAt: now,
-    lastWallAt: now,
-    lastPositionMs: positionMs,
-    listenMs: 0,
-    maxProgress: 0,
-  };
-}
-
-function updateHomeListenSession(
-  session: HomeListenSession | null,
-  positionMs: number,
-  durationMs: number | null,
-  now: number,
-  force = false,
-): HomeListenSession | null {
-  if (!session) return null;
-  const deltaByAudio = Math.max(0, positionMs - session.lastPositionMs);
-  const deltaByWall = Math.max(0, now - session.lastWallAt);
-  let delta = deltaByAudio > 0 ? Math.min(deltaByAudio, deltaByWall || deltaByAudio, 4200) : 0;
-  if (force && delta <= 0) delta = Math.min(deltaByWall, 1500);
-  return {
-    ...session,
-    listenMs: delta > 0 && delta < 8000 ? session.listenMs + delta : session.listenMs,
-    lastWallAt: now,
-    lastPositionMs: positionMs,
-    maxProgress: durationMs && durationMs > 0
-      ? Math.max(session.maxProgress, positionMs / durationMs)
-      : session.maxProgress,
-  };
-}
-
-function isEffectiveHomeListenSession(
-  session: HomeListenSession,
-  completed: boolean,
-  durationMs: number | null,
-): boolean {
-  return completed || session.listenMs >= 45000 || session.maxProgress >= 0.5 || (!durationMs && session.listenMs >= 30000);
-}
-
-function buildHomeListenSummary(history: HomeListenHistoryRecord[]): HomeListenSummary | null {
-  if (!history.length) return null;
-  const recent = [...history].sort((a, b) => b.lastPlayedAt - a.lastPlayedAt)[0] ?? null;
-  const topSong = [...history].sort((a, b) => b.plays - a.plays || b.lastPlayedAt - a.lastPlayedAt)[0] ?? null;
-  const artistCounts = new Map<string, { plays: number; coverUrl?: string; lastPlayedAt: number }>();
-  for (const record of history) {
-    for (const artist of record.track.artists ?? []) {
-      if (!artist) continue;
-      const current = artistCounts.get(artist) ?? { plays: 0, coverUrl: record.track.coverUrl, lastPlayedAt: 0 };
-      current.plays += record.plays;
-      if (!current.coverUrl) current.coverUrl = record.track.coverUrl;
-      current.lastPlayedAt = Math.max(current.lastPlayedAt, record.lastPlayedAt);
-      artistCounts.set(artist, current);
-    }
-  }
-  const topArtistEntry = [...artistCounts.entries()]
-    .sort((a, b) => b[1].plays - a[1].plays || b[1].lastPlayedAt - a[1].lastPlayedAt)[0];
-  const totalPlays = history.reduce((sum, record) => sum + record.plays, 0);
-  return {
-    recent,
-    topSong,
-    topArtist: topArtistEntry
-      ? { name: topArtistEntry[0], plays: topArtistEntry[1].plays, coverUrl: topArtistEntry[1].coverUrl }
-      : null,
-    totalPlays,
-  };
 }
 
 export function isHomeBlankDismissElement(target: EventTarget | null): boolean {
@@ -677,8 +524,6 @@ export function App({
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("full");
   const [loginProvider, setLoginProvider] = useState<LoginProviderId>("netease");
   const [qqManualCookieOpen, setQqManualCookieOpen] = useState(false);
-  const [homeForcedOpen, setHomeForcedOpen] = useState(false);
-  const [homeSuppressed, setHomeSuppressed] = useState(false);
   const [diyMode, setDiyMode] = useState(() =>
     readBooleanPreference(DIY_MODE_STORE_KEY, false),
   );
@@ -704,18 +549,6 @@ export function App({
     tone?: "good" | "fail";
   }>({ text: "" });
   const [customLyricVersion, setCustomLyricVersion] = useState(0);
-  const [homeDiscover, setHomeDiscover] =
-    useState<DiscoverHomeResponse | null>(null);
-  const [homeWeatherRadio, setHomeWeatherRadio] =
-    useState<WeatherRadioResponse | null>(null);
-  const [homePlaylistDetail, setHomePlaylistDetail] =
-    useState<HomePlaylistDetailView | null>(null);
-  const [homeDiscoverLoading, setHomeDiscoverLoading] = useState(false);
-  const [homeWeatherRadioLoading, setHomeWeatherRadioLoading] = useState(false);
-  const [homeListenHistory, setHomeListenHistory] = useState<
-    HomeListenHistoryRecord[]
-  >(readHomeListenHistory);
-
   const currentTrack = usePlaybackStore((s) => s.currentTrack);
   const queue = usePlaybackStore((s) => s.queue);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
@@ -802,6 +635,83 @@ export function App({
   const searchDetailOpen = useSearchStore((s) => s.detailOpen);
   const setSearchKeyword = useSearchStore((s) => s.setKeyword);
   const setSearchError = useSearchStore((s) => s.setError);
+  const libraryControllerRef = useRef<LibraryControllerResult | null>(null);
+  const accountLoggedInRef = useRef(false);
+  const homeControllerRef = useRef<HomeControllerResult | null>(null);
+  const homeController = useHomeController({
+    discover: appServices?.music.discover ?? null,
+    library: appServices?.music.library ?? null,
+    search: appServices?.music.search ?? null,
+    currentTrack,
+    positionMs,
+    durationMs,
+    providerLoggedIn: () => accountLoggedInRef.current,
+    libraryPanelPinned: playlistPanelPinned,
+    playback: {
+      setQueue,
+      playAt: (index) => usePlaybackStore.getState().playAt(index),
+    },
+    searchQuery: (query, mode = "song") => {
+      homeControllerRef.current?.setSuppressed(false);
+      setSearchModeRequest(mode);
+      setSearchKeyword(query);
+      const input = typeof document === "undefined" ? null : document.getElementById("search-input");
+      if (input instanceof HTMLElement && input.tagName === "INPUT") input.focus();
+    },
+    openLogin: () => setLoginModalOpen(true),
+    openLibrarySurface: () => {
+      const library = libraryControllerRef.current;
+      if (!library) return;
+      void library.refresh();
+      setConsole(false);
+      setMiniQueue(false);
+      closeShelf();
+      selectShelfPlaylist(null);
+      library.openPanelTab("playlists");
+      showToast("已打开歌单库");
+    },
+    enterPlaybackSurface: () => {
+      setConsole(true);
+      setMiniQueue(false);
+    },
+    closeLibraryPanel: () => libraryControllerRef.current?.setPanelOpen(false),
+    closeShelf,
+    selectShelfPlaylist,
+    setConsole,
+    setMiniQueue,
+    showToast,
+  });
+  homeControllerRef.current = homeController;
+  const {
+    discover: homeDiscover,
+    weatherRadio: homeWeatherRadio,
+    playlistDetail: homePlaylistDetail,
+    discoverLoading: homeDiscoverLoading,
+    weatherRadioLoading: homeWeatherRadioLoading,
+    forcedOpen: homeForcedOpen,
+    suppressed: homeSuppressed,
+    listenSummary: homeListenSummary,
+    setForcedOpen: setHomeForcedOpen,
+    setSuppressed: setHomeSuppressed,
+    refreshDiscover: refreshHomeDiscover,
+    refreshWeatherRadio: refreshHomeWeatherRadio,
+    recordListenPause: recordHomeListenPause,
+    recordListenProgress: recordHomeListenProgress,
+    finalizeListenSession: finalizeHomeListenSession,
+    playDaily: playHomeDaily,
+    playPrivate: playHomePrivate,
+    playDiscoverSongs: playHomeDiscoverSongs,
+    openPlaylist: openHomeDiscoverPlaylist,
+    closePlaylistDetail: closeHomePlaylistDetail,
+    playPlaylistDetail: playHomePlaylistDetail,
+    searchPlaylistDetailArtist: searchHomePlaylistDetailArtist,
+    openPodcast: openHomeDiscoverPodcast,
+    openPodcastSearch: openHomePodcastSearch,
+    playWeatherSong: playHomeWeatherSong,
+    openInsight: openHomeInsight,
+    playRecent: playHomeRecent,
+    enterPlaybackSurface,
+  } = homeController;
 
   // 首次渲染时同步创建 Audio，确保视觉引擎先绑定同一个媒体元素，
   // 随后再由 PlaybackRuntimeHost 接管 PlayerController 生命周期。
@@ -826,11 +736,6 @@ export function App({
     beatPulse: 0,
     bass: 0,
   });
-  const homeDiscoverRequestSeqRef = useRef(0);
-  const homeWeatherRadioRequestSeqRef = useRef(0);
-  const lastHomeListenKeyRef = useRef("");
-  const homeListenSessionRef = useRef<HomeListenSession | null>(null);
-
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
 
@@ -842,15 +747,6 @@ export function App({
       durationMs: state.durationMs,
       isPlaying: state.isPlaying,
     };
-  }, []);
-  const recordHomeListenPause = useCallback(() => {
-    homeListenSessionRef.current = updateHomeListenSession(
-      homeListenSessionRef.current,
-      usePlaybackStore.getState().positionMs,
-      usePlaybackStore.getState().durationMs,
-      Date.now(),
-      true,
-    );
   }, []);
   const {
     playbackQuality,
@@ -922,10 +818,6 @@ export function App({
   const currentLiked = isTrackLiked(currentTrack);
   const currentLikeBusy = isTrackLikeBusy(currentTrack);
   const currentHasCustomCover = hasCustomCoverForTrack(currentTrack);
-  const homeListenSummary = useMemo(
-    () => buildHomeListenSummary(homeListenHistory),
-    [homeListenHistory],
-  );
   void customLyricVersion;
 
   const revealConsole = useCallback(() => {
@@ -958,14 +850,6 @@ export function App({
     },
     [focusSearch, setSearchKeyword],
   );
-
-  const enterPlaybackSurface = useCallback(() => {
-    setHomePlaylistDetail(null);
-    setHomeForcedOpen(false);
-    setHomeSuppressed(true);
-    setConsole(true);
-    setMiniQueue(false);
-  }, [setConsole, setMiniQueue]);
 
   const {
     playlists: shelfPlaylists,
@@ -1006,6 +890,31 @@ export function App({
     setSearchError,
     showToast,
   });
+  libraryControllerRef.current = {
+    playlists: shelfPlaylists,
+    importedPlaylists,
+    podcastCollections: shelfPodcastCollections,
+    panelOpen: playlistPanelOpen,
+    panelTab: playlistPanelTab,
+    setPanelOpen: setPlaylistPanelOpen,
+    setPanelTab: setPlaylistPanelTab,
+    openPanelTab: openPlaylistPanelTab,
+    collectTarget,
+    collectBusyPlaylistId,
+    writableCollectPlaylists,
+    refresh: refreshShelfPlaylists,
+    refreshProvider: refreshProviderPlaylists,
+    openCollectPicker,
+    openCollectPickerForCurrent,
+    closeCollectPicker,
+    collectToPlaylist: addCollectTargetToPlaylist,
+    importSharedPlaylist: importSharedPlaylistFromText,
+    deleteImportedPlaylist,
+    loadPlaylistDetail: loadPlaylistPanelDetail,
+    playTracks: playPlaylistPanelTracks,
+    openPodcastCollection: openPlaylistPanelPodcastCollection,
+    playShelfPlaylist,
+  };
 
   const toggleDiyMode = useCallback(() => {
     setDiyMode((on) => {
@@ -1263,7 +1172,7 @@ export function App({
 
   const goHome = useCallback(() => {
     if (homeForcedOpen || emptyHomeActive) {
-      setHomePlaylistDetail(null);
+      closeHomePlaylistDetail();
       setHomeForcedOpen(false);
       setHomeSuppressed(true);
       setConsole(false);
@@ -1274,7 +1183,7 @@ export function App({
       showToast("已关闭 Home");
       return;
     }
-    setHomePlaylistDetail(null);
+    closeHomePlaylistDetail();
     setHomeSuppressed(false);
     setHomeForcedOpen(true);
     setConsole(false);
@@ -1286,6 +1195,7 @@ export function App({
     showToast("已回到 Home");
   }, [
     closeShelf,
+    closeHomePlaylistDetail,
     emptyHomeActive,
     focusSearch,
     homeForcedOpen,
@@ -1359,36 +1269,6 @@ export function App({
     [],
   );
 
-  const refreshHomeDiscover = useCallback(async () => {
-    const client = sidecarClient;
-    if (!client) {
-      setHomeDiscover(null);
-      setHomeDiscoverLoading(false);
-      return null;
-    }
-    const seq = ++homeDiscoverRequestSeqRef.current;
-    setHomeDiscoverLoading(true);
-    try {
-      const next = await client.discoverHome();
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(next);
-      return next;
-    } catch {
-      const fallback: DiscoverHomeResponse = {
-        loggedIn: false,
-        user: null,
-        dailySongs: [],
-        playlists: [],
-        podcasts: [],
-        mode: "starter",
-        updatedAt: Date.now(),
-      };
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscover(fallback);
-      return fallback;
-    } finally {
-      if (seq === homeDiscoverRequestSeqRef.current) setHomeDiscoverLoading(false);
-    }
-  }, [sidecarClient]);
-
   const syncProviderLoginLibrary = useCallback(
     async (provider: LoginProviderId) => {
       if (!appServices?.music.library) return;
@@ -1427,6 +1307,11 @@ export function App({
   const neteaseStatus = accountStatusByProvider.netease;
   const qqStatus = accountStatusByProvider.qq;
   const sodaStatus = accountStatusByProvider.soda;
+  accountLoggedInRef.current = !!(
+    neteaseStatus?.loggedIn ||
+    qqStatus?.loggedIn ||
+    sodaStatus?.loggedIn
+  );
 
   const {
     qrByProvider: loginQrByProvider,
@@ -1513,80 +1398,6 @@ export function App({
       document.removeEventListener("pointerdown", closeOnPointerDown, true);
   }, [accountDropdownOpen]);
 
-  const refreshHomeWeatherRadio = useCallback(async () => {
-    const client = sidecarClient;
-    const weatherRadio = client?.weatherRadio;
-    if (!client || typeof weatherRadio !== "function") {
-      setHomeWeatherRadio(null);
-      setHomeWeatherRadioLoading(false);
-      return null;
-    }
-    const seq = ++homeWeatherRadioRequestSeqRef.current;
-    setHomeWeatherRadioLoading(true);
-    try {
-      const next = await weatherRadio.call(client, {
-        city: "上海",
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || "auto",
-      });
-      if (seq === homeWeatherRadioRequestSeqRef.current) setHomeWeatherRadio(next);
-      return next;
-    } catch {
-      if (seq === homeWeatherRadioRequestSeqRef.current) setHomeWeatherRadio(null);
-      return null;
-    } finally {
-      if (seq === homeWeatherRadioRequestSeqRef.current) setHomeWeatherRadioLoading(false);
-    }
-  }, [sidecarClient]);
-
-  useEffect(() => {
-    if (!sidecarClient) {
-      setHomeDiscover(null);
-      setHomeWeatherRadio(null);
-      setHomeDiscoverLoading(false);
-      setHomeWeatherRadioLoading(false);
-      return;
-    }
-    void refreshHomeDiscover();
-    void refreshHomeWeatherRadio();
-  }, [
-    neteaseStatus?.loggedIn,
-    qqStatus?.loggedIn,
-    sodaStatus?.loggedIn,
-    refreshHomeDiscover,
-    refreshHomeWeatherRadio,
-    sidecarClient,
-  ]);
-
-  const finalizeHomeListenSession = useCallback((completed = false) => {
-    const session = updateHomeListenSession(
-      homeListenSessionRef.current,
-      usePlaybackStore.getState().positionMs,
-      usePlaybackStore.getState().durationMs,
-      Date.now(),
-      true,
-    );
-    homeListenSessionRef.current = null;
-    if (!session || !isEffectiveHomeListenSession(session, completed, usePlaybackStore.getState().durationMs)) return;
-    setHomeListenHistory((history) => {
-      const next = updateHomeListenHistory(history, session.track, Date.now(), session.listenMs, completed);
-      writeHomeListenHistory(next);
-      return next;
-    });
-  }, []);
-
-  useEffect(() => {
-    const key = trackLikeKey(currentTrack);
-    if (!currentTrack || !key) {
-      finalizeHomeListenSession(false);
-      lastHomeListenKeyRef.current = "";
-      return;
-    }
-    if (key === lastHomeListenKeyRef.current) return;
-    finalizeHomeListenSession(false);
-    lastHomeListenKeyRef.current = key;
-    homeListenSessionRef.current = beginHomeListenSession(currentTrack, Date.now(), positionMs);
-  }, [currentTrack, finalizeHomeListenSession, positionMs]);
-
   const openHomeProductGuide = useCallback(() => {
     setHomeSuppressed(false);
     setVisualGuideOpen(true);
@@ -1604,7 +1415,7 @@ export function App({
   }, [playlistPanelPinned, setPlaylistPanelPinned, showToast]);
 
   const openHomeLibrary = useCallback(() => {
-    setHomePlaylistDetail(null);
+    closeHomePlaylistDetail();
     if (homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) {
       void refreshShelfPlaylists();
       setHomeForcedOpen(false);
@@ -1632,264 +1443,6 @@ export function App({
     setMiniQueue,
     showToast,
   ]);
-
-  const homeHasLogin = useCallback(
-    () => !!(homeDiscover?.loggedIn || neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn),
-    [homeDiscover?.loggedIn, neteaseStatus?.loggedIn, qqStatus?.loggedIn, sodaStatus?.loggedIn],
-  );
-
-  const playHomeDiscoverSongs = useCallback(
-    async (index: number) => {
-      const discover = homeDiscover?.loggedIn ? homeDiscover : await refreshHomeDiscover();
-      if (!homeHasLogin() && !discover?.loggedIn) {
-        openLoginModal();
-        showToast("登录后同步你的今日歌曲");
-        return;
-      }
-      const songs = discover?.dailySongs ?? [];
-      const targetIndex = Math.max(0, Math.min(index, songs.length - 1));
-      if (!songs.length || !songs[targetIndex]) {
-        searchQuery(index > 0 ? "私人雷达" : "每日推荐", "song");
-        return;
-      }
-      usePlaybackStore.getState().setQueue(songs);
-      usePlaybackStore.getState().playAt(targetIndex);
-      enterPlaybackSurface();
-    },
-    [
-      enterPlaybackSurface,
-      homeDiscover,
-      homeHasLogin,
-      openLoginModal,
-      refreshHomeDiscover,
-      searchQuery,
-      showToast,
-    ],
-  );
-
-  const playHomeDaily = useCallback(() => {
-    void playHomeDiscoverSongs(0);
-  }, [playHomeDiscoverSongs]);
-
-  const openHomeDiscoverPlaylist = useCallback(
-    async (index: number) => {
-      const useCachedDiscover = shouldUseCachedHomeDiscoverPlaylist(homeDiscover, homeHasLogin());
-      const discover = useCachedDiscover ? homeDiscover : await refreshHomeDiscover();
-      const item = discover?.playlists[index];
-      if (!item) {
-        if (!homeHasLogin() && !discover?.loggedIn) searchQuery("", "song");
-        else openHomeLibrary();
-        return;
-      }
-      if (!sidecarClient) {
-        showToast("sidecar 未连接，稍后再试");
-        return;
-      }
-      const key = `${item.provider}:${item.id}`;
-      setHomePlaylistDetail({ key, playlist: item, tracks: [], loading: true });
-      setHomeSuppressed(false);
-      setHomeForcedOpen(true);
-      setConsole(false);
-      setMiniQueue(false);
-      if (!playlistPanelPinned) setPlaylistPanelOpen(false);
-      closeShelf();
-      selectShelfPlaylist(null);
-      try {
-        const detail = await sidecarClient.playlistDetail(item.provider, item.id);
-        setHomePlaylistDetail((current) =>
-          current?.key === key
-            ? { key, playlist: detail, tracks: detail.tracks, loading: false }
-            : current,
-        );
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "歌单载入失败";
-        setHomePlaylistDetail((current) =>
-          current?.key === key
-            ? { ...current, loading: false, error: message, tracks: [] }
-            : current,
-        );
-        showToast(message);
-      }
-    },
-    [
-      closeShelf,
-      homeDiscover,
-      homeHasLogin,
-      openHomeLibrary,
-      playlistPanelPinned,
-      refreshHomeDiscover,
-      searchQuery,
-      selectShelfPlaylist,
-      setConsole,
-      setMiniQueue,
-      showToast,
-      sidecarClient,
-    ],
-  );
-
-  const closeHomePlaylistDetail = useCallback(() => {
-    setHomePlaylistDetail(null);
-  }, []);
-
-  const playHomePlaylistDetail = useCallback(
-    (index: number) => {
-      const detail = homePlaylistDetail;
-      const tracks = detail?.tracks ?? [];
-      if (!detail || detail.loading) {
-        showToast("歌单仍在载入");
-        return;
-      }
-      if (!tracks.length) {
-        showToast("歌单暂时没有可播放歌曲");
-        return;
-      }
-      const safeIndex = Math.max(0, Math.min(index, tracks.length - 1));
-      usePlaybackStore.getState().setQueue(tracks);
-      usePlaybackStore.getState().playAt(safeIndex);
-      const title = detail.playlist.name || "歌单";
-      setHomePlaylistDetail(null);
-      enterPlaybackSurface();
-      showToast(title);
-    },
-    [enterPlaybackSurface, homePlaylistDetail, showToast],
-  );
-
-  const searchHomePlaylistDetailArtist = useCallback(
-    (artist: string) => {
-      const keyword = artist.trim();
-      if (!keyword) return;
-      setHomePlaylistDetail(null);
-      searchQuery(keyword, "song");
-    },
-    [searchQuery],
-  );
-
-  const playHomePrivate = useCallback(async () => {
-    const discover = homeDiscover?.loggedIn ? homeDiscover : await refreshHomeDiscover();
-    if (!homeHasLogin() && !discover?.loggedIn) {
-      openLoginModal();
-      showToast("登录后同步更多歌曲");
-      return;
-    }
-    if (discover?.dailySongs.length) {
-      await playHomeDiscoverSongs(0);
-      return;
-    }
-    if (discover?.playlists.length) {
-      await openHomeDiscoverPlaylist(0);
-      return;
-    }
-    openHomeLibrary();
-  }, [
-    homeDiscover,
-    homeHasLogin,
-    openHomeDiscoverPlaylist,
-    openHomeLibrary,
-    openLoginModal,
-    playHomeDiscoverSongs,
-    refreshHomeDiscover,
-    showToast,
-  ]);
-
-  const playPodcastRadio = useCallback(
-    async (id: string, title = "播客") => {
-      if (!id || !sidecarClient) {
-        searchQuery(title || "播客", "podcast");
-        return;
-      }
-      try {
-        const detail = await sidecarClient.podcastPrograms(id, 30, 0);
-        if (!detail.programs.length) {
-          searchQuery(title || "播客", "podcast");
-          return;
-        }
-        usePlaybackStore.getState().setQueue(detail.programs);
-        usePlaybackStore.getState().playAt(0);
-        enterPlaybackSurface();
-        showToast(title || "播客");
-      } catch (e) {
-        const message = e instanceof Error ? e.message : "播客载入失败";
-        showToast(message);
-      }
-    },
-    [enterPlaybackSurface, searchQuery, showToast, sidecarClient],
-  );
-
-  const openHomeDiscoverPodcast = useCallback(
-    async (index: number) => {
-      const discover = homeDiscover?.loggedIn ? homeDiscover : await refreshHomeDiscover();
-      const item = discover?.podcasts[index];
-      if (!item) {
-        searchQuery("", "podcast");
-        return;
-      }
-      await playPodcastRadio(item.id, item.name || "播客");
-    },
-    [
-      homeDiscover,
-      playPodcastRadio,
-      refreshHomeDiscover,
-      searchQuery,
-    ],
-  );
-
-  const playHomeWeatherSong = useCallback(
-    async (index: number) => {
-      let radio = homeWeatherRadio;
-      if (!radio?.radio.songs.length) {
-        showToast("正在生成天气电台");
-        radio = await refreshHomeWeatherRadio();
-      }
-      const songs = radio?.radio.songs ?? [];
-      if (!songs.length) {
-        const seed = radio?.radio.seedQueries[0] || "雨天 R&B";
-        showToast("天气队列暂时为空，先打开搜索");
-        searchQuery(seed, "song");
-        return;
-      }
-      const targetIndex = Math.max(0, Math.min(index, songs.length - 1));
-      usePlaybackStore.getState().setQueue(songs);
-      usePlaybackStore.getState().playAt(targetIndex);
-      enterPlaybackSurface();
-      showToast(`${radio?.radio.title || "天气电台"} · ${songs.length} 首`);
-    },
-    [
-      enterPlaybackSurface,
-      homeWeatherRadio,
-      refreshHomeWeatherRadio,
-      searchQuery,
-      showToast,
-    ],
-  );
-
-  const openHomePodcastSearch = useCallback(() => {
-    searchQuery("", "podcast");
-  }, [searchQuery]);
-
-  const openHomeInsight = useCallback(() => {
-    const artist = homeListenSummary?.topArtist?.name;
-    if (artist) {
-      searchQuery(artist);
-      return;
-    }
-    const song = homeListenSummary?.topSong?.track.title;
-    if (song) {
-      searchQuery(song);
-      return;
-    }
-    showToast("播放几首歌后会生成听歌画像");
-  }, [homeListenSummary, searchQuery, showToast]);
-
-  const playHomeRecent = useCallback(() => {
-    const track = homeListenSummary?.recent?.track;
-    if (track) {
-      usePlaybackStore.getState().setQueue([track]);
-      usePlaybackStore.getState().playAt(0);
-      enterPlaybackSurface();
-      return;
-    }
-    showToast("还没有听歌记录");
-  }, [enterPlaybackSurface, homeListenSummary, showToast]);
 
   const toggleLikeCurrent = useCallback(async () => {
     await toggleLikeTrack(usePlaybackStore.getState().currentTrack);
@@ -2407,17 +1960,12 @@ export function App({
         lastRuntimeDurationRef.current = payload.durationMs;
         setDurationMs(payload.durationMs);
       }
-      homeListenSessionRef.current = updateHomeListenSession(
-        homeListenSessionRef.current,
-        payload.positionMs,
-        payload.durationMs,
-        Date.now(),
-      );
+      recordHomeListenProgress(payload.positionMs, payload.durationMs);
       setLyricsIndex(
         selectCurrentIndex(payload.positionMs, lyricsPayloadRef.current),
       );
     },
-    [setDurationMs, setLyricsIndex, setPositionMs],
+    [recordHomeListenProgress, setDurationMs, setLyricsIndex, setPositionMs],
   );
 
   const handleRuntimeDurationChange = useCallback(

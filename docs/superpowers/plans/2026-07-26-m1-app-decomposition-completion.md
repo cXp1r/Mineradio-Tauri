@@ -152,15 +152,15 @@ App 删除 `refreshShelfPlaylists`、`refreshProviderPlaylists`、collect、play
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/home-controller-boundary.test.ts`
 
-- [ ] **Step 1: Test stale Home requests and listen-session finalization**
+- [x] **Step 1: Test stale Home requests and listen-session finalization**
 
 使用 deferred discover/weather responses 断言旧结果不覆盖新请求；ended/pause 只提交有效 listen session。
 
-- [ ] **Step 2: Implement controller**
+- [x] **Step 2: Implement controller**
 
 Controller 持有 discover/weather/loading、forced/suppressed、playlist detail、listen history/session 和 Home actions。依赖 `DiscoverPort`、Library read model、`PlaybackActions`、Preferences adapter。
 
-- [ ] **Step 3: Integrate, verify and commit**
+- [x] **Step 3: Integrate, verify and commit**
 
 App 删除 Home network effects、listen refs、Home action callbacks 和 direct storage usage。运行 Home/App tests、boundary、typecheck/build，提交 `refactor(web): extract home controller`。
 
