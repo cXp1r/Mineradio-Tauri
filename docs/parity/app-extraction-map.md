@@ -109,3 +109,13 @@
 3. 每次只移动一个 runtime/effect 所有权；
 4. 不创建全能 `useAppController`；
 5. `App.tsx` 行数不是单独门禁，依赖方向和 characterization tests 才是门禁。
+
+## M0/M1 已验证提取
+
+| boundary | result | evidence | commit |
+| --- | --- | --- | --- |
+| Search concrete client dependency | `SearchShell` 仅依赖 `SearchExperiencePort`；其余搜索业务仍保留现状 | `bun test apps/web/src/components/shell/SearchShell.test.ts apps/web/src/components/shell/SearchShell.actions.test.tsx apps/web/src/app/App.test.tsx` | `c5804c9` |
+| Application service assembly | `AppServices` 与 `AppRuntimeProvider` 已建立；未迁移领域仍由 legacy adapters 委托 | `bun test apps/web/src/app/AppRuntimeProvider.test.tsx apps/web/src/app/App.test.tsx` | `5105427` |
+| Sidecar bootstrap and recovery | 配置加载、健康重试、能力同步、账户恢复、状态轮询和 timer cleanup 已由 `SidecarRecoveryRuntime` 持有 | `bun test apps/web/src/app/runtime apps/web/src/components/shell/SidecarRecoveryNotice.test.tsx apps/web/src/app/App.test.tsx` | `512c97c` |
+
+播放事务、二维码登录、Home、资料库、桌面运行时和 updater 的 effect 所有权仍在 `App.tsx`，不计入本批完成范围。

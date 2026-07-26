@@ -525,11 +525,11 @@ git commit -m "refactor(web): extract sidecar recovery runtime"
 - Modify: `docs/parity/app-extraction-map.md`
 - Modify: `docs/parity/capability-matrix.md`
 
-- [ ] **Step 1: Mark only verified migrations as completed**
+- [x] **Step 1: Mark only verified migrations as completed**
 
 Update the search and sidecar bootstrap rows with exact test commands and commit SHAs. Do not mark playback, accounts, home, library, desktop or updater complete.
 
-- [ ] **Step 2: Run the full repository verification**
+- [x] **Step 2: Run the full repository verification**
 
 ```powershell
 bun run typecheck
@@ -544,7 +544,7 @@ git diff --check
 
 Expected: every command exits 0; Bun reports zero failed tests and Cargo reports zero failed tests.
 
-- [ ] **Step 3: Audit the API freeze**
+- [x] **Step 3: Audit the API freeze**
 
 Run:
 
@@ -555,7 +555,7 @@ git diff HEAD~7..HEAD -- sidecars/api apps/desktop/src-tauri/src/sidecar.rs apps
 
 Expected: the second diff is empty. If the actual commit count differs, use the M0 baseline commit as the left revision.
 
-- [ ] **Step 4: Commit parity evidence**
+- [x] **Step 4: Commit parity evidence**
 
 ```powershell
 git add docs/parity
