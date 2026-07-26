@@ -28,6 +28,7 @@ function playingState(): PlaybackMachineState {
 	return reducePlaybackState(loading, {
 		type: "MEDIA_PLAYING",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 }
 
@@ -70,6 +71,7 @@ test("a resolved source advances through loading to playing", () => {
 	const playing = reducePlaybackState(loading, {
 		type: "MEDIA_PLAYING",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 
 	expect(loading.phase).toBe("loading");
@@ -95,6 +97,7 @@ test("a recoverable media failure consumes one recovery before exhaustion fails"
 	const recovering = reducePlaybackState(playingState(), {
 		type: "MEDIA_FAILED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 		recoverable: true,
 		reason: "network",
 	});
@@ -144,6 +147,7 @@ test("STOP returns to idle and invalidates the stopped session", () => {
 	const staleResult = reducePlaybackState(stopped, {
 		type: "MEDIA_ENDED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 
 	expect(stopped).toEqual({
@@ -171,8 +175,21 @@ test("BEGIN_RELOAD keeps the session and consumed recovery budget", () => {
 	const recovering = reducePlaybackState(playingState(), {
 		type: "MEDIA_FAILED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 		recoverable: true,
 		reason: "network",
+	});
+	const sameLoad = reducePlaybackState(recovering, {
+		type: "BEGIN_RELOAD",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		reason: "media-error",
+	});
+	const olderLoad = reducePlaybackState(recovering, {
+		type: "BEGIN_RELOAD",
+		playbackSessionId: 1,
+		loadRequestId: 0,
+		reason: "media-error",
 	});
 	const mediaReload = reducePlaybackState(recovering, {
 		type: "BEGIN_RELOAD",
@@ -187,6 +204,8 @@ test("BEGIN_RELOAD keeps the session and consumed recovery budget", () => {
 		reason: "url-age",
 	});
 
+	expect(sameLoad).toBe(recovering);
+	expect(olderLoad).toBe(recovering);
 	expect(mediaReload.phase).toBe("recovering");
 	expect(mediaReload.playbackSessionId).toBe(1);
 	expect(mediaReload.loadRequestId).toBe(2);
@@ -201,12 +220,14 @@ test("a non-recoverable or already recovered media failure records its reason", 
 	const failedImmediately = reducePlaybackState(playingState(), {
 		type: "MEDIA_FAILED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 		recoverable: false,
 		reason: "unsupported-codec",
 	});
 	const recovering = reducePlaybackState(playingState(), {
 		type: "MEDIA_FAILED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 		recoverable: true,
 		reason: "network",
 	});
@@ -224,6 +245,7 @@ test("a non-recoverable or already recovered media failure records its reason", 
 	const failedAfterRecovery = reducePlaybackState(loading, {
 		type: "MEDIA_FAILED",
 		playbackSessionId: 1,
+		loadRequestId: 2,
 		recoverable: true,
 		reason: "network-again",
 	});
@@ -252,7 +274,55 @@ test("current playback can end", () => {
 	const ended = reducePlaybackState(playingState(), {
 		type: "MEDIA_ENDED",
 		playbackSessionId: 1,
+		loadRequestId: 1,
 	});
 
 	expect(ended.phase).toBe("ended");
+});
+
+test("media events from an old load are ignored within the current session", () => {
+	const recovering = reducePlaybackState(playingState(), {
+		type: "MEDIA_FAILED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		recoverable: true,
+		reason: "network",
+	});
+	const reloading = reducePlaybackState(recovering, {
+		type: "BEGIN_RELOAD",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+		reason: "media-error",
+	});
+	const loading = reducePlaybackState(reloading, {
+		type: "SOURCE_READY",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+	});
+	const stalePlaying = reducePlaybackState(loading, {
+		type: "MEDIA_PLAYING",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+	const staleFailed = reducePlaybackState(loading, {
+		type: "MEDIA_FAILED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		recoverable: false,
+		reason: "old-media-error",
+	});
+	const playing = reducePlaybackState(loading, {
+		type: "MEDIA_PLAYING",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+	});
+	const staleEnded = reducePlaybackState(playing, {
+		type: "MEDIA_ENDED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+
+	expect(stalePlaying).toBe(loading);
+	expect(staleFailed).toBe(loading);
+	expect(staleEnded).toBe(playing);
 });

@@ -47,13 +47,22 @@ export type PlaybackMachineEvent =
 			playbackSessionId: number;
 			loadRequestId: number;
 	  }
-	| { type: "MEDIA_PLAYING"; playbackSessionId: number }
+	| {
+			type: "MEDIA_PLAYING";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
 	| { type: "PAUSE"; playbackSessionId: number }
 	| { type: "RESUME"; playbackSessionId: number }
-	| { type: "MEDIA_ENDED"; playbackSessionId: number }
+	| {
+			type: "MEDIA_ENDED";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
 	| {
 			type: "MEDIA_FAILED";
 			playbackSessionId: number;
+			loadRequestId: number;
 			recoverable: boolean;
 			reason: string;
 	  }
@@ -119,6 +128,7 @@ export function reducePlaybackState(
 		case "BEGIN_RELOAD":
 			if (
 				!isCurrentSession(state, event.playbackSessionId) ||
+				event.loadRequestId <= state.loadRequestId ||
 				state.phase === "idle" ||
 				state.phase === "ended"
 			) {
@@ -146,7 +156,11 @@ export function reducePlaybackState(
 
 		case "MEDIA_PLAYING":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				state.phase !== "loading"
 			) {
 				return state;
@@ -173,7 +187,11 @@ export function reducePlaybackState(
 
 		case "MEDIA_ENDED":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				(state.phase !== "playing" && state.phase !== "paused")
 			) {
 				return state;
@@ -182,7 +200,11 @@ export function reducePlaybackState(
 
 		case "MEDIA_FAILED":
 			if (
-				!isCurrentSession(state, event.playbackSessionId) ||
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
 				(state.phase !== "loading" &&
 					state.phase !== "playing" &&
 					state.phase !== "paused")
