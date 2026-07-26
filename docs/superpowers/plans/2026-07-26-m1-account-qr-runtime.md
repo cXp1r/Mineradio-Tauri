@@ -82,7 +82,7 @@ git commit -m "refactor(web): add login QR coordinator"
 - Create: `apps/web/src/features/accounts/useLoginQrRuntime.ts`
 - Create: `apps/web/src/features/accounts/useLoginQrRuntime.test.tsx`
 
-- [ ] **Step 1: Write a failing QR generation tracer test**
+- [x] **Step 1: Write a failing QR generation tracer test**
 
 渲染最小 harness，通过 fake `AccountPort` 打开网易云登录 modal，断言依次调用 `createLoginQrKey()`、`createLoginQrImage()`，并发布：
 
@@ -93,7 +93,7 @@ git commit -m "refactor(web): add login QR coordinator"
 }
 ```
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/accounts/useLoginQrRuntime.test.tsx
@@ -101,7 +101,7 @@ bun test apps/web/src/features/accounts/useLoginQrRuntime.test.tsx
 
 Expected: FAIL because the runtime hook does not exist.
 
-- [ ] **Step 3: Implement the injected runtime minimally**
+- [x] **Step 3: Implement the injected runtime minimally**
 
 公开接口：
 
@@ -116,7 +116,7 @@ export interface LoginQrRuntimeResult {
 
 依赖：`AccountPort | null`、modal open/mode/provider、`onProviderStatus`、`syncProviderLibrary`、`refreshLibraryAfterLoggedOut`、`providerLabel`、`showToast`，以及测试可注入的 interval scheduler。不得导入 `SidecarClient`。
 
-- [ ] **Step 4: Add core runtime tests one behavior at a time**
+- [x] **Step 4: Add core runtime tests one behavior at a time**
 
 逐个 RED→GREEN：
 
@@ -127,7 +127,7 @@ export interface LoginQrRuntimeResult {
 5. modal 关闭或 unmount 清除 interval；
 6. expired/scanned/check failure 保持现有文案。
 
-- [ ] **Step 5: Run focused verification and commit**
+- [x] **Step 5: Run focused verification and commit**
 
 ```powershell
 bun test apps/web/src/features/accounts
