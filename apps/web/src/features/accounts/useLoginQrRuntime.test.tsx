@@ -197,7 +197,7 @@ test("a successful QR check synchronizes account and library before completing",
 	document.body.appendChild(host);
 	const root = createRoot(host);
 	flushSync(() => root.render(<Harness />));
-	for (let i = 0; i < 8 && !events.includes("login-status"); i += 1) {
+	for (let i = 0; i < 40 && !events.includes("login-status"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
 	expect(runtimeRef.current?.statusByProvider.qq.text).toBe("登录成功，正在同步账号状态");

@@ -27,7 +27,7 @@
 - Create: `apps/web/src/features/accounts/useAccountSessionController.ts`
 - Create: `apps/web/src/features/accounts/useAccountSessionController.test.tsx`
 
-- [ ] **Step 1: Write the failing Cookie import tracer test**
+- [x] **Step 1: Write the failing Cookie import tracer test**
 
 最小 React harness 注入 fake `AccountPort`，调用：
 
@@ -45,14 +45,15 @@ await controller.importProviderCookie("qq", "uin=1", {
 	"set-session",
 	"stored",
 	"login-status",
-	"provider-status",
 	"sync-provider",
 	"toast:QQ 音乐已登录: 10001",
 	"finished",
 ]
 ```
 
-- [ ] **Step 2: Verify RED**
+并在 promise 完成后的下一次 React commit 断言 `statusByProvider.qq` 已更新为登录状态。
+
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/accounts/useAccountSessionController.test.tsx
@@ -60,7 +61,7 @@ bun test apps/web/src/features/accounts/useAccountSessionController.test.tsx
 
 Expected: FAIL because the controller module does not exist.
 
-- [ ] **Step 3: Implement the controller public interface**
+- [x] **Step 3: Implement the controller public interface**
 
 ```ts
 export interface AccountSessionControllerResult {
@@ -79,9 +80,9 @@ export interface AccountSessionControllerResult {
 }
 ```
 
-依赖为 `AccountPort | null`、`syncProviderLibrary`、`refreshLibrary`、`providerLabel` 和 `showToast`。使用 callback ref 保持 action identity，不把 view callback identity 变成 effect 或 action 重建条件。
+依赖为 `AccountPort | null`、`syncProviderPlaylists`、`refreshHome`、`refreshLibrary`、`providerLabel` 和 `showToast`。status refresh 只调用 `syncProviderPlaylists`；Cookie 登录成功依次调用 `syncProviderPlaylists` 与 `refreshHome`，保持当前行为差异。使用 callback ref 保持 action identity，不把 view callback identity 变成 action 重建条件。
 
-- [ ] **Step 4: Add the logout core test**
+- [x] **Step 4: Add the logout core test**
 
 逐个 RED→GREEN 断言：
 
@@ -91,7 +92,7 @@ await controller.logoutProvider("soda");
 
 按顺序调用 `accounts.logout`、发布 logged-out status、刷新完整资料库并显示 `汽水音乐会话已清除`；logout reject 时保留旧状态并显示原错误。
 
-- [ ] **Step 5: Run focused verification and commit**
+- [x] **Step 5: Run focused verification and commit**
 
 ```powershell
 bun test apps/web/src/features/accounts
