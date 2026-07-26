@@ -1,6 +1,5 @@
 import {
   useCallback,
-  useEffect,
   useMemo,
   useRef,
   useState,
@@ -26,17 +25,10 @@ import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useProviderStore } from "../stores/provider-store";
 import { useSearchStore } from "../stores/search-store";
-import {
-  loadShelfSettingsFromStorage,
-  saveShelfSettingsToStorage,
-  useShelfStore,
-  type ShelfCameraMode,
-  type ShelfMode,
-  type ShelfPresence,
-} from "../stores/shelf-store";
+import { useShelfStore } from "../stores/shelf-store";
 import { useUiStore } from "../stores/ui-store";
 import { useUpdateStore } from "../stores/update-store";
-import { saveVisualFxToStorage, useVisualStore } from "../stores/visual-store";
+import { useVisualStore } from "../stores/visual-store";
 import type { JsonValue, RuntimeConfig, WindowState } from "../tauri/runtime";
 import { createTauriDesktopRuntime } from "../adapters/tauri/tauri-desktop-runtime";
 import type { DesktopRuntimePort } from "../ports/desktop-runtime-port";
@@ -95,18 +87,12 @@ import {
 } from "../components/shell/SidecarRecoveryNotice";
 import { TopRightControls, VipBadge } from "../components/shell/TopRightControls";
 import {
-  VISUAL_GUIDE_SEEN_STORE_KEY,
   VisualGuideHost,
   type VisualGuideStep,
 } from "../components/shell/VisualGuideHost";
 import { UpdateHost } from "../components/shell/UpdateHost";
 import { EmptyHomeHost } from "../home/EmptyHomeHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
-import {
-  AI_DEPTH_STATUS_EVENT,
-  type AiDepthStatusDetail,
-} from "../visual/ai-depth-estimator";
-import { applyVisualThemeToRoot } from "../visual/visual-theme";
 import { VisualControlPanelHost } from "../visual/VisualControlPanelHost";
 import {
   VisualEngineHost,
@@ -119,19 +105,20 @@ import {
   type ShelfDetailContentListController,
 } from "../visual/shelf-detail-data";
 import {
-  type PlaybackQualityRequest,
   type ProviderId,
   type ProviderLoginStatus,
   type ProviderVipIcon,
   type Track,
 } from "@mineradio/shared";
-import type { FxState } from "@mineradio/visual-engine";
+import {
+  readPlaybackQualityPreference,
+  savePlaybackQualityPreference,
+  useShellPreferences,
+} from "./runtime/useShellPreferences";
+import { useGlobalShellRuntime } from "./runtime/GlobalShellRuntime";
+export { isHomeBlankDismissElement } from "./runtime/GlobalShellRuntime";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
-const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
-const USER_CAPSULE_AUTO_HIDE_STORE_KEY = "mineradio-user-capsule-auto-hide-v1";
-const PLAYLIST_PANEL_PIN_STORE_KEY = "mineradio-playlist-panel-pinned-v1";
-const DIY_MODE_STORE_KEY = "mineradio-diy-player-mode-v1";
 type AccountVipBadge = {
   text: string;
   icon?: ProviderVipIcon;
@@ -157,43 +144,6 @@ function accountVipBadge(status: ProviderLoginStatus | null | undefined): Accoun
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
-}
-
-function normalizePlaybackQualityPreference(value: string): PlaybackQualityRequest {
-  const text = value.trim();
-  if (!text) return "hires";
-  if (text.toLowerCase() === "hi-res") return "hires";
-  return text;
-}
-
-function readPlaybackQualityPreference(): PlaybackQualityRequest {
-  if (typeof localStorage === "undefined") return "hires";
-  const raw = localStorage.getItem(PLAYBACK_QUALITY_STORE_KEY);
-  return raw ? normalizePlaybackQualityPreference(raw) : "hires";
-}
-
-function savePlaybackQualityPreference(quality: PlaybackQualityRequest): void {
-  if (typeof localStorage === "undefined") return;
-  localStorage.setItem(PLAYBACK_QUALITY_STORE_KEY, quality);
-}
-
-function readBooleanPreference(key: string, fallback = false): boolean {
-  if (typeof localStorage === "undefined") return fallback;
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === null) return fallback;
-    return raw === "1";
-  } catch {
-    return fallback;
-  }
-}
-
-function saveBooleanPreference(key: string, value: boolean): void {
-  if (typeof localStorage === "undefined") return;
-  try {
-    localStorage.setItem(key, value ? "1" : "0");
-  } catch {
-  }
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -239,51 +189,6 @@ function trackTitle(track: Track | null | undefined): string {
 
 function trackArtist(track: Track | null | undefined): string {
   return track?.artists?.join(" / ") || track?.album || "";
-}
-
-export function isHomeBlankDismissElement(target: EventTarget | null): boolean {
-  if (!(target instanceof Element)) return false;
-  const home = target.closest("#empty-home");
-  if (!home) return false;
-  return !target.closest(
-    [
-      ".home-card",
-      ".home-tile",
-      ".home-chip",
-      "button",
-      "a",
-      "input",
-      "textarea",
-      "select",
-      '[contenteditable="true"]',
-      "#desktop-titlebar",
-      "#search-area",
-      "#top-right",
-      "#bottom-bar",
-      "#bottom-handle",
-      "#fx-fab",
-      "#fx-fab-hide-btn",
-      "#fx-panel",
-      "#playlist-panel",
-      "#mini-queue-popover",
-      "#visual-guide",
-      "#upload-tip",
-      "#toast",
-      "#trial-banner",
-      "#source-fallback-notice",
-      "#ai-depth-chip",
-      "#beat-chip",
-      "#drop-overlay",
-      ".modal-mask",
-      ".modal",
-      "#login-modal",
-      ".track-detail-modal",
-      ".cover-color-pop",
-      ".color-lab-pop",
-      ".quality-popover",
-      ".volume-popover",
-    ].join(","),
-  );
 }
 
 export interface EmptyHomeStateInput {
@@ -503,19 +408,9 @@ export function App({
   const [loginModalMode, setLoginModalMode] = useState<LoginModalMode>("full");
   const [loginProvider, setLoginProvider] = useState<LoginProviderId>("netease");
   const [qqManualCookieOpen, setQqManualCookieOpen] = useState(false);
-  const [diyMode, setDiyMode] = useState(() =>
-    readBooleanPreference(DIY_MODE_STORE_KEY, false),
-  );
-  const [playlistPanelPinned, setPlaylistPanelPinnedState] = useState(() =>
-    readBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, false),
-  );
   const [shelfDetailOpen, setShelfDetailOpen] = useState(false);
   const [sidecarRecoveryState, setSidecarRecoveryState] =
     useState<SidecarRecoveryNoticeState | null>(null);
-  const [userCapsuleAutoHide, setUserCapsuleAutoHide] = useState(() =>
-    readBooleanPreference(USER_CAPSULE_AUTO_HIDE_STORE_KEY, false),
-  );
-  const [userCapsulePeek, setUserCapsulePeek] = useState(false);
   const [visualGuideOpen, setVisualGuideOpen] = useState(false);
   const visualGuidePlaylistRestoreRef = useRef<{
     open: boolean;
@@ -529,28 +424,9 @@ export function App({
   const volume = usePlaybackStore((s) => s.volume);
   const muted = usePlaybackStore((s) => s.muted);
   const setMatrix = useProviderStore((s) => s.setMatrix);
-  const shelfMode = useShelfStore((s) => s.mode);
-  const shelfCameraMode = useShelfStore((s) => s.cameraMode);
-  const shelfPresence = useShelfStore((s) => s.presence);
-  const shelfShowPodcasts = useShelfStore((s) => s.showPodcasts);
-  const shelfMergeCollections = useShelfStore((s) => s.mergeCollections);
   const shelfOpen = useShelfStore((s) => s.open);
-  const setShelfMode = useShelfStore((s) => s.setMode);
-  const setShelfCameraMode = useShelfStore((s) => s.setCameraMode);
-  const setShelfPresence = useShelfStore((s) => s.setPresence);
-  const setShelfShowPodcasts = useShelfStore((s) => s.setShowPodcasts);
-  const setShelfMergeCollections = useShelfStore((s) => s.setMergeCollections);
-  const applyShelfSettings = useShelfStore((s) => s.applySettings);
   const closeShelf = useShelfStore((s) => s.closeShelf);
   const selectShelfPlaylist = useShelfStore((s) => s.selectPlaylist);
-  const visualFx = useVisualStore((s) => s.fx);
-  const visualPreset = useVisualStore((s) => s.preset);
-  const visualIntensity = useVisualStore((s) => s.intensity);
-  const setVisualPreset = useVisualStore((s) => s.setPreset);
-  const setVisualNumberSetting = useVisualStore((s) => s.setNumberSetting);
-  const setVisualBooleanSetting = useVisualStore((s) => s.setBooleanSetting);
-  const setVisualStringSetting = useVisualStore((s) => s.setStringSetting);
-  const setVisualFxPatch = useVisualStore((s) => s.setFxPatch);
   const consoleVisible = useUiStore((s) => s.consoleVisible);
   const setConsole = useUiStore((s) => s.setConsole);
   const miniQueueOpen = useUiStore((s) => s.miniQueueOpen);
@@ -559,6 +435,46 @@ export function App({
   const toast = useUiStore((s) => s.toast);
   const showToast = useUiStore((s) => s.showToast);
   const clearToast = useUiStore((s) => s.clearToast);
+  const setDesktopLyricsWindowEnabledRef = useRef<
+    (enabled: boolean) => Promise<void> | void
+  >(() => {});
+  const handleDesktopLyricsPreferenceChange = useCallback(
+    (enabled: boolean) => {
+      void setDesktopLyricsWindowEnabledRef.current(enabled);
+    },
+    [],
+  );
+  const {
+    diyMode,
+    playlistPanelPinned,
+    userCapsuleAutoHide,
+    shelfMode,
+    shelfCameraMode,
+    shelfPresence,
+    shelfShowPodcasts,
+    shelfMergeCollections,
+    visualFx,
+    visualPreset,
+    visualIntensity,
+    setDiyMode,
+    setPlaylistPanelPinned: persistPlaylistPanelPinned,
+    setUserCapsuleAutoHide,
+    markVisualGuideSeen,
+    setShelfModeTransient,
+    updateShelfMode,
+    updateShelfCameraMode,
+    updateShelfPresence,
+    updateShelfShowPodcasts,
+    updateShelfMergeCollections,
+    updateVisualPreset,
+    updateVisualFxPatch,
+    updateVisualNumberSetting,
+    updateVisualBooleanSetting,
+    updateVisualStringSetting,
+  } = useShellPreferences({
+    showToast,
+    onDesktopLyricsChange: handleDesktopLyricsPreferenceChange,
+  });
   const {
     modalOpen: updateModalOpen,
     setModalOpen: setUpdateModalOpen,
@@ -574,10 +490,6 @@ export function App({
     currentTrack,
     showToast,
     openProviderLogin: () => setLoginModalOpen(true),
-  });
-  const [aiDepthChip, setAiDepthChip] = useState({
-    visible: false,
-    text: "AI 深度估计…",
   });
   const updateState = useUpdateStore();
 
@@ -946,17 +858,20 @@ export function App({
   };
 
   const toggleDiyMode = useCallback(() => {
-    setDiyMode((on) => {
-      const next = !on;
-      saveBooleanPreference(DIY_MODE_STORE_KEY, next);
-      if (!next) {
-        setPlaylistPanelOpen(false);
-        setMiniQueue(false);
-      }
-      showToast(next ? "DIY 玩家模式已开启" : "已切回简约模式");
-      return next;
-    });
-  }, [setMiniQueue, setPlaylistPanelOpen, showToast]);
+    const next = !diyMode;
+    setDiyMode(next);
+    if (!next) {
+      setPlaylistPanelOpen(false);
+      setMiniQueue(false);
+    }
+    showToast(next ? "DIY 玩家模式已开启" : "已切回简约模式");
+  }, [
+    diyMode,
+    setDiyMode,
+    setMiniQueue,
+    setPlaylistPanelOpen,
+    showToast,
+  ]);
 
   const showUnavailable = useCallback(
     (message: string) => {
@@ -984,17 +899,15 @@ export function App({
 
   const toggleUserCapsuleAutoHide = useCallback(() => {
     const next = !userCapsuleAutoHide;
-    saveBooleanPreference(USER_CAPSULE_AUTO_HIDE_STORE_KEY, next);
     setUserCapsuleAutoHide(next);
-    if (!next) setUserCapsulePeek(false);
     showToast(next ? "账号胶囊已自动隐藏" : "账号胶囊已固定显示");
-  }, [showToast, userCapsuleAutoHide]);
+  }, [setUserCapsuleAutoHide, showToast, userCapsuleAutoHide]);
 
   const closeVisualGuide = useCallback((markSeen: boolean) => {
-    if (markSeen) saveBooleanPreference(VISUAL_GUIDE_SEEN_STORE_KEY, true);
+    if (markSeen) markVisualGuideSeen();
     restoreVisualGuidePlaylistPanel();
     setVisualGuideOpen(false);
-  }, [restoreVisualGuidePlaylistPanel]);
+  }, [markVisualGuideSeen, restoreVisualGuidePlaylistPanel]);
 
   const prepareVisualGuideStep = useCallback(
     (step: VisualGuideStep) => {
@@ -1021,7 +934,7 @@ export function App({
         if (button && "click" in button && !panel?.classList.contains("show")) button.click();
       }
       if (step.target === "shelf") {
-        setShelfMode("side");
+        setShelfModeTransient("side");
         useShelfStore.getState().openShelf();
       }
     },
@@ -1032,7 +945,7 @@ export function App({
       playlistPanelTab,
       restoreVisualGuidePlaylistPanel,
       revealConsole,
-      setShelfMode,
+      setShelfModeTransient,
     ],
   );
 
@@ -1212,36 +1125,15 @@ export function App({
     openLoginModal();
   }, [neteaseStatus?.loggedIn, openLoginModal, qqStatus?.loggedIn, sodaStatus?.loggedIn]);
 
-  useEffect(() => {
-    if (neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn) return;
-    setAccountDropdownOpen(false);
-  }, [neteaseStatus?.loggedIn, qqStatus?.loggedIn, sodaStatus?.loggedIn]);
-
-  useEffect(() => {
-    if (!accountDropdownOpen) return;
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      const dropdown = document.getElementById("account-dropdown");
-      const topRight = document.getElementById("top-right");
-      if (dropdown?.contains(target) || topRight?.contains(target)) return;
-      setAccountDropdownOpen(false);
-    };
-    document.addEventListener("pointerdown", closeOnPointerDown, true);
-    return () =>
-      document.removeEventListener("pointerdown", closeOnPointerDown, true);
-  }, [accountDropdownOpen]);
-
   const openHomeProductGuide = useCallback(() => {
     setHomeSuppressed(false);
     setVisualGuideOpen(true);
   }, []);
 
   const setPlaylistPanelPinned = useCallback((pinned: boolean) => {
-    setPlaylistPanelPinnedState(pinned);
-    saveBooleanPreference(PLAYLIST_PANEL_PIN_STORE_KEY, pinned);
+    persistPlaylistPanelPinned(pinned);
     if (pinned) setPlaylistPanelOpen(true);
-  }, []);
+  }, [persistPlaylistPanelPinned, setPlaylistPanelOpen]);
 
   const togglePlaylistPanelPinned = useCallback(() => {
     setPlaylistPanelPinned(!playlistPanelPinned);
@@ -1365,163 +1257,6 @@ export function App({
     [searchQuery],
   );
 
-  const updateShelfMode = useCallback(
-    (mode: ShelfMode) => {
-      setShelfMode(mode);
-      saveShelfSettingsToStorage();
-    },
-    [setShelfMode],
-  );
-
-  const updateShelfCameraMode = useCallback(
-    (mode: ShelfCameraMode) => {
-      setShelfCameraMode(mode);
-      saveShelfSettingsToStorage();
-      showToast(
-        mode === "static" ? "3D歌单架: 静态镜头" : "3D歌单架: 动态镜头",
-      );
-    },
-    [setShelfCameraMode, showToast],
-  );
-
-  const updateShelfPresence = useCallback(
-    (presence: ShelfPresence) => {
-      setShelfPresence(presence);
-      saveShelfSettingsToStorage();
-      showToast(
-        presence === "always" ? "3D歌单架: 常驻" : "3D歌单架: 自动隐藏",
-      );
-    },
-    [setShelfPresence, showToast],
-  );
-
-  const updateShelfShowPodcasts = useCallback(
-    (show: boolean) => {
-      setShelfShowPodcasts(show);
-      saveShelfSettingsToStorage();
-      showToast(show ? "3D歌单架已显示播客歌单" : "3D歌单架已隐藏播客歌单");
-    },
-    [setShelfShowPodcasts, showToast],
-  );
-
-  const updateShelfMergeCollections = useCallback(
-    (merge: boolean) => {
-      setShelfMergeCollections(merge);
-      saveShelfSettingsToStorage();
-      showToast(
-        merge ? "我的歌单与收藏歌单已合并滚动" : "收藏歌单恢复滚到底切页",
-      );
-    },
-    [setShelfMergeCollections, showToast],
-  );
-
-  const setDesktopLyricsWindowEnabledRef = useRef<
-    (enabled: boolean) => Promise<void> | void
-  >(() => {});
-
-  const updateVisualPreset = useCallback(
-    (preset: number) => {
-      setVisualPreset(preset);
-      saveVisualFxToStorage();
-    },
-    [setVisualPreset],
-  );
-
-  const updateVisualFxPatch = useCallback(
-    (patch: Partial<FxState>) => {
-      setVisualFxPatch(patch);
-      saveVisualFxToStorage();
-    },
-    [setVisualFxPatch],
-  );
-
-  const updateVisualNumberSetting = useCallback(
-    (key: keyof typeof visualFx, value: number) => {
-      if (key === "backgroundOpacity") {
-        setVisualFxPatch({
-          backgroundOpacity: value,
-          backgroundColorMode: "custom",
-          backgroundColorCustom: true,
-        });
-        saveVisualFxToStorage();
-        return;
-      }
-      setVisualNumberSetting(key, value);
-      saveVisualFxToStorage();
-    },
-    [setVisualFxPatch, setVisualNumberSetting],
-  );
-
-  const updateVisualBooleanSetting = useCallback(
-    (key: keyof typeof visualFx, value: boolean) => {
-      setVisualBooleanSetting(key, value);
-      if (key === "shelfShowPodcasts") setShelfShowPodcasts(value);
-      if (key === "shelfMergeCollections") setShelfMergeCollections(value);
-      saveVisualFxToStorage();
-      if (key === "shelfShowPodcasts" || key === "shelfMergeCollections")
-        saveShelfSettingsToStorage();
-      if (key === "desktopLyrics") {
-        void setDesktopLyricsWindowEnabledRef.current(value);
-      }
-      if (key === "aiDepth") {
-        showToast(
-          value
-            ? "已开启后台 AI 立体增强"
-            : "已关闭 AI 立体增强, 使用轻量弧面",
-        );
-      }
-    },
-    [
-      setShelfMergeCollections,
-      setShelfShowPodcasts,
-      setVisualBooleanSetting,
-      showToast,
-    ],
-  );
-
-  useEffect(() => {
-    const handleAiDepthStatus = (event: Event) => {
-      const detail = (event as CustomEvent<AiDepthStatusDetail>).detail;
-      if (!detail) return;
-      if (detail.toast) showToast(detail.toast);
-      setAiDepthChip((current) => ({
-        visible: detail.visible,
-        text: detail.text || current.text || "AI 深度估计…",
-      }));
-    };
-    window.addEventListener(AI_DEPTH_STATUS_EVENT, handleAiDepthStatus);
-    return () =>
-      window.removeEventListener(AI_DEPTH_STATUS_EVENT, handleAiDepthStatus);
-  }, [showToast]);
-
-  const updateVisualStringSetting = useCallback(
-    (key: keyof typeof visualFx, value: string) => {
-      setVisualStringSetting(key, value);
-      if (key === "shelf") setShelfMode(value as ShelfMode);
-      if (key === "shelfCameraMode")
-        setShelfCameraMode(value as ShelfCameraMode);
-      if (key === "shelfPresence") setShelfPresence(value as ShelfPresence);
-      saveVisualFxToStorage();
-      if (
-        key === "shelf" ||
-        key === "shelfCameraMode" ||
-        key === "shelfPresence"
-      )
-        saveShelfSettingsToStorage();
-    },
-    [
-      setShelfCameraMode,
-      setShelfMode,
-      setShelfPresence,
-      setVisualStringSetting,
-    ],
-  );
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    applyVisualThemeToRoot(document.documentElement, visualFx);
-  }, [visualFx]);
-
   const currentDesktopLyricSnapshot = useCallback(() => {
     const payload = useLyricsStore.getState().payload;
     const playback = usePlaybackStore.getState();
@@ -1617,120 +1352,35 @@ export function App({
     onWindowCleanup: clearDesktopWindowShell,
   });
   setDesktopLyricsWindowEnabledRef.current = setDesktopLyricsWindowEnabled;
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.classList.toggle("diy-mode-preload", diyMode);
-    document.documentElement.classList.toggle("simple-mode-preload", !diyMode);
-    document.body.classList.toggle("diy-mode", diyMode);
-    document.body.classList.toggle("simple-mode", !diyMode);
-    return () => {
-      document.documentElement.classList.remove("diy-mode-preload", "simple-mode-preload");
-      document.body.classList.remove("diy-mode", "simple-mode");
-    };
-  }, [diyMode]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.body.classList.toggle("splash-active", splashActive);
-    document.body.classList.toggle("empty-home-active", emptyHomeActive);
-    document.body.classList.toggle("controls-visible", consoleVisible);
-    document.body.classList.toggle("home-wallpaper-preview", emptyHomeActive);
-    document.body.classList.toggle("home-controls-locked", homeControlsLocked);
-    document.body.classList.toggle("user-capsule-auto-hide", userCapsuleAutoHide);
-    document.body.classList.toggle("user-capsule-peek", userCapsuleAutoHide && userCapsulePeek);
-    document.body.classList.toggle("visual-guide-active", visualGuideOpen);
-    document.body.classList.toggle("search-detail-open", searchDetailOpen);
-    return () => {
-      document.body.classList.remove(
-        "splash-active",
-        "empty-home-active",
-        "controls-visible",
-        "home-wallpaper-preview",
-        "home-controls-locked",
-        "user-capsule-auto-hide",
-        "user-capsule-peek",
-        "visual-guide-active",
-        "search-detail-open",
-      );
-    };
-  }, [
-    consoleVisible,
-    emptyHomeActive,
-    homeControlsLocked,
-    searchDetailOpen,
+  const dismissEmptyHome = useCallback(() => {
+    setHomeForcedOpen(false);
+    setHomeSuppressed(true);
+    setConsole(false);
+    setMiniQueue(false);
+  }, [setConsole, setHomeForcedOpen, setHomeSuppressed, setMiniQueue]);
+  const { userCapsulePeek, aiDepthChip } = useGlobalShellRuntime({
+    diyMode,
     splashActive,
+    emptyHomeActive,
+    consoleVisible,
+    homeControlsLocked,
     userCapsuleAutoHide,
-    userCapsulePeek,
     visualGuideOpen,
-  ]);
-
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    if (!userCapsuleAutoHide) {
-      setUserCapsulePeek(false);
-      return;
-    }
-    const updateFromPointer = (event: MouseEvent) => {
-      setUserCapsulePeek(event.clientX > window.innerWidth - 112 && event.clientY < 126);
-    };
-    const clearPeek = () => setUserCapsulePeek(false);
-    window.addEventListener("mousemove", updateFromPointer);
-    window.addEventListener("mouseleave", clearPeek);
-    return () => {
-      window.removeEventListener("mousemove", updateFromPointer);
-      window.removeEventListener("mouseleave", clearPeek);
-    };
-  }, [userCapsuleAutoHide]);
-
-  useEffect(() => {
-    const settings = loadShelfSettingsFromStorage();
-    if (settings) applyShelfSettings(settings);
-  }, [applyShelfSettings]);
-
-  useEffect(() => {
-    if (typeof document === "undefined") return;
-    const stageMode = shelfMode === "stage";
-    document
-      .getElementById("search-area")
-      ?.classList.toggle("stage-mode", stageMode);
-    document
-      .getElementById("bottom-bar")
-      ?.classList.toggle("stage-mode", stageMode);
-  }, [shelfMode]);
-
-  useEffect(() => {
-    if (!emptyHomeActive || typeof document === "undefined") return;
-    const onBlankClick = (event: MouseEvent) => {
-      if (!isHomeBlankDismissElement(event.target)) return;
-      event.preventDefault();
-      event.stopPropagation();
-      setHomeForcedOpen(false);
-      setHomeSuppressed(true);
-      setConsole(false);
-      setMiniQueue(false);
-    };
-    document.addEventListener("click", onBlankClick, true);
-    return () => document.removeEventListener("click", onBlankClick, true);
-  }, [emptyHomeActive, setConsole, setMiniQueue]);
-
-  useEffect(() => {
-    if (!toast) return;
-    const timer = setTimeout(() => clearToast(), 2600);
-    return () => clearTimeout(timer);
-  }, [clearToast, toast]);
-
-  useEffect(() => {
-    if (!miniQueueOpen || typeof document === "undefined") return;
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (target instanceof Element && target.closest("#bottom-bar")) return;
-      setMiniQueue(false);
-    };
-    document.addEventListener("pointerdown", closeOnPointerDown);
-    return () =>
-      document.removeEventListener("pointerdown", closeOnPointerDown);
-  }, [miniQueueOpen, setMiniQueue]);
+    searchDetailOpen,
+    shelfMode,
+    visualFx,
+    toast,
+    miniQueueOpen,
+    accountDropdownOpen,
+    accountLoggedIn: Boolean(
+      neteaseStatus?.loggedIn || qqStatus?.loggedIn || sodaStatus?.loggedIn,
+    ),
+    clearToast,
+    setMiniQueue,
+    setAccountDropdownOpen,
+    dismissEmptyHome,
+    showToast,
+  });
 
   const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
     netease: neteaseStatus,
