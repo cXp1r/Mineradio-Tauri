@@ -21,33 +21,7 @@ import {
   SidecarRecoveryRuntime,
   type SidecarRuntimeConnection,
 } from "./runtime/SidecarRecoveryRuntime";
-import {
-  LOCAL_AUDIO_ACCEPT,
-  createLocalAudioTrack,
-  firstLocalAudioFile,
-  firstLocalCoverFile,
-  readLocalFileAsDataUrl,
-} from "../audio/local-audio-import";
-import {
-  PlayerController,
-  type TimeUpdatePayload,
-} from "../audio/player-controller";
-import {
-  clearCustomCoverForTrack,
-  customCoverKeyForTrack,
-  hasCustomCoverForTrack,
-  saveCustomCoverForTrack,
-  withStoredCustomCover,
-} from "../cover/custom-cover";
-import {
-  deleteCustomLyricForTrack,
-  getCustomLyricPreferenceForTrack,
-  getCustomLyricTextForTrack,
-  resolveLyricsForTrack,
-  saveCustomLyricForTrack,
-  setCustomLyricPreferenceForTrack,
-} from "../lyrics/custom-lyrics";
-import { selectCurrentIndex } from "../lyrics/select-current-index";
+import { PlayerController } from "../audio/player-controller";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
 import { useProviderStore } from "../stores/provider-store";
@@ -71,6 +45,11 @@ import {
   usePlaybackSessionRuntime,
   type CurrentBeatMapState,
 } from "../features/playback/usePlaybackSessionRuntime";
+import {
+  LOCAL_AUDIO_ACCEPT,
+  usePlaybackUiController,
+} from "../features/playback/usePlaybackUiController";
+import { useTrackCustomizationController } from "../features/customization/useTrackCustomizationController";
 import {
   LOGIN_QR_PROVIDERS,
   useLoginQrRuntime,
@@ -542,13 +521,6 @@ export function App({
     open: boolean;
     tab: PlaylistPanelTab;
   } | null>(null);
-  const [customLyricModalOpen, setCustomLyricModalOpen] = useState(false);
-  const [customLyricText, setCustomLyricText] = useState("");
-  const [customLyricStatus, setCustomLyricStatus] = useState<{
-    text: string;
-    tone?: "good" | "fail";
-  }>({ text: "" });
-  const [customLyricVersion, setCustomLyricVersion] = useState(0);
   const currentTrack = usePlaybackStore((s) => s.currentTrack);
   const queue = usePlaybackStore((s) => s.queue);
   const isPlaying = usePlaybackStore((s) => s.isPlaying);
@@ -719,13 +691,9 @@ export function App({
     typeof Audio !== "undefined" && audioElementSupported() ? new Audio() : null,
   );
   const controllerRef = useRef<PlayerController | null>(null);
-  const lastRuntimeDurationRef = useRef<number | null>(null);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const localAudioUrlsRef = useRef(new Map<string, string>());
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
-  const customLyricInputRef = useRef<HTMLTextAreaElement | null>(null);
   const shelfContentListRef = useRef<ShelfDetailContentListController | null>(
     null,
   );
@@ -738,6 +706,46 @@ export function App({
   });
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
+  const clearCurrentBeatMapRef = useRef<() => void>(() => undefined);
+  const applyCustomCoverImageRef = useRef<
+    (file: Blob, track?: Track) => Promise<void>
+  >(async () => undefined);
+  const {
+    fileInputRef,
+    localAudioUrlsRef,
+    openLocalFileImport,
+    importLocalFiles,
+    playMiniQueueIndex,
+    insertMiniQueueNext,
+    cyclePlaylistPanelMode,
+    shufflePlaylistPanelQueue,
+    clearPlaylistPanelQueue,
+    seekPlayback,
+    handleRuntimeTimeUpdate,
+    handleRuntimeDurationChange,
+    handleRuntimeEnded,
+  } = usePlaybackUiController({
+    controllerRef,
+    lyricsPayloadRef,
+    playbackMode,
+    setPositionMs,
+    setDurationMs,
+    setLyricsIndex,
+    setMiniQueue,
+    insertQueueNext,
+    setPlaybackMode,
+    setQueue,
+    clearQueue,
+    recordListenProgress: recordHomeListenProgress,
+    finalizeListenSession: finalizeHomeListenSession,
+    enterPlaybackSurface,
+    setHomeForcedOpen,
+    setHomeSuppressed,
+    clearCurrentBeatMap: () => clearCurrentBeatMapRef.current(),
+    applyCustomCoverImage: (file, track) =>
+      applyCustomCoverImageRef.current(file, track),
+    showToast,
+  });
 
   const getPlaybackSessionSnapshot = useCallback(() => {
     const state = usePlaybackStore.getState();
@@ -785,6 +793,31 @@ export function App({
     persistPlaybackQuality: savePlaybackQualityPreference,
     onRuntimePause: recordHomeListenPause,
   });
+  clearCurrentBeatMapRef.current = clearCurrentBeatMap;
+  const {
+    customLyricModalOpen,
+    setCustomLyricModalOpen,
+    customLyricText,
+    setCustomLyricText,
+    customLyricStatus,
+    customLyricInputRef,
+    currentLyricPreference,
+    currentCustomLyricText,
+    currentHasCustomCover,
+    applyCustomCoverImage,
+    clearCustomCoverImage,
+    applyOriginalLyrics,
+    openCustomLyricModal,
+    chooseCustomLyrics,
+    saveCustomLyric,
+    deleteCustomLyric,
+  } = useTrackCustomizationController({
+    currentTrack,
+    originalLyricsPayloadRef,
+    setLyricsPayload,
+    showToast,
+  });
+  applyCustomCoverImageRef.current = applyCustomCoverImage;
 
   const emptyHomeCoreAllowed = shouldShowEmptyHome({
     splashActive: false,
@@ -813,12 +846,8 @@ export function App({
     homeForcedOpen &&
     !consoleVisible &&
     emptyHomeCoreAllowed;
-  const currentLyricPreference = getCustomLyricPreferenceForTrack(currentTrack);
-  const currentCustomLyricText = getCustomLyricTextForTrack(currentTrack);
   const currentLiked = isTrackLiked(currentTrack);
   const currentLikeBusy = isTrackLikeBusy(currentTrack);
-  const currentHasCustomCover = hasCustomCoverForTrack(currentTrack);
-  void customLyricVersion;
 
   const revealConsole = useCallback(() => {
     setHomeForcedOpen(false);
@@ -1007,169 +1036,6 @@ export function App({
     ],
   );
 
-  const patchCustomCoverTrack = useCallback((target: Track, nextTrack: Track) => {
-    const key = customCoverKeyForTrack(target);
-    if (!key) return;
-    const runtime = nextTrack as Track & {
-      customCover?: string;
-      defaultCoverUrl?: string;
-    };
-    const merge = (track: Track): Track => {
-      if (customCoverKeyForTrack(track) !== key) return track;
-      const patched = {
-        ...track,
-        coverUrl: nextTrack.coverUrl,
-      } as Track & { customCover?: string; defaultCoverUrl?: string };
-      if (runtime.customCover) patched.customCover = runtime.customCover;
-      else delete patched.customCover;
-      if (runtime.defaultCoverUrl) patched.defaultCoverUrl = runtime.defaultCoverUrl;
-      else delete patched.defaultCoverUrl;
-      return patched as Track;
-    };
-    usePlaybackStore.setState((state) => ({
-      currentTrack: state.currentTrack ? merge(state.currentTrack) : state.currentTrack,
-      queue: state.queue.map(merge),
-    }));
-  }, []);
-
-  const applyCustomCoverImage = useCallback(
-    async (file: Blob, explicitTrack?: Track) => {
-      const target = explicitTrack ?? usePlaybackStore.getState().currentTrack;
-      if (!target) {
-        showToast("先播放或选择一首歌");
-        return;
-      }
-      try {
-        const dataUrl = await readLocalFileAsDataUrl(file);
-        const result = saveCustomCoverForTrack(target, dataUrl);
-        patchCustomCoverTrack(target, result.track);
-        showToast(result.saved ? "封面已保存" : "封面已应用，存储空间不足");
-      } catch {
-        showToast("封面读取失败");
-      }
-    },
-    [patchCustomCoverTrack, showToast],
-  );
-
-  const clearCustomCoverImage = useCallback(() => {
-    const target = usePlaybackStore.getState().currentTrack;
-    if (!target) {
-      showToast("先播放或选择一首歌");
-      return;
-    }
-    const result = clearCustomCoverForTrack(target);
-    if (!result.existed) {
-      showToast("当前没有自定义封面");
-      return;
-    }
-    patchCustomCoverTrack(target, result.track);
-    showToast("已恢复默认封面");
-  }, [patchCustomCoverTrack, showToast]);
-
-  const applyOriginalLyrics = useCallback(() => {
-    const track = usePlaybackStore.getState().currentTrack;
-    if (track) setCustomLyricPreferenceForTrack(track, "original");
-    const original = originalLyricsPayloadRef.current;
-    if (original) setLyricsPayload(original);
-    setCustomLyricVersion((version) => version + 1);
-    showToast("已切换到原歌词");
-  }, [setLyricsPayload, showToast]);
-
-  const applyCustomLyrics = useCallback(
-    (track = usePlaybackStore.getState().currentTrack) => {
-      const currentPayload = useLyricsStore.getState().payload;
-      const text = getCustomLyricTextForTrack(track);
-      if (!track || !currentPayload || !text?.trim()) return false;
-      const resolved = resolveLyricsForTrack({
-        track,
-        original: currentPayload,
-        durationMs: usePlaybackStore.getState().durationMs ?? track.durationMs,
-      });
-      if (resolved.source !== "custom") return false;
-      setLyricsPayload(resolved.payload);
-      setCustomLyricVersion((version) => version + 1);
-      return true;
-    },
-    [setLyricsPayload],
-  );
-
-  const openCustomLyricModal = useCallback(() => {
-    const track = usePlaybackStore.getState().currentTrack;
-    if (!track) {
-      showToast("先播放或选择一首歌");
-      return;
-    }
-    const text = getCustomLyricTextForTrack(track) ?? "";
-    setCustomLyricText(text);
-    setCustomLyricStatus({
-      text: text
-        ? "已读取本地自定义歌词"
-        : "提示：带 [00:12.00] 时间轴会更精准；纯文本会自动铺开",
-      tone: text ? "good" : undefined,
-    });
-    setCustomLyricModalOpen(true);
-  }, [showToast]);
-
-  const chooseCustomLyrics = useCallback(() => {
-    const track = usePlaybackStore.getState().currentTrack;
-    if (!track) {
-      showToast("先播放或选择一首歌");
-      return;
-    }
-    setCustomLyricPreferenceForTrack(track, "custom");
-    setCustomLyricVersion((version) => version + 1);
-    if (!applyCustomLyrics(track)) openCustomLyricModal();
-    else {
-      showToast("已切换到自定义歌词");
-      openCustomLyricModal();
-    }
-  }, [applyCustomLyrics, openCustomLyricModal, showToast]);
-
-  const saveCustomLyric = useCallback(() => {
-    const track = usePlaybackStore.getState().currentTrack;
-    const text = (customLyricInputRef.current?.value ?? customLyricText).trim();
-    if (!track) {
-      setCustomLyricStatus({ text: "请先播放或选择一首歌", tone: "fail" });
-      showToast("先播放或选择一首歌");
-      return;
-    }
-    if (!text) {
-      setCustomLyricStatus({ text: "请输入歌词内容", tone: "fail" });
-      return;
-    }
-    const result = saveCustomLyricForTrack(track, text);
-    if (result.lines.length === 0) {
-      setCustomLyricStatus({ text: "没有识别到可显示的歌词行", tone: "fail" });
-      return;
-    }
-    applyCustomLyrics(track);
-    setCustomLyricText(text);
-    setCustomLyricStatus({
-      text: result.saved
-        ? `已保存 ${result.lines.length} 行，并切换为自定义歌词`
-        : "已应用，但本地存储空间不足",
-      tone: result.saved ? "good" : "fail",
-    });
-    showToast(result.saved ? "自定义歌词已保存" : "自定义歌词已应用");
-    setCustomLyricModalOpen(false);
-  }, [applyCustomLyrics, customLyricText, showToast]);
-
-  const deleteCustomLyric = useCallback(() => {
-    const track = usePlaybackStore.getState().currentTrack;
-    if (!track) {
-      setCustomLyricStatus({ text: "请先播放或选择一首歌", tone: "fail" });
-      return;
-    }
-    if (!deleteCustomLyricForTrack(track)) {
-      setCustomLyricStatus({ text: "当前歌曲没有自定义歌词", tone: "fail" });
-      return;
-    }
-    setCustomLyricText("");
-    setCustomLyricStatus({ text: "已删除，恢复原歌词", tone: "good" });
-    setCustomLyricVersion((version) => version + 1);
-    showToast("已恢复原歌词");
-  }, [showToast]);
-
   const goHome = useCallback(() => {
     if (homeForcedOpen || emptyHomeActive) {
       closeHomePlaylistDetail();
@@ -1205,38 +1071,6 @@ export function App({
     setMiniQueue,
     showToast,
   ]);
-
-  const openLocalFileImport = useCallback(() => {
-    setHomeForcedOpen(false);
-    setHomeSuppressed(false);
-    fileInputRef.current?.click();
-  }, []);
-
-  const importLocalFiles = useCallback((files: FileList | File[] | null) => {
-    if (!files) return;
-    const file = firstLocalAudioFile(files);
-    const coverFile = firstLocalCoverFile(files);
-    if (!file && !coverFile) {
-      showToast("请选择音频或图片文件");
-      return;
-    }
-    if (file) {
-      const url = URL.createObjectURL(file);
-      const track = withStoredCustomCover(createLocalAudioTrack(file));
-      const key = `${track.provider}:${track.id}`;
-      const previousUrl = localAudioUrlsRef.current.get(key);
-      if (previousUrl && previousUrl !== url) URL.revokeObjectURL(previousUrl);
-      localAudioUrlsRef.current.set(key, url);
-      usePlaybackStore.getState().setQueue([track]);
-      usePlaybackStore.getState().playAt(0);
-      enterPlaybackSurface();
-      clearCurrentBeatMap();
-      showToast(track.title);
-      if (coverFile) void applyCustomCoverImage(coverFile, track);
-      return;
-    }
-    if (coverFile) void applyCustomCoverImage(coverFile);
-  }, [applyCustomCoverImage, clearCurrentBeatMap, enterPlaybackSurface, showToast]);
 
   const providerLabel = useCallback(
     (provider: ProviderId) => providerLabelText(provider),
@@ -1477,50 +1311,6 @@ export function App({
     [importProviderSessionCookie],
   );
 
-  const playMiniQueueIndex = useCallback(
-    (index: number) => {
-      playQueueAt(index);
-      setMiniQueue(false);
-    },
-    [playQueueAt, setMiniQueue],
-  );
-
-  const insertMiniQueueNext = useCallback(
-    (index: number) => {
-      const track = usePlaybackStore.getState().queue[index];
-      if (!track) return;
-      insertQueueNext(track);
-      showToast(`已设为下一首: ${track.title}`);
-    },
-    [insertQueueNext, showToast],
-  );
-
-  const cyclePlaylistPanelMode = useCallback(() => {
-    const order: Array<typeof playbackMode> = ["queue", "loop", "single", "shuffle"];
-    const next = order[(order.indexOf(playbackMode) + 1) % order.length] ?? "queue";
-    setPlaybackMode(next);
-  }, [playbackMode, setPlaybackMode]);
-
-  const shufflePlaylistPanelQueue = useCallback(() => {
-    const tracks = usePlaybackStore.getState().queue;
-    if (tracks.length < 2) {
-      showToast("队列歌曲不足");
-      return;
-    }
-    const shuffled = [...tracks];
-    for (let i = shuffled.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
-    }
-    setQueue(shuffled);
-    showToast("队列已随机排序");
-  }, [setQueue, showToast]);
-
-  const clearPlaylistPanelQueue = useCallback(() => {
-    clearQueue();
-    showToast("队列已清空");
-  }, [clearQueue, showToast]);
-
   const toggleLikeQueueIndex = useCallback(
     (index: number) => {
       void toggleLikeTrack(usePlaybackStore.getState().queue[index]);
@@ -1573,14 +1363,6 @@ export function App({
       searchQuery(artist, "song");
     },
     [searchQuery],
-  );
-
-  const seekPlayback = useCallback(
-    (position: number) => {
-      controllerRef.current?.seek(position);
-      setPositionMs(position);
-    },
-    [setPositionMs],
   );
 
   const updateShelfMode = useCallback(
@@ -1949,51 +1731,6 @@ export function App({
     return () =>
       document.removeEventListener("pointerdown", closeOnPointerDown);
   }, [miniQueueOpen, setMiniQueue]);
-
-  const handleRuntimeTimeUpdate = useCallback(
-    (payload: TimeUpdatePayload) => {
-      setPositionMs(payload.positionMs);
-      if (
-        payload.durationMs !== null &&
-        payload.durationMs !== lastRuntimeDurationRef.current
-      ) {
-        lastRuntimeDurationRef.current = payload.durationMs;
-        setDurationMs(payload.durationMs);
-      }
-      recordHomeListenProgress(payload.positionMs, payload.durationMs);
-      setLyricsIndex(
-        selectCurrentIndex(payload.positionMs, lyricsPayloadRef.current),
-      );
-    },
-    [recordHomeListenProgress, setDurationMs, setLyricsIndex, setPositionMs],
-  );
-
-  const handleRuntimeDurationChange = useCallback(
-    (payload: TimeUpdatePayload) => {
-      if (payload.durationMs !== null) setDurationMs(payload.durationMs);
-    },
-    [setDurationMs],
-  );
-
-  const handleRuntimeEnded = useCallback(() => {
-    finalizeHomeListenSession(true);
-    setPositionMs(0);
-    usePlaybackStore.getState().ended();
-    if (
-      usePlaybackStore.getState().mode === "single" &&
-      controllerRef.current
-    ) {
-      controllerRef.current.seek(0);
-      void controllerRef.current.play();
-    }
-  }, [finalizeHomeListenSession, setPositionMs]);
-
-  useEffect(() => {
-    if (!currentTrack) return;
-    const hydrated = withStoredCustomCover(currentTrack);
-    if (hydrated === currentTrack || hydrated.coverUrl === currentTrack.coverUrl) return;
-    patchCustomCoverTrack(currentTrack, hydrated);
-  }, [currentTrack, patchCustomCoverTrack]);
 
   const providerStatuses: Partial<Record<ProviderId, ProviderLoginStatus | null>> = {
     netease: neteaseStatus,

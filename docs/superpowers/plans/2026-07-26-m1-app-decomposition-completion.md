@@ -172,15 +172,15 @@ App 删除 Home network effects、listen refs、Home action callbacks 和 direct
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/playback-ui-boundary.test.ts`
 
-- [ ] **Step 1: Move runtime event ownership**
+- [x] **Step 1: Move runtime event ownership**
 
 `usePlaybackUiController` 持有 timeupdate/duration/ended、queue actions、seek、local file import 与 object URL cleanup，并连接现有 `PlaybackRuntimeHost`/store。
 
-- [ ] **Step 2: Move lyric/cover customization**
+- [x] **Step 2: Move lyric/cover customization**
 
 Customization controller 持有 modal、custom lyric、custom cover 和 current-track patch；保持现有 localStorage compatibility adapters，不在 App 直接访问存储。
 
-- [ ] **Step 3: Integrate, verify and commit**
+- [x] **Step 3: Integrate, verify and commit**
 
 运行 playback/custom lyric/custom cover/App tests、boundary、typecheck/build，提交 `refactor(web): extract playback UI controllers`。
 
