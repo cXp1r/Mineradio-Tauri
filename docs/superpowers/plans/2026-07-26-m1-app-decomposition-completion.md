@@ -132,15 +132,15 @@ export interface LikesControllerResult {
 - Modify: `apps/web/src/app/App.tsx`
 - Create: `scripts/architecture/library-controller-boundary.test.ts`
 
-- [ ] **Step 1: Freeze playlist merge and collect mutation**
+- [x] **Step 1: Freeze playlist merge and collect mutation**
 
 核心测试覆盖 Provider 局部刷新不清空其他 Provider、collect 成功后关闭 picker、失败时 busy 清理。
 
-- [ ] **Step 2: Implement controller**
+- [x] **Step 2: Implement controller**
 
 Controller 持有平台/导入歌单、播客集合、panel/detail、collect target/busy 和 shared-playlist import/delete；通过 `LibraryPort` 请求，通过注入的 `PlaybackActions` 播放。
 
-- [ ] **Step 3: Integrate, verify and commit**
+- [x] **Step 3: Integrate, verify and commit**
 
 App 删除 `refreshShelfPlaylists`、`refreshProviderPlaylists`、collect、playlist panel 和 imported playlist 业务 callbacks。运行 Library/PlaylistPanel/App tests、boundary、typecheck/build，提交 `refactor(web): extract library controller`。
 
