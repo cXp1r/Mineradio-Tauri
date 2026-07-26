@@ -5,6 +5,7 @@ import { flushSync } from "react-dom";
 import type { LyricPayload, Track } from "@mineradio/shared";
 import type { PlayerController } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
+import { PlaybackSessionCoordinator } from "./playback-session-coordinator";
 import {
 	usePlaybackSessionRuntime,
 	type PlaybackSessionRuntimeResult,
@@ -134,6 +135,182 @@ test("the playback session publishes fallback lyrics before loading and resuming
 	host.remove();
 });
 
+test("a controller load failure marks the accepted source as terminally failed", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const coordinator = new PlaybackSessionCoordinator();
+	const searchErrors: string[] = [];
+	const toasts: string[] = [];
+	const playing: boolean[] = [];
+	const controller = {
+		load() {
+			throw new Error("controller load failed");
+		},
+		seek() {},
+		async play() {},
+		pause() {},
+	} as unknown as PlayerController;
+	const services = {
+		music: {
+			playback: {
+				async resolveSongUrl() {
+					return {
+						url: "https://media.example/load-failure.mp3",
+						quality: "standard",
+						proxied: false,
+					};
+				},
+			},
+			lyrics: {
+				async lyric() {
+					return await new Promise<LyricPayload>(() => undefined);
+				},
+			},
+			discover: {},
+		},
+		mediaUrl: {
+			audioProxyUrl: (url: string) => url,
+			playableUrl: (url: string) => url,
+		},
+	} as unknown as AppServices;
+
+	function Harness() {
+		usePlaybackSessionRuntime({
+			appServices: services,
+			coordinator,
+			controllerRef: { current: controller },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: TRACK,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: TRACK,
+				positionMs: 0,
+				durationMs: 60_000,
+				isPlaying: false,
+			}),
+			setPlaying: (value) => playing.push(value),
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: (message) => searchErrors.push(message),
+			showToast: (message) => toasts.push(message),
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "dj:test",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => undefined,
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	for (let i = 0; i < 12 && coordinator.snapshot().phase !== "failed"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(coordinator.snapshot().phase).toBe("failed");
+	expect(coordinator.snapshot().failureReason).toBe("controller load failed");
+	expect(playing.at(-1)).toBe(false);
+	expect(searchErrors).toEqual(["controller load failed"]);
+	expect(toasts).toEqual(["controller load failed"]);
+
+	root.unmount();
+	host.remove();
+});
+
+test("a controller play rejection marks the accepted source as terminally failed", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const coordinator = new PlaybackSessionCoordinator();
+	const searchErrors: string[] = [];
+	const toasts: string[] = [];
+	const controller = {
+		load() {},
+		seek() {},
+		async play() {
+			throw new Error("controller play failed");
+		},
+		pause() {},
+	} as unknown as PlayerController;
+	const services = {
+		music: {
+			playback: {
+				async resolveSongUrl() {
+					return {
+						url: "https://media.example/play-failure.mp3",
+						quality: "standard",
+						proxied: false,
+					};
+				},
+			},
+			lyrics: {
+				async lyric() {
+					return await new Promise<LyricPayload>(() => undefined);
+				},
+			},
+			discover: {},
+		},
+		mediaUrl: {
+			audioProxyUrl: (url: string) => url,
+			playableUrl: (url: string) => url,
+		},
+	} as unknown as AppServices;
+
+	function Harness() {
+		usePlaybackSessionRuntime({
+			appServices: services,
+			coordinator,
+			controllerRef: { current: controller },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: TRACK,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: TRACK,
+				positionMs: 0,
+				durationMs: 60_000,
+				isPlaying: false,
+			}),
+			setPlaying: () => undefined,
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: (message) => searchErrors.push(message),
+			showToast: (message) => toasts.push(message),
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "dj:test",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => undefined,
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	for (let i = 0; i < 12 && coordinator.snapshot().phase !== "failed"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(coordinator.snapshot().phase).toBe("failed");
+	expect(coordinator.snapshot().failureReason).toBe("controller play failed");
+	expect(searchErrors).toEqual(["controller play failed"]);
+	expect(toasts).toEqual(["controller play failed"]);
+
+	root.unmount();
+	host.remove();
+});
+
 test("a stale lyric response cannot replace the next track fallback", async () => {
 	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	const firstLyric = deferred<LyricPayload>();
@@ -229,6 +406,155 @@ test("a stale lyric response cannot replace the next track fallback", async () =
 
 	expect(lyricPayloads.at(-1)?.trackId).toBe(secondTrack.id);
 	expect(lyricPayloads.at(-1)?.lines[0]?.text).toBe("Second Song - Second Artist");
+
+	root.unmount();
+	host.remove();
+});
+
+test("old controller events stay silent while the next track URL is pending", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const coordinator = new PlaybackSessionCoordinator();
+	const pendingSecondUrl = deferred<{
+		url: string;
+		quality: string;
+		proxied: boolean;
+	}>();
+	const secondTrack: Track = {
+		...TRACK,
+		id: "session-pending",
+		sourceId: "session-pending",
+		title: "Pending Song",
+	};
+	const playing: boolean[] = [];
+	const searchErrors: string[] = [];
+	const toasts: string[] = [];
+	let runtimePauseCount = 0;
+	let loadCount = 0;
+	let secondResolveStarted = false;
+	let activeTrack = TRACK;
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+	const controller = {
+		load() {
+			loadCount += 1;
+		},
+		seek() {},
+		async play() {},
+		pause() {},
+	} as unknown as PlayerController;
+	const services = {
+		music: {
+			playback: {
+				async resolveSongUrl(track: Track) {
+					if (track.id === secondTrack.id) {
+						secondResolveStarted = true;
+						return await pendingSecondUrl.promise;
+					}
+					return {
+						url: `https://media.example/${track.id}.mp3`,
+						quality: "standard",
+						proxied: false,
+					};
+				},
+			},
+			lyrics: {
+				async lyric(track: Track) {
+					return {
+						provider: track.provider,
+						trackId: track.id,
+						lines: [],
+						hasTranslation: false,
+						isWordByWord: false,
+					};
+				},
+			},
+			discover: {},
+		},
+		mediaUrl: {
+			audioProxyUrl: (url: string) => url,
+			playableUrl: (url: string) => url,
+		},
+	} as unknown as AppServices;
+
+	function Harness({ track }: { track: Track }) {
+		activeTrack = track;
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: services,
+			coordinator,
+			controllerRef: { current: controller },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: track,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: activeTrack,
+				positionMs: 0,
+				durationMs: 60_000,
+				isPlaying: false,
+			}),
+			setPlaying: (value) => playing.push(value),
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: (message) => searchErrors.push(message),
+			showToast: (message) => toasts.push(message),
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "dj:test",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => undefined,
+			onRuntimePause: () => {
+				runtimePauseCount += 1;
+			},
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness track={TRACK} />));
+	for (let i = 0; i < 12 && coordinator.snapshot().phase !== "playing"; i += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	const firstSessionId = coordinator.snapshot().playbackSessionId;
+	const oldEvents = {
+		play: runtimeRef.current!.handleRuntimePlay,
+		pause: runtimeRef.current!.handleRuntimePause,
+		error: runtimeRef.current!.handleRuntimeError,
+	};
+	flushSync(() => root.render(<Harness track={secondTrack} />));
+	for (
+		let i = 0;
+		i < 12 &&
+		(!secondResolveStarted ||
+			coordinator.snapshot().playbackSessionId === firstSessionId);
+		i += 1
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	const resolving = coordinator.snapshot();
+	const playingCount = playing.length;
+	expect(resolving.phase).toBe("resolving");
+	expect(resolving.trackKey).toBe(`${secondTrack.provider}:${secondTrack.id}`);
+	expect(secondResolveStarted).toBe(true);
+	expect(loadCount).toBe(1);
+
+	oldEvents.play();
+	oldEvents.pause();
+	oldEvents.error({ code: 2, message: "old media failed" });
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(coordinator.snapshot()).toBe(resolving);
+	expect(loadCount).toBe(1);
+	expect(playing.length).toBe(playingCount);
+	expect(runtimePauseCount).toBe(0);
+	expect(searchErrors).toEqual([]);
+	expect(toasts).toEqual([]);
 
 	root.unmount();
 	host.remove();

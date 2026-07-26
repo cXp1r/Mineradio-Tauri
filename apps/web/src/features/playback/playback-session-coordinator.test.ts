@@ -54,6 +54,76 @@ test("switching tracks invalidates stale playback and lyric work", () => {
 	expect(coordinator.isLyricCurrent(second)).toBe(true);
 });
 
+test("a cloned current handle cannot publish a loaded source", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	const clone = { ...session };
+	const resolving = coordinator.snapshot();
+
+	expect(coordinator.markLoaded(clone, remoteSource())).toBe(false);
+	expect(coordinator.snapshot()).toBe(resolving);
+	expect(coordinator.isPlaybackCurrent(clone)).toBe(false);
+	expect(coordinator.isLyricCurrent(clone)).toBe(false);
+});
+
+test("a cloned current handle cannot publish playing", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	load(coordinator, session);
+	const clone = { ...session };
+	const loading = coordinator.snapshot();
+
+	expect(coordinator.markPlaying(clone)).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+});
+
+test("a cloned reload handle cannot complete the reload", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	loadAndPlay(coordinator, session);
+	const reload = coordinator.beginReload("url-age")!;
+	load(coordinator, reload);
+	const clone = { ...reload };
+	const loading = coordinator.snapshot();
+
+	expect(coordinator.completeReload(clone)).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	expect(coordinator.completeReload(reload)).toBe(true);
+});
+
+test("issued playback handles are frozen capabilities", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	let mutationRejected = false;
+	try {
+		Object.assign(session, { playbackToken: 99 });
+	} catch {
+		mutationRejected = true;
+	}
+
+	expect(Object.isFrozen(session)).toBe(true);
+	expect(mutationRejected).toBe(true);
+	expect(session.playbackToken).toBe(1);
+});
+
+test("markMediaFailed is handle-scoped and terminal after source acceptance", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	const resolving = coordinator.snapshot();
+
+	expect(coordinator.markMediaFailed(session, "too-early")).toBe(false);
+	expect(coordinator.snapshot()).toBe(resolving);
+	load(coordinator, session);
+	const loading = coordinator.snapshot();
+	expect(
+		coordinator.markMediaFailed({ ...session }, "forged-failure"),
+	).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	expect(coordinator.markMediaFailed(session, "decoder-failed")).toBe(true);
+	expect(coordinator.snapshot().phase).toBe("failed");
+	expect(coordinator.snapshot().failureReason).toBe("decoder-failed");
+});
+
 test("legacy track changes do not advance the explicit intent watermark", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const legacy = coordinator.beginTrack("netease:first")!;
@@ -325,8 +395,14 @@ test("reload completion uses the coordinator-bound reason", () => {
 	coordinator.claimMediaErrorRecovery(session, "netease:first", true);
 	const reload = coordinator.beginReload("media-error")!;
 	load(coordinator, reload);
-	const tampered = reload as { reloadReason?: string };
-	tampered.reloadReason = "url-age";
+	let mutationRejected = false;
+	try {
+		Object.assign(reload, { reloadReason: "url-age" });
+	} catch {
+		mutationRejected = true;
+	}
+	expect(mutationRejected).toBe(true);
+	expect(reload.reloadReason).toBe("media-error");
 
 	expect(coordinator.completeReload(reload)).toBe(true);
 	expect(coordinator.snapshot().recoveryAttempts).toBe(1);

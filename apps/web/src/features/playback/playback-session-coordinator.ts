@@ -36,13 +36,8 @@ interface PlaybackTransition {
 	accepted: boolean;
 }
 
-interface PendingReloadCompletion {
-	readonly playbackSessionId: number;
-	readonly playbackToken: number;
-	readonly reason: PlaybackReloadReason;
-}
-
 export class PlaybackSessionCoordinator {
+	private readonly issuedHandles = new WeakSet<PlaybackLoadHandle>();
 	private trackKey = "";
 	private playbackToken = 0;
 	private lyricToken = 0;
@@ -55,7 +50,7 @@ export class PlaybackSessionCoordinator {
 	private hasExplicitPlaybackIntent = false;
 	private pendingInvalidatedLoad: PlaybackLoadHandle | null = null;
 	private qualityReloadLoad: PlaybackLoadHandle | null = null;
-	private pendingReloadCompletion: PendingReloadCompletion | null = null;
+	private pendingReloadCompletion: PlaybackLoadHandle | null = null;
 
 	snapshot(): PlaybackMachineState {
 		return this.machineState;
@@ -125,21 +120,17 @@ export class PlaybackSessionCoordinator {
 		});
 		if (!transition.accepted) return null;
 
-		const handle: PlaybackLoadHandle = {
+		const handle = this.issueHandle({
 			playbackSessionId: transition.next.playbackSessionId,
 			playbackToken,
 			lyricToken: this.lyricToken,
 			reloadReason: reason,
-		};
+		});
 		this.machineState = transition.next;
 		this.playbackToken = playbackToken;
 		this.pendingInvalidatedLoad = null;
 		this.qualityReloadLoad = null;
-		this.pendingReloadCompletion = {
-			playbackSessionId: handle.playbackSessionId,
-			playbackToken: handle.playbackToken,
-			reason,
-		};
+		this.pendingReloadCompletion = handle;
 		return handle;
 	}
 
@@ -154,12 +145,12 @@ export class PlaybackSessionCoordinator {
 		});
 		if (!transition.accepted) return null;
 
-		const handle: PlaybackLoadHandle = {
+		const handle = this.issueHandle({
 			playbackSessionId: transition.next.playbackSessionId,
 			playbackToken,
 			lyricToken,
 			reloadReason: "quality",
-		};
+		});
 		this.machineState = transition.next;
 		this.playbackToken = playbackToken;
 		this.lyricToken = lyricToken;
@@ -168,15 +159,12 @@ export class PlaybackSessionCoordinator {
 		this.mediaErrorRecoveryTrackKey = "";
 		this.pendingInvalidatedLoad = handle;
 		this.qualityReloadLoad = handle;
-		this.pendingReloadCompletion = {
-			playbackSessionId: handle.playbackSessionId,
-			playbackToken: handle.playbackToken,
-			reason: "quality",
-		};
+		this.pendingReloadCompletion = handle;
 		return handle;
 	}
 
 	markLoaded(handle: PlaybackLoadHandle, source: LoadedPlaybackSource): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const transition = this.reduce({
 			type: "SOURCE_READY",
 			playbackSessionId: handle.playbackSessionId,
@@ -186,17 +174,17 @@ export class PlaybackSessionCoordinator {
 
 		this.machineState = transition.next;
 		this.loadedSource = source;
-		if (this.isSameLoad(this.pendingInvalidatedLoad, handle)) {
+		if (this.pendingInvalidatedLoad === handle) {
 			this.pendingInvalidatedLoad = null;
 		}
-		if (this.isSameLoad(this.qualityReloadLoad, handle)) {
+		if (this.qualityReloadLoad === handle) {
 			this.machineState = reducePlaybackState(this.machineState, {
 				type: "RESET_RECOVERY_BUDGET",
 				playbackSessionId: handle.playbackSessionId,
 				loadRequestId: handle.playbackToken,
 			});
 			this.qualityReloadLoad = null;
-			if (this.isSameLoad(this.pendingReloadCompletion, handle)) {
+			if (this.pendingReloadCompletion === handle) {
 				this.pendingReloadCompletion = null;
 			}
 		}
@@ -204,6 +192,7 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markPaused(handle: PlaybackLoadHandle, nowMs: number): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const transition = this.tryDispatch({
 			type: "PAUSE",
 			playbackSessionId: handle.playbackSessionId,
@@ -215,6 +204,7 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markPlaying(handle: PlaybackLoadHandle): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const transition = this.machineState.phase === "paused"
 			? this.tryDispatch({
 				type: "RESUME",
@@ -232,6 +222,7 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markEnded(handle: PlaybackLoadHandle): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const accepted = this.tryDispatch({
 			type: "MEDIA_ENDED",
 			playbackSessionId: handle.playbackSessionId,
@@ -242,6 +233,7 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markResolveFailed(handle: PlaybackLoadHandle, reason: string): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const accepted = this.tryDispatch({
 			type: "RESOLVE_FAILED",
 			playbackSessionId: handle.playbackSessionId,
@@ -253,10 +245,28 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markRecoveryExhausted(handle: PlaybackLoadHandle, reason: string): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const accepted = this.tryDispatch({
 			type: "RECOVERY_EXHAUSTED",
 			playbackSessionId: handle.playbackSessionId,
 			loadRequestId: handle.playbackToken,
+			reason,
+		}).accepted;
+		if (accepted) this.clearPendingLoad(handle);
+		return accepted;
+	}
+
+	markMediaFailed(
+		handle: PlaybackLoadHandle,
+		reason: string,
+		recoverable = false,
+	): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
+		const accepted = this.tryDispatch({
+			type: "MEDIA_FAILED",
+			playbackSessionId: handle.playbackSessionId,
+			loadRequestId: handle.playbackToken,
+			recoverable,
 			reason,
 		}).accepted;
 		if (accepted) this.clearPendingLoad(handle);
@@ -284,6 +294,7 @@ export class PlaybackSessionCoordinator {
 		trackKey: string,
 		canResolveSongUrl: boolean,
 	): boolean {
+		if (!this.isPlaybackCurrent(handle)) return false;
 		const loaded = this.loadedSource;
 		const canRecover = !!(
 			canResolveSongUrl &&
@@ -307,29 +318,20 @@ export class PlaybackSessionCoordinator {
 					"media-error-recovery-unavailable",
 				);
 			} else {
-				const transition = this.tryDispatch({
-					type: "MEDIA_FAILED",
-					playbackSessionId: handle.playbackSessionId,
-					loadRequestId: handle.playbackToken,
-					recoverable: false,
-					reason: "media-error-recovery-unavailable",
-				});
-				if (transition.accepted) this.clearPendingLoad(handle);
+				this.markMediaFailed(
+					handle,
+					"media-error-recovery-unavailable",
+				);
 			}
 			return false;
 		}
 
-		const transition = this.tryDispatch({
-			type: "MEDIA_FAILED",
-			playbackSessionId: handle.playbackSessionId,
-			loadRequestId: handle.playbackToken,
-			recoverable: true,
-			reason: "media-error",
-		});
-		if (!transition.accepted || transition.next.phase !== "recovering") {
+		if (
+			!this.markMediaFailed(handle, "media-error", true) ||
+			this.machineState.phase !== "recovering"
+		) {
 			return false;
 		}
-		this.clearPendingLoad(handle);
 		this.mediaErrorRecoveryTrackKey = trackKey;
 		return true;
 	}
@@ -337,15 +339,14 @@ export class PlaybackSessionCoordinator {
 	completeReload(handle: PlaybackLoadHandle): boolean {
 		const pending = this.pendingReloadCompletion;
 		if (
-			!pending ||
-			!this.isSameLoad(pending, handle) ||
 			!this.isPlaybackCurrent(handle) ||
+			pending !== handle ||
 			this.machineState.phase !== "loading"
 		) {
 			return false;
 		}
 		this.pendingReloadCompletion = null;
-		if (pending.reason !== "media-error") {
+		if (pending.reloadReason !== "media-error") {
 			this.machineState = reducePlaybackState(this.machineState, {
 				type: "RESET_RECOVERY_BUDGET",
 				playbackSessionId: handle.playbackSessionId,
@@ -358,6 +359,7 @@ export class PlaybackSessionCoordinator {
 
 	isPlaybackCurrent(handle: PlaybackLoadHandle): boolean {
 		return (
+			this.isIssuedHandle(handle) &&
 			handle.playbackSessionId === this.machineState.playbackSessionId &&
 			handle.playbackToken === this.machineState.loadRequestId &&
 			handle.playbackToken === this.playbackToken
@@ -366,6 +368,7 @@ export class PlaybackSessionCoordinator {
 
 	isLyricCurrent(handle: PlaybackLoadHandle): boolean {
 		return (
+			this.isIssuedHandle(handle) &&
 			handle.playbackSessionId === this.machineState.playbackSessionId &&
 			handle.lyricToken === this.lyricToken
 		);
@@ -386,11 +389,11 @@ export class PlaybackSessionCoordinator {
 		});
 		if (!transition.accepted) return null;
 
-		const handle: PlaybackTrackSession = {
+		const handle = this.issueHandle({
 			playbackSessionId,
 			playbackToken,
 			lyricToken,
-		};
+		});
 		this.machineState = transition.next;
 		this.nextPlaybackSessionId = playbackSessionId;
 		this.playbackToken = playbackToken;
@@ -413,6 +416,7 @@ export class PlaybackSessionCoordinator {
 		if (
 			!pending ||
 			pending !== expectedInvalidatedLoad ||
+			!this.isIssuedHandle(expectedInvalidatedLoad) ||
 			trackKey !== this.trackKey ||
 			!this.isPlaybackCurrent(pending)
 		) {
@@ -423,26 +427,27 @@ export class PlaybackSessionCoordinator {
 	}
 
 	private clearPendingLoad(handle: PlaybackLoadHandle): void {
-		if (this.isSameLoad(this.pendingInvalidatedLoad, handle)) {
+		if (this.pendingInvalidatedLoad === handle) {
 			this.pendingInvalidatedLoad = null;
 		}
-		if (this.isSameLoad(this.qualityReloadLoad, handle)) {
+		if (this.qualityReloadLoad === handle) {
 			this.qualityReloadLoad = null;
 		}
-		if (this.isSameLoad(this.pendingReloadCompletion, handle)) {
+		if (this.pendingReloadCompletion === handle) {
 			this.pendingReloadCompletion = null;
 		}
 	}
 
-	private isSameLoad(
-		left: Pick<PlaybackLoadHandle, "playbackSessionId" | "playbackToken"> | null,
-		right: Pick<PlaybackLoadHandle, "playbackSessionId" | "playbackToken">,
-	): boolean {
-		return !!(
-			left &&
-			left.playbackSessionId === right.playbackSessionId &&
-			left.playbackToken === right.playbackToken
-		);
+	private issueHandle(handle: PlaybackLoadHandle): PlaybackLoadHandle {
+		const issued = Object.freeze(handle);
+		this.issuedHandles.add(issued);
+		return issued;
+	}
+
+	private isIssuedHandle(
+		handle: PlaybackLoadHandle | undefined,
+	): handle is PlaybackLoadHandle {
+		return !!handle && this.issuedHandles.has(handle);
 	}
 
 	private reduce(event: PlaybackMachineEvent): PlaybackTransition {

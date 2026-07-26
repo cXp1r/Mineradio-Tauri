@@ -48,6 +48,7 @@ export interface PlaybackSessionSnapshot {
 
 export interface PlaybackSessionRuntimeOptions {
 	appServices: AppServices | null;
+	coordinator?: PlaybackSessionCoordinator;
 	controllerRef: RefObject<PlayerController | null>;
 	localAudioUrlsRef: RefObject<Map<string, string>>;
 	currentTrack: Track | null;
@@ -129,6 +130,7 @@ function isPodcastTrack(track: Track | null | undefined): boolean {
 
 export function usePlaybackSessionRuntime({
 	appServices,
+	coordinator: providedCoordinator,
 	controllerRef,
 	localAudioUrlsRef,
 	currentTrack,
@@ -161,10 +163,10 @@ export function usePlaybackSessionRuntime({
 		useState<CurrentBeatMapState | null>(null);
 	const coordinatorRef = useRef<PlaybackSessionCoordinator | null>(null);
 	if (!coordinatorRef.current) {
-		coordinatorRef.current = new PlaybackSessionCoordinator();
+		coordinatorRef.current = providedCoordinator ?? new PlaybackSessionCoordinator();
 	}
 	const coordinator = coordinatorRef.current;
-	const activeLoadHandleRef = useRef<PlaybackLoadHandle | null>(null);
+	const controllerBoundLoadHandleRef = useRef<PlaybackLoadHandle | null>(null);
 	const positionRef = useRef(positionMs);
 	positionRef.current = positionMs;
 	const originalLyricsPayloadRef = useRef<LyricPayload | null>(initialLyricsPayload);
@@ -217,11 +219,11 @@ export function usePlaybackSessionRuntime({
 
 		const reload = coordinator.beginReload(reason);
 		if (!reload) return false;
-		activeLoadHandleRef.current = reload;
 		const resumeAt = preservePosition
 			? Math.max(0, getPlaybackSnapshot().positionMs)
 			: 0;
 
+		let sourceAccepted = false;
 		try {
 			const { result, audioUrl } = await resolvePlayableAudio({
 				playback: services.music.playback,
@@ -244,6 +246,8 @@ export function usePlaybackSessionRuntime({
 				local: false,
 				trial: result.trial === true,
 			})) return false;
+			sourceAccepted = true;
+			controllerBoundLoadHandleRef.current = reload;
 			controller.load(audioUrl);
 			coordinator.completeReload(reload);
 			loadBeatMap(services, track, result.url, reload);
@@ -260,7 +264,10 @@ export function usePlaybackSessionRuntime({
 		} catch (error) {
 			if (!coordinator.isPlaybackCurrent(reload)) return false;
 			const message = error instanceof Error ? error.message : "playback error";
-			coordinator.markResolveFailed(reload, message);
+			const accepted = sourceAccepted
+				? coordinator.markMediaFailed(reload, message)
+				: coordinator.markResolveFailed(reload, message);
+			if (!accepted) return false;
 			setTrialBanner(null);
 			setPlaying(false);
 			setSearchError(message);
@@ -286,14 +293,15 @@ export function usePlaybackSessionRuntime({
 	reloadCurrentTrackAndPlayRef.current = reloadCurrentTrackAndPlay;
 
 	const handleRuntimeErrorImpl = useCallback((payload: ErrorPayload) => {
+		const boundLoad = controllerBoundLoadHandleRef.current;
+		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
 		const message = payload.message || "音频播放失败";
 		const track = getPlaybackSnapshot().currentTrack;
 		const key = playbackKeyForTrack(track);
-		const activeLoad = activeLoadHandleRef.current;
+		const previousState = coordinator.snapshot();
 		if (
-			activeLoad &&
 			coordinator.claimMediaErrorRecovery(
-				activeLoad,
+				boundLoad,
 				key,
 				!!appServices?.music.playback,
 			)
@@ -305,6 +313,7 @@ export function usePlaybackSessionRuntime({
 			});
 			return;
 		}
+		if (coordinator.snapshot() === previousState) return;
 		setTrialBanner(null);
 		setSearchError(message);
 		showToast(message);
@@ -342,14 +351,16 @@ export function usePlaybackSessionRuntime({
 	}, [controllerRef, coordinator, getPlaybackSnapshot, now, showToast, togglePlayFallback]);
 
 	const handleRuntimePlay = useCallback(() => {
-		const activeLoad = activeLoadHandleRef.current;
-		if (activeLoad) coordinator.markPlaying(activeLoad);
+		const boundLoad = controllerBoundLoadHandleRef.current;
+		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
+		if (!coordinator.markPlaying(boundLoad)) return;
 		setPlaying(true);
 	}, [coordinator, setPlaying]);
 
 	const handleRuntimePause = useCallback(() => {
-		const activeLoad = activeLoadHandleRef.current;
-		if (activeLoad) coordinator.markPaused(activeLoad, now());
+		const boundLoad = controllerBoundLoadHandleRef.current;
+		if (!boundLoad || !coordinator.isPlaybackCurrent(boundLoad)) return;
+		if (!coordinator.markPaused(boundLoad, now())) return;
 		onRuntimePause?.();
 		setPlaying(false);
 	}, [coordinator, now, onRuntimePause, setPlaying]);
@@ -366,7 +377,6 @@ export function usePlaybackSessionRuntime({
 		if (resumeAt > 0) controllerRef.current?.pause();
 		const qualityReload = coordinator.invalidateCurrentTrackLoad();
 		if (qualityReload) {
-			activeLoadHandleRef.current = qualityReload;
 			setPlaybackQualityReloadHandle(qualityReload);
 		}
 		setPositionMs(resumeAt);
@@ -418,7 +428,7 @@ export function usePlaybackSessionRuntime({
 		if (!controller) return;
 		if (!currentTrack) {
 			coordinator.clear();
-			activeLoadHandleRef.current = null;
+			controllerBoundLoadHandleRef.current = null;
 			setCurrentBeatMapState(null);
 			setTrialBanner(null);
 			controller.pause();
@@ -435,7 +445,6 @@ export function usePlaybackSessionRuntime({
 			playbackQualityReloadHandle ?? undefined,
 		);
 		if (!session) return;
-		activeLoadHandleRef.current = session;
 		setCurrentBeatMapState(null);
 		setTrialBanner(null);
 		const fallbackLyric = buildTrackLyricFallback(currentTrack);
@@ -449,6 +458,7 @@ export function usePlaybackSessionRuntime({
 
 		if (localAudioUrl) {
 			void (async () => {
+				let sourceAccepted = false;
 				try {
 					if (!coordinator.markLoaded(session, {
 						trackKey: key,
@@ -459,6 +469,8 @@ export function usePlaybackSessionRuntime({
 						local: true,
 						trial: false,
 					})) return;
+					sourceAccepted = true;
+					controllerBoundLoadHandleRef.current = session;
 					controller.load(localAudioUrl);
 					if (positionRef.current > 0) controller.seek(positionRef.current);
 					await controller.play();
@@ -470,7 +482,10 @@ export function usePlaybackSessionRuntime({
 				} catch (error) {
 					if (!coordinator.isPlaybackCurrent(session)) return;
 					const message = error instanceof Error ? error.message : "playback error";
-					coordinator.markResolveFailed(session, message);
+					const accepted = sourceAccepted
+						? coordinator.markMediaFailed(session, message)
+						: coordinator.markResolveFailed(session, message);
+					if (!accepted) return;
 					setPlaying(false);
 					setSearchError(message);
 					showToast(message);
@@ -481,6 +496,7 @@ export function usePlaybackSessionRuntime({
 
 		if (!services) return;
 		void (async () => {
+			let sourceAccepted = false;
 			try {
 				const { result, audioUrl } = await resolvePlayableAudio({
 					playback: services.music.playback,
@@ -503,6 +519,8 @@ export function usePlaybackSessionRuntime({
 					local: false,
 					trial: result.trial === true,
 				})) return;
+				sourceAccepted = true;
+				controllerBoundLoadHandleRef.current = session;
 				controller.load(audioUrl);
 				loadBeatMap(services, currentTrack, result.url, session);
 				if (positionRef.current > 0) controller.seek(positionRef.current);
@@ -514,7 +532,10 @@ export function usePlaybackSessionRuntime({
 			} catch (error) {
 				if (!coordinator.isPlaybackCurrent(session)) return;
 				const message = error instanceof Error ? error.message : "playback error";
-				coordinator.markResolveFailed(session, message);
+				const accepted = sourceAccepted
+					? coordinator.markMediaFailed(session, message)
+					: coordinator.markResolveFailed(session, message);
+				if (!accepted) return;
 				setTrialBanner(null);
 				setPlaying(false);
 				setSearchError(message);
