@@ -110,7 +110,7 @@ git commit -m "refactor(web): add playback runtime host"
 - Modify: `apps/web/src/app/App.tsx`
 - Test: `apps/web/src/app/App.test.tsx`
 
-- [ ] **Step 1: Extract stable event bridge callbacks in App**
+- [x] **Step 1: Extract stable event bridge callbacks in App**
 
 保留原事件体，分别建立：
 
@@ -125,15 +125,15 @@ handleRuntimeError
 
 `handleRuntimeError` 必须继续调用 `handlePlaybackErrorRef.current(payload)`；`handleRuntimeEnded` 必须继续完成收听会话、清零位置、调用 store `ended()`，并在 single 模式 seek 到 0 后重新播放。
 
-- [ ] **Step 2: Render PlaybackRuntimeHost after the visual shell**
+- [x] **Step 2: Render PlaybackRuntimeHost after the visual shell**
 
 Host 放在 `AppRuntimeProvider` 内、主 `div` 之后，使视觉子树 effect 仍先获得同步创建的 Audio 元素。传入现有 refs、`volume`、`muted` 和六个稳定回调。
 
-- [ ] **Step 3: Remove the old lifecycle and volume effects**
+- [x] **Step 3: Remove the old lifecycle and volume effects**
 
 删除 App 中直接执行 `new PlayerController(audio)`、`controller.on(...)` 和 `controllerRef.current?.setVolume(...)` 的两个 effect。不得修改加载、播放、暂停、seek 或 recovery callbacks。
 
-- [ ] **Step 4: Run focused App playback characterization**
+- [x] **Step 4: Run focused App playback characterization**
 
 ```powershell
 bun test apps/web/src/features/playback/PlaybackRuntimeHost.test.tsx apps/web/src/audio/player-controller.test.ts apps/web/src/app/App.test.tsx
@@ -143,7 +143,7 @@ bun run web:build
 
 Expected: PASS; existing media proxy、Soda recovery、quality fallback、trial banner、lyrics fallback and queue tests remain unchanged.
 
-- [ ] **Step 5: Commit App integration**
+- [x] **Step 5: Commit App integration**
 
 ```powershell
 git add apps/web/src/app/App.tsx

@@ -28,7 +28,11 @@ import {
   firstLocalCoverFile,
   readLocalFileAsDataUrl,
 } from "../audio/local-audio-import";
-import { PlayerController, type ErrorPayload } from "../audio/player-controller";
+import {
+  PlayerController,
+  type ErrorPayload,
+  type TimeUpdatePayload,
+} from "../audio/player-controller";
 import {
   clearCustomCoverForTrack,
   customCoverKeyForTrack,
@@ -85,6 +89,7 @@ import {
   type WindowState,
 } from "../tauri/runtime";
 import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
+import { PlaybackRuntimeHost } from "../features/playback/PlaybackRuntimeHost";
 import { BottomControlsHost } from "../components/shell/BottomControlsHost";
 import { GuideParticlesHost } from "../components/shell/GuideParticlesHost";
 import { PlaylistPanelHost, type PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
@@ -1235,14 +1240,13 @@ export function App({
   const setSearchKeyword = useSearchStore((s) => s.setKeyword);
   const setSearchError = useSearchStore((s) => s.setError);
 
-  // Create the audio element synchronously on first render so child effects
-  // (e.g. useVisualEngine's initAudioSource) can attach a MediaElementSource
-  // before the App-level PlayerController effect runs. The element is only
-  // created when the DOM supports it; otherwise we keep the ref null.
+  // 首次渲染时同步创建 Audio，确保视觉引擎先绑定同一个媒体元素，
+  // 随后再由 PlaybackRuntimeHost 接管 PlayerController 生命周期。
   const audioRef = useRef<HTMLAudioElement | null>(
     typeof Audio !== "undefined" && audioElementSupported() ? new Audio() : null,
   );
   const controllerRef = useRef<PlayerController | null>(null);
+  const lastRuntimeDurationRef = useRef<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const localAudioUrlsRef = useRef(new Map<string, string>());
   const lastLoadedKeyRef = useRef<string>("");
@@ -3649,32 +3653,14 @@ export function App({
       document.removeEventListener("pointerdown", closeOnPointerDown);
   }, [miniQueueOpen, setMiniQueue]);
 
-  useEffect(() => {
-    controllerRef.current?.setVolume(muted ? 0 : volume);
-  }, [muted, volume]);
-
-  useEffect(() => {
-    if (!audioElementSupported()) return;
-    if (controllerRef.current) return;
-    // Reuse the synchronously-created audio element from the ref; only create
-    // a fresh one if SSR/storage disabled the early creation (audioRef null).
-    let audio = audioRef.current;
-    if (!audio) {
-      audio = new Audio();
-      audioRef.current = audio;
-    }
-    audio.preload = "metadata";
-    const controller = new PlayerController(audio);
-    const playback = usePlaybackStore.getState();
-    controller.setVolume(playback.muted ? 0 : playback.volume);
-    controllerRef.current = controller;
-
-    let lastDuration: number | null = null;
-
-    controller.on("timeupdate", (payload) => {
+  const handleRuntimeTimeUpdate = useCallback(
+    (payload: TimeUpdatePayload) => {
       setPositionMs(payload.positionMs);
-      if (payload.durationMs !== null && payload.durationMs !== lastDuration) {
-        lastDuration = payload.durationMs;
+      if (
+        payload.durationMs !== null &&
+        payload.durationMs !== lastRuntimeDurationRef.current
+      ) {
+        lastRuntimeDurationRef.current = payload.durationMs;
         setDurationMs(payload.durationMs);
       }
       homeListenSessionRef.current = updateHomeListenSession(
@@ -3683,60 +3669,53 @@ export function App({
         payload.durationMs,
         Date.now(),
       );
-      const idx = selectCurrentIndex(
-        payload.positionMs,
-        lyricsPayloadRef.current,
+      setLyricsIndex(
+        selectCurrentIndex(payload.positionMs, lyricsPayloadRef.current),
       );
-      setLyricsIndex(idx);
-    });
-    controller.on("durationchange", (payload) => {
-      if (payload.durationMs !== null) {
-        setDurationMs(payload.durationMs);
-      }
-    });
-    controller.on("play", () => {
-      pausedAtMsRef.current = null;
-      setPlaying(true);
-    });
-    controller.on("pause", () => {
-      pausedAtMsRef.current = Date.now();
-      homeListenSessionRef.current = updateHomeListenSession(
-        homeListenSessionRef.current,
-        usePlaybackStore.getState().positionMs,
-        usePlaybackStore.getState().durationMs,
-        Date.now(),
-        true,
-      );
-      setPlaying(false);
-    });
-    controller.on("ended", () => {
-      finalizeHomeListenSession(true);
-      setPositionMs(0);
-      usePlaybackStore.getState().ended();
-      if (
-        usePlaybackStore.getState().mode === "single" &&
-        controllerRef.current
-      ) {
-        controllerRef.current.seek(0);
-        void controllerRef.current.play();
-      }
-    });
-    controller.on("error", (payload) => {
-      handlePlaybackErrorRef.current(payload);
-    });
-    return () => {
-      controllerRef.current = null;
-      audioRef.current = null;
-    };
-  }, [
-    setDurationMs,
-    setLyricsIndex,
-    setPlaying,
-    setPositionMs,
-    setSearchError,
-    finalizeHomeListenSession,
-    showToast,
-  ]);
+    },
+    [setDurationMs, setLyricsIndex, setPositionMs],
+  );
+
+  const handleRuntimeDurationChange = useCallback(
+    (payload: TimeUpdatePayload) => {
+      if (payload.durationMs !== null) setDurationMs(payload.durationMs);
+    },
+    [setDurationMs],
+  );
+
+  const handleRuntimePlay = useCallback(() => {
+    pausedAtMsRef.current = null;
+    setPlaying(true);
+  }, [setPlaying]);
+
+  const handleRuntimePause = useCallback(() => {
+    pausedAtMsRef.current = Date.now();
+    homeListenSessionRef.current = updateHomeListenSession(
+      homeListenSessionRef.current,
+      usePlaybackStore.getState().positionMs,
+      usePlaybackStore.getState().durationMs,
+      Date.now(),
+      true,
+    );
+    setPlaying(false);
+  }, [setPlaying]);
+
+  const handleRuntimeEnded = useCallback(() => {
+    finalizeHomeListenSession(true);
+    setPositionMs(0);
+    usePlaybackStore.getState().ended();
+    if (
+      usePlaybackStore.getState().mode === "single" &&
+      controllerRef.current
+    ) {
+      controllerRef.current.seek(0);
+      void controllerRef.current.play();
+    }
+  }, [finalizeHomeListenSession, setPositionMs]);
+
+  const handleRuntimeError = useCallback((payload: ErrorPayload) => {
+    handlePlaybackErrorRef.current(payload);
+  }, []);
 
   useEffect(() => {
     if (!currentTrack) return;
@@ -4823,6 +4802,18 @@ export function App({
         {toast ?? ""}
       </div>
     </div>
+    <PlaybackRuntimeHost
+      audioElementRef={audioRef}
+      controllerRef={controllerRef}
+      volume={volume}
+      muted={muted}
+      onTimeUpdate={handleRuntimeTimeUpdate}
+      onDurationChange={handleRuntimeDurationChange}
+      onPlay={handleRuntimePlay}
+      onPause={handleRuntimePause}
+      onEnded={handleRuntimeEnded}
+      onError={handleRuntimeError}
+    />
     </AppRuntimeProvider>
   );
 }
