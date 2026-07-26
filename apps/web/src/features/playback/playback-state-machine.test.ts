@@ -216,6 +216,48 @@ test("BEGIN_RELOAD keeps the session and consumed recovery budget", () => {
 	expect(ageReload.recoveryAttempts).toBe(1);
 });
 
+test("only the current successful non-error reload restores the recovery budget", () => {
+	const recovering = reducePlaybackState(playingState(), {
+		type: "MEDIA_FAILED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+		recoverable: true,
+		reason: "network",
+	});
+	const reloading = reducePlaybackState(recovering, {
+		type: "BEGIN_RELOAD",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+		reason: "url-age",
+	});
+	const loading = reducePlaybackState(reloading, {
+		type: "SOURCE_READY",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+	});
+	const stale = reducePlaybackState(loading, {
+		type: "RESET_RECOVERY_BUDGET",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+	const restored = reducePlaybackState(loading, {
+		type: "RESET_RECOVERY_BUDGET",
+		playbackSessionId: 1,
+		loadRequestId: 2,
+	});
+	const compatibilityRestore = reducePlaybackState(recovering, {
+		type: "RESET_RECOVERY_BUDGET",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+
+	expect(stale).toBe(loading);
+	expect(restored.phase).toBe("loading");
+	expect(restored.recoveryAttempts).toBe(0);
+	expect(compatibilityRestore.phase).toBe("recovering");
+	expect(compatibilityRestore.recoveryAttempts).toBe(0);
+});
+
 test("a non-recoverable or already recovered media failure records its reason", () => {
 	const failedImmediately = reducePlaybackState(playingState(), {
 		type: "MEDIA_FAILED",

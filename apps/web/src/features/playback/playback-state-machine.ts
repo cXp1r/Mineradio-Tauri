@@ -77,6 +77,11 @@ export type PlaybackMachineEvent =
 			playbackSessionId: number;
 			reason: string;
 	  }
+	| {
+			type: "RESET_RECOVERY_BUDGET";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
 	| { type: "STOP"; playbackSessionId: number };
 
 export function createPlaybackState(): PlaybackMachineState {
@@ -242,6 +247,21 @@ export function reducePlaybackState(
 				return state;
 			}
 			return { ...state, phase: "failed", failureReason: event.reason };
+
+		case "RESET_RECOVERY_BUDGET":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "loading" && state.phase !== "recovering")
+			) {
+				return state;
+			}
+			return state.recoveryAttempts === 0
+				? state
+				: { ...state, recoveryAttempts: 0 };
 
 		case "STOP":
 			if (event.playbackSessionId <= state.playbackSessionId) return state;
