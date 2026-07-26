@@ -13,6 +13,14 @@ import {
   type AppServices,
   type AppServicesFactory,
 } from "./app-services";
+export {
+  deriveSidecarRecoveryNoticeState,
+  nextSidecarStatusPollDelayMs,
+} from "./runtime/sidecar-recovery-policy";
+import {
+  SidecarRecoveryRuntime,
+  type SidecarRuntimeConnection,
+} from "./runtime/SidecarRecoveryRuntime";
 import {
   LOCAL_AUDIO_ACCEPT,
   createLocalAudioTrack,
@@ -62,8 +70,6 @@ import { saveVisualFxToStorage, useVisualStore } from "../stores/visual-store";
 import {
   closeDesktopLyricsWindow,
   configureGlobalHotkeys,
-  getRuntimeConfig,
-  getSidecarStatus,
   getWindowState,
   listenWindowState,
   listenGlobalHotkey,
@@ -76,7 +82,6 @@ import {
   type GlobalHotkeyBinding,
   type JsonValue,
   type RuntimeConfig,
-  type SidecarStatus,
   type WindowState,
 } from "../tauri/runtime";
 import { checkForUpdate, getUpdaterStatus, installUpdate, shouldOpenDevUpdatePreview } from "../tauri/updater";
@@ -143,10 +148,6 @@ import {
 import type { FxState, LyricPalette } from "@mineradio/visual-engine";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
-const SIDECAR_STATUS_POLL_MS = 1500;
-const SIDECAR_STATUS_READY_MAX_POLL_MS = 12000;
-const SIDECAR_STATUS_HIDDEN_MAX_POLL_MS = 60000;
-const SIDECAR_RECOVERED_NOTICE_MS = 2600;
 const PLAYBACK_QUALITY_STORE_KEY = "mineradio-playback-quality-v1";
 const LONG_PAUSE_PLAYBACK_URL_REFRESH_MS = 10 * 60 * 1000;
 const PLAYBACK_URL_MAX_AGE_MS = 20 * 60 * 1000;
@@ -184,16 +185,6 @@ function accountVipBadge(status: ProviderLoginStatus | null | undefined): Accoun
     text,
     icon: status.vipIcon,
     iconUrl: status.vipIconUrl,
-  };
-}
-
-function placeholderRuntimeConfig(): RuntimeConfig {
-  return {
-    sidecarBaseUrl: "",
-    appDataDir: "",
-    appVersion: "0.0.0-dev",
-    schemaVersion: "0.1.0",
-    updaterPublicKeyConfigured: false,
   };
 }
 
@@ -906,41 +897,6 @@ export function shouldShowEmptyHome(input: EmptyHomeStateInput): boolean {
   return true;
 }
 
-export function deriveSidecarRecoveryNoticeState(
-  status: SidecarStatus,
-  previous: SidecarRecoveryNoticeState | null,
-): SidecarRecoveryNoticeState {
-  const recovered =
-    status.phase === "ready" &&
-    !!previous &&
-    (previous.phase === "recovering" ||
-      previous.phase === "stopped" ||
-      previous.phase === "error" ||
-      status.restarts > previous.restarts);
-  return {
-    phase: status.phase,
-    restarts: status.restarts,
-    lastError: status.lastError,
-    recovered,
-  };
-}
-
-export function nextSidecarStatusPollDelayMs(input: {
-  status: SidecarStatus;
-  consecutiveReadyPolls: number;
-  documentHidden?: boolean;
-}): number {
-  if (input.status.phase !== "ready") return SIDECAR_STATUS_POLL_MS;
-  const readySteps = Math.max(0, Math.min(3, Math.floor(input.consecutiveReadyPolls)));
-  const foregroundDelay = Math.min(
-    SIDECAR_STATUS_READY_MAX_POLL_MS,
-    SIDECAR_STATUS_POLL_MS * 2 ** readySteps,
-  );
-  if (!input.documentHidden) return foregroundDelay;
-  if (readySteps >= 3) return SIDECAR_STATUS_HIDDEN_MAX_POLL_MS;
-  return Math.min(SIDECAR_STATUS_HIDDEN_MAX_POLL_MS, foregroundDelay * 2);
-}
-
 export function isDesktopWindowFullscreen(state: WindowState): boolean {
   return !!(
     state.isFullScreen ||
@@ -1279,7 +1235,6 @@ export function App({
   const setSearchKeyword = useSearchStore((s) => s.setKeyword);
   const setSearchError = useSearchStore((s) => s.setError);
 
-  const cancelledRef = useRef(false);
   // Create the audio element synchronously on first render so child effects
   // (e.g. useVisualEngine's initAudioSource) can attach a MediaElementSource
   // before the App-level PlayerController effect runs. The element is only
@@ -1331,17 +1286,6 @@ export function App({
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
   const originalLyricsPayloadRef = useRef(lyricsPayload);
-
-  const initSidecar = useCallback(
-    (cfg: RuntimeConfig) => {
-      const client = createSidecarClient(cfg);
-      setSidecarClient(client);
-      setAppServices(servicesFactory(cfg, client));
-      setSidecarBaseUrl(cfg.sidecarBaseUrl);
-      return client;
-    },
-    [createSidecarClient, servicesFactory],
-  );
 
   const emptyHomeCoreAllowed = shouldShowEmptyHome({
     splashActive: false,
@@ -1840,6 +1784,29 @@ export function App({
           ? podcastValue.collections
           : [],
       );
+    },
+    [],
+  );
+
+  const handleSidecarConnection = useCallback(
+    (connection: SidecarRuntimeConnection) => {
+      setSidecarClient(connection.client);
+      setAppServices(connection.services);
+      setSidecarBaseUrl(connection.config.sidecarBaseUrl);
+    },
+    [],
+  );
+
+  const handleRuntimeLibraryRefresh = useCallback(
+    (connection: SidecarRuntimeConnection) => {
+      void refreshShelfPlaylists(connection.client);
+    },
+    [refreshShelfPlaylists],
+  );
+
+  const handleRecoveryState = useCallback(
+    (state: SidecarRecoveryNoticeState) => {
+      setSidecarRecoveryState(state);
     },
     [],
   );
@@ -3671,58 +3638,6 @@ export function App({
   ]);
 
   useEffect(() => {
-    if (!sidecarBaseUrl) return;
-    let cancelled = false;
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
-    let clearRecoveredTimer: ReturnType<typeof setTimeout> | null = null;
-    let consecutiveReadyPolls = 0;
-
-    async function pollStatus(): Promise<void> {
-      let nextDelayMs = SIDECAR_STATUS_POLL_MS;
-      try {
-        const status = await getSidecarStatus();
-        if (cancelled) return;
-        setSidecarRecoveryState((previous) => {
-          const next = deriveSidecarRecoveryNoticeState(status, previous);
-          if (next.recovered) {
-            if (clearRecoveredTimer) clearTimeout(clearRecoveredTimer);
-            clearRecoveredTimer = setTimeout(() => {
-              setSidecarRecoveryState((current) =>
-                current?.recovered ? { ...current, recovered: false } : current,
-              );
-            }, SIDECAR_RECOVERED_NOTICE_MS);
-          }
-          return next;
-        });
-        nextDelayMs = nextSidecarStatusPollDelayMs({
-          status,
-          consecutiveReadyPolls,
-          documentHidden:
-            typeof document !== "undefined" &&
-            document.visibilityState === "hidden",
-        });
-        consecutiveReadyPolls =
-          status.phase === "ready" ? consecutiveReadyPolls + 1 : 0;
-      } catch {
-        consecutiveReadyPolls = 0;
-      } finally {
-        if (!cancelled) {
-          pollTimer = setTimeout(() => {
-            void pollStatus();
-          }, nextDelayMs);
-        }
-      }
-    }
-
-    void pollStatus();
-    return () => {
-      cancelled = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      if (clearRecoveredTimer) clearTimeout(clearRecoveredTimer);
-    };
-  }, [sidecarBaseUrl]);
-
-  useEffect(() => {
     if (!miniQueueOpen || typeof document === "undefined") return;
     const closeOnPointerDown = (event: PointerEvent) => {
       const target = event.target;
@@ -3737,76 +3652,6 @@ export function App({
   useEffect(() => {
     controllerRef.current?.setVolume(muted ? 0 : volume);
   }, [muted, volume]);
-
-  useEffect(() => {
-    cancelledRef.current = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
-    async function boot(): Promise<void> {
-      let cfg: RuntimeConfig;
-      if (initialRuntimeConfig) cfg = initialRuntimeConfig;
-      else {
-        try {
-          cfg = await getRuntimeConfig();
-        } catch {
-          cfg = placeholderRuntimeConfig();
-        }
-      }
-      if (cancelledRef.current) return;
-
-      if (!cfg.sidecarBaseUrl) {
-        return;
-      }
-
-      const client = initSidecar(cfg);
-      let attempts = 0;
-
-      async function poll(): Promise<void> {
-        try {
-          await client.health();
-          if (cancelledRef.current) return;
-          try {
-            const caps = await client.capabilities();
-            if (!cancelledRef.current) setMatrix(caps);
-          } catch {
-            // 能力矩阵仅用于运行期同步，失败不阻断视觉宿主。
-          }
-          const statusResults = await Promise.allSettled([
-            ...LOGIN_PROVIDERS.map((provider) => client.loginStatus(provider)),
-          ]);
-          if (cancelledRef.current) return;
-          for (const result of statusResults) {
-            if (result.status === "fulfilled") {
-              setProviderStatus(result.value);
-            }
-          }
-          if (!cancelledRef.current) void refreshShelfPlaylists(client);
-        } catch {
-          if (cancelledRef.current) return;
-          attempts += 1;
-          if (attempts < 5) {
-            timer = setTimeout(() => {
-              void poll();
-            }, 800);
-          }
-        }
-      }
-
-      void poll();
-    }
-
-    void boot();
-    return () => {
-      cancelledRef.current = true;
-      if (timer) clearTimeout(timer);
-    };
-  }, [
-    initSidecar,
-    initialRuntimeConfig,
-    refreshShelfPlaylists,
-    setMatrix,
-    setProviderStatus,
-  ]);
 
   useEffect(() => {
     if (!audioElementSupported()) return;
@@ -4187,6 +4032,17 @@ export function App({
 
   return (
     <AppRuntimeProvider services={appServices}>
+    <SidecarRecoveryRuntime
+      initialRuntimeConfig={initialRuntimeConfig}
+      createSidecarClient={createSidecarClient}
+      servicesFactory={servicesFactory}
+      loginProviders={LOGIN_PROVIDERS}
+      onConnection={handleSidecarConnection}
+      onCapabilities={setMatrix}
+      onProviderStatus={setProviderStatus}
+      onRefreshLibrary={handleRuntimeLibraryRefresh}
+      onRecoveryState={handleRecoveryState}
+    />
     <div id="desktop-window-shell">
       <input
         ref={fileInputRef}

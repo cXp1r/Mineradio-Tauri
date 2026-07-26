@@ -1,8 +1,8 @@
 import type { ReactElement } from "react";
-import type { SidecarPhase } from "../../tauri/runtime";
+import type { ApiRuntimePhase } from "../../ports/api-runtime-port";
 
 export interface SidecarRecoveryNoticeState {
-	phase: SidecarPhase;
+	phase: ApiRuntimePhase;
 	restarts: number;
 	lastError: string | null;
 	recovered: boolean;

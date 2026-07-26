@@ -476,11 +476,11 @@ git commit -m "refactor(web): route search through application port"
 - Modify: `apps/web/src/app/App.tsx`
 - Test: `apps/web/src/app/App.test.tsx`
 
-- [ ] **Step 1: Move existing pure recovery functions behind policy tests**
+- [x] **Step 1: Move existing pure recovery functions behind policy tests**
 
 Copy the existing truth table for `deriveSidecarRecoveryNoticeState()` and `nextSidecarStatusPollDelayMs()` into the focused policy test before moving code.
 
-- [ ] **Step 2: Run the focused test against the not-yet-created module**
+- [x] **Step 2: Run the focused test against the not-yet-created module**
 
 ```powershell
 bun test apps/web/src/app/runtime/sidecar-recovery-policy.test.ts
@@ -488,7 +488,7 @@ bun test apps/web/src/app/runtime/sidecar-recovery-policy.test.ts
 
 Expected: FAIL because the policy module does not exist.
 
-- [ ] **Step 3: Move pure policy without changing constants or text**
+- [x] **Step 3: Move pure policy without changing constants or text**
 
 Preserve:
 
@@ -498,11 +498,11 @@ Preserve:
 - `2600` ms recovered notice;
 - all current `SidecarRecoveryNoticeState` values and Chinese copy.
 
-- [ ] **Step 4: Extract runtime ownership with injected ApiRuntimePort and client factory**
+- [x] **Step 4: Extract runtime ownership with injected ApiRuntimePort and client factory**
 
 `SidecarRecoveryRuntime` owns runtime config loading, client creation, status polling, health/capabilities verification, recovery state, cancellation and cleanup. It reports a snapshot to `App` through a render prop or narrow context. It must keep the current `initialRuntimeConfig` and `createSidecarClient` test hooks.
 
-- [ ] **Step 5: Run recovery, App and full web tests**
+- [x] **Step 5: Run recovery, App and full web tests**
 
 ```powershell
 bun test apps/web/src/app/runtime apps/web/src/components/shell/SidecarRecoveryNotice.test.tsx apps/web/src/app/App.test.tsx
@@ -512,7 +512,7 @@ bun run web:build
 
 Expected: PASS with unchanged recovery timing assertions.
 
-- [ ] **Step 6: Commit runtime extraction**
+- [x] **Step 6: Commit runtime extraction**
 
 ```powershell
 git add apps/web/src/app/runtime apps/web/src/app/App.tsx
