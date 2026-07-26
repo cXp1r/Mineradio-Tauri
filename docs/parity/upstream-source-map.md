@@ -1,0 +1,34 @@
+# Electron 2.0.2 上游源码映射
+
+Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
+
+本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。
+
+| 领域 | 上游证据 | 当前 Tauri 证据 | 目标所有权 | 迁移规则 |
+| --- | --- | --- | --- | --- |
+| 启动与本地服务 | `desktop/main.js`、`server.js` | `src-tauri/src/sidecar.rs`、`api/sidecar-client.ts` | `ApiRuntimePort` + legacy adapter | M0–M9 保留现有 supervisor 和 HTTP 行为 |
+| 搜索 | `public/js/modules/05-playback/07-search.js` | `components/shell/SearchShell.tsx` | `SearchExperiencePort` + search controller | 先换依赖类型，不改请求与竞态控制 |
+| 播放 URL 与音质 | `05-playback/00-api-quality-output.js`、`11-provider-fallback.js` | `App.tsx`、`player-controller.ts` | playback runtime | 先冻结现有 reload/fallback，再引入 session id |
+| 队列与切歌 | `05-playback/09-queue-snapshot-autoplay.js` 至 `13-playback-start-audio.js` | playback store、`App.tsx` | playback store/runtime | 真实媒体时钟不受视觉 Frame Gate 限流 |
+| Audio Graph | `05-playback/08-audio-graph-controls.js` | `player-controller.ts`、visual audio modules | playback runtime + visual snapshot | 不让 React 每帧驱动 analyser |
+| 歌词请求 | `06-lyrics/00-lyrics-fetch-parse.js` | lyrics store、custom lyrics、`App.tsx` | lyrics controller | 保留 fallback、自定义歌词与 stale request 语义 |
+| 舞台歌词 | `02-visual/10-lyrics-mask-textures.js` 至 `14-stage-lyrics-rendering.js` | `packages/visual-engine/src/stage-lyrics/**` | visual-engine | 保留旧 mesh 直到新正文 ready，双预算上传 |
+| 主循环与调度 | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | visual-engine runtime | visual scheduler | analyser/视觉采样可限流，媒体状态不可限流 |
+| 3D 歌单架 | `04-shelf/**` | visual shelf modules、`shelf-detail-data.ts` | visual-engine + library controller | 数据增长时 DOM/GPU 对象保持有界 |
+| Home 2.0 | `05-playback/03-home-discover-weather.js`、`03a-home-dashboard.js`、`05-home-actions.js` | `home/EmptyHomeHost.tsx`、`App.tsx` | home controller/surface | 维持当前 API，允许重做 UI 组织 |
+| 完整桌面 | `desktop/full-desktop-mode-runtime.js` | 尚无 | Rust full desktop runtime | 先恢复 journal，再 attach/interactive |
+| 原生桌面图标 | `desktop/desktop-native-icon-layer-runtime.js`、`desktop-icon-shape-runtime.js` | 尚无 | Rust Windows platform | 系统修改必须可对称 rollback |
+| Wallpaper Engine | `desktop/wallpaper-engine-runtime.js`、`wallpaper-engine-library.js` | 尚无 | Rust wallpaper runtime | 只终止能证明由本应用启动的进程 |
+| 桌面歌词 | `desktop/main.js`、overlay preload | desktop lyrics Rust/React modules | desktop runtime | 保持锁定、穿透、拖动和显示器修正 |
+| 内存与资源 | `desktop/system-memory.js`、`00-state/08-desktop-render-power.js` | visual perf state、Rust diagnostics | resources runtime | 系统级释放默认关闭且不在前台播放运行 |
+| Cuefield | `05-playback/16-cuefield-automix-core.js` 至 `18-cuefield-automix-integration.js` | 尚无完整服务 | future playback service | 等待未来 API capability，不进入本轮 |
+
+## 明确不迁移的上游实现
+
+- 同步 XHR 脚本拼接与编号加载顺序；
+- renderer 全局变量和内联事件；
+- Electron 主进程内加载完整 HTTP server；
+- 运行时 PowerShell/C# helper；
+- 登录彩蛋认证门禁；
+- 未使用或未实例化的旧 runtime；
+- Electron 快速补丁更新路径。

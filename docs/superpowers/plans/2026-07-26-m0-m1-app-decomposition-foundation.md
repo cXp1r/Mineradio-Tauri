@@ -66,7 +66,7 @@
 - Create: `scripts/architecture/verify-convergence-baseline.test.ts`
 - Modify: `package.json`
 
-- [ ] **Step 1: Write the failing validator tests**
+- [x] **Step 1: Write the failing validator tests**
 
 Create `scripts/architecture/verify-convergence-baseline.test.ts`:
 
@@ -100,7 +100,7 @@ test("M0 baseline reports missing API freeze markers", () => {
 });
 ```
 
-- [ ] **Step 2: Run the tests and verify the missing module failure**
+- [x] **Step 2: Run the tests and verify the missing module failure**
 
 Run:
 
@@ -110,7 +110,7 @@ bun test scripts/architecture/verify-convergence-baseline.test.ts
 
 Expected: FAIL because `verify-convergence-baseline.mjs` does not exist.
 
-- [ ] **Step 3: Implement the validator and repository documents**
+- [x] **Step 3: Implement the validator and repository documents**
 
 Implement `validateConvergenceBaseline()` as a pure function. It must verify the complete capability header, complete extraction header, the pinned Electron SHA, and every API-freeze marker from the test. Its CLI mode must read the four UTF-8 files and exit non-zero with one diagnostic per missing marker.
 
@@ -122,7 +122,7 @@ Modify the root test script so architecture tests are always included:
 "test": "bun test --parallel=1 packages/shared packages/visual-engine sidecars/api apps/web scripts/ci scripts/architecture"
 ```
 
-- [ ] **Step 4: Run the M0 validator and focused tests**
+- [x] **Step 4: Run the M0 validator and focused tests**
 
 Run:
 
@@ -134,7 +134,7 @@ git diff --check
 
 Expected: both commands exit 0 and the validator prints the four verified document paths.
 
-- [ ] **Step 5: Commit the M0 baseline**
+- [x] **Step 5: Commit the M0 baseline**
 
 ```powershell
 git add docs/parity scripts/architecture package.json

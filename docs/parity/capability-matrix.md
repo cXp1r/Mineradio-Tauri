@@ -1,0 +1,38 @@
+# Mineradio 2.0.2 能力矩阵
+
+上游行为基线：`XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224`。
+
+状态含义：`baseline` 表示当前已有并需要冻结，`partial` 表示已有部分实现，`missing` 表示尚未迁移，`blocked` 表示等待开发中的 `MineRadio-api`。
+
+| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| app.sidecar-recovery | app | `desktop/main.js`、`server.js` | `app/runtime/SidecarRecoveryRuntime.tsx` | baseline | P0 | runtime | legacy-frozen | none | App characterization + status policy | none | none | polling remains bounded |
+| app.dependency-assembly | app | current Tauri composition | `app/AppRuntimeProvider.tsx` | missing | P0 | app | legacy-frozen | none | provider fixture + App smoke | none | none | no startup regression >10% |
+| search.song | search | `05-playback/07-search.js` | `features/search` | baseline | P0 | controller | legacy-frozen | none | SearchShell tests | none | none | long result DOM bounded |
+| search.podcast | search | `06-lyrics/03-podcast-playlist-loaders.js` | `features/search` | baseline | P1 | controller | legacy-frozen | none | podcast drill-down tests | none | none | long result DOM bounded |
+| playback.resolve | playback | `05-playback/11-provider-fallback.js` | `features/playback` | partial | P0 | runtime | legacy-frozen | none | virtual media timeline | parity-playback-v2 | none | source switch bounded |
+| playback.switch | playback | `05-playback/12-playback-switch-core.js` | `features/playback` | partial | P0 | runtime | legacy-frozen | none | stale request tests | parity-playback-v2 | none | no audible stall regression |
+| playback.audio-start | playback | `05-playback/13-playback-start-audio.js` | `features/playback` | partial | P0 | runtime | legacy-frozen | none | PlayerController tests | parity-playback-v2 | none | media clock never frame-gated |
+| playback.gapless | playback | `05-playback/12-playback-switch-core.js` | `features/playback` | missing | P0 | runtime | legacy-frozen | none | dual-owner fixture | parity-playback-v2 | M2 | crossfade frame stability |
+| playback.output-routing | playback | `05-playback/00-api-quality-output.js` | `features/playback` | partial | P1 | runtime | legacy-frozen | preference migration | device integration test | audio-output-routing | M2 | disabled path has zero overhead |
+| queue.actions | playback | `05-playback/10-queue-actions.js` | `features/playback` | baseline | P0 | store/controller | none | SQLite later | store tests | none | none | 240 tracks remain bounded |
+| lyrics.fetch | lyrics | `06-lyrics/00-lyrics-fetch-parse.js` | `features/lyrics` | baseline | P0 | controller | legacy-frozen | custom lyric compatibility | fallback + stale tests | none | none | request cancellation bounded |
+| lyrics.stage-v2 | visual | `02-visual/10-lyrics-mask-textures.js` 至 `14-stage-lyrics-rendering.js` | `packages/visual-engine/src/stage-lyrics` | partial | P0 | visual-engine | none | visual preset compatibility | fixed lyric fixtures | parity-stage-lyrics-v2 | M3 foundation | texture and upload budgets |
+| visual.frame-scheduler | visual | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | `packages/visual-engine/src/runtime` | partial | P0 | visual-engine | none | none | scheduler tests + perf trace | none | M3 | p95 frame time ≤ baseline+10% |
+| visual.sonic-topography | visual | 2.0.2 preset modules | `packages/visual-engine/src/presets/sonic-topography` | missing | P0 | visual-engine | none | preset id migration | screenshot/recording | sonic-topography | M3 | GPU objects bounded |
+| shelf.3d | visual | `04-shelf/**` | `packages/visual-engine/src/shelf` | partial | P0 | visual-engine | legacy-frozen | shelf setting compatibility | interaction + object count | none | M3 | 600 rows remain virtualized |
+| home.dashboard | home | `05-playback/03a-home-dashboard.js` | `features/home` | partial | P1 | controller/surface | legacy-frozen | listen history later | home fixture tests | none | M8 | startup non-blocking |
+| home.weather | home | `05-playback/03-home-discover-weather.js` | `features/home` | baseline | P1 | controller | legacy-frozen | none | weather fixture | none | none | request cancellation bounded |
+| accounts.multi-provider | accounts | Electron account modules | `features/accounts` | baseline | P0 | controller/runtime | legacy-frozen | Cookie unchanged | QR/cookie characterization | none | none | one poller per provider flow |
+| library.playlists | library | `06-lyrics/01-playlist-panel-shell.js`、`02-playlist-detail.js` | `features/library` | baseline | P1 | controller/surface | legacy-frozen | imported data compatible | list/detail tests | none | none | list DOM bounded |
+| likes.mutation | likes | Electron provider actions | `features/likes` | baseline | P1 | controller | legacy-frozen | none | mutation tests | none | none | no duplicate mutation |
+| desktop.lyrics | desktop | `desktop/main.js`、overlay files | `runtime/desktop_lyrics` | partial | P0 | Rust runtime | none | existing preferences | Rust + overlay tests | none | M5 | background refresh bounded |
+| desktop.window | desktop | `desktop/main.js` | `runtime/window` | baseline | P1 | Rust runtime | none | window state compatible | command tests | none | none | no startup regression |
+| desktop.full-mode | desktop | `desktop/full-desktop-mode-runtime.js` | `runtime/full_desktop` | missing | P0 | Rust runtime | none | recovery journal | Windows integration | full-desktop | M5 | watcher bounded |
+| desktop.native-icons | desktop | `desktop/desktop-native-icon-layer-runtime.js` | `platform/windows/explorer_icons.rs` | missing | P0 | Rust platform | none | recovery journal | Explorer lifecycle | native-desktop-icons | M6 | native handles bounded |
+| wallpaper.engine | desktop | `desktop/wallpaper-engine-runtime.js`、`wallpaper-engine-library.js` | `runtime/wallpaper_engine` | missing | P0 | Rust runtime | none | imported project paths | real project lifecycle | wallpaper-engine | M6 | capture and texture bounded |
+| updater.signed | updater | Electron custom updater | existing Tauri updater | baseline | P1 | Rust/Tauri adapter | none | none | updater tests | none | none | startup non-blocking |
+| persistence.preferences | storage | localStorage/file state | `PreferencesRepository` | partial | P0 | repository | none | dual-read/dual-write | migration fixtures | none | M8 | transactions bounded |
+| provider.kugou | provider | `server.js`、`kugou-api.js` | future embedded API adapter | blocked | P2 | future API | future-rust-api | future | adapter conformance | provider-kugou | MineRadio-api | outside current baseline |
+| provider.spotify | provider | `server.js`、`spotify-api.js` | future embedded API adapter | blocked | P2 | future API | future-rust-api | future | OAuth smoke | provider-spotify | MineRadio-api | outside current baseline |
+| cuefield.automix | playback | `05-playback/16-*` 至 `18-*` | future playback service | blocked | P2 | runtime/service | future-rust-api | future | audio fixtures | cuefield | MineRadio-api | planning budget bounded |
