@@ -25,11 +25,11 @@
 - Create: `apps/web/src/features/playback/resolve-playable-audio.ts`
 - Create: `apps/web/src/features/playback/resolve-playable-audio.test.ts`
 
-- [ ] **Step 1: Write failing core tests**
+- [x] **Step 1: Write failing core tests**
 
 覆盖普通远程 URL、`proxied=true` 相对 URL、请求参数透传和空 URL 错误文案。测试使用 recording fake Ports，必须断言未选择的 URL 方法没有调用。
 
-- [ ] **Step 2: Verify RED**
+- [x] **Step 2: Verify RED**
 
 ```powershell
 bun test apps/web/src/features/playback/resolve-playable-audio.test.ts
@@ -37,7 +37,7 @@ bun test apps/web/src/features/playback/resolve-playable-audio.test.ts
 
 Expected: FAIL because the module does not exist.
 
-- [ ] **Step 3: Implement the minimal use case**
+- [x] **Step 3: Implement the minimal use case**
 
 ```ts
 export interface ResolvedPlayableAudio {
@@ -55,14 +55,14 @@ export async function resolvePlayableAudio(input: {
 
 不得捕获或重建 adapter error。
 
-- [ ] **Step 4: Verify GREEN and typecheck**
+- [x] **Step 4: Verify GREEN and typecheck**
 
 ```powershell
 bun test apps/web/src/features/playback/resolve-playable-audio.test.ts
 bun run --filter ./apps/web typecheck
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```powershell
 git add apps/web/src/features/playback docs/superpowers/plans/2026-07-26-m1-playback-port-session-boundary.md
