@@ -17,7 +17,9 @@ test("App delegates current-track session ownership to the playback runtime", ()
 	);
 
 	expect(appSource).toContain("usePlaybackSessionRuntime({");
-	expect(appSource).toMatch(/usePlaybackSessionRuntime\(\{[\s\S]*?\n\s+playbackIntentId,\n/);
+	expect(appSource).toMatch(
+		/usePlaybackSessionRuntime\(\{[\s\S]*?\r?\n\s+playbackIntentId,\r?\n/,
+	);
 	expect(appSource).not.toContain("playback-state-machine");
 	for (const forbidden of [
 		"playbackRequestSeqRef",
