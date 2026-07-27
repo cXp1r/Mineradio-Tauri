@@ -251,6 +251,10 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		state === "mounted" &&
 		lifecycleGeneration === generation &&
 		cancellation.isOpen();
+	const assertMountedLive = (generation: number): void => {
+		if (!isMountedLive(generation)) throw new VisualEngineMountCancelledError();
+	};
+	const isDisposed = (): boolean => state === "disposed";
 
 	return {
 		async mount(container) {
@@ -283,18 +287,19 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 				scheduler.setBackgroundPolicy(frame.settings.backgroundPolicy);
 				scheduler.setForegroundFramePolicy(frame.settings.foregroundFramePolicy);
 				scheduler.setVisibility(visibility);
-				composition.setVisibility(visibility);
-				assertLive(generation, ticket);
-				applyMountedFrame();
-				assertLive(generation, ticket);
 				scheduler.start();
 				assertLive(generation, ticket);
 				running = true;
 				state = "mounted";
 				updatePerformance();
+				const mountedGeneration = lifecycleGeneration;
+				applyMountedFrame();
+				assertMountedLive(mountedGeneration);
+				composition.setVisibility(visibility);
+				assertMountedLive(mountedGeneration);
 			} catch (error) {
 				ticket.signal.removeEventListener("abort", onAbort);
-				if (state === "mounting") {
+				if (!isDisposed()) {
 					state = "disposing";
 					lifecycleGeneration += 1;
 					cleanup();

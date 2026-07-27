@@ -91,6 +91,39 @@ test("mount caches the latest snapshot and applies one frozen shared bundle", as
 	engine.dispose();
 });
 
+test("an unresolved mount commits only the latest complete snapshot bundle", async () => {
+	const wait = deferred();
+	let mountCalls = 0;
+	const applied: VisualFrameSnapshot[] = [];
+	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+		async mount(context) {
+			mountCalls += 1;
+			context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			await wait.promise;
+		},
+		applyFrameSnapshot(snapshot) { applied.push(snapshot); },
+		applyPreset() {}, setVisibility() {}, dispose() {},
+	}) });
+	const mounted = engine.mount(document.createElement("div"));
+	engine.setPlaybackSnapshot({ trackKey: "first", playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
+	engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 99, coverUrl: "cover", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
+	engine.setLyricsSnapshot({ lines: [], fallbackText: "latest lyrics", hasNativeKaraoke: false });
+	engine.setShelfSnapshot({ items: [], pane: "fav", mode: "stage", cameraMode: "static", presence: "always", mergeCollections: false, mineCount: 0, favCount: 1, secondaryLeftDisplaySeamGuard: false });
+	engine.setVisualSettings(fixedSettings(30));
+	engine.setVisualSettings(fixedSettings(60));
+	wait.resolve();
+	await mounted;
+
+	expect(mountCalls).toBe(1);
+	expect(applied).toHaveLength(1);
+	expect(applied[0]?.revision).toBe(6);
+	expect(applied[0]?.playback.trackKey).toBe("latest");
+	expect(applied[0]?.lyrics.fallbackText).toBe("latest lyrics");
+	expect(applied[0]?.shelf.pane).toBe("fav");
+	expect(applied[0]?.settings.foregroundFramePolicy).toEqual({ mode: "fixed", fps: 60 });
+	engine.dispose();
+});
+
 test("mounted updates do not remount and settings update scheduler policy", async () => {
 	let mountCalls = 0;
 	const captured: { current: VisualEngineCompositionContext | null } = { current: null };
@@ -112,6 +145,48 @@ test("mounted updates do not remount and settings update scheduler policy", asyn
 	expect(applied).toEqual([0, 1, 2, 3, 4]);
 	expect(captured.current?.scheduler.getMode()).toBe("foreground");
 	engine.dispose();
+});
+
+test("mounted settings drive fixed cadence and background scheduler policy", async () => {
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	let nextHandle = 1;
+	const callbacks = new Map<number, FrameRequestCallback>();
+	const cancelled: number[] = [];
+	globalThis.requestAnimationFrame = (callback) => {
+		const handle = nextHandle++;
+		callbacks.set(handle, callback);
+		return handle;
+	};
+	globalThis.cancelAnimationFrame = (handle) => { cancelled.push(handle); };
+	try {
+		const decisions: boolean[] = [];
+		const captured: { current: VisualEngineCompositionContext | null } = { current: null };
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(nextContext) {
+				captured.current = nextContext;
+				nextContext.scheduler.registerRuntimeCallbacks({ onAnimation(_now, decision) { decisions.push(decision.run); } });
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+		}) });
+		await engine.mount(document.createElement("div"));
+		engine.setVisualSettings(fixedSettings(30));
+		callbacks.get(1)?.(0);
+		callbacks.get(2)?.(16);
+		expect(decisions).toEqual([true, false]);
+
+		engine.setVisibility({ ...foreground, documentVisible: false });
+		engine.setVisualSettings({ ...fixedSettings(30), backgroundPolicy: "keep" });
+		expect(captured.current?.scheduler.getMode()).toBe("background");
+		expect(callbacks.has(4)).toBe(true);
+		engine.setVisualSettings({ ...fixedSettings(30), backgroundPolicy: "release" });
+		expect(captured.current?.scheduler.getMode()).toBe("released");
+		expect(cancelled).toContain(4);
+		engine.dispose();
+	} finally {
+		globalThis.requestAnimationFrame = originalRequest;
+		globalThis.cancelAnimationFrame = originalCancel;
+	}
 });
 
 test("a second mount rejects and composition is constructed once", async () => {
@@ -206,10 +281,109 @@ test("mount rejection rolls back despite resource disposal failures", async () =
 });
 
 test("missing runtime registration rejects without scheduling work", async () => {
-	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
-		async mount() {}, applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
-	}) });
-	await expectRejected(engine.mount(document.createElement("div")), "runtime callbacks");
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	const originalSetTimeout = globalThis.setTimeout;
+	let frames = 0;
+	let timers = 0;
+	globalThis.requestAnimationFrame = () => { frames += 1; return frames; };
+	globalThis.cancelAnimationFrame = () => {};
+	globalThis.setTimeout = (handler, timeout, ...arguments_) => {
+		timers += 1;
+		return originalSetTimeout(handler, timeout, ...arguments_);
+	};
+	try {
+		let disposed = 0;
+		let released = 0;
+		let visibilityCalls = 0;
+		let frameCalls = 0;
+		const engine = createVisualEngine({
+			mediaClock: clock,
+			initialVisibility: { ...foreground, windowMinimized: true },
+			createComposition: () => ({
+				async mount(context) {
+					context.resources.register({ owner: "test", kind: "timer", retention: "ephemeral", dispose() { released += 1; } });
+				},
+				applyFrameSnapshot() { frameCalls += 1; },
+				applyPreset() {},
+				setVisibility() { visibilityCalls += 1; },
+				dispose() { disposed += 1; },
+			}),
+		});
+		await expectRejected(engine.mount(document.createElement("div")), "runtime callbacks");
+		expect(disposed).toBe(1);
+		expect(released).toBe(1);
+		expect(frames).toBe(0);
+		expect(timers).toBe(0);
+		expect(frameCalls).toBe(0);
+		expect(visibilityCalls).toBe(0);
+	} finally {
+		globalThis.requestAnimationFrame = originalRequest;
+		globalThis.cancelAnimationFrame = originalCancel;
+		globalThis.setTimeout = originalSetTimeout;
+	}
+});
+
+test("a stale mount completion cannot start scheduler handles after disposal", async () => {
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	let requested = 0;
+	globalThis.requestAnimationFrame = () => { requested += 1; return requested; };
+	globalThis.cancelAnimationFrame = () => {};
+	try {
+		const wait = deferred();
+		let applied = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				await wait.promise;
+			},
+			applyFrameSnapshot() { applied += 1; }, applyPreset() {}, setVisibility() {}, dispose() {},
+		}) });
+		const mounted = engine.mount(document.createElement("div"));
+		engine.dispose();
+		await expectRejected(mounted, "cancelled");
+		wait.resolve();
+		await Promise.resolve();
+		expect(requested).toBe(0);
+		expect(applied).toBe(0);
+	} finally {
+		globalThis.requestAnimationFrame = originalRequest;
+		globalThis.cancelAnimationFrame = originalCancel;
+	}
+});
+
+test("a post-start composition delegate failure rejects mount and rolls back once", async () => {
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	let requested = 0;
+	const cancelled: number[] = [];
+	globalThis.requestAnimationFrame = () => { requested += 1; return requested; };
+	globalThis.cancelAnimationFrame = (handle) => { cancelled.push(handle); };
+	try {
+		let disposed = 0;
+		let released = 0;
+		let visibilityCalls = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				context.resources.register({ owner: "test", kind: "timer", retention: "ephemeral", dispose() { released += 1; } });
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() { throw new Error("initial frame failed"); },
+			applyPreset() {},
+			setVisibility() { visibilityCalls += 1; },
+			dispose() { disposed += 1; },
+		}) });
+		await expectRejected(engine.mount(document.createElement("div")), "initial frame failed");
+		expect(requested).toBe(1);
+		expect(cancelled).toEqual([1]);
+		expect(disposed).toBe(1);
+		expect(released).toBe(1);
+		expect(visibilityCalls).toBe(0);
+	} finally {
+		globalThis.requestAnimationFrame = originalRequest;
+		globalThis.cancelAnimationFrame = originalCancel;
+	}
 });
 
 test("visibility and presets delegate only while mounted, and dispose is reentrant-safe", async () => {
@@ -273,4 +447,47 @@ test("performance projects merged budgets and returns a copy", async () => {
 	expect(disposed.runtime.mounted).toBe(false);
 	expect(disposed.runtime.running).toBe(false);
 	expect(disposed.runtime.generation).toBeGreaterThan(first.runtime.generation);
+});
+
+test("dispose cancels queued and running context tasks while releasing ledger cost", async () => {
+	const completion = deferred();
+	const running: { signal: AbortSignal | null } = { signal: null };
+	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+		async mount(context) {
+			context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			context.tasks.enqueue({
+				owner: "test",
+				key: "running",
+				priority: "critical",
+				cost: 1,
+				run(taskContext) { running.signal = taskContext.signal; return completion.promise; },
+				commit() {},
+			});
+			context.tasks.enqueue({
+				owner: "test",
+				key: "queued",
+				priority: "normal",
+				cost: 7,
+				run() {},
+				commit() {},
+			});
+			context.tasks.runSlice(1);
+		},
+		applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+	}) });
+	await engine.mount(document.createElement("div"));
+	const live = engine.getPerformanceSnapshot();
+	expect(live.tasks.running).toBe(1);
+	expect(live.tasks.queued).toBe(1);
+	expect(live.resources.current.queuedTaskCost).toBe(7);
+
+	engine.dispose();
+	expect(running.signal?.aborted).toBe(true);
+	const disposed = engine.getPerformanceSnapshot();
+	expect(disposed.tasks.running).toBe(0);
+	expect(disposed.tasks.queued).toBe(0);
+	expect(disposed.tasks.cancelled).toBe(2);
+	expect(disposed.resources.current.queuedTaskCost).toBe(0);
+	expect(disposed.resources.releases).toBe(2);
+	completion.resolve();
 });
