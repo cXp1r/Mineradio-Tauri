@@ -119,6 +119,16 @@ const schedulerAuthorityActions: readonly SchedulerAuthorityAction[] = [
 ];
 const schedulerPolicyAuthorityActions = schedulerAuthorityActions.slice(3);
 
+interface RuntimeServiceAuthorityAction {
+	readonly name: "resources" | "tasks";
+	invoke(context: VisualEngineCompositionContext): void;
+}
+
+const runtimeServiceAuthorityActions: readonly RuntimeServiceAuthorityAction[] = [
+	{ name: "resources", invoke: (context) => { context.resources.dispose(); } },
+	{ name: "tasks", invoke: (context) => { context.tasks.dispose(); } },
+];
+
 test("mount caches the latest snapshot and applies one frozen shared bundle", async () => {
 	const captured: { current: VisualEngineCompositionContext | null } = { current: null };
 	const applied: VisualFrameSnapshot[] = [];
@@ -815,6 +825,116 @@ test("scheduler authority violations after mount leave mode cadence and handle u
 	}
 });
 
+for (const action of runtimeServiceAuthorityActions) {
+	test(`caught root ${action.name} disposal during mount rejects before commit`, async () => {
+		const frames = installAnimationFrameHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
+		try {
+			let caught = 0;
+			let compositionDisposals = 0;
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+					try {
+						action.invoke(context);
+					} catch {
+						caught += 1;
+					}
+				},
+				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+
+			await expectRejected(engine.mount(document.createElement("div")), "ownership");
+			expect(caught).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(frames.requested).toBe(0);
+			const runtime = engine.getPerformanceSnapshot().runtime;
+			expect(runtime.mounted).toBe(false);
+			expect(runtime.running).toBe(false);
+		} finally {
+			engine?.dispose();
+			frames.restore();
+		}
+	});
+
+	test(`root ${action.name} disposal is rejected without touching the live service`, async () => {
+		const frames = installAnimationFrameHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
+		try {
+			const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+			let compositionDisposals = 0;
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(nextContext) {
+					captured.context = nextContext;
+					nextContext.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				},
+				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+			await engine.mount(document.createElement("div"));
+			const context = captured.context;
+			if (!context) throw new Error("Expected mounted composition context.");
+
+			expect(() => action.invoke(context)).toThrow("ownership");
+			if (action.name === "resources") {
+				const handle = context.resources.register({ owner: "guard", kind: "timer", retention: "ephemeral", dispose() {} });
+				expect(handle.disposed).toBe(false);
+				handle.dispose();
+			} else {
+				expect(context.tasks.enqueue({ owner: "guard", key: "live", priority: "critical", cost: 1, run() {}, commit() {} })).toBe(true);
+				context.tasks.cancelOwner("guard");
+			}
+			expect(() => engine?.setPlaybackSnapshot(playbackSnapshot("still-live"))).not.toThrow();
+			const runtime = engine.getPerformanceSnapshot().runtime;
+			expect(runtime.mounted).toBe(true);
+			expect(runtime.running).toBe(true);
+			expect(compositionDisposals).toBe(0);
+			expect(frames.cancelled).toEqual([]);
+		} finally {
+			engine?.dispose();
+			frames.restore();
+		}
+	});
+
+	test(`caught root ${action.name} disposal from a mounted delegate fails closed`, async () => {
+		const frames = installAnimationFrameHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
+		try {
+			let context: VisualEngineCompositionContext | null = null;
+			let armed = false;
+			let caught = 0;
+			let compositionDisposals = 0;
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(nextContext) {
+					context = nextContext;
+					nextContext.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				},
+				applyFrameSnapshot() {
+					if (!armed || !context) return;
+					try {
+						action.invoke(context);
+					} catch {
+						caught += 1;
+					}
+				},
+				applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+			await engine.mount(document.createElement("div"));
+			armed = true;
+
+			expect(() => engine?.setPlaybackSnapshot(playbackSnapshot(action.name))).toThrow("ownership");
+			expect(caught).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(frames.cancelled).toEqual([1]);
+			const runtime = engine.getPerformanceSnapshot().runtime;
+			expect(runtime.mounted).toBe(false);
+			expect(runtime.running).toBe(false);
+		} finally {
+			engine?.dispose();
+			frames.restore();
+		}
+	});
+}
+
 test("unregistering runtime callbacks after mount immediately disposes the facade", async () => {
 	const frames = installAnimationFrameHarness();
 	try {
@@ -1390,8 +1510,9 @@ test("hard budget denial rejects optional and background registrations with moun
 test("a raw resource registration failure releases its admitted lease", async () => {
 	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
 		async mount(context) {
-			context.resources.dispose();
-			context.resources.register({ owner: "closed", kind: "texture", retention: "persistent", estimatedBytes: 9, dispose() {} });
+			const child = context.resources.createChild("closed");
+			child.dispose();
+			child.register({ owner: "closed", kind: "texture", retention: "persistent", estimatedBytes: 9, dispose() {} });
 		},
 		applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
 	}) });

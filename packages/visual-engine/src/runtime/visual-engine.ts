@@ -1,4 +1,4 @@
-import { createBudgetTaskQueue } from "./budget-task-queue";
+import { createBudgetTaskQueue, type BudgetTaskQueue } from "./budget-task-queue";
 import { createCancellationScope, type CancellationTicket } from "./cancellation-scope";
 import { createPerformanceCollector } from "./performance-collector";
 import {
@@ -121,6 +121,19 @@ class VisualEngineSchedulerOwnershipError extends Error {
 	}
 }
 
+type VisualEngineRuntimeService = "resources" | "tasks";
+
+class VisualEngineRuntimeServiceOwnershipError extends Error {
+	constructor(service?: VisualEngineRuntimeService) {
+		super(
+			service
+				? `Visual engine runtime service ownership forbids composition ${service}.dispose().`
+				: "Visual engine runtime service ownership was violated by the composition.",
+		);
+		this.name = "VisualEngineRuntimeServiceOwnershipError";
+	}
+}
+
 class VisualResourceBudgetAdmissionError extends Error {
 	constructor(registration: VisualResourceRegistration) {
 		super(`Visual resource budget denied ${registration.kind} registration for "${registration.owner}".`);
@@ -222,6 +235,56 @@ interface GuardedVisualScheduler {
 	hasActiveRegistration(): boolean;
 	getOwnershipViolationCount(): number;
 	clearRegistrationForCleanup(): void;
+}
+
+interface GuardedVisualRuntimeServices {
+	readonly resources: VisualResourceScope;
+	readonly tasks: BudgetTaskQueue;
+	getOwnershipViolationCount(): number;
+}
+
+interface VisualEngineOwnershipViolationBaseline {
+	readonly scheduler: number;
+	readonly runtimeServices: number;
+}
+
+function createGuardedVisualRuntimeServices(
+	rawResources: VisualResourceScope,
+	rawTasks: BudgetTaskQueue,
+): GuardedVisualRuntimeServices {
+	let ownershipViolationCount = 0;
+	const rejectDispose = (service: VisualEngineRuntimeService): never => {
+		ownershipViolationCount += 1;
+		throw new VisualEngineRuntimeServiceOwnershipError(service);
+	};
+	const resources: VisualResourceScope = {
+		get name() {
+			return rawResources.name;
+		},
+		get closed() {
+			return rawResources.closed;
+		},
+		isOpen: () => rawResources.isOpen(),
+		register: (registration) => rawResources.register(registration),
+		createChild: (name) => rawResources.createChild(name),
+		releaseRetention: (retention) => rawResources.releaseRetention(retention),
+		dispose: () => rejectDispose("resources"),
+	};
+	const tasks: BudgetTaskQueue = {
+		enqueue(task) {
+			return rawTasks.enqueue(task);
+		},
+		runSlice: (costBudget) => rawTasks.runSlice(costBudget),
+		cancelOwner: (owner) => rawTasks.cancelOwner(owner),
+		cancelPriority: (priority) => rawTasks.cancelPriority(priority),
+		dispose: () => rejectDispose("tasks"),
+		getSnapshot: () => rawTasks.getSnapshot(),
+	};
+	return {
+		resources,
+		tasks,
+		getOwnershipViolationCount: () => ownershipViolationCount,
+	};
 }
 
 function createGuardedVisualScheduler(
@@ -377,6 +440,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	const ledger = createVisualResourceLedger({ budget });
 	const resources = createBudgetedResourceScope(rawResources, ledger);
 	const tasks = createBudgetTaskQueue({ ledger, resourceScope: resources, cancellationScope: cancellation });
+	const runtimeServices = createGuardedVisualRuntimeServices(resources, tasks);
 	const performance = createPerformanceCollector({ resourceBudget: budget });
 	let visibility = copyVisibility(options.initialVisibility ?? DEFAULT_VISIBILITY);
 	let frame = makeFrame(0, DEFAULT_PLAYBACK, DEFAULT_LYRICS, DEFAULT_SHELF, DEFAULT_SETTINGS);
@@ -484,11 +548,19 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		state === "mounted" &&
 		mountCommitted &&
 		lifecycleGeneration === generation;
-	const assertMountSchedulerReady = (ownershipViolationBaseline: number): void => {
-		if (guardedScheduler.getOwnershipViolationCount() !== ownershipViolationBaseline) {
+	const assertMountRuntimeReady = (
+		ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline,
+	): void => {
+		if (guardedScheduler.getOwnershipViolationCount() !== ownershipViolationBaseline.scheduler) {
 			throw new VisualEngineSchedulerStateError(
 				"Visual scheduler lifecycle ownership was violated by the composition.",
 			);
+		}
+		if (
+			runtimeServices.getOwnershipViolationCount() !==
+			ownershipViolationBaseline.runtimeServices
+		) {
+			throw new VisualEngineRuntimeServiceOwnershipError();
 		}
 		if (!guardedScheduler.hasActiveRegistration()) {
 			throw new VisualEngineSchedulerStateError("Visual scheduler runtime registration is not active.");
@@ -497,10 +569,10 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	const assertMountCommitLive = (
 		generation: number,
 		ticket: CancellationTicket,
-		ownershipViolationBaseline: number,
+		ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline,
 	): void => {
 		assertLive(generation, ticket);
-		assertMountSchedulerReady(ownershipViolationBaseline);
+		assertMountRuntimeReady(ownershipViolationBaseline);
 	};
 	const applyRawSchedulerState = (
 		currentFrame: VisualFrameSnapshot,
@@ -513,7 +585,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	const synchronizeInitialState = (
 		generation: number,
 		ticket: CancellationTicket,
-		ownershipViolationBaseline: number,
+		ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline,
 	): void => {
 		let appliedFrameRevision: number | null = null;
 		let appliedVisibilityRevision: number | null = null;
@@ -579,9 +651,15 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		operation: () => void,
 	): boolean => {
 		if (!prepareMountedOperation(generation)) return false;
+		const ownershipViolationBaseline = runtimeServices.getOwnershipViolationCount();
 		try {
 			operation();
 		} catch (error) {
+			invalidateAndCleanup();
+			throw error;
+		}
+		if (runtimeServices.getOwnershipViolationCount() !== ownershipViolationBaseline) {
+			const error = new VisualEngineRuntimeServiceOwnershipError();
 			invalidateAndCleanup();
 			throw error;
 		}
@@ -656,7 +734,10 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 			state = "mounting";
 			lifecycleGeneration += 1;
 			const generation = lifecycleGeneration;
-			const ownershipViolationBaseline = guardedScheduler.getOwnershipViolationCount();
+			const ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline = {
+				scheduler: guardedScheduler.getOwnershipViolationCount(),
+				runtimeServices: runtimeServices.getOwnershipViolationCount(),
+			};
 			const ticket = cancellation.issue("visual-engine", "mount");
 			updatePerformance();
 			let rejectAbort: ((reason: unknown) => void) | null = null;
@@ -666,9 +747,9 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 			const context: VisualEngineCompositionContext = {
 				container,
 				mediaClock: options.mediaClock,
-				resources,
+				resources: runtimeServices.resources,
 				cancellation,
-				tasks,
+				tasks: runtimeServices.tasks,
 				scheduler,
 				performance,
 				getFrameSnapshot: () => frame,
