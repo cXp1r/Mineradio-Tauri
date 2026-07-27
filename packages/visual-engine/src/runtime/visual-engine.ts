@@ -26,6 +26,7 @@ import type {
 	VisualEngineFacade,
 	VisualEngineOptions,
 	VisualFrameSnapshot,
+	VisualPresetId,
 	VisualResourceBudget,
 	VisualResourceUsage,
 	VisualSettingsSnapshot,
@@ -89,7 +90,7 @@ const DEFAULT_SETTINGS: VisualSettingsSnapshot = Object.freeze({
 	prefersReducedMotion: false,
 });
 
-const MAX_INITIAL_SYNC_PASSES = 16;
+const MAX_FACADE_SYNC_PASSES = 16;
 
 class VisualEngineMountCancelledError extends Error {
 	constructor() {
@@ -105,9 +106,17 @@ class VisualEngineSchedulerStateError extends Error {
 	}
 }
 
+type VisualEngineSchedulerOwnedOperation =
+	| "start"
+	| "stop"
+	| "dispose"
+	| "setVisibility"
+	| "setBackgroundPolicy"
+	| "setForegroundFramePolicy";
+
 class VisualEngineSchedulerOwnershipError extends Error {
-	constructor(operation: "start" | "stop" | "dispose") {
-		super(`Visual scheduler lifecycle ownership forbids composition ${operation}().`);
+	constructor(operation: VisualEngineSchedulerOwnedOperation) {
+		super(`Visual scheduler ownership forbids composition ${operation}().`);
 		this.name = "VisualEngineSchedulerOwnershipError";
 	}
 }
@@ -224,8 +233,8 @@ function createGuardedVisualScheduler(
 ): GuardedVisualScheduler {
 	let activeRegistration: object | null = null;
 	let ownershipViolationCount = 0;
-	const rejectLifecycleOperation = (
-		operation: "start" | "stop" | "dispose",
+	const rejectAuthorityOperation = (
+		operation: VisualEngineSchedulerOwnedOperation,
 	): never => {
 		ownershipViolationCount += 1;
 		throw new VisualEngineSchedulerOwnershipError(operation);
@@ -250,27 +259,27 @@ function createGuardedVisualScheduler(
 			};
 		},
 		start() {
-			return rejectLifecycleOperation("start");
+			return rejectAuthorityOperation("start");
 		},
 		stop() {
-			return rejectLifecycleOperation("stop");
+			return rejectAuthorityOperation("stop");
 		},
 		stepOnce(nowMs) {
 			rawScheduler.stepOnce(nowMs);
 		},
-		setVisibility(state) {
-			rawScheduler.setVisibility(state);
+		setVisibility() {
+			return rejectAuthorityOperation("setVisibility");
 		},
-		setBackgroundPolicy(policy) {
-			rawScheduler.setBackgroundPolicy(policy);
+		setBackgroundPolicy() {
+			return rejectAuthorityOperation("setBackgroundPolicy");
 		},
-		setForegroundFramePolicy(policy) {
-			rawScheduler.setForegroundFramePolicy(policy);
+		setForegroundFramePolicy() {
+			return rejectAuthorityOperation("setForegroundFramePolicy");
 		},
 		getMode: () => rawScheduler.getMode(),
 		getGeneration: () => rawScheduler.getGeneration(),
 		dispose() {
-			return rejectLifecycleOperation("dispose");
+			return rejectAuthorityOperation("dispose");
 		},
 	};
 	return {
@@ -384,6 +393,10 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	let mountCommitted = false;
 	let visibilityRevision = 0;
 	let compositionDisposed = false;
+	let mountedDispatchActive = false;
+	let pendingFrameDispatch = false;
+	let pendingVisibilityDispatch = false;
+	let pendingPresetDispatch: VisualPresetId | null = null;
 	let handleActiveRegistrationRemoved = () => {};
 	const guardedScheduler = createGuardedVisualScheduler(rawScheduler, {
 		isCleanupInProgress: () => state === "disposing" || state === "disposed",
@@ -426,6 +439,9 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	const cleanup = () => {
 		mountCommitted = false;
 		running = false;
+		pendingFrameDispatch = false;
+		pendingVisibilityDispatch = false;
+		pendingPresetDispatch = null;
 		guardedScheduler.clearRegistrationForCleanup();
 		cancellation.dispose();
 		try {
@@ -464,14 +480,10 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		);
 	};
 
-	const applyMountedFrame = () => {
-		composition.applyFrameSnapshot(frame);
-	};
-	const isMountedLive = (generation: number): boolean =>
+	const isMountedGenerationCurrent = (generation: number): boolean =>
 		state === "mounted" &&
 		mountCommitted &&
-		lifecycleGeneration === generation &&
-		cancellation.isOpen();
+		lifecycleGeneration === generation;
 	const assertMountSchedulerReady = (ownershipViolationBaseline: number): void => {
 		if (guardedScheduler.getOwnershipViolationCount() !== ownershipViolationBaseline) {
 			throw new VisualEngineSchedulerStateError(
@@ -503,20 +515,30 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		ticket: CancellationTicket,
 		ownershipViolationBaseline: number,
 	): void => {
-		for (let pass = 0; pass < MAX_INITIAL_SYNC_PASSES; pass += 1) {
+		let appliedFrameRevision: number | null = null;
+		let appliedVisibilityRevision: number | null = null;
+		for (let pass = 0; pass < MAX_FACADE_SYNC_PASSES; pass += 1) {
 			assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
 			const currentFrame = frame;
 			const currentVisibility = visibility;
 			const currentVisibilityRevision = visibilityRevision;
+			const shouldApplyFrame = appliedFrameRevision !== currentFrame.revision;
+			const shouldApplyVisibility = appliedVisibilityRevision !== currentVisibilityRevision;
 
 			applyRawSchedulerState(currentFrame, currentVisibility);
 			assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
-			composition.applyFrameSnapshot(currentFrame);
+			if (shouldApplyFrame) {
+				composition.applyFrameSnapshot(currentFrame);
+				assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
+			}
+			if (shouldApplyVisibility) {
+				composition.setVisibility(currentVisibility);
+				assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
+			}
+			applyRawSchedulerState(frame, visibility);
 			assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
-			composition.setVisibility(currentVisibility);
-			assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
-			applyRawSchedulerState(currentFrame, currentVisibility);
-			assertMountCommitLive(generation, ticket, ownershipViolationBaseline);
+			appliedFrameRevision = currentFrame.revision;
+			appliedVisibilityRevision = currentVisibilityRevision;
 
 			if (
 				frame.revision === currentFrame.revision &&
@@ -539,25 +561,91 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	handleActiveRegistrationRemoved = () => {
 		if (state === "mounted" && mountCommitted) invalidateAndCleanup();
 	};
+	const prepareMountedOperation = (generation: number): boolean => {
+		if (!isMountedGenerationCurrent(generation)) return false;
+		if (!cancellation.isOpen()) {
+			invalidateAndCleanup();
+			return false;
+		}
+		if (guardedScheduler.hasActiveRegistration()) return true;
+		const error = new VisualEngineSchedulerStateError(
+			"Visual scheduler runtime registration is not active.",
+		);
+		invalidateAndCleanup();
+		throw error;
+	};
 	const runMountedOperation = (
 		generation: number,
 		operation: () => void,
 	): boolean => {
+		if (!prepareMountedOperation(generation)) return false;
 		try {
 			operation();
 		} catch (error) {
 			invalidateAndCleanup();
 			throw error;
 		}
-		if (!isMountedLive(generation)) return false;
-		if (!guardedScheduler.hasActiveRegistration()) {
+		return prepareMountedOperation(generation);
+	};
+	const hasPendingMountedDispatch = (): boolean =>
+		pendingFrameDispatch ||
+		pendingVisibilityDispatch ||
+		pendingPresetDispatch !== null;
+	const drainMountedDispatch = (): void => {
+		if (mountedDispatchActive || state !== "mounted" || !mountCommitted) return;
+		mountedDispatchActive = true;
+		const generation = lifecycleGeneration;
+		try {
+			for (let pass = 0; pass < MAX_FACADE_SYNC_PASSES; pass += 1) {
+				if (!hasPendingMountedDispatch()) return;
+				const shouldApplyFrame = pendingFrameDispatch;
+				const shouldApplyVisibility = pendingVisibilityDispatch;
+				const preset = pendingPresetDispatch;
+				const currentFrame = frame;
+				const currentVisibility = visibility;
+				pendingFrameDispatch = false;
+				pendingVisibilityDispatch = false;
+				pendingPresetDispatch = null;
+
+				if (!runMountedOperation(
+					generation,
+					() => applyRawSchedulerState(currentFrame, currentVisibility),
+				)) return;
+				if (
+					shouldApplyFrame &&
+					!runMountedOperation(
+						generation,
+						() => composition.applyFrameSnapshot(currentFrame),
+					)
+				) return;
+				if (
+					shouldApplyVisibility &&
+					!runMountedOperation(
+						generation,
+						() => composition.setVisibility(currentVisibility),
+					)
+				) return;
+				if (
+					preset !== null &&
+					!runMountedOperation(generation, () => composition.applyPreset(preset))
+				) return;
+				if (!runMountedOperation(
+					generation,
+					() => applyRawSchedulerState(frame, visibility),
+				)) return;
+				if (!hasPendingMountedDispatch()) {
+					updatePerformance();
+					return;
+				}
+			}
 			const error = new VisualEngineSchedulerStateError(
-				"Visual scheduler runtime registration is not active.",
+				"Visual engine mounted delegates did not stabilize.",
 			);
 			invalidateAndCleanup();
 			throw error;
+		} finally {
+			mountedDispatchActive = false;
 		}
-		return true;
 	};
 
 	return {
@@ -617,53 +705,42 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 			if (state === "disposing" || state === "disposed") return;
 			replaceFrame({ playback: snapshot });
 			if (state !== "mounted" || !mountCommitted) return;
-			const generation = lifecycleGeneration;
-			runMountedOperation(generation, applyMountedFrame);
+			pendingFrameDispatch = true;
+			drainMountedDispatch();
 		},
 		setLyricsSnapshot(snapshot) {
 			if (state === "disposing" || state === "disposed") return;
 			replaceFrame({ lyrics: snapshot });
 			if (state !== "mounted" || !mountCommitted) return;
-			const generation = lifecycleGeneration;
-			runMountedOperation(generation, applyMountedFrame);
+			pendingFrameDispatch = true;
+			drainMountedDispatch();
 		},
 		setShelfSnapshot(snapshot) {
 			if (state === "disposing" || state === "disposed") return;
 			replaceFrame({ shelf: snapshot });
 			if (state !== "mounted" || !mountCommitted) return;
-			const generation = lifecycleGeneration;
-			runMountedOperation(generation, applyMountedFrame);
+			pendingFrameDispatch = true;
+			drainMountedDispatch();
 		},
 		setVisualSettings(snapshot) {
 			if (state === "disposing" || state === "disposed") return;
 			replaceFrame({ settings: snapshot });
 			if (state !== "mounted" || !mountCommitted) return;
-			const generation = lifecycleGeneration;
-			const committed = runMountedOperation(generation, () => {
-				rawScheduler.setBackgroundPolicy(frame.settings.backgroundPolicy);
-				rawScheduler.setForegroundFramePolicy(frame.settings.foregroundFramePolicy);
-				applyMountedFrame();
-			});
-			if (!committed) return;
-			updatePerformance();
+			pendingFrameDispatch = true;
+			drainMountedDispatch();
 		},
 		applyPreset(preset) {
 			if (state !== "mounted" || !mountCommitted || !cancellation.isOpen()) return;
-			const generation = lifecycleGeneration;
-			runMountedOperation(generation, () => composition.applyPreset(preset));
+			pendingPresetDispatch = preset;
+			drainMountedDispatch();
 		},
 		setVisibility(nextVisibility) {
 			if (state === "disposing" || state === "disposed") return;
 			visibility = copyVisibility(nextVisibility);
 			visibilityRevision += 1;
 			if (state !== "mounted" || !mountCommitted) return;
-			const generation = lifecycleGeneration;
-			const committed = runMountedOperation(generation, () => {
-				rawScheduler.setVisibility(visibility);
-				composition.setVisibility(visibility);
-			});
-			if (!committed) return;
-			updatePerformance();
+			pendingVisibilityDispatch = true;
+			drainMountedDispatch();
 		},
 		getPerformanceSnapshot() {
 			updatePerformance();

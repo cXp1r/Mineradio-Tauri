@@ -5,6 +5,7 @@ import type {
 	VisualEngineComposition,
 	VisualEngineCompositionContext,
 	VisualFrameSnapshot,
+	PlaybackVisualSnapshot,
 	ShelfVisualSnapshot,
 	VisualSettingsSnapshot,
 	VisualVisibilityState,
@@ -24,6 +25,11 @@ const foreground: VisualVisibilityState = {
 	windowMinimized: false,
 };
 
+const backgroundVisibility: VisualVisibilityState = {
+	...foreground,
+	documentVisible: false,
+};
+
 function fixedSettings(fps: 30 | 60 = 30): VisualSettingsSnapshot {
 	return {
 		fx: {},
@@ -32,6 +38,19 @@ function fixedSettings(fps: 30 | 60 = 30): VisualSettingsSnapshot {
 		backgroundPolicy: "auto",
 		foregroundFramePolicy: { mode: "fixed", fps },
 		prefersReducedMotion: false,
+	};
+}
+
+function playbackSnapshot(trackKey: string): PlaybackVisualSnapshot {
+	return {
+		trackKey,
+		playing: false,
+		durationMs: null,
+		coverUrl: "",
+		beatMapKey: "",
+		beatMap: null,
+		splashActive: false,
+		homeActive: false,
 	};
 }
 
@@ -84,6 +103,21 @@ function installAnimationFrameHarness(): {
 		},
 	};
 }
+
+interface SchedulerAuthorityAction {
+	readonly name: string;
+	invoke(scheduler: VisualEngineCompositionContext["scheduler"]): void;
+}
+
+const schedulerAuthorityActions: readonly SchedulerAuthorityAction[] = [
+	{ name: "start", invoke: (scheduler) => scheduler.start() },
+	{ name: "stop", invoke: (scheduler) => scheduler.stop() },
+	{ name: "dispose", invoke: (scheduler) => scheduler.dispose() },
+	{ name: "setVisibility", invoke: (scheduler) => scheduler.setVisibility(foreground) },
+	{ name: "setBackgroundPolicy", invoke: (scheduler) => scheduler.setBackgroundPolicy("release") },
+	{ name: "setForegroundFramePolicy", invoke: (scheduler) => scheduler.setForegroundFramePolicy({ mode: "fixed", fps: 30 }) },
+];
+const schedulerPolicyAuthorityActions = schedulerAuthorityActions.slice(3);
 
 test("mount caches the latest snapshot and applies one frozen shared bundle", async () => {
 	const captured: { current: VisualEngineCompositionContext | null } = { current: null };
@@ -576,6 +610,45 @@ test("initial delegate reentrancy stabilizes the latest cached state before sche
 	}
 });
 
+test("initial stabilization replays only the delegate whose revision changed", async () => {
+	for (const changedKind of ["frame", "visibility"] as const) {
+		const frames = installAnimationFrameHarness();
+		try {
+			let changed = false;
+			let frameCalls = 0;
+			let visibilityCalls = 0;
+			let engine: ReturnType<typeof createVisualEngine>;
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				},
+				applyFrameSnapshot() {
+					frameCalls += 1;
+					if (changedKind !== "frame" || changed) return;
+					changed = true;
+					engine.setPlaybackSnapshot(playbackSnapshot("latest"));
+				},
+				applyPreset() {},
+				setVisibility() {
+					visibilityCalls += 1;
+					if (changedKind !== "visibility" || changed) return;
+					changed = true;
+					engine.setVisibility(backgroundVisibility);
+				},
+				dispose() {},
+			}) });
+
+			await engine.mount(document.createElement("div"));
+
+			expect(frameCalls).toBe(changedKind === "frame" ? 2 : 1);
+			expect(visibilityCalls).toBe(changedKind === "visibility" ? 2 : 1);
+			engine.dispose();
+		} finally {
+			frames.restore();
+		}
+	}
+});
+
 test("initial delegate synchronization fails closed when frame revisions never stabilize", async () => {
 	const frames = installAnimationFrameHarness();
 	try {
@@ -631,9 +704,37 @@ test("a caught scheduler ownership violation during initial commit still rejects
 	}
 });
 
-test("composition scheduler lifecycle calls during mount reject without touching the raw scheduler", async () => {
-	const actions: readonly ("start" | "stop" | "dispose")[] = ["start", "stop", "dispose"];
-	for (const action of actions) {
+test("caught scheduler policy ownership violations during mount still roll back", async () => {
+	for (const action of schedulerPolicyAuthorityActions) {
+		const frames = installAnimationFrameHarness();
+		try {
+			let caught = 0;
+			let compositionDisposals = 0;
+			const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+					try {
+						action.invoke(context.scheduler);
+					} catch {
+						caught += 1;
+					}
+				},
+				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+
+			await expectRejected(engine.mount(document.createElement("div")), "ownership");
+			expect(caught).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(frames.requested).toBe(0);
+			expect(frames.cancelled).toEqual([]);
+		} finally {
+			frames.restore();
+		}
+	}
+});
+
+test("composition scheduler authority calls during mount reject without touching the raw scheduler", async () => {
+	for (const action of schedulerAuthorityActions) {
 		const frames = installAnimationFrameHarness();
 		try {
 			let frameCalls = 0;
@@ -641,9 +742,9 @@ test("composition scheduler lifecycle calls during mount reject without touching
 			let resourceDisposals = 0;
 			const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
 				async mount(context) {
-					context.resources.register({ owner: action, kind: "timer", retention: "ephemeral", dispose() { resourceDisposals += 1; } });
+					context.resources.register({ owner: action.name, kind: "timer", retention: "ephemeral", dispose() { resourceDisposals += 1; } });
 					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
-					context.scheduler[action]();
+					action.invoke(context.scheduler);
 				},
 				applyFrameSnapshot() { frameCalls += 1; },
 				applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
@@ -660,34 +761,54 @@ test("composition scheduler lifecycle calls during mount reject without touching
 	}
 });
 
-test("scheduler lifecycle ownership violations after mount leave the raw scheduler running", async () => {
-	const actions: readonly ("start" | "stop" | "dispose")[] = ["start", "stop", "dispose"];
-	for (const action of actions) {
+test("scheduler authority violations after mount leave mode cadence and handle unchanged", async () => {
+	for (const action of schedulerAuthorityActions) {
 		const frames = installAnimationFrameHarness();
 		try {
-			let scheduler: VisualEngineCompositionContext["scheduler"] | null = null;
+			const captured: { scheduler: VisualEngineCompositionContext["scheduler"] | null } = { scheduler: null };
 			let compositionDisposals = 0;
-			const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
-				async mount(context) {
-					scheduler = context.scheduler;
-					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
-				},
-				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
-			}) });
+			const decisions: boolean[] = [];
+			const engine = createVisualEngine({
+				mediaClock: clock,
+				initialVisibility: backgroundVisibility,
+				createComposition: () => ({
+					async mount(context) {
+						captured.scheduler = context.scheduler;
+						context.scheduler.registerRuntimeCallbacks({ onAnimation(_now, decision) { decisions.push(decision.run); } });
+					},
+					applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+				}),
+			});
+			engine.setVisualSettings({
+				...fixedSettings(60),
+				backgroundPolicy: "keep",
+				foregroundFramePolicy: { mode: "vsync" },
+			});
 			await engine.mount(document.createElement("div"));
+			const scheduler = captured.scheduler;
 			if (!scheduler) throw new Error("Expected captured scheduler.");
 
-			expect(() => scheduler?.[action]()).toThrow("ownership");
+			expect(scheduler.getMode()).toBe("background");
+			expect(() => action.invoke(scheduler)).toThrow("ownership");
+			expect(scheduler.getMode()).toBe("background");
 			expect(frames.requested).toBe(1);
 			expect(frames.cancelled).toEqual([]);
+			frames.callbacks.get(1)?.(0);
+			frames.callbacks.get(2)?.(16);
+			expect(decisions).toEqual([true, true]);
 			const liveRuntime = engine.getPerformanceSnapshot().runtime;
 			expect(liveRuntime.mounted).toBe(true);
 			expect(liveRuntime.running).toBe(true);
 			expect(compositionDisposals).toBe(0);
 
 			engine.dispose();
-			expect(frames.cancelled).toEqual([1]);
+			expect(frames.cancelled).toEqual([3]);
 			expect(compositionDisposals).toBe(1);
+			const disposedMode = scheduler.getMode();
+			const disposedGeneration = scheduler.getGeneration();
+			expect(() => action.invoke(scheduler)).toThrow("ownership");
+			expect(scheduler.getMode()).toBe(disposedMode);
+			expect(scheduler.getGeneration()).toBe(disposedGeneration);
 		} finally {
 			frames.restore();
 		}
@@ -749,6 +870,265 @@ test("cleanup reports the scheduler stopped before composition disposal reentran
 
 		expect(frames.cancelled).toEqual([1]);
 		expect(observedRuntime).toEqual({ mounted: false, running: false });
+	} finally {
+		frames.restore();
+	}
+});
+
+test("mounted facade serializes same-type reentrant delegates and applies the latest value", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		type ActiveDelegate = "frame" | "settings" | "visibility" | "preset";
+		let activeDelegate: ActiveDelegate | null = null;
+		let delegateDepth = 0;
+		let maxDelegateDepth = 0;
+		const frameTracks: string[] = [];
+		const settingsRates: number[] = [];
+		const visibilityStates: boolean[] = [];
+		const presets: number[] = [];
+		const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+		let engine: ReturnType<typeof createVisualEngine>;
+		const runDelegate = (operation: () => void) => {
+			delegateDepth += 1;
+			maxDelegateDepth = Math.max(maxDelegateDepth, delegateDepth);
+			try {
+				operation();
+			} finally {
+				delegateDepth -= 1;
+			}
+		};
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				captured.context = context;
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot(snapshot) {
+				if (activeDelegate === "frame") {
+					runDelegate(() => {
+						frameTracks.push(snapshot.playback.trackKey);
+						if (snapshot.playback.trackKey === "outer") engine.setPlaybackSnapshot(playbackSnapshot("inner"));
+					});
+					return;
+				}
+				if (activeDelegate !== "settings") return;
+				runDelegate(() => {
+					const policy = snapshot.settings.foregroundFramePolicy;
+					const fps = policy.mode === "fixed" ? policy.fps : 0;
+					settingsRates.push(fps);
+					if (fps === 30) engine.setVisualSettings(fixedSettings(60));
+				});
+			},
+			applyPreset(preset) {
+				if (activeDelegate !== "preset") return;
+				runDelegate(() => {
+					presets.push(preset);
+					if (preset === 1) engine.applyPreset(2);
+				});
+			},
+			setVisibility(state) {
+				if (activeDelegate !== "visibility") return;
+				runDelegate(() => {
+					visibilityStates.push(state.documentVisible);
+					if (!state.documentVisible) engine.setVisibility(foreground);
+				});
+			},
+			dispose() {},
+		}) });
+		await engine.mount(document.createElement("div"));
+
+		activeDelegate = "frame";
+		maxDelegateDepth = 0;
+		engine.setPlaybackSnapshot(playbackSnapshot("outer"));
+		expect(frameTracks).toEqual(["outer", "inner"]);
+		expect(maxDelegateDepth).toBe(1);
+		expect(captured.context?.getFrameSnapshot().playback.trackKey).toBe("inner");
+
+		activeDelegate = "settings";
+		maxDelegateDepth = 0;
+		engine.setVisualSettings(fixedSettings(30));
+		expect(settingsRates).toEqual([30, 60]);
+		expect(maxDelegateDepth).toBe(1);
+		expect(captured.context?.getFrameSnapshot().settings.foregroundFramePolicy).toEqual({ mode: "fixed", fps: 60 });
+
+		activeDelegate = "visibility";
+		maxDelegateDepth = 0;
+		engine.setVisibility(backgroundVisibility);
+		expect(visibilityStates).toEqual([false, true]);
+		expect(maxDelegateDepth).toBe(1);
+		expect(captured.context?.scheduler.getMode()).toBe("foreground");
+
+		activeDelegate = "preset";
+		maxDelegateDepth = 0;
+		engine.applyPreset(1);
+		expect(presets).toEqual([1, 2]);
+		expect(maxDelegateDepth).toBe(1);
+		engine.dispose();
+	} finally {
+		frames.restore();
+	}
+});
+
+test("mounted facade serializes cross-type reentrancy and converges cache raw scheduler and composition", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		const latestSettings: VisualSettingsSnapshot = {
+			...fixedSettings(30),
+			backgroundPolicy: "keep",
+		};
+		const frameStates: { readonly trackKey: string; readonly fps: number }[] = [];
+		const visibilityStates: boolean[] = [];
+		const presets: number[] = [];
+		const decisions: boolean[] = [];
+		const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+		let armed = false;
+		let frameTriggered = false;
+		let visibilityTriggered = false;
+		let delegateDepth = 0;
+		let maxDelegateDepth = 0;
+		let engine: ReturnType<typeof createVisualEngine>;
+		const runDelegate = (operation: () => void) => {
+			delegateDepth += 1;
+			maxDelegateDepth = Math.max(maxDelegateDepth, delegateDepth);
+			try {
+				operation();
+			} finally {
+				delegateDepth -= 1;
+			}
+		};
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				captured.context = context;
+				context.scheduler.registerRuntimeCallbacks({ onAnimation(_now, decision) { decisions.push(decision.run); } });
+			},
+			applyFrameSnapshot(snapshot) {
+				if (!armed) return;
+				runDelegate(() => {
+					const policy = snapshot.settings.foregroundFramePolicy;
+					frameStates.push({
+						trackKey: snapshot.playback.trackKey,
+						fps: policy.mode === "fixed" ? policy.fps : 0,
+					});
+					if (frameTriggered || snapshot.playback.trackKey !== "outer") return;
+					frameTriggered = true;
+					engine.setVisualSettings(latestSettings);
+					engine.setVisibility(backgroundVisibility);
+					engine.applyPreset(7);
+				});
+			},
+			applyPreset(preset) {
+				if (!armed) return;
+				runDelegate(() => { presets.push(preset); });
+			},
+			setVisibility(state) {
+				if (!armed) return;
+				runDelegate(() => {
+					visibilityStates.push(state.documentVisible);
+					if (visibilityTriggered || state.documentVisible) return;
+					visibilityTriggered = true;
+					engine.setPlaybackSnapshot(playbackSnapshot("from-visibility"));
+				});
+			},
+			dispose() {},
+		}) });
+		await engine.mount(document.createElement("div"));
+		armed = true;
+
+		engine.setPlaybackSnapshot(playbackSnapshot("outer"));
+
+		expect(maxDelegateDepth).toBe(1);
+		expect(frameStates.at(-1)).toEqual({ trackKey: "from-visibility", fps: 30 });
+		expect(visibilityStates.at(-1)).toBe(false);
+		expect(presets).toEqual([7]);
+		expect(captured.context?.getFrameSnapshot().playback.trackKey).toBe("from-visibility");
+		expect(captured.context?.getFrameSnapshot().settings).toBe(latestSettings);
+		expect(captured.context?.scheduler.getMode()).toBe("background");
+		const activeHandle = frames.requested;
+		frames.callbacks.get(activeHandle)?.(0);
+		frames.callbacks.get(activeHandle + 1)?.(16);
+		expect(decisions).toEqual([true, false]);
+		engine.dispose();
+	} finally {
+		frames.restore();
+	}
+});
+
+test("mounted delegate dispatch fails closed when reentrancy never stabilizes", async () => {
+	type ReentrantKind = "frame" | "visibility" | "preset";
+	const kinds: readonly ReentrantKind[] = ["frame", "visibility", "preset"];
+	for (const kind of kinds) {
+		const frames = installAnimationFrameHarness();
+		try {
+			let armed = false;
+			let calls = 0;
+			let delegateDepth = 0;
+			let maxDelegateDepth = 0;
+			let compositionDisposals = 0;
+			let engine: ReturnType<typeof createVisualEngine>;
+			const invoke = (value: number) => {
+				if (kind === "frame") engine.setPlaybackSnapshot(playbackSnapshot(String(value)));
+				else if (kind === "visibility") engine.setVisibility(backgroundVisibility);
+				else engine.applyPreset(value);
+			};
+			const reenter = () => {
+				if (!armed) return;
+				delegateDepth += 1;
+				maxDelegateDepth = Math.max(maxDelegateDepth, delegateDepth);
+				try {
+					calls += 1;
+					if (calls < 100) invoke(calls);
+				} finally {
+					delegateDepth -= 1;
+				}
+			};
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) { context.scheduler.registerRuntimeCallbacks({ onAnimation() {} }); },
+				applyFrameSnapshot() { if (kind === "frame") reenter(); },
+				applyPreset() { if (kind === "preset") reenter(); },
+				setVisibility() { if (kind === "visibility") reenter(); },
+				dispose() { compositionDisposals += 1; },
+			}) });
+			await engine.mount(document.createElement("div"));
+			armed = true;
+
+			expect(() => invoke(0)).toThrow("stabilize");
+			expect(calls).toBeGreaterThan(1);
+			expect(calls).toBeLessThan(100);
+			expect(maxDelegateDepth).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(engine.getPerformanceSnapshot().runtime.mounted).toBe(false);
+			expect(frames.cancelled).toHaveLength(1);
+		} finally {
+			frames.restore();
+		}
+	}
+});
+
+test("mounted dispatch cleans up when a delegate closes the cancellation scope", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let armed = false;
+		let compositionDisposals = 0;
+		let context: VisualEngineCompositionContext | null = null;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(nextContext) {
+				context = nextContext;
+				nextContext.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {
+				if (armed) context?.cancellation.dispose();
+			},
+			applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		armed = true;
+
+		expect(() => engine.setPlaybackSnapshot(playbackSnapshot("cancel"))).not.toThrow();
+
+		const runtime = engine.getPerformanceSnapshot().runtime;
+		expect(runtime.mounted).toBe(false);
+		expect(runtime.running).toBe(false);
+		expect(compositionDisposals).toBe(1);
+		expect(frames.cancelled).toEqual([1]);
 	} finally {
 		frames.restore();
 	}
