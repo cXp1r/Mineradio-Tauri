@@ -25,6 +25,8 @@ export type {
 	VisualBackgroundPolicy,
 	VisualEngineFacade,
 	VisualFrameSnapshot,
+	VisualLyricLine,
+	VisualLyricWord,
 	VisualMediaClock,
 	VisualPerformanceSnapshot,
 	VisualPresetId,
@@ -33,6 +35,7 @@ export type {
 	VisualResourceUsage,
 	VisualRuntimeMode,
 	VisualSettingsSnapshot,
+	VisualShelfItem,
 	VisualVisibilityState,
 } from "./runtime/visual-engine-contract";
 

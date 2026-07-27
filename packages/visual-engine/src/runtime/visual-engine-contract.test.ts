@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import "./visual-engine-contract";
 import type {
 	ForegroundFramePolicy,
 	LyricsVisualSnapshot,
@@ -18,6 +17,35 @@ import type {
 	VisualSettingsSnapshot,
 	VisualVisibilityState,
 } from "../index";
+
+if (false) {
+	const lyrics = null as unknown as LyricsVisualSnapshot;
+	const shelf = null as unknown as ShelfVisualSnapshot;
+
+	// @ts-expect-error 歌词数组必须保持只读
+	lyrics.lines.push({ t: 0, text: "mutated" });
+
+	const line = lyrics.lines[0];
+	if (line) {
+		// @ts-expect-error 歌词行字段不能通过快照引用修改
+		line.text = "mutated";
+	}
+
+	const word = line?.words?.[0];
+	if (word) {
+		// @ts-expect-error 嵌套逐字字段不能通过快照引用修改
+		word.text = "mutated";
+	}
+
+	// @ts-expect-error Shelf 数组必须保持只读
+	shelf.items.push({ title: "mutated" });
+
+	const item = shelf.items[0];
+	if (item) {
+		// @ts-expect-error Shelf item 字段不能通过快照引用修改
+		item.title = "mutated";
+	}
+}
 
 test("visual engine exports the M3 snapshot and facade contracts", () => {
 	const preset: VisualPresetId = 2;
@@ -46,7 +74,13 @@ test("visual engine exports the M3 snapshot and facade contracts", () => {
 		homeActive: true,
 	};
 	const lyrics: LyricsVisualSnapshot = {
-		lines: [{ t: 0, text: "Mineradio" }],
+		lines: [
+			{
+				t: 0,
+				text: "Mineradio",
+				words: [{ t: 0, c0: 0, c1: 9, text: "Mineradio" }],
+			},
+		],
 		fallbackText: "Mineradio",
 		hasNativeKaraoke: false,
 	};

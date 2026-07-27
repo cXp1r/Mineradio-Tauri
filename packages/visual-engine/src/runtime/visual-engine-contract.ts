@@ -1,7 +1,5 @@
 import type { FxState } from "../home-visual/fx-defaults";
-import type { ShelfItem } from "../shelf/shelf-animate";
 import type { ShelfPane } from "../shelf/shelf-state";
-import type { LyricLine } from "../stage-lyrics/lyric-line-progress";
 
 export type VisualPresetId = number;
 
@@ -41,14 +39,43 @@ export interface PlaybackVisualSnapshot {
 	readonly homeActive: boolean;
 }
 
+export interface VisualLyricWord {
+	readonly t: number;
+	readonly d?: number;
+	readonly c0: number;
+	readonly c1: number;
+	readonly text?: string;
+}
+
+export interface VisualLyricLine {
+	readonly t: number;
+	readonly text: string;
+	readonly duration?: number;
+	readonly charCount?: number;
+	readonly fallback?: boolean;
+	readonly words?: readonly VisualLyricWord[];
+}
+
 export interface LyricsVisualSnapshot {
-	readonly lines: readonly LyricLine[];
+	readonly lines: readonly VisualLyricLine[];
 	readonly fallbackText: string;
 	readonly hasNativeKaraoke: boolean;
 }
 
+export interface VisualShelfItem {
+	readonly type?: string;
+	readonly title?: string;
+	readonly sub?: string;
+	readonly cover?: string;
+	readonly tag?: string;
+	readonly playlistId?: string;
+	readonly podcastKey?: string;
+	readonly queueIndex?: number;
+	readonly provider?: string;
+}
+
 export interface ShelfVisualSnapshot {
-	readonly items: readonly ShelfItem[];
+	readonly items: readonly VisualShelfItem[];
 	readonly pane: ShelfPane;
 	readonly mode: string;
 	readonly cameraMode: string;
