@@ -111,6 +111,36 @@ test("start is idempotent and owns exactly one animation frame", () => {
 	expect(driver.activeTimers.size).toBe(0);
 });
 
+test("visibility inputs are copied at construction and setter boundaries", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const initialVisibility = {
+		documentVisible: true,
+		windowVisible: true,
+		windowFocused: true,
+		windowMinimized: false,
+	};
+	const scheduler = createVisualScheduler({
+		driver,
+		onAnimation() {},
+		initialVisibility,
+	});
+
+	initialVisibility.documentVisible = false;
+	scheduler.setBackgroundPolicy("keep");
+	expect(scheduler.getMode()).toBe("foreground");
+
+	const blurredVisibility = {
+		...foregroundVisibility,
+		windowFocused: false,
+	};
+	scheduler.setVisibility(blurredVisibility);
+	expect(scheduler.getMode()).toBe("background");
+
+	blurredVisibility.windowFocused = true;
+	scheduler.setBackgroundPolicy("release");
+	expect(scheduler.getMode()).toBe("released");
+});
+
 test("stop is idempotent and cancels its owned animation frame once", () => {
 	const driver = new FakeVisualSchedulerDriver();
 	const scheduler = createVisualScheduler({
@@ -484,6 +514,44 @@ test("fixed FPS is opt-in and switching back to VSync resets cadence", () => {
 		{ nowMs: 66, run: true, dtSec: 0.016, pendingDtSec: 0 },
 	]);
 	expect(driver.activeFrames.size).toBe(1);
+});
+
+test("frame policy inputs are copied and later legal setters update cadence", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const policy: { mode: "fixed"; fps: 30 | 60 } = {
+		mode: "fixed",
+		fps: 30,
+	};
+	const decisions: { nowMs: number; run: boolean }[] = [];
+	const scheduler = createVisualScheduler({
+		driver,
+		onAnimation(nowMs, decision) {
+			decisions.push({ nowMs, run: decision.run });
+		},
+		initialVisibility: foregroundVisibility,
+		initialForegroundFramePolicy: policy,
+	});
+
+	policy.fps = 60;
+	scheduler.setForegroundFramePolicy(policy);
+	scheduler.start();
+	driver.triggerFrame(driver.onlyFrameHandle, 0);
+	driver.triggerFrame(driver.onlyFrameHandle, 17);
+	expect(decisions).toEqual([
+		{ nowMs: 0, run: true },
+		{ nowMs: 17, run: true },
+	]);
+
+	policy.fps = 30;
+	scheduler.setForegroundFramePolicy({ mode: "fixed", fps: 30 });
+	driver.triggerFrame(driver.onlyFrameHandle, 100);
+	driver.triggerFrame(driver.onlyFrameHandle, 117);
+	expect(decisions).toEqual([
+		{ nowMs: 0, run: true },
+		{ nowMs: 17, run: true },
+		{ nowMs: 100, run: true },
+		{ nowMs: 117, run: false },
+	]);
 });
 
 test("released owns no handle and stale maintenance cannot revive after generations change", () => {

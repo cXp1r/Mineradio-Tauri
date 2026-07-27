@@ -59,6 +59,25 @@ const DEFAULT_VISIBILITY: VisualVisibilityState = {
 	windowMinimized: false,
 };
 
+function copyVisibilityState(
+	state: VisualVisibilityState,
+): VisualVisibilityState {
+	return {
+		documentVisible: state.documentVisible,
+		windowVisible: state.windowVisible,
+		windowFocused: state.windowFocused,
+		windowMinimized: state.windowMinimized,
+	};
+}
+
+function copyForegroundFramePolicy(
+	policy: ForegroundFramePolicy,
+): ForegroundFramePolicy {
+	return policy.mode === "fixed"
+		? { mode: "fixed", fps: policy.fps }
+		: { mode: "vsync" };
+}
+
 export function createVisualScheduler(
 	options: VisualSchedulerOptions,
 ): VisualScheduler {
@@ -66,7 +85,9 @@ export function createVisualScheduler(
 	let running = false;
 	let disposed = false;
 	let generation = 0;
-	let visibility = options.initialVisibility ?? DEFAULT_VISIBILITY;
+	let visibility = copyVisibilityState(
+		options.initialVisibility ?? DEFAULT_VISIBILITY,
+	);
 	let backgroundPolicy = options.initialBackgroundPolicy ?? "auto";
 	let mode = deriveVisualRuntimeMode(visibility, backgroundPolicy);
 	const maintenanceIntervalMs = options.maintenanceIntervalMs ?? 1_000;
@@ -74,8 +95,9 @@ export function createVisualScheduler(
 	let frameToken: object | null = null;
 	let timerHandle: number | null = null;
 	let timerToken: object | null = null;
-	let foregroundFramePolicy: ForegroundFramePolicy =
-		options.initialForegroundFramePolicy ?? ({ mode: "vsync" } as const);
+	let foregroundFramePolicy = copyForegroundFramePolicy(
+		options.initialForegroundFramePolicy ?? { mode: "vsync" },
+	);
 	const frameGate = createFrameGate({
 		rate:
 			foregroundFramePolicy.mode === "fixed"
@@ -239,7 +261,7 @@ export function createVisualScheduler(
 			runAnimation(nowMs, { run: true, dtSec: 0, pendingDtSec: 0 });
 		},
 		setVisibility(state) {
-			visibility = state;
+			visibility = copyVisibilityState(state);
 			transitionMode(deriveVisualRuntimeMode(visibility, backgroundPolicy));
 		},
 		setBackgroundPolicy(policy) {
@@ -247,15 +269,16 @@ export function createVisualScheduler(
 			transitionMode(deriveVisualRuntimeMode(visibility, backgroundPolicy));
 		},
 		setForegroundFramePolicy(policy) {
+			const nextPolicy = copyForegroundFramePolicy(policy);
 			const unchanged =
-				policy.mode === foregroundFramePolicy.mode &&
-				(policy.mode === "vsync" ||
+				nextPolicy.mode === foregroundFramePolicy.mode &&
+				(nextPolicy.mode === "vsync" ||
 					(foregroundFramePolicy.mode === "fixed" &&
-						policy.fps === foregroundFramePolicy.fps));
+						nextPolicy.fps === foregroundFramePolicy.fps));
 			if (unchanged) return;
-			foregroundFramePolicy = policy;
+			foregroundFramePolicy = nextPolicy;
 			frameGate.setRate(
-				policy.mode === "fixed" ? policy.fps : "presentation",
+				nextPolicy.mode === "fixed" ? nextPolicy.fps : "presentation",
 			);
 		},
 		getMode: () => mode,
