@@ -38,6 +38,18 @@ test("runSlice starts higher priorities first and only within its cost budget", 
 	expect(started).toEqual(["critical", "visible"]);
 });
 
+test("runSlice preserves the full critical to background priority order", () => {
+	const { queue } = createQueue();
+	const started: string[] = [];
+	for (const priority of ["background", "normal", "visible", "critical"] as const) {
+		queue.enqueue({ owner: "scene", key: priority, priority, cost: 1, run: () => started.push(priority), commit() {} });
+	}
+
+	for (let index = 0; index < 4; index += 1) queue.runSlice(1);
+
+	expect(started).toEqual(["critical", "visible", "normal", "background"]);
+});
+
 test("replacement, owner cancellation, and priority cancellation release queued ledger cost", () => {
 	const { ledger, queue } = createQueue();
 	queue.enqueue({ owner: "cover", key: "a", priority: "normal", cost: 3, run() {}, commit() {} });
@@ -132,4 +144,44 @@ test("a current task failure increments the failed counter", () => {
 	queue.runSlice(1);
 
 	expect(queue.getSnapshot().failed).toBe(1);
+});
+
+test("abort-handler replacement commits once when owner cancellation is synchronous", async () => {
+	const { queue } = createQueue();
+	const commits: string[] = [];
+	queue.enqueue({
+		owner: "cover",
+		key: "art",
+		priority: "visible",
+		cost: 1,
+		run: ({ signal }) => {
+			signal.addEventListener("abort", () => {
+				queue.enqueue({ owner: "cover", key: "art", priority: "visible", cost: 1, run: () => "replacement", commit: (value) => commits.push(value) });
+			});
+			return new Promise(() => {});
+		},
+		commit() {},
+	});
+	queue.runSlice(1);
+
+	queue.cancelOwner("cover");
+	queue.runSlice(1);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(commits).toEqual(["replacement"]);
+	expect(queue.getSnapshot().cancelled).toBe(1);
+	expect(queue.getSnapshot().staleResultsDropped).toBe(0);
+});
+
+test("peak queue depth excludes running tasks", () => {
+	const { queue } = createQueue();
+	queue.enqueue({ owner: "cover", key: "running", priority: "visible", cost: 1, run: () => new Promise(() => {}), commit() {} });
+	queue.runSlice(1);
+	queue.enqueue({ owner: "cover", key: "queued", priority: "visible", cost: 1, run() {}, commit() {} });
+
+	const snapshot = queue.getSnapshot();
+	expect(snapshot.queued).toBe(1);
+	expect(snapshot.running).toBe(1);
+	expect(snapshot.peakQueueDepth).toBe(1);
 });

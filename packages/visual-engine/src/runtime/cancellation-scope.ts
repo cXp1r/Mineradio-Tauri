@@ -52,7 +52,6 @@ export function createCancellationScope(name: string): CancellationScope {
 			assertOpen();
 			const id = ticketId(owner, key);
 			const previous = tickets.get(id);
-			previous?.controller.abort();
 			const controller = new AbortController();
 			const generation = (generations.get(id) ?? 0) + 1;
 			generations.set(id, generation);
@@ -66,6 +65,7 @@ export function createCancellationScope(name: string): CancellationScope {
 			};
 			entry = { controller, ticket };
 			tickets.set(id, entry);
+			previous?.controller.abort();
 			return ticket;
 		},
 		createChild(childName) {

@@ -43,3 +43,19 @@ test("a stale uncancellable promise cannot commit after a replacement ticket", a
 
 	expect(commits).toEqual([]);
 });
+
+test("synchronous abort reentrancy never leaves a replaced ticket live but stale", () => {
+	const scope = createCancellationScope("root");
+	const first = scope.issue("cover", "album-1");
+	let reentrant = first;
+	first.signal.addEventListener("abort", () => {
+		reentrant = scope.issue("cover", "album-1");
+	});
+
+	const replacement = scope.issue("cover", "album-1");
+
+	for (const ticket of [first, replacement, reentrant]) {
+		expect(ticket.signal.aborted || ticket.isCurrent()).toBe(true);
+	}
+	expect(reentrant.isCurrent()).toBe(true);
+});

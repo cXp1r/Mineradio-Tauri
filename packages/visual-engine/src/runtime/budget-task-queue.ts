@@ -100,7 +100,7 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		options.resourceScope.isOpen() &&
 		!entry.ticket.signal.aborted &&
 		entry.ticket.isCurrent();
-	const queueDepth = () => activeById.size;
+	const queueDepth = () => queued.length;
 	const runningCount = () =>
 		[...activeById.values()].filter((entry) => entry.state === "running").length;
 	const forgetCurrent = (entry: QueueEntry) => {
@@ -116,9 +116,6 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 	};
 	const cancelEntry = (entry: QueueEntry) => {
 		if (entry.state === "cancelled" || entry.state === "settled") return;
-		if (entry.ticket.isCurrent() && cancellationScope.isOpen()) {
-			cancellationScope.issue(entry.task.owner, entry.task.key);
-		}
 		if (entry.state === "queued") {
 			removeQueued(entry);
 			releaseQueuedLease(entry);
@@ -126,6 +123,9 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		entry.state = "cancelled";
 		forgetCurrent(entry);
 		cancelled += 1;
+		if (entry.ticket.isCurrent() && cancellationScope.isOpen()) {
+			cancellationScope.issue(entry.task.owner, entry.task.key);
+		}
 	};
 	const cancelLowPriorityForHardPressure = () => {
 		if (options.ledger.getSnapshot().pressure !== "hard") return;

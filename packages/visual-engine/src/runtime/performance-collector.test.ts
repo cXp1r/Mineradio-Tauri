@@ -49,3 +49,13 @@ test("collector projects task and resource snapshots and returns deep copies", (
 	expect(second.resources.allocations).toBe(11);
 	expect(second.resources.releases).toBe(12);
 });
+
+test("a full collector keeps percentile samples within its fixed capacity", () => {
+	const collector = createPerformanceCollector({ resourceBudget: budget, capacity: 3 });
+	for (const costMs of [1, 2, 3, 40, 50]) {
+		collector.recordFrame({ source: "raf", rendered: true, costMs });
+	}
+
+	expect(collector.getSnapshot().frames.frameCostP50Ms).toBe(40);
+	expect(collector.getSnapshot().frames.frameCostP95Ms).toBe(50);
+});
