@@ -1,4 +1,5 @@
 export const RenderStepSlot = {
+	Beatmap: "beatmap",
 	Ripples: "ripples",
 	FloatLayer: "float-layer",
 	Shelf: "shelf",
@@ -15,6 +16,7 @@ export const RenderStepSlot = {
 export type RenderStepSlot = (typeof RenderStepSlot)[keyof typeof RenderStepSlot];
 
 export const RENDER_STEP_ORDER: readonly RenderStepSlot[] = [
+	RenderStepSlot.Beatmap,
 	RenderStepSlot.Ripples,
 	RenderStepSlot.FloatLayer,
 	RenderStepSlot.Shelf,

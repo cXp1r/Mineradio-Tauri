@@ -118,7 +118,7 @@ export type {
 export { attachRendererResizeSync, createRenderer } from "./runtime/renderer-setup";
 export type { RendererHandle, RendererResizeOptions, RendererResizeSyncOptions, RendererSetupOptions, ThreeModule, ThreeFactory } from "./runtime/renderer-setup";
 export { createRenderLoop } from "./runtime/render-loop";
-export type { RenderLoop, RenderLoopOptions } from "./runtime/render-loop";
+export type { RenderLoop, RenderLoopOptions, RenderStepOptions } from "./runtime/render-loop";
 export { createCinemaCamera } from "./runtime/cinema-camera";
 export type {
 	CinemaCamera,
@@ -172,7 +172,7 @@ export { createRuntimeUniforms } from "./runtime/uniforms";
 export type { RuntimeUniforms, UniformValue } from "./runtime/uniforms";
 export { RenderStepSlot, RENDER_STEP_ORDER } from "./runtime/render-step-slot";
 export type { RenderStepSlot as RenderStepSlotName } from "./runtime/render-step-slot";
-export { createPerfState } from "./runtime/perf-state";
+export { createPerfState, projectPerfState } from "./runtime/perf-state";
 export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/perf-state";
 export type { FrameContext } from "./runtime/frame-context";
 export { createFrameGate } from "./runtime/frame-gate";

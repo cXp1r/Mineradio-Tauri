@@ -1,3 +1,5 @@
+import type { VisualPerformanceSnapshot } from "./visual-engine-contract";
+
 export type RenderPerfMode = "vsync" | `${number}fps`;
 
 export interface PerfState {
@@ -21,5 +23,24 @@ export function createPerfState(now: number): PerfState {
 		skipped: 0,
 		lastRenderAt: now,
 		lastSampleAt: now,
+	};
+}
+
+export function projectPerfState(
+	snapshot: VisualPerformanceSnapshot,
+	modeHint?: RenderPerfMode,
+): PerfStateSnapshot {
+	const presentation = snapshot.gates.presentation;
+	const fps = Math.round(presentation?.effectiveFps ?? 0);
+	return {
+		mode: modeHint ?? (presentation && presentation.skips > 0 && fps > 0
+			? (`${fps}fps` as RenderPerfMode)
+			: "vsync"),
+		frames: snapshot.frames.rafTicks,
+		fps,
+		longFrames: snapshot.frames.longFrames,
+		skipped: snapshot.frames.skippedRenders,
+		lastRenderAt: 0,
+		lastSampleAt: 0,
 	};
 }
