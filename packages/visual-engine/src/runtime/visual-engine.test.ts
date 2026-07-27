@@ -817,57 +817,198 @@ test("composition scheduler authority calls during mount reject without touching
 	}
 });
 
-test("scheduler authority violations after mount leave mode cadence and handle unchanged", async () => {
+test("caught scheduler authority violations from mounted external callbacks fail closed immediately", async () => {
 	for (const action of schedulerAuthorityActions) {
 		const frames = installAnimationFrameHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
 		try {
-			const captured: { scheduler: VisualEngineCompositionContext["scheduler"] | null } = { scheduler: null };
+			const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+			let caught = 0;
 			let compositionDisposals = 0;
-			const decisions: boolean[] = [];
-			const engine = createVisualEngine({
+			let resourceDisposals = 0;
+			engine = createVisualEngine({
 				mediaClock: clock,
-				initialVisibility: backgroundVisibility,
 				createComposition: () => ({
 					async mount(context) {
-						captured.scheduler = context.scheduler;
-						context.scheduler.registerRuntimeCallbacks({ onAnimation(_now, decision) { decisions.push(decision.run); } });
+						captured.context = context;
+						context.resources.register({ owner: action.name, kind: "texture", retention: "persistent", estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+						context.tasks.enqueue({ owner: action.name, key: "queued", priority: "critical", cost: 1, run() {}, commit() {} });
+						context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
 					},
 					applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
 				}),
 			});
-			engine.setVisualSettings({
-				...fixedSettings(60),
-				backgroundPolicy: "keep",
-				foregroundFramePolicy: { mode: "vsync" },
-			});
 			await engine.mount(document.createElement("div"));
-			const scheduler = captured.scheduler;
-			if (!scheduler) throw new Error("Expected captured scheduler.");
+			const context = captured.context;
+			if (!context) throw new Error("Expected captured context.");
 
-			expect(scheduler.getMode()).toBe("background");
-			expect(() => action.invoke(scheduler)).toThrow("ownership");
-			expect(scheduler.getMode()).toBe("background");
-			expect(frames.requested).toBe(1);
-			expect(frames.cancelled).toEqual([]);
-			frames.callbacks.get(1)?.(0);
-			frames.callbacks.get(2)?.(16);
-			expect(decisions).toEqual([true, true]);
-			const liveRuntime = engine.getPerformanceSnapshot().runtime;
-			expect(liveRuntime.mounted).toBe(true);
-			expect(liveRuntime.running).toBe(true);
-			expect(compositionDisposals).toBe(0);
+			const invokeExternalCallback = () => {
+				try {
+					action.invoke(context.scheduler);
+				} catch {
+					caught += 1;
+				}
+			};
+			invokeExternalCallback();
 
-			engine.dispose();
-			expect(frames.cancelled).toEqual([3]);
+			expect(caught).toBe(1);
 			expect(compositionDisposals).toBe(1);
-			const disposedMode = scheduler.getMode();
-			const disposedGeneration = scheduler.getGeneration();
-			expect(() => action.invoke(scheduler)).toThrow("ownership");
-			expect(scheduler.getMode()).toBe(disposedMode);
-			expect(scheduler.getGeneration()).toBe(disposedGeneration);
+			expect(resourceDisposals).toBe(1);
+			expect(frames.cancelled).toEqual([1]);
+			const disposed = engine.getPerformanceSnapshot();
+			expect(disposed.runtime.mounted).toBe(false);
+			expect(disposed.runtime.running).toBe(false);
+			expect(disposed.tasks.cancelled).toBe(1);
+			const generation = context.scheduler.getGeneration();
+			invokeExternalCallback();
+			engine.dispose();
+			expect(caught).toBe(2);
+			expect(context.scheduler.getGeneration()).toBe(generation);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
 		} finally {
+			engine?.dispose();
 			frames.restore();
 		}
+	}
+});
+
+test("caught root cancellation disposal during mount rejects before commit", async () => {
+	const frames = installAnimationFrameHarness();
+	let engine: ReturnType<typeof createVisualEngine> | null = null;
+	try {
+		let caught = 0;
+		let compositionDisposals = 0;
+		let disposedBeforeMountReturned = false;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				try {
+					context.cancellation.dispose();
+				} catch {
+					caught += 1;
+				}
+				disposedBeforeMountReturned = compositionDisposals !== 0;
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+		}) });
+
+		await expectRejected(engine.mount(document.createElement("div")), "ownership");
+		expect(caught).toBe(1);
+		expect(disposedBeforeMountReturned).toBe(false);
+		expect(compositionDisposals).toBe(1);
+		expect(frames.requested).toBe(0);
+		const runtime = engine.getPerformanceSnapshot().runtime;
+		expect(runtime.mounted).toBe(false);
+		expect(runtime.running).toBe(false);
+	} finally {
+		engine?.dispose();
+		frames.restore();
+	}
+});
+
+test("caught root cancellation disposal from a released external callback fails closed immediately", async () => {
+	const frames = installAnimationFrameHarness();
+	let engine: ReturnType<typeof createVisualEngine> | null = null;
+	try {
+		const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+		let caught = 0;
+		let compositionDisposals = 0;
+		let resourceDisposals = 0;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				captured.context = context;
+				context.resources.register({ owner: "released-cancellation", kind: "texture", retention: "persistent", estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+				context.tasks.enqueue({ owner: "released-cancellation", key: "queued", priority: "critical", cost: 1, run() {}, commit() {} });
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		engine.setVisibility(backgroundVisibility);
+		engine.setVisualSettings({ ...fixedSettings(30), backgroundPolicy: "release" });
+		const context = captured.context;
+		if (!context) throw new Error("Expected mounted composition context.");
+		expect(context.scheduler.getMode()).toBe("released");
+
+		const invokeExternalCallback = () => {
+			try {
+				context.cancellation.dispose();
+			} catch {
+				caught += 1;
+			}
+		};
+		invokeExternalCallback();
+
+		expect(caught).toBe(1);
+		expect(compositionDisposals).toBe(1);
+		expect(resourceDisposals).toBe(1);
+		expect(context.cancellation.isOpen()).toBe(false);
+		const disposed = engine.getPerformanceSnapshot();
+		expect(disposed.runtime.mounted).toBe(false);
+		expect(disposed.runtime.running).toBe(false);
+		expect(disposed.tasks.cancelled).toBe(1);
+		const generation = context.scheduler.getGeneration();
+		invokeExternalCallback();
+		engine.dispose();
+		expect(caught).toBe(2);
+		expect(context.scheduler.getGeneration()).toBe(generation);
+		expect(compositionDisposals).toBe(1);
+		expect(resourceDisposals).toBe(1);
+	} finally {
+		engine?.dispose();
+		frames.restore();
+	}
+});
+
+test("composition child cancellation disposal remains legal and keeps the facade live", async () => {
+	const frames = installAnimationFrameHarness();
+	let engine: ReturnType<typeof createVisualEngine> | null = null;
+	try {
+		const captured: {
+			context: VisualEngineCompositionContext | null;
+			child: ReturnType<VisualEngineCompositionContext["cancellation"]["createChild"]> | null;
+		} = { context: null, child: null };
+		let compositionDisposals = 0;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				captured.context = context;
+				captured.child = context.cancellation.createChild("composition-child");
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		const context = captured.context;
+		const child = captured.child;
+		if (!context || !child) throw new Error("Expected cancellation scopes.");
+		const rootTicket = context.cancellation.issue("composition", "root-ticket");
+		const childTicket = child.issue("composition", "child-ticket");
+
+		expect(context.cancellation.name).toBe("visual-engine");
+		expect(context.cancellation.closed).toBe(false);
+		expect(context.cancellation.isOpen()).toBe(true);
+		expect(rootTicket.isCurrent()).toBe(true);
+		child.dispose();
+
+		expect(child.closed).toBe(true);
+		expect(childTicket.signal.aborted).toBe(true);
+		expect(context.cancellation.isOpen()).toBe(true);
+		expect(rootTicket.isCurrent()).toBe(true);
+		const live = engine.getPerformanceSnapshot().runtime;
+		expect(live.mounted).toBe(true);
+		expect(live.running).toBe(true);
+		expect(compositionDisposals).toBe(0);
+		expect(frames.cancelled).toEqual([]);
+
+		engine.dispose();
+		expect(context.cancellation.closed).toBe(true);
+		expect(rootTicket.signal.aborted).toBe(true);
+		expect(compositionDisposals).toBe(1);
+		expect(frames.cancelled).toEqual([1]);
+	} finally {
+		engine?.dispose();
+		frames.restore();
 	}
 });
 
@@ -903,15 +1044,19 @@ for (const action of runtimeServiceAuthorityActions) {
 		}
 	});
 
-	test(`root ${action.name} disposal is rejected without touching the live service`, async () => {
+	test(`caught root ${action.name} disposal from a mounted external callback fails closed immediately`, async () => {
 		const frames = installAnimationFrameHarness();
 		let engine: ReturnType<typeof createVisualEngine> | null = null;
 		try {
 			const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+			let caught = 0;
 			let compositionDisposals = 0;
+			let resourceDisposals = 0;
 			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
 				async mount(nextContext) {
 					captured.context = nextContext;
+					nextContext.resources.register({ owner: action.name, kind: "texture", retention: "persistent", estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+					nextContext.tasks.enqueue({ owner: action.name, key: "queued", priority: "critical", cost: 1, run() {}, commit() {} });
 					nextContext.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
 				},
 				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
@@ -920,21 +1065,30 @@ for (const action of runtimeServiceAuthorityActions) {
 			const context = captured.context;
 			if (!context) throw new Error("Expected mounted composition context.");
 
-			expect(() => action.invoke(context)).toThrow("ownership");
-			if (action.name === "resources") {
-				const handle = context.resources.register({ owner: "guard", kind: "timer", retention: "ephemeral", dispose() {} });
-				expect(handle.disposed).toBe(false);
-				handle.dispose();
-			} else {
-				expect(context.tasks.enqueue({ owner: "guard", key: "live", priority: "critical", cost: 1, run() {}, commit() {} })).toBe(true);
-				context.tasks.cancelOwner("guard");
-			}
-			expect(() => engine?.setPlaybackSnapshot(playbackSnapshot("still-live"))).not.toThrow();
-			const runtime = engine.getPerformanceSnapshot().runtime;
-			expect(runtime.mounted).toBe(true);
-			expect(runtime.running).toBe(true);
-			expect(compositionDisposals).toBe(0);
-			expect(frames.cancelled).toEqual([]);
+			const invokeExternalCallback = () => {
+				try {
+					action.invoke(context);
+				} catch {
+					caught += 1;
+				}
+			};
+			invokeExternalCallback();
+
+			expect(caught).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
+			expect(frames.cancelled).toEqual([1]);
+			const disposed = engine.getPerformanceSnapshot();
+			expect(disposed.runtime.mounted).toBe(false);
+			expect(disposed.runtime.running).toBe(false);
+			expect(disposed.tasks.cancelled).toBe(1);
+			const generation = context.scheduler.getGeneration();
+			invokeExternalCallback();
+			engine.dispose();
+			expect(caught).toBe(2);
+			expect(context.scheduler.getGeneration()).toBe(generation);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
 		} finally {
 			engine?.dispose();
 			frames.restore();
@@ -1456,7 +1610,7 @@ test("mounted delegate dispatch fails closed when reentrancy never stabilizes", 
 	}
 });
 
-test("mounted dispatch cleans up when a delegate closes the cancellation scope", async () => {
+test("mounted dispatch fails closed when a delegate attempts root cancellation disposal", async () => {
 	const frames = installAnimationFrameHarness();
 	try {
 		let armed = false;
@@ -1475,7 +1629,7 @@ test("mounted dispatch cleans up when a delegate closes the cancellation scope",
 		await engine.mount(document.createElement("div"));
 		armed = true;
 
-		expect(() => engine.setPlaybackSnapshot(playbackSnapshot("cancel"))).not.toThrow();
+		expect(() => engine.setPlaybackSnapshot(playbackSnapshot("cancel"))).toThrow("ownership");
 
 		const runtime = engine.getPerformanceSnapshot().runtime;
 		expect(runtime.mounted).toBe(false);
