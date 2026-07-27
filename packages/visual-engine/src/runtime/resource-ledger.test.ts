@@ -195,6 +195,19 @@ test("hard projected pressure denies only optional and background allocations", 
 	});
 });
 
+test("invalid runtime priorities are rejected without changing accounting", () => {
+	const ledger = createVisualResourceLedger({ budget });
+	const before = ledger.getSnapshot();
+
+	for (const priority of ["critical", "visible", "unknown", null]) {
+		expect(() =>
+			ledger.admit({ textureBytes: budget.textureBytes + 1 }, priority as any),
+		).toThrow(TypeError);
+	}
+
+	expect(ledger.getSnapshot()).toEqual(before);
+});
+
 test("budget, usage, admissions, and snapshots do not retain mutable aliases", () => {
 	const mutableBudget = { ...budget };
 	const ledger = createVisualResourceLedger({ budget: mutableBudget });

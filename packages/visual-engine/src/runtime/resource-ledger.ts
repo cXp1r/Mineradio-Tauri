@@ -143,6 +143,14 @@ export function createVisualResourceLedger(
 
 	return {
 		admit(inputUsage, priority) {
+			if (
+				priority !== "essential" &&
+				priority !== "normal" &&
+				priority !== "optional" &&
+				priority !== "background"
+			) {
+				throw new TypeError(`Unknown visual resource priority: ${String(priority)}.`);
+			}
 			const usage = normalizeUsage(inputUsage);
 			const projected = addUsage(current, usage);
 			const projectedPressure = pressureForUsage(

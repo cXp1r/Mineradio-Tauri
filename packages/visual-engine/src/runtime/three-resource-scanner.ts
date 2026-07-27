@@ -92,6 +92,13 @@ export function scanThreeResourceUsage(
 		scanArray(value.array);
 		if (isRecord(value.data)) scanArray(value.data.array);
 	};
+	const scanAttributeCollection = (value: unknown) => {
+		if (Array.isArray(value)) {
+			for (const attribute of value) scanAttribute(attribute);
+			return;
+		}
+		scanAttribute(value);
+	};
 
 	const scanGeometry = (value: unknown) => {
 		if (!isRecord(value) || seenGeometries.has(value)) return;
@@ -99,6 +106,11 @@ export function scanThreeResourceUsage(
 		if (isRecord(value.attributes)) {
 			for (const attribute of Object.values(value.attributes)) {
 				scanAttribute(attribute);
+			}
+		}
+		if (isRecord(value.morphAttributes)) {
+			for (const morphAttributes of Object.values(value.morphAttributes)) {
+				scanAttributeCollection(morphAttributes);
 			}
 		}
 		scanAttribute(value.index);

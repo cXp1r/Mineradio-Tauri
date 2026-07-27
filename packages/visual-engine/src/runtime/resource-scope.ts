@@ -152,7 +152,7 @@ function createVisualResourceScopeAtPath(
 				kind: registration.kind,
 				retention: registration.retention,
 				estimatedBytes: registration.estimatedBytes,
-				disposer: registration.dispose,
+				disposer: registration.dispose.bind(registration),
 				disposed: false,
 			};
 			entries.push(entry);

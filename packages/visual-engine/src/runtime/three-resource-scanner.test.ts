@@ -178,3 +178,53 @@ test("common interleaved geometry, material arrays, and shader uniforms are scan
 	});
 	expect(disposeCalls).toBe(0);
 });
+
+test("morph attributes include array and single entries with typed-array identity de-duplication", () => {
+	let disposeCalls = 0;
+	const basePositions = new Float32Array(6);
+	const sharedBaseAndMorph = new Float32Array(3);
+	const morphPositions = new Float32Array(9);
+	const singleMorph = new Uint16Array(4);
+	const geometry = {
+		attributes: {
+			position: { array: basePositions },
+			shared: { array: sharedBaseAndMorph },
+		},
+		morphAttributes: {
+			position: [
+				{ array: sharedBaseAndMorph },
+				{ array: morphPositions },
+			],
+			normal: { array: singleMorph },
+		},
+		dispose: () => {
+			disposeCalls += 1;
+		},
+	};
+	const material = {
+		dispose: () => {
+			disposeCalls += 1;
+		},
+	};
+	const object = {
+		geometry,
+		material,
+		children: [],
+		dispose: () => {
+			disposeCalls += 1;
+		},
+	};
+
+	expect(scanThreeResourceUsage(object)).toEqual({
+		textureBytes: 0,
+		geometryBytes:
+			basePositions.byteLength +
+			sharedBaseAndMorph.byteLength +
+			morphPositions.byteLength +
+			singleMorph.byteLength,
+		meshCount: 1,
+		queuedTaskCost: 0,
+		cacheBytes: 0,
+	});
+	expect(disposeCalls).toBe(0);
+});

@@ -86,6 +86,26 @@ test("a reentrant disposer observes the shared handle as already disposed", () =
 	expect(calls).toBe(1);
 });
 
+test("method-style disposers retain the registration as their this value", () => {
+	const scope = createVisualResourceScope("method-disposer");
+	let observedThis: unknown;
+	const registration = {
+		owner: "method-resource",
+		kind: "listener" as const,
+		retention: "persistent" as const,
+		dispose() {
+			observedThis = this;
+		},
+	};
+	const handle = scope.register(registration);
+
+	const report = handle.dispose();
+
+	expect(observedThis).toBe(registration);
+	expect(report.errors).toEqual([]);
+	expect(report.disposed).toBe(1);
+});
+
 test("closed scopes reject resource registration and child creation", () => {
 	const scope = createVisualResourceScope("closed-scope");
 	scope.dispose();
