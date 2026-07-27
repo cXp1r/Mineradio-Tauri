@@ -225,6 +225,31 @@ export type {
 	VisualResourceLedgerSnapshot,
 	VisualResourcePriority,
 } from "./runtime/resource-ledger";
+export {
+	createCancellationScope,
+	CancellationScopeClosedError,
+} from "./runtime/cancellation-scope";
+export type {
+	CancellationScope,
+	CancellationTicket,
+} from "./runtime/cancellation-scope";
+export { createBudgetTaskQueue } from "./runtime/budget-task-queue";
+export type {
+	BudgetTask,
+	BudgetTaskContext,
+	BudgetTaskPriority,
+	BudgetTaskQueue,
+	BudgetTaskQueueOptions,
+	VisualTaskQueueSnapshot,
+} from "./runtime/budget-task-queue";
+export { createPerformanceCollector } from "./runtime/performance-collector";
+export type {
+	PerformanceCollector,
+	PerformanceCollectorOptions,
+	PerformanceFrameSample,
+	PerformanceGateSample,
+	PerformanceRuntimeState,
+} from "./runtime/performance-collector";
 export { scanThreeResourceUsage } from "./runtime/three-resource-scanner";
 export type { ThreeResourceObjectLike } from "./runtime/three-resource-scanner";
 
