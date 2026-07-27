@@ -388,6 +388,35 @@ test("splash path renders every 520ms and skips step registry", () => {
 	loop.dispose();
 });
 
+test("stop then start inside the splash predicate cannot revive the old tick", () => {
+	const calls: string[] = [];
+	let restartPipeline = () => {};
+	let restarted = false;
+	const { loop, renderer } = makeLoop({
+		isMainSceneCoveredBySplash() {
+			calls.push("splash");
+			if (restarted) return true;
+			restarted = true;
+			restartPipeline();
+			return true;
+		},
+	});
+	restartPipeline = () => {
+		loop.stop();
+		loop.start();
+	};
+
+	loop.stepOnce();
+
+	expect(calls).toEqual(["splash"]);
+	expect(renderer.renderCount).toBe(0);
+
+	loop.stepOnce();
+	expect(calls).toEqual(["splash", "splash"]);
+	expect(renderer.renderCount).toBe(1);
+	loop.dispose();
+});
+
 test("uniforms.uTime advances by dt each frame", () => {
 	let now = 1000;
 	const { loop, uniforms } = makeLoop({ now: () => now });
@@ -845,6 +874,44 @@ test("a failing audio update records diagnostics while snapshot, later steps, an
 	loop.dispose();
 });
 
+test("stop then start inside audio update cannot revive the old tick but the next tick runs", () => {
+	const calls: string[] = [];
+	let restartPipeline = () => {};
+	let restarted = false;
+	let laneRuns = 0;
+	const { loop, renderer } = makeLoop({
+		audio: {
+			update() {
+				calls.push("audio.update");
+				if (restarted) return;
+				restarted = true;
+				restartPipeline();
+			},
+			getSnapshot() {
+				calls.push("audio.getSnapshot");
+				return makeAudioSnapshot({ beatPulse: 0.8 });
+			},
+		},
+	});
+	restartPipeline = () => {
+		loop.stop();
+		loop.start();
+	};
+	loop.registerStep(RenderStepSlot.Ripples, () => { laneRuns += 1; });
+
+	loop.stepOnce();
+
+	expect(calls).toEqual(["audio.update"]);
+	expect(laneRuns).toBe(0);
+	expect(renderer.renderCount).toBe(0);
+
+	loop.stepOnce();
+	expect(calls).toEqual(["audio.update", "audio.update", "audio.getSnapshot"]);
+	expect(laneRuns).toBe(1);
+	expect(renderer.renderCount).toBe(1);
+	loop.dispose();
+});
+
 test("a failing audio snapshot uses a frozen neutral snapshot without blocking later steps or render", () => {
 	const calls: string[] = [];
 	let visualSnapshot: AudioSnapshot | undefined;
@@ -868,6 +935,44 @@ test("a failing audio snapshot uses a frozen neutral snapshot without blocking l
 	expect(visualSnapshot).toEqual(makeAudioSnapshot());
 	expect(Object.isFrozen(visualSnapshot)).toBe(true);
 	expect(renderer.renderCount).toBe(1);
+	expect(performance.getSnapshot().gates["audio-analysis"]?.errors).toBe(1);
+	loop.dispose();
+});
+
+test("a failed later audio snapshot replaces cached reactive data with a frozen neutral snapshot", () => {
+	let now = 1_000;
+	let snapshotReads = 0;
+	const visualSnapshots: AudioSnapshot[] = [];
+	const { loop, renderer, performance } = makeLoop({
+		now: () => now,
+		audio: {
+			update() {},
+			getSnapshot() {
+				snapshotReads += 1;
+				if (snapshotReads === 1) {
+					return makeAudioSnapshot({
+						beatPulse: 0.8,
+						frequencyBands: new Float32Array([0.75, 0.25]),
+					});
+				}
+				throw new Error("later audio snapshot failed");
+			},
+		},
+	});
+	loop.registerStep(RenderStepSlot.Ripples, (ctx) => { visualSnapshots.push(ctx.snapshot); });
+
+	loop.stepOnce();
+	now += 17;
+	loop.stepOnce();
+
+	expect(visualSnapshots).toHaveLength(2);
+	expect(visualSnapshots[0]?.beatPulse).toBe(0.8);
+	expect(visualSnapshots[0]?.frequencyBands?.[0]).toBeCloseTo(0.75, 6);
+	expect(visualSnapshots[1]).toEqual(makeAudioSnapshot());
+	expect(visualSnapshots[1]).not.toBe(visualSnapshots[0]);
+	expect(visualSnapshots[1]?.frequencyBands).toBeUndefined();
+	expect(Object.isFrozen(visualSnapshots[1])).toBe(true);
+	expect(renderer.renderCount).toBe(2);
 	expect(performance.getSnapshot().gates["audio-analysis"]?.errors).toBe(1);
 	loop.dispose();
 });
@@ -901,6 +1006,35 @@ test("a failing isActive predicate is isolated and recorded before later steps r
 	expect(beatmapGate?.runs).toBe(0);
 	expect(beatmapGate?.skips).toBe(1);
 	expect(beatmapGate?.errors).toBe(1);
+	loop.dispose();
+});
+
+test("stop then start inside an isActive predicate cannot revive the old tick", () => {
+	const calls: string[] = [];
+	let restarted = false;
+	const { loop, renderer } = makeLoop();
+	loop.registerStep(RenderStepSlot.Beatmap, () => { calls.push("beatmap"); }, {
+		isActive() {
+			if (restarted) {
+				calls.push("predicate-next");
+				return true;
+			}
+			restarted = true;
+			calls.push("predicate-restart");
+			loop.stop();
+			loop.start();
+			return true;
+		},
+	});
+	loop.registerStep(RenderStepSlot.Ripples, () => { calls.push("later-slot"); });
+
+	loop.stepOnce();
+	expect(calls).toEqual(["predicate-restart"]);
+	expect(renderer.renderCount).toBe(0);
+
+	loop.stepOnce();
+	expect(calls).toEqual(["predicate-restart", "predicate-next", "beatmap", "later-slot"]);
+	expect(renderer.renderCount).toBe(1);
 	loop.dispose();
 });
 
@@ -1018,6 +1152,70 @@ test("stopping inside a step aborts later registrations, later slots, and presen
 	loop.dispose();
 });
 
+test("stop then start inside a step cannot revive the old tick but the next tick runs", () => {
+	const calls: string[] = [];
+	let restarted = false;
+	const { loop, renderer } = makeLoop();
+	loop.registerStep(RenderStepSlot.Beatmap, () => {
+		if (restarted) {
+			calls.push("beatmap-next");
+			return;
+		}
+		restarted = true;
+		calls.push("restart");
+		loop.stop();
+		loop.start();
+	});
+	loop.registerStep(RenderStepSlot.Beatmap, () => { calls.push("same-slot"); });
+	loop.registerStep(RenderStepSlot.Ripples, () => { calls.push("later-slot"); });
+
+	loop.stepOnce();
+	expect(calls).toEqual(["restart"]);
+	expect(renderer.renderCount).toBe(0);
+
+	loop.stepOnce();
+	expect(calls).toEqual(["restart", "beatmap-next", "same-slot", "later-slot"]);
+	expect(renderer.renderCount).toBe(1);
+	loop.dispose();
+});
+
+test("stop then start inside renderer does not credit the old tick but the next tick renders", () => {
+	let restartPipeline = () => {};
+	let restarted = false;
+	let renderCalls = 0;
+	const renderer = {
+		render() {
+			renderCalls += 1;
+			if (restarted) return;
+			restarted = true;
+			restartPipeline();
+		},
+	};
+	const { driver, scheduler, performance, loop } = makeScheduledLoop({
+		loop: { renderer },
+	});
+	restartPipeline = () => {
+		loop.stop();
+		loop.start();
+	};
+	loop.start();
+	scheduler.start();
+
+	driver.triggerNextFrame(100);
+	expect(renderCalls).toBe(1);
+	expect(performance.getSnapshot().frames.renders).toBe(0);
+	expect(performance.getSnapshot().frames.skippedRenders).toBe(1);
+	expect(loop.getPerfState().lastRenderAt).toBe(0);
+
+	driver.triggerNextFrame(116);
+	expect(renderCalls).toBe(2);
+	expect(performance.getSnapshot().frames.renders).toBe(1);
+	expect(performance.getSnapshot().frames.skippedRenders).toBe(1);
+	expect(loop.getPerfState().lastRenderAt).toBe(116);
+	loop.dispose();
+	scheduler.dispose();
+});
+
 test("disposing inside a step aborts the rest of the tick before presentation", () => {
 	const calls: string[] = [];
 	const { loop, renderer } = makeLoop();
@@ -1098,6 +1296,25 @@ test("pipeline start and stop do not create or cancel scheduler handles and step
 	expect(driver.activeFrames.size).toBe(1);
 	loop.dispose();
 	expect(driver.activeFrames.size).toBe(0);
+	scheduler.dispose();
+});
+
+test("scheduler ticks after pipeline stop leave collector state unchanged while the scheduler stays live", () => {
+	const { driver, scheduler, performance, renderer, loop } = makeScheduledLoop();
+	loop.registerStep(RenderStepSlot.Ripples, () => {});
+	loop.start();
+	scheduler.start();
+	driver.triggerNextFrame(0);
+	const beforeStop = performance.getSnapshot();
+
+	loop.stop();
+	driver.triggerNextFrame(16);
+	driver.triggerNextFrame(32);
+
+	expect(performance.getSnapshot()).toEqual(beforeStop);
+	expect(renderer.renderCount).toBe(1);
+	expect(driver.activeFrames.size).toBe(1);
+	loop.dispose();
 	scheduler.dispose();
 });
 

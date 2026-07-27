@@ -155,6 +155,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	let active = false;
 	let splashWarmRenderLast = 0;
 	let disposed = false;
+	let pipelineEpoch = 0;
 	let snapshotCache: AudioSnapshot = NEUTRAL_AUDIO_SNAPSHOT;
 	let lastMode: VisualRuntimeMode | undefined;
 	let lastSchedulerGeneration = scheduler.getGeneration();
@@ -263,6 +264,10 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		return { dt, now, snapshot, uniforms, scene, camera, pointerParallax, pointerTarget };
 	}
 
+	function isCurrentPipeline(epoch: number): boolean {
+		return active && !disposed && pipelineEpoch === epoch;
+	}
+
 	function captureRegistrationSnapshot(): readonly StepRegistrationBatch[] {
 		const snapshot: StepRegistrationBatch[] = [];
 		for (const slot of RENDER_STEP_ORDER) {
@@ -272,7 +277,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		return snapshot;
 	}
 
-	function refreshAudioSnapshot(now: number): void {
+	function refreshAudioSnapshot(now: number, pipelineEpochAtTickStart: number): void {
 		const decision = audioGate.advance(now);
 		if (!decision.run) {
 			recordGateSkip(AUDIO_GATE_NAME, 60, decision.pendingDtSec);
@@ -281,6 +286,10 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		const updateResult = runMeasured(`${AUDIO_GATE_NAME}.update`, () => {
 			audio.update(decision.dtSec);
 		});
+		if (!isCurrentPipeline(pipelineEpochAtTickStart)) {
+			recordGateRun(AUDIO_GATE_NAME, 60, decision.pendingDtSec, updateResult);
+			return;
+		}
 		const snapshotResult = runMeasured(`${AUDIO_GATE_NAME}.getSnapshot`, () => {
 			const snapshot = audio.getSnapshot();
 			const nextSnapshot: AudioSnapshot = snapshot.frequencyBands === undefined
@@ -298,7 +307,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			}
 			return Object.freeze(nextSnapshot);
 		});
-		if (snapshotResult.value) snapshotCache = snapshotResult.value;
+		snapshotCache = snapshotResult.value ?? NEUTRAL_AUDIO_SNAPSHOT;
 		const result: TimedResult<AudioSnapshot> = {
 			value: snapshotResult.value,
 			costMs: updateResult.costMs + snapshotResult.costMs,
@@ -307,9 +316,15 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		recordGateRun(AUDIO_GATE_NAME, 60, decision.pendingDtSec, result);
 	}
 
-	function renderPresentation(now: number, decision: FrameGateDecision): boolean {
+	function renderPresentation(
+		now: number,
+		decision: FrameGateDecision,
+		pipelineEpochAtTickStart: number,
+	): boolean {
+		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 		const result = runMeasured(PRESENTATION_GATE_NAME, () => renderer.render(scene, camera));
 		recordGateRun(PRESENTATION_GATE_NAME, "presentation", decision.pendingDtSec, result);
+		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 		if (result.error === undefined) lastRenderAt = now;
 		return result.error === undefined;
 	}
@@ -320,10 +335,11 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		presentationDecision: FrameGateDecision,
 		snapshot: AudioSnapshot,
 		registrationSnapshot: readonly StepRegistrationBatch[],
+		pipelineEpochAtTickStart: number,
 	): boolean {
 		for (const { registrations } of registrationSnapshot) {
 			for (const registration of registrations) {
-				if (disposed || !active) return false;
+				if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 				if (!registration.subscribed) continue;
 				let registrationActive = true;
 				if (registration.isActive) {
@@ -331,10 +347,10 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 					if (result.error) {
 						registration.gate.reset();
 						recordGateSkip(registration.gateName, registration.cadence, 0, result);
-						if (disposed || !active) return false;
+						if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 						continue;
 					}
-					if (disposed || !active) return false;
+					if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 					if (!registration.subscribed) continue;
 					registrationActive = result.value ?? false;
 				}
@@ -355,7 +371,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 				const context = buildContext(decision.dtSec, now, snapshot);
 				const result = runMeasured(registration.gateName, () => registration.fn(context));
 				recordGateRun(registration.gateName, registration.cadence, decision.pendingDtSec, result);
-				if (disposed || !active) return false;
+				if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 			}
 		}
 		return true;
@@ -380,17 +396,20 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
 		}
+		const pipelineEpochAtTickStart = pipelineEpoch;
 		const registrationSnapshot = captureRegistrationSnapshot();
-		refreshAudioSnapshot(now);
-		if (disposed || !active) return false;
+		refreshAudioSnapshot(now, pipelineEpochAtTickStart);
+		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 		if (presentationDecision.run) {
 			uniforms.uTime.value += presentationDecision.dtSec;
 		}
-		if (isMainSceneCoveredBySplash()) {
+		const mainSceneCoveredBySplash = isMainSceneCoveredBySplash();
+		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
+		if (mainSceneCoveredBySplash) {
 			recordStepSkips();
 			if (presentationDecision.run && now - splashWarmRenderLast > SPLASH_WARM_INTERVAL_MS) {
 				splashWarmRenderLast = now;
-				return renderPresentation(now, presentationDecision);
+				return renderPresentation(now, presentationDecision, pipelineEpochAtTickStart);
 			}
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
@@ -399,18 +418,26 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			pointerParallax.x += (pointerTarget.x - pointerParallax.x) * POINTER_PARALLAX_LERP;
 			pointerParallax.y += (pointerTarget.y - pointerParallax.y) * POINTER_PARALLAX_LERP;
 		}
-		if (!runRegisteredSteps(now, mode, presentationDecision, snapshotCache, registrationSnapshot)) {
+		if (!runRegisteredSteps(
+			now,
+			mode,
+			presentationDecision,
+			snapshotCache,
+			registrationSnapshot,
+			pipelineEpochAtTickStart,
+		)) {
 			return false;
 		}
 		if (!presentationDecision.run) {
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
 		}
-		return renderPresentation(now, presentationDecision);
+		return renderPresentation(now, presentationDecision, pipelineEpochAtTickStart);
 	}
 
 	const unregisterSchedulerCallbacks = scheduler.registerRuntimeCallbacks({
 		onAnimation(now, decision) {
+			if (disposed || !active) return undefined;
 			lastSampleAt = now;
 			const startedAt = nowFn();
 			let rendered = false;
@@ -452,11 +479,13 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	return {
 		start() {
 			if (disposed || active) return;
+			pipelineEpoch += 1;
 			active = true;
 			resetGates();
 		},
 		stop() {
 			if (!active) return;
+			pipelineEpoch += 1;
 			active = false;
 			resetGates();
 		},
@@ -489,6 +518,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		},
 		dispose() {
 			if (disposed) return;
+			pipelineEpoch += 1;
 			disposed = true;
 			active = false;
 			resetGates();
