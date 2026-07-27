@@ -202,6 +202,31 @@ export type {
 	VisualSchedulerMaintenanceCallback,
 	VisualSchedulerOptions,
 } from "./runtime/visual-scheduler";
+export {
+	createVisualResourceScope,
+	VisualResourceScopeClosedError,
+} from "./runtime/resource-scope";
+export type {
+	VisualReleasableResourceRetention,
+	VisualResourceDisposalError,
+	VisualResourceDisposalReport,
+	VisualResourceHandle,
+	VisualResourceKind,
+	VisualResourceRegistration,
+	VisualResourceRetention,
+	VisualResourceScope,
+} from "./runtime/resource-scope";
+export { createVisualResourceLedger } from "./runtime/resource-ledger";
+export type {
+	VisualResourceAdmission,
+	VisualResourceAllocation,
+	VisualResourceLedger,
+	VisualResourceLedgerOptions,
+	VisualResourceLedgerSnapshot,
+	VisualResourcePriority,
+} from "./runtime/resource-ledger";
+export { scanThreeResourceUsage } from "./runtime/three-resource-scanner";
+export type { ThreeResourceObjectLike } from "./runtime/three-resource-scanner";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
 export type { FxState } from "./home-visual/fx-defaults";
