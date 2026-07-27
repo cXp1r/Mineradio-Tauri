@@ -191,6 +191,17 @@ export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/per
 export type { FrameContext } from "./runtime/frame-context";
 export { createFrameGate } from "./runtime/frame-gate";
 export type { FrameGate, FrameGateDecision, FrameGateRate } from "./runtime/frame-gate";
+export { deriveVisualRuntimeMode } from "./runtime/visual-visibility";
+export { createVisualScheduler } from "./runtime/visual-scheduler";
+export type {
+	VisualScheduler,
+	VisualSchedulerAnimationCallback,
+	VisualSchedulerDriver,
+	VisualSchedulerErrorReporter,
+	VisualSchedulerErrorSource,
+	VisualSchedulerMaintenanceCallback,
+	VisualSchedulerOptions,
+} from "./runtime/visual-scheduler";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
 export type { FxState } from "./home-visual/fx-defaults";
