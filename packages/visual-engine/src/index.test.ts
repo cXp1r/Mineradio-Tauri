@@ -1,10 +1,10 @@
 import { expect, test } from "bun:test";
-import { createVisualEngine } from "./index";
+import { createVisualEngine, type VisualEngine } from "./index";
 
 test("createVisualEngine returns lifecycle methods", () => {
-  const engine = createVisualEngine();
+	const engine: VisualEngine = createVisualEngine();
 
-  expect(typeof engine.update).toBe("function");
-  expect(typeof engine.resize).toBe("function");
-  expect(typeof engine.dispose).toBe("function");
+	expect(typeof engine.update).toBe("function");
+	expect(typeof engine.resize).toBe("function");
+	expect(typeof engine.dispose).toBe("function");
 });

@@ -17,6 +17,25 @@ export function createVisualEngine(): VisualEngine {
 	};
 }
 
+export type {
+	ForegroundFramePolicy,
+	LyricsVisualSnapshot,
+	PlaybackVisualSnapshot,
+	ShelfVisualSnapshot,
+	VisualBackgroundPolicy,
+	VisualEngineFacade,
+	VisualFrameSnapshot,
+	VisualMediaClock,
+	VisualPerformanceSnapshot,
+	VisualPresetId,
+	VisualResourceBudget,
+	VisualResourcePressure,
+	VisualResourceUsage,
+	VisualRuntimeMode,
+	VisualSettingsSnapshot,
+	VisualVisibilityState,
+} from "./runtime/visual-engine-contract";
+
 export { createSplashEngine } from "./splash/splash-engine";
 export type { SplashEngine, SplashEngineOptions } from "./splash/splash-engine";
 export { createSplashWebgl, SPLASH_VERTEX_SHADER, SPLASH_FRAGMENT_SHADER } from "./splash/splash-webgl";
