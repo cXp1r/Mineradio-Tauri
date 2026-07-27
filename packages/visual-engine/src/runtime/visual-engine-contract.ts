@@ -1,5 +1,10 @@
 import type { FxState } from "../home-visual/fx-defaults";
 import type { ShelfPane } from "../shelf/shelf-state";
+import type { BudgetTaskQueue } from "./budget-task-queue";
+import type { CancellationScope } from "./cancellation-scope";
+import type { PerformanceCollector } from "./performance-collector";
+import type { VisualResourceScope } from "./resource-scope";
+import type { VisualScheduler } from "./visual-scheduler";
 
 export type VisualPresetId = number;
 
@@ -174,4 +179,30 @@ export interface VisualEngineFacade {
 	setVisibility(state: VisualVisibilityState): void;
 	getPerformanceSnapshot(): VisualPerformanceSnapshot;
 	dispose(): void;
+}
+
+export interface VisualEngineCompositionContext {
+	readonly container: HTMLElement;
+	readonly mediaClock: VisualMediaClock;
+	readonly resources: VisualResourceScope;
+	readonly cancellation: CancellationScope;
+	readonly tasks: BudgetTaskQueue;
+	readonly scheduler: VisualScheduler;
+	readonly performance: PerformanceCollector;
+	getFrameSnapshot(): VisualFrameSnapshot;
+}
+
+export interface VisualEngineComposition {
+	mount(context: VisualEngineCompositionContext): Promise<void>;
+	applyFrameSnapshot(snapshot: VisualFrameSnapshot): void;
+	applyPreset(preset: VisualPresetId): void;
+	setVisibility(state: VisualVisibilityState): void;
+	dispose(): void;
+}
+
+export interface VisualEngineOptions {
+	readonly mediaClock: VisualMediaClock;
+	readonly createComposition: () => VisualEngineComposition;
+	readonly resourceBudget?: Partial<VisualResourceBudget>;
+	readonly initialVisibility?: VisualVisibilityState;
 }

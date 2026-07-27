@@ -1,21 +1,4 @@
-export type VisualEngineSnapshot = {
-	preset: string;
-	playing: boolean;
-};
-
-export type VisualEngine = {
-	update(snapshot: VisualEngineSnapshot): void;
-	resize(size: { width: number; height: number }): void;
-	dispose(): void;
-};
-
-export function createVisualEngine(): VisualEngine {
-	return {
-		update() {},
-		resize() {},
-		dispose() {},
-	};
-}
+export { createVisualEngine } from "./runtime/visual-engine";
 
 export type {
 	ForegroundFramePolicy,
@@ -24,6 +7,9 @@ export type {
 	ShelfVisualSnapshot,
 	VisualBackgroundPolicy,
 	VisualEngineFacade,
+	VisualEngineComposition,
+	VisualEngineCompositionContext,
+	VisualEngineOptions,
 	VisualFrameSnapshot,
 	VisualLyricLine,
 	VisualLyricWord,
