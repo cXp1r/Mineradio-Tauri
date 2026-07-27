@@ -9,6 +9,7 @@ import type {
 	VisualSettingsSnapshot,
 	VisualVisibilityState,
 } from "./visual-engine-contract";
+import type { VisualResourceHandle, VisualResourceScope } from "./resource-scope";
 
 const clock = {
 	currentTimeSeconds: () => 0,
@@ -54,6 +55,34 @@ async function expectRejected(promise: Promise<void>, text: string): Promise<voi
 	expect(error).toBeInstanceOf(Error);
 	if (!(error instanceof Error)) throw new Error("Expected a rejection error.");
 	expect(error.message).toContain(text);
+}
+
+function installAnimationFrameHarness(): {
+	readonly callbacks: Map<number, FrameRequestCallback>;
+	readonly cancelled: number[];
+	readonly requested: number;
+	restore(): void;
+} {
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	let requested = 0;
+	const callbacks = new Map<number, FrameRequestCallback>();
+	const cancelled: number[] = [];
+	globalThis.requestAnimationFrame = (callback) => {
+		requested += 1;
+		callbacks.set(requested, callback);
+		return requested;
+	};
+	globalThis.cancelAnimationFrame = (handle) => { cancelled.push(handle); };
+	return {
+		callbacks,
+		cancelled,
+		get requested() { return requested; },
+		restore() {
+			globalThis.requestAnimationFrame = originalRequest;
+			globalThis.cancelAnimationFrame = originalCancel;
+		},
+	};
 }
 
 test("mount caches the latest snapshot and applies one frozen shared bundle", async () => {
@@ -203,6 +232,7 @@ test("a second mount rejects and composition is constructed once", async () => {
 
 test("disposing an unresolved mount aborts it and releases all resources", async () => {
 	const wait = deferred();
+	const started = deferred();
 	let disposeCalls = 0;
 	let released = 0;
 	let applied = 0;
@@ -210,11 +240,13 @@ test("disposing an unresolved mount aborts it and releases all resources", async
 		async mount(context) {
 			context.resources.register({ owner: "test", kind: "timer", retention: "ephemeral", dispose() { released += 1; } });
 			context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			started.resolve();
 			await wait.promise;
 		},
 		applyFrameSnapshot() { applied += 1; }, applyPreset() {}, setVisibility() {}, dispose() { disposeCalls += 1; },
 	}) });
 	const mounted = engine.mount(document.createElement("div"));
+	await started.promise;
 	engine.dispose();
 	await expectRejected(mounted, "cancelled");
 	expect(disposeCalls).toBe(1);
@@ -222,6 +254,32 @@ test("disposing an unresolved mount aborts it and releases all resources", async
 	wait.resolve();
 	await Promise.resolve();
 	expect(applied).toBe(0);
+});
+
+test("a synchronous mount disposal and throw cannot leak an unhandled rejection", async () => {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (event: PromiseRejectionEvent) => {
+		unhandled.push(event.reason);
+		event.preventDefault();
+	};
+	globalThis.addEventListener("unhandledrejection", onUnhandled);
+	let engine: ReturnType<typeof createVisualEngine>;
+	let disposeCalls = 0;
+	try {
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			mount() {
+				engine.dispose();
+				throw new Error("synchronous mount failure");
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { disposeCalls += 1; },
+		}) });
+		await expectRejected(engine.mount(document.createElement("div")), "cancelled");
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(unhandled).toEqual([]);
+		expect(disposeCalls).toBe(1);
+	} finally {
+		globalThis.removeEventListener("unhandledrejection", onUnhandled);
+	}
 });
 
 test("a mounted facade owns one scheduler handle and cancellation prevents stale callbacks", async () => {
@@ -255,6 +313,38 @@ test("a mounted facade owns one scheduler handle and cancellation prevents stale
 	} finally {
 		globalThis.requestAnimationFrame = originalRequest;
 		globalThis.cancelAnimationFrame = originalCancel;
+	}
+});
+
+test("an incomplete RAF pair uses timeout for both scheduling and cancellation", async () => {
+	const originalRequest = globalThis.requestAnimationFrame;
+	const originalCancel = globalThis.cancelAnimationFrame;
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	let rafRequests = 0;
+	let timeoutRequests = 0;
+	const clearedTimeouts: number[] = [];
+	globalThis.requestAnimationFrame = () => { rafRequests += 1; return rafRequests; };
+	Reflect.deleteProperty(globalThis, "cancelAnimationFrame");
+	globalThis.setTimeout = () => { timeoutRequests += 1; return 100 + timeoutRequests; };
+	globalThis.clearTimeout = (handle) => {
+		if (handle !== undefined) clearedTimeouts.push(handle);
+	};
+	try {
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) { context.scheduler.registerRuntimeCallbacks({ onAnimation() {} }); },
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+		}) });
+		await engine.mount(document.createElement("div"));
+		expect(rafRequests).toBe(0);
+		expect(timeoutRequests).toBe(1);
+		engine.dispose();
+		expect(clearedTimeouts).toEqual([101]);
+	} finally {
+		globalThis.requestAnimationFrame = originalRequest;
+		globalThis.cancelAnimationFrame = originalCancel;
+		globalThis.setTimeout = originalSetTimeout;
+		globalThis.clearTimeout = originalClearTimeout;
 	}
 });
 
@@ -310,7 +400,7 @@ test("missing runtime registration rejects without scheduling work", async () =>
 				dispose() { disposed += 1; },
 			}),
 		});
-		await expectRejected(engine.mount(document.createElement("div")), "runtime callbacks");
+		await expectRejected(engine.mount(document.createElement("div")), "registration");
 		expect(disposed).toBe(1);
 		expect(released).toBe(1);
 		expect(frames).toBe(0);
@@ -332,15 +422,18 @@ test("a stale mount completion cannot start scheduler handles after disposal", a
 	globalThis.cancelAnimationFrame = () => {};
 	try {
 		const wait = deferred();
+		const started = deferred();
 		let applied = 0;
 		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
 			async mount(context) {
 				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				started.resolve();
 				await wait.promise;
 			},
 			applyFrameSnapshot() { applied += 1; }, applyPreset() {}, setVisibility() {}, dispose() {},
 		}) });
 		const mounted = engine.mount(document.createElement("div"));
+		await started.promise;
 		engine.dispose();
 		await expectRejected(mounted, "cancelled");
 		wait.resolve();
@@ -353,13 +446,8 @@ test("a stale mount completion cannot start scheduler handles after disposal", a
 	}
 });
 
-test("a post-start composition delegate failure rejects mount and rolls back once", async () => {
-	const originalRequest = globalThis.requestAnimationFrame;
-	const originalCancel = globalThis.cancelAnimationFrame;
-	let requested = 0;
-	const cancelled: number[] = [];
-	globalThis.requestAnimationFrame = () => { requested += 1; return requested; };
-	globalThis.cancelAnimationFrame = (handle) => { cancelled.push(handle); };
+test("an initial composition delegate failure rejects before scheduler start and rolls back once", async () => {
+	const frames = installAnimationFrameHarness();
 	try {
 		let disposed = 0;
 		let released = 0;
@@ -375,14 +463,382 @@ test("a post-start composition delegate failure rejects mount and rolls back onc
 			dispose() { disposed += 1; },
 		}) });
 		await expectRejected(engine.mount(document.createElement("div")), "initial frame failed");
-		expect(requested).toBe(1);
-		expect(cancelled).toEqual([1]);
+		expect(frames.requested).toBe(0);
+		expect(frames.cancelled).toEqual([]);
 		expect(disposed).toBe(1);
 		expect(released).toBe(1);
 		expect(visibilityCalls).toBe(0);
 	} finally {
-		globalThis.requestAnimationFrame = originalRequest;
-		globalThis.cancelAnimationFrame = originalCancel;
+		frames.restore();
+	}
+});
+
+test("unregistering scheduler callbacks during initial delegates rejects before any handle starts", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let unregister = () => {};
+		let disposed = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				unregister = context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() { unregister(); },
+			applyPreset() {}, setVisibility() {}, dispose() { disposed += 1; },
+		}) });
+		await expectRejected(engine.mount(document.createElement("div")), "registration");
+		expect(frames.requested).toBe(0);
+		expect(frames.cancelled).toEqual([]);
+		expect(disposed).toBe(1);
+	} finally {
+		frames.restore();
+	}
+});
+
+test("initial delegate reentrancy stabilizes the latest cached state before scheduler start", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		const latestSettings: VisualSettingsSnapshot = {
+			...fixedSettings(30),
+			backgroundPolicy: "keep",
+		};
+		const latestVisibility: VisualVisibilityState = {
+			...foreground,
+			documentVisible: false,
+		};
+		const applied: VisualFrameSnapshot[] = [];
+		const visibilityCalls: VisualVisibilityState[] = [];
+		const frameModes: { readonly trackKey: string; readonly mode: string }[] = [];
+		const visibilityModes: { readonly documentVisible: boolean; readonly mode: string }[] = [];
+		const decisions: boolean[] = [];
+		let presetCalls = 0;
+		let delegateDepth = 0;
+		let maxDelegateDepth = 0;
+		let reentered = false;
+		const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+		let engine: ReturnType<typeof createVisualEngine>;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(nextContext) {
+				captured.context = nextContext;
+				nextContext.scheduler.registerRuntimeCallbacks({
+					onAnimation(_now, decision) { decisions.push(decision.run); },
+				});
+			},
+			applyFrameSnapshot(snapshot) {
+				delegateDepth += 1;
+				maxDelegateDepth = Math.max(maxDelegateDepth, delegateDepth);
+				try {
+					applied.push(snapshot);
+					frameModes.push({
+						trackKey: snapshot.playback.trackKey,
+						mode: captured.context?.scheduler.getMode() ?? "missing",
+					});
+					if (reentered) return;
+					reentered = true;
+					engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 1, coverUrl: "cover", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
+					engine.setVisualSettings(latestSettings);
+					engine.setVisibility(latestVisibility);
+					engine.applyPreset(9);
+				} finally {
+					delegateDepth -= 1;
+				}
+			},
+			applyPreset() { presetCalls += 1; },
+			setVisibility(state) {
+				visibilityCalls.push(state);
+				visibilityModes.push({
+					documentVisible: state.documentVisible,
+					mode: captured.context?.scheduler.getMode() ?? "missing",
+				});
+			},
+			dispose() {},
+		}) });
+
+		await engine.mount(document.createElement("div"));
+
+		expect(maxDelegateDepth).toBe(1);
+		expect(presetCalls).toBe(0);
+		expect(applied.length).toBeGreaterThan(1);
+		expect(applied.at(-1)?.playback.trackKey).toBe("latest");
+		expect(applied.at(-1)?.settings).toBe(latestSettings);
+		expect(visibilityCalls.at(-1)).toEqual(latestVisibility);
+		expect(frameModes.at(-1)).toEqual({ trackKey: "latest", mode: "background" });
+		expect(visibilityModes.at(-1)).toEqual({ documentVisible: false, mode: "background" });
+		expect(captured.context?.scheduler.getMode()).toBe("background");
+		expect(frames.requested).toBe(1);
+		expect(frames.cancelled).toEqual([]);
+
+		frames.callbacks.get(1)?.(0);
+		frames.callbacks.get(2)?.(16);
+		expect(decisions).toEqual([true, false]);
+		engine.dispose();
+	} finally {
+		frames.restore();
+	}
+});
+
+test("initial delegate synchronization fails closed when frame revisions never stabilize", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let frameCalls = 0;
+		let compositionDisposals = 0;
+		let engine: ReturnType<typeof createVisualEngine>;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {
+				frameCalls += 1;
+				if (frameCalls >= 100) return;
+				engine.setPlaybackSnapshot({ trackKey: String(frameCalls), playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
+			},
+			applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+		}) });
+
+		await expectRejected(engine.mount(document.createElement("div")), "stabilize");
+		expect(frameCalls).toBeGreaterThan(1);
+		expect(frameCalls).toBeLessThan(100);
+		expect(frames.requested).toBe(0);
+		expect(frames.cancelled).toEqual([]);
+		expect(compositionDisposals).toBe(1);
+	} finally {
+		frames.restore();
+	}
+});
+
+test("a caught scheduler ownership violation during initial commit still rejects mount", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let scheduler: VisualEngineCompositionContext["scheduler"] | null = null;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				scheduler = context.scheduler;
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {
+				try {
+					scheduler?.stop();
+				} catch {
+					// composition 即使吞掉 ownership 错误，facade 仍必须回滚 mount。
+				}
+			},
+			applyPreset() {}, setVisibility() {}, dispose() {},
+		}) });
+		await expectRejected(engine.mount(document.createElement("div")), "ownership");
+		expect(frames.requested).toBe(0);
+		expect(frames.cancelled).toEqual([]);
+	} finally {
+		frames.restore();
+	}
+});
+
+test("composition scheduler lifecycle calls during mount reject without touching the raw scheduler", async () => {
+	const actions: readonly ("start" | "stop" | "dispose")[] = ["start", "stop", "dispose"];
+	for (const action of actions) {
+		const frames = installAnimationFrameHarness();
+		try {
+			let frameCalls = 0;
+			let compositionDisposals = 0;
+			let resourceDisposals = 0;
+			const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					context.resources.register({ owner: action, kind: "timer", retention: "ephemeral", dispose() { resourceDisposals += 1; } });
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+					context.scheduler[action]();
+				},
+				applyFrameSnapshot() { frameCalls += 1; },
+				applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+			await expectRejected(engine.mount(document.createElement("div")), "ownership");
+			expect(frameCalls).toBe(0);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
+			expect(frames.requested).toBe(0);
+			expect(frames.cancelled).toEqual([]);
+		} finally {
+			frames.restore();
+		}
+	}
+});
+
+test("scheduler lifecycle ownership violations after mount leave the raw scheduler running", async () => {
+	const actions: readonly ("start" | "stop" | "dispose")[] = ["start", "stop", "dispose"];
+	for (const action of actions) {
+		const frames = installAnimationFrameHarness();
+		try {
+			let scheduler: VisualEngineCompositionContext["scheduler"] | null = null;
+			let compositionDisposals = 0;
+			const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					scheduler = context.scheduler;
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				},
+				applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+			await engine.mount(document.createElement("div"));
+			if (!scheduler) throw new Error("Expected captured scheduler.");
+
+			expect(() => scheduler?.[action]()).toThrow("ownership");
+			expect(frames.requested).toBe(1);
+			expect(frames.cancelled).toEqual([]);
+			const liveRuntime = engine.getPerformanceSnapshot().runtime;
+			expect(liveRuntime.mounted).toBe(true);
+			expect(liveRuntime.running).toBe(true);
+			expect(compositionDisposals).toBe(0);
+
+			engine.dispose();
+			expect(frames.cancelled).toEqual([1]);
+			expect(compositionDisposals).toBe(1);
+		} finally {
+			frames.restore();
+		}
+	}
+});
+
+test("unregistering runtime callbacks after mount immediately disposes the facade", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let unregister: (() => void) | null = null;
+		let compositionDisposals = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				unregister = context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {},
+			dispose() {
+				compositionDisposals += 1;
+				unregister?.();
+			},
+		}) });
+		await engine.mount(document.createElement("div"));
+		if (!unregister) throw new Error("Expected unregister callback.");
+
+		expect(() => unregister?.()).not.toThrow();
+		expect(frames.requested).toBe(1);
+		expect(frames.cancelled).toEqual([1]);
+		const disposedRuntime = engine.getPerformanceSnapshot().runtime;
+		expect(disposedRuntime.mounted).toBe(false);
+		expect(disposedRuntime.running).toBe(false);
+		expect(compositionDisposals).toBe(1);
+		expect(() => unregister?.()).not.toThrow();
+		engine.dispose();
+		expect(frames.cancelled).toEqual([1]);
+		expect(compositionDisposals).toBe(1);
+	} finally {
+		frames.restore();
+	}
+});
+
+test("cleanup reports the scheduler stopped before composition disposal reentrancy", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let observedRuntime: { readonly mounted: boolean; readonly running: boolean } | null = null;
+		let engine: ReturnType<typeof createVisualEngine>;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) {
+				context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {},
+			dispose() {
+				const runtime = engine.getPerformanceSnapshot().runtime;
+				observedRuntime = { mounted: runtime.mounted, running: runtime.running };
+			},
+		}) });
+		await engine.mount(document.createElement("div"));
+
+		engine.dispose();
+
+		expect(frames.cancelled).toEqual([1]);
+		expect(observedRuntime).toEqual({ mounted: false, running: false });
+	} finally {
+		frames.restore();
+	}
+});
+
+test("a mounted frame delegate failure invalidates and cleans up the facade", async () => {
+	const frames = installAnimationFrameHarness();
+	try {
+		let failFrame = false;
+		let disposed = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) { context.scheduler.registerRuntimeCallbacks({ onAnimation() {} }); },
+			applyFrameSnapshot() { if (failFrame) throw new Error("frame delegate failed"); },
+			applyPreset() {}, setVisibility() {}, dispose() { disposed += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		failFrame = true;
+		expect(() => engine.setPlaybackSnapshot({ trackKey: "failed", playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false })).toThrow("frame delegate failed");
+		const performance = engine.getPerformanceSnapshot();
+		expect(performance.runtime.mounted).toBe(false);
+		expect(performance.runtime.running).toBe(false);
+		expect(disposed).toBe(1);
+		expect(frames.requested).toBe(1);
+		expect(frames.cancelled).toEqual([1]);
+	} finally {
+		frames.restore();
+	}
+});
+
+test("mounted settings visibility and preset delegate failures all fail closed", async () => {
+	type FailureCase = {
+		readonly name: "settings" | "visibility" | "preset";
+		invoke(engine: ReturnType<typeof createVisualEngine>): void;
+	};
+	const cases: readonly FailureCase[] = [
+		{ name: "settings", invoke: (engine) => engine.setVisualSettings(fixedSettings(30)) },
+		{ name: "visibility", invoke: (engine) => engine.setVisibility({ ...foreground, windowFocused: false }) },
+		{ name: "preset", invoke: (engine) => engine.applyPreset(4) },
+	];
+	for (const failure of cases) {
+		let armed = false;
+		let disposed = 0;
+		const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) { context.scheduler.registerRuntimeCallbacks({ onAnimation() {} }); },
+			applyFrameSnapshot() {
+				if (armed && failure.name === "settings") throw new Error("settings delegate failed");
+			},
+			applyPreset() {
+				if (armed && failure.name === "preset") throw new Error("preset delegate failed");
+			},
+			setVisibility() {
+				if (armed && failure.name === "visibility") throw new Error("visibility delegate failed");
+			},
+			dispose() { disposed += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		armed = true;
+		expect(() => failure.invoke(engine)).toThrow(`${failure.name} delegate failed`);
+		const performance = engine.getPerformanceSnapshot();
+		expect(performance.runtime.mounted).toBe(false);
+		expect(performance.runtime.running).toBe(false);
+		expect(disposed).toBe(1);
+	}
+});
+
+test("mounted delegate reentrant disposal is idempotent and preserves later throws", async () => {
+	for (const throwAfterDispose of [false, true]) {
+		let armed = false;
+		let disposed = 0;
+		let engine: ReturnType<typeof createVisualEngine>;
+		engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+			async mount(context) { context.scheduler.registerRuntimeCallbacks({ onAnimation() {} }); },
+			applyFrameSnapshot() {},
+			applyPreset() {
+				if (!armed) return;
+				engine.dispose();
+				if (throwAfterDispose) throw new Error("throw after reentrant dispose");
+			},
+			setVisibility() {},
+			dispose() { disposed += 1; },
+		}) });
+		await engine.mount(document.createElement("div"));
+		armed = true;
+		if (throwAfterDispose) {
+			expect(() => engine.applyPreset(2)).toThrow("throw after reentrant dispose");
+		} else {
+			expect(() => engine.applyPreset(2)).not.toThrow();
+		}
+		expect(disposed).toBe(1);
+		expect(engine.getPerformanceSnapshot().runtime.mounted).toBe(false);
 	}
 });
 
@@ -447,6 +903,123 @@ test("performance projects merged budgets and returns a copy", async () => {
 	expect(disposed.runtime.mounted).toBe(false);
 	expect(disposed.runtime.running).toBe(false);
 	expect(disposed.runtime.generation).toBeGreaterThan(first.runtime.generation);
+});
+
+test("composition resources project texture geometry mesh and cache usage into performance", async () => {
+	let disposerCalls = 0;
+	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+		async mount(context) {
+			context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			context.resources.register({ owner: "texture", kind: "texture", retention: "persistent", estimatedBytes: 10, dispose() { disposerCalls += 1; } });
+			context.resources.register({ owner: "geometry", kind: "geometry", retention: "rebuildable", estimatedBytes: 20, dispose() { disposerCalls += 1; } });
+			context.resources.register({ owner: "mesh", kind: "mesh", retention: "ephemeral", dispose() { disposerCalls += 1; } });
+			context.resources.register({ owner: "cache", kind: "cache", retention: "ephemeral", estimatedBytes: 30, dispose() { disposerCalls += 1; } });
+		},
+		applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+	}) });
+	await engine.mount(document.createElement("div"));
+	const live = engine.getPerformanceSnapshot();
+	expect(live.resources.current).toEqual({ textureBytes: 10, geometryBytes: 20, meshCount: 1, queuedTaskCost: 0, cacheBytes: 30 });
+	expect(live.resources.peak).toEqual(live.resources.current);
+	expect(live.resources.allocations).toBe(4);
+	expect(live.resources.releases).toBe(0);
+
+	engine.dispose();
+	const disposed = engine.getPerformanceSnapshot();
+	expect(disposerCalls).toBe(4);
+	expect(disposed.resources.current).toEqual({ textureBytes: 0, geometryBytes: 0, meshCount: 0, queuedTaskCost: 0, cacheBytes: 0 });
+	expect(disposed.resources.releases).toBe(4);
+});
+
+test("resource handles retention release child scopes and root disposal release leases once", async () => {
+	const captured: {
+		root: VisualResourceScope | null;
+		child: VisualResourceScope | null;
+		texture: VisualResourceHandle | null;
+	} = { root: null, child: null, texture: null };
+	const disposals = { texture: 0, geometry: 0, mesh: 0, cache: 0 };
+	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+		async mount(context) {
+			context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			captured.root = context.resources;
+			captured.child = context.resources.createChild("child");
+			captured.texture = captured.child.register({ owner: "texture", kind: "texture", retention: "persistent", estimatedBytes: 5, dispose() { disposals.texture += 1; } });
+			captured.child.register({ owner: "geometry", kind: "geometry", retention: "rebuildable", estimatedBytes: 6, dispose() { disposals.geometry += 1; throw new Error("geometry dispose failed"); } });
+			captured.child.register({ owner: "mesh", kind: "mesh", retention: "ephemeral", dispose() { disposals.mesh += 1; } });
+			context.resources.register({ owner: "cache", kind: "cache", retention: "persistent", estimatedBytes: 7, dispose() { disposals.cache += 1; } });
+		},
+		applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+	}) });
+	await engine.mount(document.createElement("div"));
+	if (!captured.root || !captured.child || !captured.texture) throw new Error("Expected captured resource handles.");
+
+	captured.texture.dispose();
+	captured.texture.dispose();
+	const geometryRelease = captured.root.releaseRetention("rebuildable");
+	const duplicateGeometryRelease = captured.root.releaseRetention("rebuildable");
+	captured.child.releaseRetention("ephemeral");
+	captured.child.releaseRetention("ephemeral");
+	const retained = engine.getPerformanceSnapshot();
+	expect(disposals).toEqual({ texture: 1, geometry: 1, mesh: 1, cache: 0 });
+	expect(geometryRelease.errors).toHaveLength(1);
+	expect(duplicateGeometryRelease.errors).toHaveLength(0);
+	expect(retained.resources.current).toEqual({ textureBytes: 0, geometryBytes: 0, meshCount: 0, queuedTaskCost: 0, cacheBytes: 7 });
+	expect(retained.resources.allocations).toBe(4);
+	expect(retained.resources.releases).toBe(3);
+
+	engine.dispose();
+	engine.dispose();
+	expect(disposals).toEqual({ texture: 1, geometry: 1, mesh: 1, cache: 1 });
+	expect(engine.getPerformanceSnapshot().resources.releases).toBe(4);
+});
+
+test("hard budget denial rejects optional and background registrations with mount rollback", async () => {
+	type DenialCase = {
+		readonly kind: "texture" | "cache";
+		readonly retention: "ephemeral" | "persistent";
+		readonly resourceBudget: { readonly textureBytes?: number; readonly cacheBytes?: number };
+	};
+	const cases: readonly DenialCase[] = [
+		{ kind: "texture", retention: "ephemeral", resourceBudget: { textureBytes: 0 } },
+		{ kind: "cache", retention: "persistent", resourceBudget: { cacheBytes: 0 } },
+	];
+	for (const denial of cases) {
+		let compositionDisposals = 0;
+		let resourceDisposals = 0;
+		let frameCalls = 0;
+		const engine = createVisualEngine({
+			mediaClock: clock,
+			resourceBudget: denial.resourceBudget,
+			createComposition: () => ({
+				async mount(context) {
+					context.resources.register({ owner: denial.kind, kind: denial.kind, retention: denial.retention, estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+				},
+				applyFrameSnapshot() { frameCalls += 1; }, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}),
+		});
+		await expectRejected(engine.mount(document.createElement("div")), "budget denied");
+		expect(compositionDisposals).toBe(1);
+		expect(resourceDisposals).toBe(0);
+		expect(frameCalls).toBe(0);
+		const performance = engine.getPerformanceSnapshot();
+		expect(performance.resources.allocations).toBe(0);
+		expect(performance.resources.current[denial.kind === "texture" ? "textureBytes" : "cacheBytes"]).toBe(0);
+	}
+});
+
+test("a raw resource registration failure releases its admitted lease", async () => {
+	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+		async mount(context) {
+			context.resources.dispose();
+			context.resources.register({ owner: "closed", kind: "texture", retention: "persistent", estimatedBytes: 9, dispose() {} });
+		},
+		applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() {},
+	}) });
+	await expectRejected(engine.mount(document.createElement("div")), "closed");
+	const performance = engine.getPerformanceSnapshot();
+	expect(performance.resources.current.textureBytes).toBe(0);
+	expect(performance.resources.allocations).toBe(1);
+	expect(performance.resources.releases).toBe(1);
 });
 
 test("dispose cancels queued and running context tasks while releasing ledger cost", async () => {
