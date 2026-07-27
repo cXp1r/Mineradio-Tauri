@@ -293,7 +293,7 @@ test("render loop caps a valid lane dt and resets after a multi-second stall", (
 	loop.dispose();
 });
 
-test("compatibility perf APIs are pure projections of the shared collector snapshot", () => {
+test("compatibility perf APIs project collector counters with render-loop timestamps", () => {
 	const { loop, performance } = makeLoop();
 	performance.recordFrame({ source: "raf", rendered: true, costMs: 51 });
 	performance.recordFrame({ source: "raf", rendered: false, costMs: 1 });
@@ -312,12 +312,12 @@ test("compatibility perf APIs are pure projections of the shared collector snaps
 	expect(loop.getFps()).toBe(24);
 	expect(loop.getPerfState()).toEqual({
 		mode: "24fps",
-		frames: 2,
+		frames: 1,
 		fps: 24,
 		longFrames: 1,
 		skipped: 1,
-		lastRenderAt: 0,
-		lastSampleAt: 0,
+		lastRenderAt: 1000,
+		lastSampleAt: 1000,
 	});
 	loop.dispose();
 });
@@ -336,6 +336,24 @@ test("compatibility perf mode follows the current presentation policy instead of
 	driver.triggerNextFrame(1_000 / 15);
 
 	expect(loop.getPerfState().mode).toBe("vsync");
+	loop.dispose();
+	scheduler.dispose();
+});
+
+test("compatibility perf state uses collector renders and real render and sample timestamps", () => {
+	const { driver, scheduler, renderer, loop } = makeScheduledLoop({
+		scheduler: { initialForegroundFramePolicy: { mode: "fixed", fps: 30 } },
+	});
+	loop.start();
+	scheduler.start();
+	driver.triggerNextFrame(100);
+	driver.triggerNextFrame(100 + 1_000 / 60);
+
+	const state = loop.getPerfState();
+	expect(renderer.renderCount).toBe(1);
+	expect(state.frames).toBe(1);
+	expect(state.lastRenderAt).toBe(100);
+	expect(state.lastSampleAt).toBeCloseTo(100 + 1_000 / 60, 6);
 	loop.dispose();
 	scheduler.dispose();
 });
@@ -568,6 +586,50 @@ test("frequency bands reject writes without leaking mutable backing storage acro
 	loop.dispose();
 });
 
+test("frequency band cloning ignores an overridden source slice and keeps its backing isolated", () => {
+	let sliceCalls = 0;
+	class SharedSliceFloat32Array extends Float32Array {
+		override slice(_start?: number, _end?: number): Float32Array<ArrayBuffer> {
+			sliceCalls += 1;
+			return this;
+		}
+	}
+	const rawBands = new SharedSliceFloat32Array([0.25, 0.5]);
+	let directWriteRejected = false;
+	let mutatorRejected = false;
+	let laterBand = Number.NaN;
+	const { loop } = makeLoop({
+		audio: makeFakeAudio(makeAudioSnapshot({ frequencyBands: rawBands })),
+	});
+	loop.registerStep(RenderStepSlot.Beatmap, (ctx) => {
+		const bands = ctx.snapshot.frequencyBands as Float32Array;
+		try {
+			bands[0] = 0.9;
+		} catch {
+			directWriteRejected = true;
+		}
+		try {
+			bands.set([0.8]);
+		} catch {
+			mutatorRejected = true;
+		}
+		new Float32Array(bands.buffer)[0] = 0.7;
+		bands.subarray(0, 1)[0] = 0.6;
+	});
+	loop.registerStep(RenderStepSlot.Ripples, (ctx) => {
+		laterBand = ctx.snapshot.frequencyBands?.[0] ?? Number.NaN;
+	});
+
+	loop.stepOnce();
+
+	expect(sliceCalls).toBe(0);
+	expect(directWriteRejected).toBe(true);
+	expect(mutatorRejected).toBe(true);
+	expect(laterBand).toBeCloseTo(0.25, 6);
+	expect(rawBands[0]).toBeCloseTo(0.25, 6);
+	loop.dispose();
+});
+
 test("numeric lanes advance independently while fixed presentation cadence only gates presentation work", () => {
 	let audioUpdates = 0;
 	let snapshotReads = 0;
@@ -671,6 +733,55 @@ test("deep sleep runs maintenance only and waking resets lane phase with bounded
 	scheduler.dispose();
 });
 
+test("maintenance is a metrics-free no-op while the render pipeline is stopped or disposed", () => {
+	let callbacks: VisualSchedulerRuntimeCallbacks | null = null;
+	const scheduler: VisualScheduler = {
+		registerRuntimeCallbacks(next) {
+			callbacks = next;
+			return () => {};
+		},
+		start() {},
+		stop() {},
+		stepOnce() {},
+		setVisibility() {},
+		setBackgroundPolicy() {},
+		setForegroundFramePolicy() {},
+		getMode: () => "deep-sleep",
+		getGeneration: () => 0,
+		dispose() {},
+	};
+	const performance = makePerformanceCollector();
+	let cacheTrims = 0;
+	const loop = createRenderLoop({
+		renderer: makeFakeRenderer() as never,
+		scene: makeFakeScene() as never,
+		camera: makeFakeCamera() as never,
+		audio: makeFakeAudio(makeAudioSnapshot()),
+		scheduler,
+		performance,
+		onCacheTrim() { cacheTrims += 1; },
+		now: () => 0,
+	});
+	const maintenanceCallbacks = callbacks as unknown as VisualSchedulerRuntimeCallbacks;
+	loop.start();
+	maintenanceCallbacks.onMaintenance?.(100);
+
+	expect(cacheTrims).toBe(1);
+	expect(performance.getSnapshot().frames.timerTicks).toBe(1);
+	expect(performance.getSnapshot().gates.maintenance?.runs).toBe(1);
+
+	loop.stop();
+	maintenanceCallbacks.onMaintenance?.(200);
+	loop.start();
+	loop.dispose();
+	maintenanceCallbacks.onMaintenance?.(300);
+
+	expect(cacheTrims).toBe(1);
+	expect(performance.getSnapshot().frames.timerTicks).toBe(1);
+	expect(performance.getSnapshot().gates.maintenance?.runs).toBe(1);
+	expect(performance.getSnapshot().gates.maintenance?.skips).toBe(0);
+});
+
 test("a failing visual step records diagnostics while later steps and render continue", () => {
 	const performance = makePerformanceCollector();
 	const renderer = makeFakeRenderer();
@@ -697,12 +808,11 @@ test("a failing visual step records diagnostics while later steps and render con
 	expect(calls).toEqual(["beatmap", "ripples"]);
 	expect(renderer.renderCount).toBe(1);
 	const snapshot = performance.getSnapshot();
-	expect(snapshot.frames.rafTicks).toBe(1);
-	expect(snapshot.frames.renders).toBe(1);
+	expect(snapshot.frames.rafTicks).toBe(0);
+	expect(snapshot.frames.renders).toBe(0);
 	expect(snapshot.gates[RenderStepSlot.Beatmap]?.errors).toBe(1);
 	expect(snapshot.gates[RenderStepSlot.Ripples]?.runs).toBe(1);
 	expect(snapshot.gates["audio-analysis"]?.runs).toBe(1);
-	expect(snapshot.frames.frameCostP50Ms).toBeGreaterThan(0);
 	expect(snapshot.gates[RenderStepSlot.Beatmap]?.costP50Ms).toBeGreaterThan(0);
 	loop.dispose();
 });
@@ -731,7 +841,7 @@ test("a failing audio update records diagnostics while snapshot, later steps, an
 	expect(snapshot.gates["audio-analysis"]?.runs).toBe(1);
 	expect(snapshot.gates["audio-analysis"]?.errors).toBe(1);
 	expect(snapshot.gates[RenderStepSlot.Ripples]?.runs).toBe(1);
-	expect(snapshot.frames.renders).toBe(1);
+	expect(snapshot.frames.renders).toBe(0);
 	loop.dispose();
 });
 
@@ -841,11 +951,94 @@ test("reduced-motion snapshot is constructed once per audio gate run and reused 
 	scheduler.dispose();
 });
 
+test("registrations added during a tick wait until the next tick even in a later slot", () => {
+	let now = 1_000;
+	let lateRuns = 0;
+	let registered = false;
+	const { loop } = makeLoop({ now: () => now });
+	loop.registerStep(RenderStepSlot.Beatmap, () => {
+		if (registered) return;
+		registered = true;
+		loop.registerStep(RenderStepSlot.Ripples, () => { lateRuns += 1; });
+	});
+
+	loop.stepOnce();
+	expect(lateRuns).toBe(0);
+	now += 17;
+	loop.stepOnce();
+	expect(lateRuns).toBe(1);
+	loop.dispose();
+});
+
+test("a callback that keeps registering its own slot cannot grow one tick without bound", () => {
+	let runs = 0;
+	const { loop } = makeLoop();
+	const registerAgain = () => {
+		runs += 1;
+		if (runs < 8) loop.registerStep(RenderStepSlot.HomeVisual, registerAgain);
+	};
+	loop.registerStep(RenderStepSlot.HomeVisual, registerAgain);
+
+	loop.stepOnce();
+
+	expect(runs).toBe(1);
+	loop.dispose();
+});
+
+test("an entry unsubscribed after the tick snapshot is skipped before its turn", () => {
+	const calls: string[] = [];
+	const { loop } = makeLoop();
+	let unsubscribeLater = () => {};
+	loop.registerStep(RenderStepSlot.Beatmap, () => {
+		calls.push("beatmap");
+		unsubscribeLater();
+	});
+	unsubscribeLater = loop.registerStep(RenderStepSlot.Ripples, () => { calls.push("ripples"); });
+
+	loop.stepOnce();
+
+	expect(calls).toEqual(["beatmap"]);
+	loop.dispose();
+});
+
+test("stopping inside a step aborts later registrations, later slots, and presentation", () => {
+	const calls: string[] = [];
+	const { loop, renderer } = makeLoop();
+	loop.registerStep(RenderStepSlot.Beatmap, () => {
+		calls.push("stop");
+		loop.stop();
+	});
+	loop.registerStep(RenderStepSlot.Beatmap, () => { calls.push("same-slot"); });
+	loop.registerStep(RenderStepSlot.Ripples, () => { calls.push("later-slot"); });
+
+	loop.stepOnce();
+
+	expect(calls).toEqual(["stop"]);
+	expect(renderer.renderCount).toBe(0);
+	loop.dispose();
+});
+
+test("disposing inside a step aborts the rest of the tick before presentation", () => {
+	const calls: string[] = [];
+	const { loop, renderer } = makeLoop();
+	loop.registerStep(RenderStepSlot.Beatmap, () => {
+		calls.push("dispose");
+		loop.dispose();
+	});
+	loop.registerStep(RenderStepSlot.Beatmap, () => { calls.push("same-slot"); });
+	loop.registerStep(RenderStepSlot.Ripples, () => { calls.push("later-slot"); });
+
+	loop.stepOnce();
+
+	expect(calls).toEqual(["dispose"]);
+	expect(renderer.renderCount).toBe(0);
+});
+
 test("same-slot registrations keep independent cadence and inactive lanes resume without backlog", () => {
 	let thirtyRuns = 0;
 	let twelveRuns = 0;
 	const resumedDts: number[] = [];
-	const { driver, scheduler, loop } = makeScheduledLoop();
+	const { driver, scheduler, performance, loop } = makeScheduledLoop();
 	loop.registerStep(RenderStepSlot.FloatLayer, (ctx) => {
 		thirtyRuns += 1;
 		resumedDts.push(ctx.dt);
@@ -860,6 +1053,13 @@ test("same-slot registrations keep independent cadence and inactive lanes resume
 
 	expect(thirtyRuns).toBe(30);
 	expect(twelveRuns).toBe(12);
+	const gates = performance.getSnapshot().gates;
+	expect(gates[RenderStepSlot.FloatLayer]?.runs).toBe(30);
+	expect(gates[RenderStepSlot.FloatLayer]?.skips).toBe(90);
+	expect(gates[RenderStepSlot.FloatLayer]?.effectiveFps).toBe(30);
+	expect(gates[`${RenderStepSlot.FloatLayer}#2`]?.runs).toBe(12);
+	expect(gates[`${RenderStepSlot.FloatLayer}#2`]?.skips).toBe(108);
+	expect(gates[`${RenderStepSlot.FloatLayer}#2`]?.effectiveFps).toBe(12);
 
 	scheduler.setVisibility(BACKGROUND_VISIBILITY);
 	driver.triggerNextFrame(1_050);
@@ -899,6 +1099,27 @@ test("pipeline start and stop do not create or cancel scheduler handles and step
 	loop.dispose();
 	expect(driver.activeFrames.size).toBe(0);
 	scheduler.dispose();
+});
+
+test("manual stepOnce keeps gate diagnostics without fabricating RAF frame metrics", () => {
+	const { loop, renderer, performance } = makeLoop();
+	loop.registerStep(RenderStepSlot.Ripples, () => {});
+
+	loop.stepOnce();
+
+	expect(renderer.renderCount).toBe(1);
+	expect(performance.getSnapshot().gates[RenderStepSlot.Ripples]?.runs).toBe(1);
+	expect(performance.getSnapshot().gates.presentation?.runs).toBe(1);
+	expect(performance.getSnapshot().frames).toEqual({
+		rafTicks: 0,
+		timerTicks: 0,
+		renders: 0,
+		skippedRenders: 0,
+		frameCostP50Ms: 0,
+		frameCostP95Ms: 0,
+		longFrames: 0,
+	});
+	loop.dispose();
 });
 
 test("duplicate scheduler registration fails without fallback and dispose unregisters idempotently", () => {

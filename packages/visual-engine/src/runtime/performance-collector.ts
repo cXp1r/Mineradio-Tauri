@@ -140,8 +140,11 @@ export function createPerformanceCollector(options: PerformanceCollectorOptions)
 		},
 		recordFrame(sample) {
 			assertFiniteNonNegative(sample.costMs, "Frame cost");
-			if (sample.source === "raf") rafTicks += 1;
-			else timerTicks += 1;
+			if (sample.source === "timer") {
+				timerTicks += 1;
+				return;
+			}
+			rafTicks += 1;
 			if (sample.rendered) renders += 1;
 			else skippedRenders += 1;
 			frameCosts.push(sample.costMs);

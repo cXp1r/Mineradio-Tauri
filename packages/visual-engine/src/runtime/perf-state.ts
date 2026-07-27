@@ -14,6 +14,16 @@ export interface PerfState {
 
 export type PerfStateSnapshot = Readonly<PerfState>;
 
+interface PerfStateTimestamps {
+	readonly lastRenderAt: number;
+	readonly lastSampleAt: number;
+}
+
+const ZERO_TIMESTAMPS: PerfStateTimestamps = {
+	lastRenderAt: 0,
+	lastSampleAt: 0,
+};
+
 export function createPerfState(now: number): PerfState {
 	return {
 		mode: "vsync",
@@ -29,6 +39,7 @@ export function createPerfState(now: number): PerfState {
 export function projectPerfState(
 	snapshot: VisualPerformanceSnapshot,
 	modeHint?: RenderPerfMode,
+	timestamps: PerfStateTimestamps = ZERO_TIMESTAMPS,
 ): PerfStateSnapshot {
 	const presentation = snapshot.gates.presentation;
 	const fps = Math.round(presentation?.effectiveFps ?? 0);
@@ -36,11 +47,11 @@ export function projectPerfState(
 		mode: modeHint ?? (presentation && presentation.skips > 0 && fps > 0
 			? (`${fps}fps` as RenderPerfMode)
 			: "vsync"),
-		frames: snapshot.frames.rafTicks,
+		frames: snapshot.frames.renders,
 		fps,
 		longFrames: snapshot.frames.longFrames,
 		skipped: snapshot.frames.skippedRenders,
-		lastRenderAt: 0,
-		lastSampleAt: 0,
+		lastRenderAt: timestamps.lastRenderAt,
+		lastSampleAt: timestamps.lastSampleAt,
 	};
 }

@@ -23,6 +23,22 @@ test("frame and independent gate percentiles use execution cost samples", () => 
 	expect(snapshot.gates.shelf).toEqual({ runs: 1, skips: 0, effectiveFps: 30, pendingDtSec: 0, costP50Ms: 9, costP95Ms: 9, errors: 1 });
 });
 
+test("timer samples count timers without changing render or RAF cost statistics", () => {
+	const collector = createPerformanceCollector({ resourceBudget: budget, longFrameThresholdMs: 50 });
+	collector.recordFrame({ source: "raf", rendered: true, costMs: 10 });
+	collector.recordFrame({ source: "timer", rendered: true, costMs: 100 });
+
+	expect(collector.getSnapshot().frames).toEqual({
+		rafTicks: 1,
+		timerTicks: 1,
+		renders: 1,
+		skippedRenders: 0,
+		frameCostP50Ms: 10,
+		frameCostP95Ms: 10,
+		longFrames: 0,
+	});
+});
+
 test("collector projects task and resource snapshots and returns deep copies", () => {
 	const collector = createPerformanceCollector({ resourceBudget: budget });
 	collector.setRuntimeState({ mode: "foreground", running: true, mounted: true, generation: 4 });

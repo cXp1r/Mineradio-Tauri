@@ -37,7 +37,14 @@ interface StepRegistration {
 	readonly fn: StepCallback;
 	readonly cadence: FrameGateRate;
 	readonly gate: FrameGate;
+	readonly gateName: string;
 	readonly isActive?: (mode: VisualRuntimeMode) => boolean;
+	subscribed: boolean;
+}
+
+interface StepRegistrationBatch {
+	readonly slot: RenderStepSlot;
+	readonly registrations: readonly StepRegistration[];
 }
 
 interface TimedResult<T> {
@@ -75,16 +82,22 @@ function rejectFrequencyBandMutation(): never {
 	throw new TypeError("AudioSnapshot frequencyBands is read-only.");
 }
 
+function copyFrequencyBands(source: Float32Array): Float32Array {
+	const copy = new Float32Array(source.length);
+	for (let index = 0; index < copy.length; index += 1) copy[index] = source[index] ?? 0;
+	return copy;
+}
+
 function createReadonlyFrequencyBands(source: Float32Array): Float32Array {
-	const values = source.slice();
+	const values = copyFrequencyBands(source);
 	return new Proxy(values, {
 		get(target, property) {
-			if (property === "buffer") return target.slice().buffer;
+			if (property === "buffer") return copyFrequencyBands(target).buffer;
 			if (property === "constructor") return target.constructor;
 			const value = Reflect.get(target, property, target);
 			if (typeof value !== "function") return value;
 			if (FREQUENCY_BAND_MUTATORS.has(property)) return rejectFrequencyBandMutation;
-			return (...args: unknown[]) => Reflect.apply(value, target.slice(), args);
+			return (...args: unknown[]) => Reflect.apply(value, copyFrequencyBands(target), args);
 		},
 		set: rejectFrequencyBandMutation,
 		defineProperty: rejectFrequencyBandMutation,
@@ -137,6 +150,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	const nowFn = opts.now ?? (() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
 
 	const registry = new Map<RenderStepSlot, Set<StepRegistration>>();
+	const nextGateOrdinal = new Map<RenderStepSlot, number>();
 	const audioGate = createFrameGate({ rate: 60 });
 	let active = false;
 	let splashWarmRenderLast = 0;
@@ -148,6 +162,9 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	let presentationSkippedSinceLastRun = false;
 	let renderPerfModeHint: RenderPerfMode | undefined;
 	let manualStepDepth = 0;
+	const initialPerfTimestamp = nowFn();
+	let lastRenderAt = initialPerfTimestamp;
+	let lastSampleAt = initialPerfTimestamp;
 
 	function elapsedSince(startedAt: number): number {
 		const elapsed = nowFn() - startedAt;
@@ -234,16 +251,25 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	}
 
 	function recordStepSkips(): void {
-		for (const [slot, registrations] of registry) {
+		for (const registrations of registry.values()) {
 			for (const registration of registrations) {
 				registration.gate.reset();
-				recordGateSkip(slot, registration.cadence);
+				recordGateSkip(registration.gateName, registration.cadence);
 			}
 		}
 	}
 
 	function buildContext(dt: number, now: number, snapshot: AudioSnapshot): FrameContext {
 		return { dt, now, snapshot, uniforms, scene, camera, pointerParallax, pointerTarget };
+	}
+
+	function captureRegistrationSnapshot(): readonly StepRegistrationBatch[] {
+		const snapshot: StepRegistrationBatch[] = [];
+		for (const slot of RENDER_STEP_ORDER) {
+			const registrations = registry.get(slot);
+			if (registrations?.size) snapshot.push({ slot, registrations: [...registrations] });
+		}
+		return snapshot;
 	}
 
 	function refreshAudioSnapshot(now: number): void {
@@ -281,9 +307,10 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		recordGateRun(AUDIO_GATE_NAME, 60, decision.pendingDtSec, result);
 	}
 
-	function renderPresentation(decision: FrameGateDecision): boolean {
+	function renderPresentation(now: number, decision: FrameGateDecision): boolean {
 		const result = runMeasured(PRESENTATION_GATE_NAME, () => renderer.render(scene, camera));
 		recordGateRun(PRESENTATION_GATE_NAME, "presentation", decision.pendingDtSec, result);
+		if (result.error === undefined) lastRenderAt = now;
 		return result.error === undefined;
 	}
 
@@ -292,40 +319,46 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		mode: VisualRuntimeMode,
 		presentationDecision: FrameGateDecision,
 		snapshot: AudioSnapshot,
-	): void {
-		for (const slot of RENDER_STEP_ORDER) {
-			const registrations = registry.get(slot);
-			if (!registrations) continue;
+		registrationSnapshot: readonly StepRegistrationBatch[],
+	): boolean {
+		for (const { registrations } of registrationSnapshot) {
 			for (const registration of registrations) {
+				if (disposed || !active) return false;
+				if (!registration.subscribed) continue;
 				let registrationActive = true;
 				if (registration.isActive) {
-					const result = runMeasured(slot, () => registration.isActive?.(mode) ?? true);
+					const result = runMeasured(registration.gateName, () => registration.isActive?.(mode) ?? true);
 					if (result.error) {
 						registration.gate.reset();
-						recordGateSkip(slot, registration.cadence, 0, result);
+						recordGateSkip(registration.gateName, registration.cadence, 0, result);
+						if (disposed || !active) return false;
 						continue;
 					}
+					if (disposed || !active) return false;
+					if (!registration.subscribed) continue;
 					registrationActive = result.value ?? false;
 				}
 				if (!registrationActive) {
 					registration.gate.reset();
-					recordGateSkip(slot, registration.cadence);
+					recordGateSkip(registration.gateName, registration.cadence);
 					continue;
 				}
 				if (registration.cadence === "presentation" && !presentationDecision.run) {
-					recordGateSkip(slot, registration.cadence, presentationDecision.pendingDtSec);
+					recordGateSkip(registration.gateName, registration.cadence, presentationDecision.pendingDtSec);
 					continue;
 				}
 				const decision = registration.gate.advance(now);
 				if (!decision.run) {
-					recordGateSkip(slot, registration.cadence, decision.pendingDtSec);
+					recordGateSkip(registration.gateName, registration.cadence, decision.pendingDtSec);
 					continue;
 				}
 				const context = buildContext(decision.dtSec, now, snapshot);
-				const result = runMeasured(slot, () => registration.fn(context));
-				recordGateRun(slot, registration.cadence, decision.pendingDtSec, result);
+				const result = runMeasured(registration.gateName, () => registration.fn(context));
+				recordGateRun(registration.gateName, registration.cadence, decision.pendingDtSec, result);
+				if (disposed || !active) return false;
 			}
 		}
+		return true;
 	}
 
 	function tick(now: number, presentationDecision: FrameGateDecision): boolean {
@@ -347,7 +380,9 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
 		}
+		const registrationSnapshot = captureRegistrationSnapshot();
 		refreshAudioSnapshot(now);
+		if (disposed || !active) return false;
 		if (presentationDecision.run) {
 			uniforms.uTime.value += presentationDecision.dtSec;
 		}
@@ -355,7 +390,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			recordStepSkips();
 			if (presentationDecision.run && now - splashWarmRenderLast > SPLASH_WARM_INTERVAL_MS) {
 				splashWarmRenderLast = now;
-				return renderPresentation(presentationDecision);
+				return renderPresentation(now, presentationDecision);
 			}
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
@@ -364,30 +399,37 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			pointerParallax.x += (pointerTarget.x - pointerParallax.x) * POINTER_PARALLAX_LERP;
 			pointerParallax.y += (pointerTarget.y - pointerParallax.y) * POINTER_PARALLAX_LERP;
 		}
-		runRegisteredSteps(now, mode, presentationDecision, snapshotCache);
+		if (!runRegisteredSteps(now, mode, presentationDecision, snapshotCache, registrationSnapshot)) {
+			return false;
+		}
 		if (!presentationDecision.run) {
 			recordGateSkip(PRESENTATION_GATE_NAME, "presentation", presentationDecision.pendingDtSec);
 			return false;
 		}
-		return renderPresentation(presentationDecision);
+		return renderPresentation(now, presentationDecision);
 	}
 
 	const unregisterSchedulerCallbacks = scheduler.registerRuntimeCallbacks({
 		onAnimation(now, decision) {
+			lastSampleAt = now;
 			const startedAt = nowFn();
 			let rendered = false;
 			try {
 				rendered = tick(now, decision);
 			} finally {
-				performanceCollector.recordFrame({
-					source: "raf",
-					rendered,
-					costMs: elapsedSince(startedAt),
-				});
+				if (manualStepDepth === 0) {
+					performanceCollector.recordFrame({
+						source: "raf",
+						rendered,
+						costMs: elapsedSince(startedAt),
+					});
+				}
 			}
 			return undefined;
 		},
 		onMaintenance(now) {
+			if (disposed || !active) return undefined;
+			lastSampleAt = now;
 			const startedAt = nowFn();
 			lastMode = scheduler.getMode();
 			lastSchedulerGeneration = scheduler.getGeneration();
@@ -420,11 +462,15 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		},
 		registerStep(slot, fn, options = {}) {
 			const cadence = options.cadence ?? defaultCadenceForSlot(slot);
+			const gateOrdinal = (nextGateOrdinal.get(slot) ?? 0) + 1;
+			nextGateOrdinal.set(slot, gateOrdinal);
 			const registration: StepRegistration = {
 				fn,
 				cadence,
 				gate: createFrameGate({ rate: cadence }),
+				gateName: gateOrdinal === 1 ? slot : `${slot}#${gateOrdinal}`,
 				isActive: options.isActive,
+				subscribed: true,
 			};
 			let registrations = registry.get(slot);
 			if (!registrations) {
@@ -432,10 +478,9 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 				registry.set(slot, registrations);
 			}
 			registrations.add(registration);
-			let subscribed = true;
 			return () => {
-				if (!subscribed) return;
-				subscribed = false;
+				if (!registration.subscribed) return;
+				registration.subscribed = false;
 				const currentRegistrations = registry.get(slot);
 				if (!currentRegistrations) return;
 				currentRegistrations.delete(registration);
@@ -448,13 +493,19 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			active = false;
 			resetGates();
 			unregisterSchedulerCallbacks();
+			for (const registrations of registry.values()) {
+				for (const registration of registrations) registration.subscribed = false;
+			}
 			registry.clear();
 		},
 		getFps() {
 			return projectPerfState(performanceCollector.getSnapshot()).fps;
 		},
 		getPerfState() {
-			return projectPerfState(performanceCollector.getSnapshot(), renderPerfModeHint);
+			return projectPerfState(performanceCollector.getSnapshot(), renderPerfModeHint, {
+				lastRenderAt,
+				lastSampleAt,
+			});
 		},
 		getPointerParallax() {
 			return pointerParallax;
