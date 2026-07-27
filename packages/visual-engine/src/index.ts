@@ -189,6 +189,8 @@ export type { RenderStepSlot as RenderStepSlotName } from "./runtime/render-step
 export { createPerfState } from "./runtime/perf-state";
 export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/perf-state";
 export type { FrameContext } from "./runtime/frame-context";
+export { createFrameGate } from "./runtime/frame-gate";
+export type { FrameGate, FrameGateDecision, FrameGateRate } from "./runtime/frame-gate";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
 export type { FxState } from "./home-visual/fx-defaults";
