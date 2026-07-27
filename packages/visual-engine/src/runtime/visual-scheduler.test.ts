@@ -5,6 +5,7 @@ import {
 	type VisualSchedulerDriver,
 	type VisualSchedulerErrorReporter,
 	type VisualSchedulerMaintenanceCallback,
+	type VisualSchedulerRuntimeCallbacks,
 } from "../index";
 
 if (false) {
@@ -615,4 +616,188 @@ test("a released scheduler wakes to one immediate foreground RAF", () => {
 	driver.triggerFrame(driver.onlyFrameHandle, 750);
 	expect(ticks).toEqual([{ nowMs: 750, dtSec: 0 }]);
 	expect(driver.activeFrames.size).toBe(1);
+});
+
+test("start rejects without runtime callbacks and does not own a handle", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const scheduler = createVisualScheduler({
+		driver,
+		initialVisibility: foregroundVisibility,
+	});
+
+	expect(() => scheduler.start()).toThrow("runtime callbacks");
+	expect(driver.activeFrames.size).toBe(0);
+	expect(driver.activeTimers.size).toBe(0);
+	expect(() => scheduler.stepOnce(100)).toThrow("runtime callbacks");
+});
+
+test("registering runtime callbacks waits for start before owning one RAF", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const animationTicks: number[] = [];
+	const scheduler = createVisualScheduler({
+		driver,
+		initialVisibility: foregroundVisibility,
+	});
+	const callbacks: {
+		onAnimation: VisualSchedulerRuntimeCallbacks["onAnimation"];
+	} = {
+		onAnimation(nowMs) {
+			animationTicks.push(nowMs);
+			return undefined;
+		},
+	};
+	scheduler.registerRuntimeCallbacks(callbacks);
+	callbacks.onAnimation = () => {
+		throw new Error("registered callbacks must be copied");
+	};
+
+	expect(driver.activeFrames.size).toBe(0);
+	expect(driver.activeTimers.size).toBe(0);
+	scheduler.start();
+	driver.triggerFrame(driver.onlyFrameHandle, 100);
+
+	expect(animationTicks).toEqual([100]);
+	expect(driver.activeFrames.size).toBe(1);
+});
+
+test("only one runtime callback registration may be active", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const scheduler = createVisualScheduler({ driver });
+	scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+
+	expect(() =>
+		scheduler.registerRuntimeCallbacks({ onAnimation() {} }),
+	).toThrow("already registered");
+
+	const legacyScheduler = createVisualScheduler({
+		driver: new FakeVisualSchedulerDriver(),
+		onAnimation() {},
+	});
+	expect(() =>
+		legacyScheduler.registerRuntimeCallbacks({ onAnimation() {} }),
+	).toThrow("already registered");
+});
+
+test("unregistering a running runtime callback cancels handles and invalidates stale RAF", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	let animationCalls = 0;
+	const scheduler = createVisualScheduler({
+		driver,
+		initialVisibility: foregroundVisibility,
+	});
+	const unregister = scheduler.registerRuntimeCallbacks({
+		onAnimation() {
+			animationCalls += 1;
+		},
+	});
+	scheduler.start();
+	const staleHandle = driver.onlyFrameHandle;
+	const runningGeneration = scheduler.getGeneration();
+
+	unregister();
+	unregister();
+	driver.triggerFrame(staleHandle, 100);
+
+	expect(driver.cancelledFrames).toEqual([staleHandle]);
+	expect(driver.activeFrames.size).toBe(0);
+	expect(driver.activeTimers.size).toBe(0);
+	expect(animationCalls).toBe(0);
+	expect(scheduler.getGeneration()).toBe(runningGeneration + 1);
+});
+
+test("unregistering in deep-sleep cancels the timer and stale maintenance cannot reschedule", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	let maintenanceCalls = 0;
+	const scheduler = createVisualScheduler({
+		driver,
+		initialVisibility: { ...foregroundVisibility, documentVisible: false },
+	});
+	const unregister = scheduler.registerRuntimeCallbacks({
+		onAnimation() {},
+		onMaintenance() {
+			maintenanceCalls += 1;
+		},
+	});
+	scheduler.start();
+	const staleHandle = driver.onlyTimerHandle;
+
+	unregister();
+	driver.triggerTimer(staleHandle, 100);
+
+	expect(driver.clearedTimers).toEqual([staleHandle]);
+	expect(driver.activeTimers.size).toBe(0);
+	expect(maintenanceCalls).toBe(0);
+});
+
+test("unregister permits replacement registration that requires an explicit start", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const ticks: string[] = [];
+	const scheduler = createVisualScheduler({
+		driver,
+		initialVisibility: foregroundVisibility,
+	});
+	const unregister = scheduler.registerRuntimeCallbacks({
+		onAnimation() {
+			ticks.push("first");
+		},
+	});
+	scheduler.start();
+	unregister();
+	scheduler.registerRuntimeCallbacks({
+		onAnimation() {
+			ticks.push("second");
+		},
+	});
+
+	expect(driver.activeFrames.size).toBe(0);
+	scheduler.start();
+	driver.triggerFrame(driver.onlyFrameHandle, 200);
+	expect(ticks).toEqual(["second"]);
+});
+
+test("registered maintenance runs from the deep-sleep timer and reports errors", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const maintenanceError = new Error("maintenance failed");
+	const reports: { error: unknown; source: string }[] = [];
+	let maintenanceCalls = 0;
+	const scheduler = createVisualScheduler({
+		driver,
+		onError(error, source) {
+			reports.push({ error, source });
+		},
+		initialVisibility: { ...foregroundVisibility, documentVisible: false },
+	});
+	scheduler.registerRuntimeCallbacks({
+		onAnimation() {},
+		onMaintenance() {
+			maintenanceCalls += 1;
+			if (maintenanceCalls === 1) throw maintenanceError;
+		},
+	});
+	scheduler.start();
+
+	driver.triggerTimer(driver.onlyTimerHandle, 100);
+	driver.triggerTimer(driver.onlyTimerHandle, 200);
+
+	expect(maintenanceCalls).toBe(2);
+	expect(reports).toEqual([{ error: maintenanceError, source: "maintenance" }]);
+	expect(driver.activeTimers.size).toBe(1);
+});
+
+test("registration rejects after dispose and legacy maintenance without animation is rejected", () => {
+	const driver = new FakeVisualSchedulerDriver();
+	const scheduler = createVisualScheduler({ driver });
+	scheduler.dispose();
+
+	expect(() =>
+		scheduler.registerRuntimeCallbacks({ onAnimation() {} }),
+	).toThrow("disposed");
+	expect(() =>
+		createVisualScheduler(
+			{
+				driver: new FakeVisualSchedulerDriver(),
+				onMaintenance() {},
+			} as never,
+		),
+	).toThrow("onAnimation");
 });

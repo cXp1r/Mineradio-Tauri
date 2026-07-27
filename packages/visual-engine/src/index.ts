@@ -201,6 +201,7 @@ export type {
 	VisualSchedulerErrorSource,
 	VisualSchedulerMaintenanceCallback,
 	VisualSchedulerOptions,
+	VisualSchedulerRuntimeCallbacks,
 } from "./runtime/visual-scheduler";
 export {
 	createVisualResourceScope,

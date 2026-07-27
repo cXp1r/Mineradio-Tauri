@@ -442,6 +442,7 @@ export interface VisualSchedulerDriver {
 }
 
 export interface VisualScheduler {
+  registerRuntimeCallbacks(callbacks: VisualSchedulerRuntimeCallbacks): () => void;
   start(): void;
   stop(): void;
   stepOnce(nowMs?: number): void;
@@ -455,6 +456,8 @@ export interface VisualScheduler {
 ~~~
 
 Every scheduled callback captures the current generation. A callback whose generation is stale returns without scheduling replacement work.
+
+`onAnimation`/`onMaintenance` options are optional legacy initial registration only. `onMaintenance` without `onAnimation` rejects; an unregistered Scheduler rejects `start` and animation-mode `stepOnce` without requesting a handle.
 
 - [ ] **Step 5: Verify green**
 
@@ -631,6 +634,34 @@ git commit -m "feat(visual-engine): add bounded visual task runtime"
 
 ---
 
+### Task 5.5: Attach the single Scheduler runtime consumer
+
+**Files:**
+- Modify: `packages/visual-engine/src/runtime/visual-scheduler.ts`
+- Modify: `packages/visual-engine/src/runtime/visual-scheduler.test.ts`
+- Modify: `packages/visual-engine/src/index.ts`
+- Modify: `docs/superpowers/specs/2026-07-27-m3-visual-runtime-foundation-design.md`
+- Modify: `docs/superpowers/plans/2026-07-27-m3-visual-runtime-foundation.md`
+
+- [ ] **Step 1: Write RED scheduler attachment tests**
+
+Cover: no callbacks rejects `start` with zero handles; registration itself owns no handle until `start`; duplicate registration rejects; running unregister cancels RAF/timer and invalidates stale callbacks; re-registration needs an explicit new `start`; deep-sleep maintenance and callback errors retain existing error isolation; registration after dispose rejects; legacy options remain compatible, while legacy maintenance without animation rejects.
+
+- [ ] **Step 2: Implement the attachment seam**
+
+Add `VisualSchedulerRuntimeCallbacks` and `registerRuntimeCallbacks(callbacks): () => void`. Copy callback references into the Scheduler-owned registration object. There is one active registration; its idempotent unregister stops a running Scheduler, cancels its sole handle, and advances generation. Registration never starts the Scheduler. Do not add fields to `VisualEngineCompositionContext`, a composition tick bridge, or another scheduler/RAF owner.
+
+- [ ] **Step 3: Verify and commit**
+
+~~~powershell
+bun test packages/visual-engine/src/runtime/visual-scheduler.test.ts
+bun run --filter ./packages/visual-engine typecheck
+git add packages/visual-engine/src/runtime/visual-scheduler.ts packages/visual-engine/src/runtime/visual-scheduler.test.ts packages/visual-engine/src/index.ts docs/superpowers/specs/2026-07-27-m3-visual-runtime-foundation-design.md docs/superpowers/plans/2026-07-27-m3-visual-runtime-foundation.md
+git commit -m "feat(visual-engine): attach scheduler runtime callbacks"
+~~~
+
+---
+
 ### Task 6: Implement the real facade lifecycle
 
 **Files:**
@@ -652,6 +683,8 @@ Use a fake composition and verify:
 - mount rejection rolls back;
 - dispose is exactly-once and idempotent;
 - stale mount completion after dispose cannot start scheduler or commit composition;
+- the fake composition registers runtime callbacks against the supplied Scheduler; a missing registration rejects/rolls back mount;
+- the Scheduler passed to composition is the single facade-created Scheduler, never a no-op Scheduler;
 - getPerformanceSnapshot returns collector data;
 - applyPreset and setVisibility delegate only while live.
 
@@ -671,7 +704,7 @@ Implement:
 idle -> mounting -> mounted -> disposing -> disposed
 ~~~
 
-Create the root CancellationScope, ResourceScope, ledger, task queue, collector, and scheduler once per facade. Capture lifecycle generation before awaiting composition mount. On failure or disposal, cancel first, then reverse-dispose resources.
+Create the root CancellationScope, ResourceScope, ledger, task queue, collector, and Scheduler once per facade. Capture lifecycle generation before awaiting composition mount. Pass that exact Scheduler through `context.scheduler`; do not supply a no-op Scheduler. The composition must register its runtime callbacks during mount. If it does not, reject and roll back mount. Only after successful mount and registration does the Facade call `scheduler.start()`. On failure or disposal, cancel first, then reverse-dispose resources.
 
 Add the exact composition contracts:
 
@@ -772,7 +805,7 @@ export interface RenderStepOptions {
 
 - [ ] **Step 4: Delegate RAF/timer ownership to VisualScheduler**
 
-RenderLoop must not schedule callbacks itself. Create per-step FrameGate instances. The animation tick order is:
+RenderLoop receives the injected `context.scheduler` and registers its animation/maintenance callbacks with `registerRuntimeCallbacks`; it must not construct a Scheduler, RAF, or timer. `RenderLoop.start()` may only activate its own pipeline state: the Facade alone starts the Scheduler. If a legacy RenderLoop start API remains temporarily, document it as pipeline activation only and preserve no-RAF ownership. Create per-step FrameGate instances. The animation tick order is:
 
 ~~~text
 AudioAnalysis gate
@@ -886,6 +919,8 @@ HomeVisual/Camera   presentation
 ~~~
 
 Remove audioEngine.update from the old Ripples callback because RenderLoop now owns AudioAnalysis before snapshot capture.
+
+Use the `context.scheduler` passed by the Facade; do not create or start a second Scheduler/RAF pipeline in the legacy composition.
 
 - [ ] **Step 7: Make useVisualEngine a lifecycle bridge**
 

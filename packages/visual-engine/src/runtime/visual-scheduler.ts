@@ -29,9 +29,15 @@ export type VisualSchedulerErrorReporter = (
 	source: VisualSchedulerErrorSource,
 ) => undefined;
 
+export interface VisualSchedulerRuntimeCallbacks {
+	readonly onAnimation: VisualSchedulerAnimationCallback;
+	readonly onMaintenance?: VisualSchedulerMaintenanceCallback;
+}
+
 export interface VisualSchedulerOptions {
 	readonly driver: VisualSchedulerDriver;
-	readonly onAnimation: VisualSchedulerAnimationCallback;
+	/** 兼容旧调用方的初始运行时回调注册。 */
+	readonly onAnimation?: VisualSchedulerAnimationCallback;
 	readonly onMaintenance?: VisualSchedulerMaintenanceCallback;
 	readonly onError?: VisualSchedulerErrorReporter;
 	readonly initialVisibility?: VisualVisibilityState;
@@ -41,6 +47,10 @@ export interface VisualSchedulerOptions {
 }
 
 export interface VisualScheduler {
+	/** 注册唯一的运行时消费者；生命周期由 facade 的 start/stop/dispose 控制。 */
+	registerRuntimeCallbacks(
+		callbacks: VisualSchedulerRuntimeCallbacks,
+	): () => void;
 	start(): void;
 	stop(): void;
 	stepOnce(nowMs?: number): void;
@@ -81,6 +91,11 @@ function copyForegroundFramePolicy(
 export function createVisualScheduler(
 	options: VisualSchedulerOptions,
 ): VisualScheduler {
+	if (!options.onAnimation && options.onMaintenance) {
+		throw new Error(
+			"VisualScheduler onMaintenance requires an onAnimation runtime callback",
+		);
+	}
 	const { driver } = options;
 	let running = false;
 	let disposed = false;
@@ -95,6 +110,12 @@ export function createVisualScheduler(
 	let frameToken: object | null = null;
 	let timerHandle: number | null = null;
 	let timerToken: object | null = null;
+	let runtimeCallbacks: VisualSchedulerRuntimeCallbacks | null = options.onAnimation
+		? {
+			onAnimation: options.onAnimation,
+			onMaintenance: options.onMaintenance,
+		}
+		: null;
 	let foregroundFramePolicy = copyForegroundFramePolicy(
 		options.initialForegroundFramePolicy ?? { mode: "vsync" },
 	);
@@ -130,16 +151,19 @@ export function createVisualScheduler(
 		}
 	};
 	const runAnimation = (nowMs: number, decision: FrameGateDecision) => {
+		const callbacks = runtimeCallbacks;
+		if (!callbacks) return;
 		try {
-			options.onAnimation(nowMs, decision);
+			callbacks.onAnimation(nowMs, decision);
 		} catch (error) {
 			reportError(error, "animation");
 		}
 	};
 	const runMaintenance = (nowMs: number) => {
-		if (!options.onMaintenance) return;
+		const callbacks = runtimeCallbacks;
+		if (!callbacks?.onMaintenance) return;
 		try {
-			options.onMaintenance(nowMs);
+			callbacks.onMaintenance(nowMs);
 		} catch (error) {
 			reportError(error, "maintenance");
 		}
@@ -240,24 +264,54 @@ export function createVisualScheduler(
 		frameGate.reset();
 		scheduleForMode();
 	};
+	const stopScheduler = () => {
+		if (!running) return;
+		running = false;
+		generation += 1;
+		cancelFrame();
+		cancelTimer();
+	};
 
 	return {
+		registerRuntimeCallbacks(callbacks) {
+			if (disposed) {
+				throw new Error("VisualScheduler is disposed");
+			}
+			if (runtimeCallbacks) {
+				throw new Error("VisualScheduler runtime callbacks are already registered");
+			}
+			const registeredCallbacks: VisualSchedulerRuntimeCallbacks = {
+				onAnimation: callbacks.onAnimation,
+				onMaintenance: callbacks.onMaintenance,
+			};
+			runtimeCallbacks = registeredCallbacks;
+			let unregistered = false;
+			return () => {
+				if (unregistered) return;
+				unregistered = true;
+				if (runtimeCallbacks !== registeredCallbacks) return;
+				runtimeCallbacks = null;
+				stopScheduler();
+			};
+		},
 		start() {
 			if (running || disposed) return;
+			if (!runtimeCallbacks) {
+				throw new Error("VisualScheduler requires runtime callbacks before start");
+			}
 			running = true;
 			generation += 1;
 			frameGate.reset();
 			scheduleForMode();
 		},
 		stop() {
-			if (!running) return;
-			running = false;
-			generation += 1;
-			cancelFrame();
-			cancelTimer();
+			stopScheduler();
 		},
 		stepOnce(nowMs = driver.now()) {
 			if (disposed || !canAnimate()) return;
+			if (!runtimeCallbacks) {
+				throw new Error("VisualScheduler requires runtime callbacks before stepOnce");
+			}
 			runAnimation(nowMs, { run: true, dtSec: 0, pendingDtSec: 0 });
 		},
 		setVisibility(state) {

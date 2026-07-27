@@ -325,6 +325,10 @@ AudioAnalysis
 ## 12. Scheduler 不变量
 
 - 任意时刻最多一个 RAF 或后台 timer；
+- 任意时刻最多一个 active runtime callback registration；legacy `onAnimation` 是初始 registration，动态注册不得与之并存；
+- 无 runtime callback registration 时，start 和可动画模式下的 stepOnce 必须同步拒绝，且不得申请 RAF/timer；
+- composition 的 RenderLoop 只通过 Scheduler 注册 animation/maintenance callbacks，不得创建第二个 Scheduler、RAF 或 timer；
+- Facade 独占 Scheduler 的 start、stop 和 dispose；runtime callback registration 不拥有启动权；
 - start、stop 和 dispose 幂等；
 - stale RAF/timer callback 不能复活循环；
 - stepOnce 只执行一次，不安排下一帧；
@@ -333,6 +337,8 @@ AudioAnalysis
 - 错误必须记录，禁止静默吞掉；
 - deep-sleep 不执行完整视觉管线；
 - Scheduler 停止时媒体 play、pause、seek、ended 和 recovery 继续工作。
+
+唯一调用链固定为：`Facade 创建唯一 Scheduler -> composition mount(context.scheduler) -> RenderLoop registerRuntimeCallbacks -> mount 成功 -> Facade start`。unregister 在运行中必须取消唯一 RAF/timer 并失效 generation，旧 callback 不得执行或复活；之后的注册必须由 Facade 显式重新 start。
 
 ## 13. ResourceScope 与 Ownership
 
@@ -560,6 +566,7 @@ TDD 只用于核心重要流程。
 - Frame Gate phase-credit；
 - 24/30/45/60 FPS 时间线；
 - Scheduler start/stop/dispose race；
+- Scheduler runtime callback 单注册、unregister 竞态和无注册拒绝；
 - stale RAF/timer 不可复活；
 - visibility 状态转换和 wake；
 - ResourceScope 逆序且恰好释放一次；
@@ -592,7 +599,7 @@ Architecture tests：
 ## 20. 实施切片
 
 1. Facade contract 与生命周期状态机；
-2. Frame Gate、Scheduler 与 visibility；
+2. Frame Gate、Scheduler 与 visibility（含 runtime callback attachment）；
 3. ResourceScope、取消域和预算任务队列；
 4. Legacy composition 接入与薄 React adapter；
 5. 性能仪表、架构守卫、文档和全量验证。
@@ -630,4 +637,3 @@ bun test
 bun run web:build
 git diff --check
 ~~~
-
