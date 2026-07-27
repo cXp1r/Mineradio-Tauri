@@ -292,6 +292,7 @@ function createGuardedVisualScheduler(
 	options: {
 		isCleanupInProgress(): boolean;
 		onActiveRegistrationRemoved(): void;
+		runRuntimeCallback(callback: () => undefined): undefined;
 	},
 ): GuardedVisualScheduler {
 	let activeRegistration: object | null = null;
@@ -304,7 +305,16 @@ function createGuardedVisualScheduler(
 	};
 	const view: VisualScheduler = {
 		registerRuntimeCallbacks(callbacks) {
-			const unregisterRaw = rawScheduler.registerRuntimeCallbacks(callbacks);
+			const onAnimation = callbacks.onAnimation;
+			const onMaintenance = callbacks.onMaintenance;
+			const unregisterRaw = rawScheduler.registerRuntimeCallbacks({
+				onAnimation(nowMs, decision) {
+					return options.runRuntimeCallback(() => onAnimation(nowMs, decision));
+				},
+				onMaintenance: onMaintenance
+					? (nowMs) => options.runRuntimeCallback(() => onMaintenance(nowMs))
+					: undefined,
+			});
 			const registration = {};
 			activeRegistration = registration;
 			let active = true;
@@ -462,9 +472,11 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	let pendingVisibilityDispatch = false;
 	let pendingPresetDispatch: VisualPresetId | null = null;
 	let handleActiveRegistrationRemoved = () => {};
+	let runRuntimeCallback = (callback: () => undefined): undefined => callback();
 	const guardedScheduler = createGuardedVisualScheduler(rawScheduler, {
 		isCleanupInProgress: () => state === "disposing" || state === "disposed",
 		onActiveRegistrationRemoved: () => handleActiveRegistrationRemoved(),
+		runRuntimeCallback: (callback) => runRuntimeCallback(callback),
 	});
 	const scheduler = guardedScheduler.view;
 	const composition = options.createComposition();
@@ -548,20 +560,28 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		state === "mounted" &&
 		mountCommitted &&
 		lifecycleGeneration === generation;
-	const assertMountRuntimeReady = (
-		ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline,
-	): void => {
-		if (guardedScheduler.getOwnershipViolationCount() !== ownershipViolationBaseline.scheduler) {
-			throw new VisualEngineSchedulerStateError(
+	const captureOwnershipViolationBaseline = (): VisualEngineOwnershipViolationBaseline => ({
+		scheduler: guardedScheduler.getOwnershipViolationCount(),
+		runtimeServices: runtimeServices.getOwnershipViolationCount(),
+	});
+	const getOwnershipViolationError = (
+		baseline: VisualEngineOwnershipViolationBaseline,
+	): Error | null => {
+		if (guardedScheduler.getOwnershipViolationCount() !== baseline.scheduler) {
+			return new VisualEngineSchedulerStateError(
 				"Visual scheduler lifecycle ownership was violated by the composition.",
 			);
 		}
-		if (
-			runtimeServices.getOwnershipViolationCount() !==
-			ownershipViolationBaseline.runtimeServices
-		) {
-			throw new VisualEngineRuntimeServiceOwnershipError();
+		if (runtimeServices.getOwnershipViolationCount() !== baseline.runtimeServices) {
+			return new VisualEngineRuntimeServiceOwnershipError();
 		}
+		return null;
+	};
+	const assertMountRuntimeReady = (
+		ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline,
+	): void => {
+		const ownershipError = getOwnershipViolationError(ownershipViolationBaseline);
+		if (ownershipError) throw ownershipError;
 		if (!guardedScheduler.hasActiveRegistration()) {
 			throw new VisualEngineSchedulerStateError("Visual scheduler runtime registration is not active.");
 		}
@@ -633,6 +653,26 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	handleActiveRegistrationRemoved = () => {
 		if (state === "mounted" && mountCommitted) invalidateAndCleanup();
 	};
+	runRuntimeCallback = (callback) => {
+		if (!cancellation.isOpen()) {
+			invalidateAndCleanup();
+			return undefined;
+		}
+		const ownershipViolationBaseline = captureOwnershipViolationBaseline();
+		let callbackThrew = false;
+		try {
+			return callback();
+		} catch (error) {
+			callbackThrew = true;
+			throw error;
+		} finally {
+			const ownershipError = getOwnershipViolationError(ownershipViolationBaseline);
+			if (ownershipError || !cancellation.isOpen()) {
+				invalidateAndCleanup();
+				if (ownershipError && !callbackThrew) throw ownershipError;
+			}
+		}
+	};
 	const prepareMountedOperation = (generation: number): boolean => {
 		if (!isMountedGenerationCurrent(generation)) return false;
 		if (!cancellation.isOpen()) {
@@ -651,17 +691,17 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		operation: () => void,
 	): boolean => {
 		if (!prepareMountedOperation(generation)) return false;
-		const ownershipViolationBaseline = runtimeServices.getOwnershipViolationCount();
+		const ownershipViolationBaseline = captureOwnershipViolationBaseline();
 		try {
 			operation();
 		} catch (error) {
 			invalidateAndCleanup();
 			throw error;
 		}
-		if (runtimeServices.getOwnershipViolationCount() !== ownershipViolationBaseline) {
-			const error = new VisualEngineRuntimeServiceOwnershipError();
+		const ownershipError = getOwnershipViolationError(ownershipViolationBaseline);
+		if (ownershipError) {
 			invalidateAndCleanup();
-			throw error;
+			throw ownershipError;
 		}
 		return prepareMountedOperation(generation);
 	};
@@ -734,10 +774,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 			state = "mounting";
 			lifecycleGeneration += 1;
 			const generation = lifecycleGeneration;
-			const ownershipViolationBaseline: VisualEngineOwnershipViolationBaseline = {
-				scheduler: guardedScheduler.getOwnershipViolationCount(),
-				runtimeServices: runtimeServices.getOwnershipViolationCount(),
-			};
+			const ownershipViolationBaseline = captureOwnershipViolationBaseline();
 			const ticket = cancellation.issue("visual-engine", "mount");
 			updatePerformance();
 			let rejectAbort: ((reason: unknown) => void) | null = null;

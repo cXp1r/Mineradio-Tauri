@@ -104,6 +104,39 @@ function installAnimationFrameHarness(): {
 	};
 }
 
+function installTimerHarness(): {
+	readonly callbacks: Map<number, () => void>;
+	readonly cleared: number[];
+	readonly requested: number;
+	restore(): void;
+} {
+	const originalSetTimeout = globalThis.setTimeout;
+	const originalClearTimeout = globalThis.clearTimeout;
+	let requested = 0;
+	const callbacks = new Map<number, () => void>();
+	const cleared: number[] = [];
+	globalThis.setTimeout = ((handler: TimerHandler) => {
+		if (typeof handler !== "function") throw new Error("Expected a timer callback.");
+		requested += 1;
+		callbacks.set(requested, () => { handler(); });
+		return requested;
+	}) as typeof globalThis.setTimeout;
+	globalThis.clearTimeout = ((handle?: number) => {
+		if (handle === undefined) return;
+		cleared.push(handle);
+		callbacks.delete(handle);
+	}) as typeof globalThis.clearTimeout;
+	return {
+		callbacks,
+		cleared,
+		get requested() { return requested; },
+		restore() {
+			globalThis.setTimeout = originalSetTimeout;
+			globalThis.clearTimeout = originalClearTimeout;
+		},
+	};
+}
+
 interface SchedulerAuthorityAction {
 	readonly name: string;
 	invoke(scheduler: VisualEngineCompositionContext["scheduler"]): void;
@@ -127,6 +160,19 @@ interface RuntimeServiceAuthorityAction {
 const runtimeServiceAuthorityActions: readonly RuntimeServiceAuthorityAction[] = [
 	{ name: "resources", invoke: (context) => { context.resources.dispose(); } },
 	{ name: "tasks", invoke: (context) => { context.tasks.dispose(); } },
+];
+
+interface RuntimeCallbackInvalidationAction {
+	readonly name: string;
+	invoke(context: VisualEngineCompositionContext): void;
+}
+
+const runtimeCallbackInvalidationActions: readonly RuntimeCallbackInvalidationAction[] = [
+	{ name: "caught resources dispose", invoke(context) { try { context.resources.dispose(); } catch {} } },
+	{ name: "caught tasks dispose", invoke(context) { try { context.tasks.dispose(); } catch {} } },
+	{ name: "caught scheduler stop", invoke(context) { try { context.scheduler.stop(); } catch {} } },
+	{ name: "uncaught scheduler dispose", invoke(context) { context.scheduler.dispose(); } },
+	{ name: "closed cancellation", invoke(context) { context.cancellation.dispose(); } },
 ];
 
 test("mount caches the latest snapshot and applies one frozen shared bundle", async () => {
@@ -931,6 +977,193 @@ for (const action of runtimeServiceAuthorityActions) {
 		} finally {
 			engine?.dispose();
 			frames.restore();
+		}
+	});
+}
+
+for (const action of schedulerAuthorityActions) {
+	test(`caught scheduler ${action.name} ownership inside a mounted frame delegate fails closed`, async () => {
+		const frames = installAnimationFrameHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
+		try {
+			const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+			let armed = false;
+			let caught = 0;
+			let compositionDisposals = 0;
+			let resourceDisposals = 0;
+			engine = createVisualEngine({ mediaClock: clock, createComposition: () => ({
+				async mount(context) {
+					captured.context = context;
+					context.resources.register({ owner: action.name, kind: "texture", retention: "persistent", estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+					context.tasks.enqueue({ owner: action.name, key: "queued", priority: "critical", cost: 1, run() {}, commit() {} });
+					context.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+				},
+				applyFrameSnapshot() {
+					if (!armed || !captured.context) return;
+					try {
+						action.invoke(captured.context.scheduler);
+					} catch {
+						caught += 1;
+					}
+				},
+				applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+			}) });
+			await engine.mount(document.createElement("div"));
+			armed = true;
+
+			expect(() => engine?.setPlaybackSnapshot(playbackSnapshot(action.name))).toThrow("ownership");
+			expect(caught).toBe(1);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
+			expect(frames.cancelled).toEqual([1]);
+			const disposed = engine.getPerformanceSnapshot();
+			expect(disposed.runtime.mounted).toBe(false);
+			expect(disposed.tasks.cancelled).toBe(1);
+			expect(disposed.resources.releases).toBe(2);
+			const generation = captured.context?.scheduler.getGeneration();
+			engine.dispose();
+			expect(captured.context?.scheduler.getGeneration()).toBe(generation);
+			expect(compositionDisposals).toBe(1);
+			expect(resourceDisposals).toBe(1);
+		} finally {
+			engine?.dispose();
+			frames.restore();
+		}
+	});
+}
+
+for (const boundary of ["animation", "maintenance"] as const) {
+	for (const action of runtimeCallbackInvalidationActions) {
+		test(`${boundary} callback ${action.name} fails closed without rescheduling`, async () => {
+			const frames = installAnimationFrameHarness();
+			const timers = installTimerHarness();
+			let engine: ReturnType<typeof createVisualEngine> | null = null;
+			try {
+				const captured: { context: VisualEngineCompositionContext | null } = { context: null };
+				let callbackCalls = 0;
+				let compositionDisposals = 0;
+				let resourceDisposals = 0;
+				engine = createVisualEngine({
+					mediaClock: clock,
+					initialVisibility: boundary === "maintenance" ? backgroundVisibility : foreground,
+					createComposition: () => ({
+						async mount(context) {
+							captured.context = context;
+							context.resources.register({ owner: action.name, kind: "texture", retention: "persistent", estimatedBytes: 1, dispose() { resourceDisposals += 1; } });
+							context.tasks.enqueue({ owner: action.name, key: boundary, priority: "critical", cost: 1, run() {}, commit() {} });
+							context.scheduler.registerRuntimeCallbacks({
+								onAnimation() {
+									if (boundary !== "animation") return;
+									callbackCalls += 1;
+									action.invoke(context);
+								},
+								onMaintenance() {
+									if (boundary !== "maintenance") return;
+									callbackCalls += 1;
+									action.invoke(context);
+								},
+							});
+						},
+						applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+					}),
+				});
+				await engine.mount(document.createElement("div"));
+				const staleFrame = frames.callbacks.get(1);
+				const staleTimer = timers.callbacks.get(1);
+				expect(frames.requested).toBe(boundary === "animation" ? 1 : 0);
+				expect(timers.requested).toBe(boundary === "maintenance" ? 1 : 0);
+
+				const originalConsoleError = console.error;
+				console.error = () => {};
+				try {
+					if (boundary === "animation") staleFrame?.(0);
+					else staleTimer?.();
+				} finally {
+					console.error = originalConsoleError;
+				}
+
+				expect(callbackCalls).toBe(1);
+				expect(frames.requested).toBe(boundary === "animation" ? 1 : 0);
+				expect(timers.requested).toBe(boundary === "maintenance" ? 1 : 0);
+				expect(compositionDisposals).toBe(1);
+				expect(resourceDisposals).toBe(1);
+				const disposed = engine.getPerformanceSnapshot();
+				expect(disposed.runtime.mounted).toBe(false);
+				expect(disposed.runtime.running).toBe(false);
+				expect(disposed.tasks.cancelled).toBe(1);
+				expect(disposed.resources.releases).toBe(2);
+				const generation = captured.context?.scheduler.getGeneration();
+
+				if (boundary === "animation") staleFrame?.(16);
+				else staleTimer?.();
+				engine.dispose();
+				expect(callbackCalls).toBe(1);
+				expect(frames.requested).toBe(boundary === "animation" ? 1 : 0);
+				expect(timers.requested).toBe(boundary === "maintenance" ? 1 : 0);
+				expect(captured.context?.scheduler.getGeneration()).toBe(generation);
+				expect(compositionDisposals).toBe(1);
+				expect(resourceDisposals).toBe(1);
+			} finally {
+				engine?.dispose();
+				frames.restore();
+				timers.restore();
+			}
+		});
+	}
+
+	test(`${boundary} callback ordinary errors remain isolated and keep scheduling`, async () => {
+		const frames = installAnimationFrameHarness();
+		const timers = installTimerHarness();
+		let engine: ReturnType<typeof createVisualEngine> | null = null;
+		try {
+			let callbackCalls = 0;
+			let compositionDisposals = 0;
+			const runCallback = () => {
+				callbackCalls += 1;
+				if (callbackCalls === 1) throw new Error("ordinary callback failure");
+			};
+			engine = createVisualEngine({
+				mediaClock: clock,
+				initialVisibility: boundary === "maintenance" ? backgroundVisibility : foreground,
+				createComposition: () => ({
+					async mount(context) {
+						context.scheduler.registerRuntimeCallbacks({
+							onAnimation() { if (boundary === "animation") runCallback(); },
+							onMaintenance() { if (boundary === "maintenance") runCallback(); },
+						});
+					},
+					applyFrameSnapshot() {}, applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
+				}),
+			});
+			await engine.mount(document.createElement("div"));
+
+			const originalConsoleError = console.error;
+			console.error = () => {};
+			try {
+				if (boundary === "animation") {
+					frames.callbacks.get(1)?.(0);
+					frames.callbacks.get(2)?.(16);
+				} else {
+					timers.callbacks.get(1)?.();
+					timers.callbacks.get(2)?.();
+				}
+			} finally {
+				console.error = originalConsoleError;
+			}
+
+			expect(callbackCalls).toBe(2);
+			expect(frames.requested).toBe(boundary === "animation" ? 3 : 0);
+			expect(timers.requested).toBe(boundary === "maintenance" ? 3 : 0);
+			expect(engine.getPerformanceSnapshot().runtime.mounted).toBe(true);
+			expect(compositionDisposals).toBe(0);
+			engine.dispose();
+			expect(frames.cancelled).toEqual(boundary === "animation" ? [3] : []);
+			expect(timers.cleared).toEqual(boundary === "maintenance" ? [3] : []);
+			expect(compositionDisposals).toBe(1);
+		} finally {
+			engine?.dispose();
+			frames.restore();
+			timers.restore();
 		}
 	});
 }
