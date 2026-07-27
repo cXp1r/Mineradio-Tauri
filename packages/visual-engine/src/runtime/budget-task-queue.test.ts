@@ -185,3 +185,37 @@ test("peak queue depth excludes running tasks", () => {
 	expect(snapshot.running).toBe(1);
 	expect(snapshot.peakQueueDepth).toBe(1);
 });
+
+test("reentrant enqueue publishes only the final current replacement", async () => {
+	const { ledger, queue } = createQueue();
+	const commits: string[] = [];
+	let reentrantAccepted = false;
+	queue.enqueue({
+		owner: "cover",
+		key: "art",
+		priority: "visible",
+		cost: 1,
+		run: ({ signal }) => {
+			signal.addEventListener("abort", () => {
+				reentrantAccepted = queue.enqueue({ owner: "cover", key: "art", priority: "visible", cost: 1, run: () => "reentrant", commit: (value) => commits.push(value) });
+			});
+			return new Promise(() => {});
+		},
+		commit() {},
+	});
+	queue.runSlice(1);
+
+	const outerAccepted = queue.enqueue({ owner: "cover", key: "art", priority: "visible", cost: 1, run: () => "outer", commit: (value) => commits.push(value) });
+	const snapshot = queue.getSnapshot();
+	expect(reentrantAccepted).toBe(true);
+	expect(outerAccepted).toBe(false);
+	expect(snapshot.queued).toBe(1);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(1);
+
+	expect(queue.runSlice(1)).toBe(1);
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(commits).toEqual(["reentrant"]);
+	expect(queue.getSnapshot().staleResultsDropped).toBe(0);
+	expect(queue.getSnapshot().cancelled).toBe(1);
+});

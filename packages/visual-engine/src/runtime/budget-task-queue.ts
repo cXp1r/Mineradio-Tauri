@@ -114,8 +114,8 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		const index = queued.indexOf(entry);
 		if (index >= 0) queued.splice(index, 1);
 	};
-	const cancelEntry = (entry: QueueEntry) => {
-		if (entry.state === "cancelled" || entry.state === "settled") return;
+	const detachEntry = (entry: QueueEntry): boolean => {
+		if (entry.state === "cancelled" || entry.state === "settled") return false;
 		if (entry.state === "queued") {
 			removeQueued(entry);
 			releaseQueuedLease(entry);
@@ -123,6 +123,10 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		entry.state = "cancelled";
 		forgetCurrent(entry);
 		cancelled += 1;
+		return true;
+	};
+	const cancelEntry = (entry: QueueEntry) => {
+		if (!detachEntry(entry)) return;
 		if (entry.ticket.isCurrent() && cancellationScope.isOpen()) {
 			cancellationScope.issue(entry.task.owner, entry.task.key);
 		}
@@ -142,7 +146,9 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 			assertFiniteNonNegative(task.cost, "Task cost");
 			const id = entryId(task.owner, task.key);
 			const previous = activeById.get(id);
-			if (previous) cancelEntry(previous);
+			if (previous) detachEntry(previous);
+			const ticket = cancellationScope.issue(task.owner, task.key);
+			if (!ticket.isCurrent()) return false;
 			const admission = options.ledger.admit(
 				{ queuedTaskCost: task.cost },
 				LEDGER_PRIORITIES[task.priority],
@@ -151,7 +157,6 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 				cancelled += 1;
 				return false;
 			}
-			const ticket = cancellationScope.issue(task.owner, task.key);
 			const entry: QueueEntry = { task, ticket, allocation: admission.allocation, state: "queued" };
 			queued.push(entry);
 			activeById.set(id, entry);
