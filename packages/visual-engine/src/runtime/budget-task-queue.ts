@@ -95,6 +95,7 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 	let staleResultsDropped = 0;
 	let failed = 0;
 	let peakQueueDepth = 0;
+	let cleaning = false;
 
 	const isQueueLive = () =>
 		!disposed &&
@@ -141,8 +142,14 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		invalidateTicket(entry.ticket);
 	};
 	const cancelAllEntries = () => {
-		for (const entry of new Set([...queued, ...activeById.values()])) {
-			cancelEntry(entry);
+		if (cleaning) return;
+		cleaning = true;
+		try {
+			for (const entry of new Set([...queued, ...activeById.values()])) {
+				cancelEntry(entry);
+			}
+		} finally {
+			cleaning = false;
 		}
 	};
 	const cleanIfInactive = (): boolean => {

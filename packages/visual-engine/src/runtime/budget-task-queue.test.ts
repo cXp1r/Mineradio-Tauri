@@ -320,3 +320,79 @@ test("queue disposal owns only a child cancellation scope", () => {
 
 	expect(secondSignal?.aborted).toBe(true);
 });
+
+function exerciseRecursiveCleanup(trigger: "inactive" | "dispose") {
+	const { ledger, queue, scope } = createQueue();
+	const nestedAccepted: boolean[] = [];
+	let listenerDepth = 0;
+	let maxListenerDepth = 0;
+	for (let index = 0; index < 5; index += 1) {
+		queue.enqueue({
+			owner: "scene",
+			key: `task-${index}`,
+			priority: "visible",
+			cost: 1,
+			run: ({ signal }) => {
+				signal.addEventListener("abort", () => {
+					listenerDepth += 1;
+					maxListenerDepth = Math.max(maxListenerDepth, listenerDepth);
+					try {
+						nestedAccepted.push(queue.enqueue({ owner: "nested", key: `task-${index}`, priority: "visible", cost: 1, run() {}, commit() {} }));
+					} finally {
+						listenerDepth -= 1;
+					}
+				});
+				return new Promise(() => {});
+			},
+			commit() {},
+		});
+	}
+	queue.runSlice(3);
+	const before = queue.getSnapshot();
+	let thrown: unknown;
+	try {
+		if (trigger === "inactive") {
+			scope.dispose();
+			queue.runSlice(5);
+		} else {
+			queue.dispose();
+		}
+	} catch (error) {
+		thrown = error;
+	}
+	return {
+		before,
+		after: queue.getSnapshot(),
+		ledger: ledger.getSnapshot(),
+		maxListenerDepth,
+		nestedAccepted,
+		thrown,
+	};
+}
+
+test("inactive cleanup rejects nested enqueue without recursive abort depth", () => {
+	const result = exerciseRecursiveCleanup("inactive");
+
+	expect(result.before).toEqual({ queued: 2, running: 3, completed: 0, cancelled: 0, staleResultsDropped: 0, failed: 0, peakQueueDepth: 5 });
+	expect(result.thrown).toBeUndefined();
+	expect(result.nestedAccepted).toEqual([false, false, false]);
+	expect(result.maxListenerDepth).toBe(1);
+	expect(result.after.queued).toBe(0);
+	expect(result.after.running).toBe(0);
+	expect(result.after.cancelled).toBe(5);
+	expect(result.ledger.current.queuedTaskCost).toBe(0);
+	expect(result.ledger.releases).toBe(5);
+});
+
+test("queue disposal shares the non-recursive cleanup guard", () => {
+	const result = exerciseRecursiveCleanup("dispose");
+
+	expect(result.thrown).toBeUndefined();
+	expect(result.nestedAccepted).toEqual([false, false, false]);
+	expect(result.maxListenerDepth).toBe(1);
+	expect(result.after.queued).toBe(0);
+	expect(result.after.running).toBe(0);
+	expect(result.after.cancelled).toBe(5);
+	expect(result.ledger.current.queuedTaskCost).toBe(0);
+	expect(result.ledger.releases).toBe(5);
+});
