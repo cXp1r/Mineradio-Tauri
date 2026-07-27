@@ -377,6 +377,27 @@ test("HomeVisual.update drives baseline ripple texture from bass rising edges", 
 	expect(data[3]).toBeGreaterThan(1);
 });
 
+test("HomeVisual keeps update backward compatible while allowing core and ripples to advance independently", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
+	const independent = hv as typeof hv & {
+		updateCore(ctx: FrameContext): void;
+		updateRipples(dtSeconds: number): void;
+	};
+	independent.getRipples().trigger(0.2, -0.3, 1);
+	independent.updateCore({ ...makeFrameCtx(), dt: 0.25 } as unknown as FrameContext);
+	expect(independent.getRipples().getData()[3]).toBe(0);
+	independent.updateRipples(0.25);
+	expect(independent.getRipples().getData()[2]).toBeCloseTo(0.25, 6);
+	expect(independent.getRipples().getData()[3]).toBe(1);
+
+	const legacy = await createHomeVisual({ scene: makeFakeScene() as never, threeFactory: makeFakeThree() });
+	legacy.getRipples().trigger(0.2, -0.3, 1);
+	legacy.update({ ...makeFrameCtx(), dt: 0.25 } as unknown as FrameContext);
+	expect(legacy.getRipples().getData()[2]).toBeCloseTo(0.25, 6);
+	expect(legacy.getRipples().getData()[3]).toBe(1);
+});
+
 test("preset 6 (skull) suppresses points visibility; non-skull leaves points visible", async () => {
 	const scene = makeFakeScene();
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });

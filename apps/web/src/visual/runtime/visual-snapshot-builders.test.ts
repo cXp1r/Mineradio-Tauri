@@ -1,0 +1,156 @@
+import { expect, test } from "bun:test";
+import { cloneFxState } from "@mineradio/visual-engine";
+import {
+	buildLyricsVisualSnapshot,
+	buildPlaybackVisualSnapshot,
+	buildShelfVisualSnapshot,
+	buildVisualSettingsSnapshot,
+	createVisualMediaClock,
+} from "./visual-snapshot-builders";
+
+test("visual snapshot builders create complete immutable snapshots while preserving opaque runtime references", () => {
+	const beatMap = { cameraBeats: [{ time: 1.25 }] };
+	const backgroundMedia = { kind: "video", element: {} };
+	const sourceFx = cloneFxState();
+	sourceFx.preset = 6;
+	sourceFx.performanceBackground = "keep";
+	sourceFx.backgroundMedia = backgroundMedia;
+	sourceFx.mouseXy = { x: 0.25, y: -0.5 };
+
+	const playback = buildPlaybackVisualSnapshot({
+		trackKey: "netease:42",
+		playing: true,
+		durationMs: 210_000,
+		coverUrl: "http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg",
+		beatMapKey: "netease:42",
+		beatMap,
+		splashActive: false,
+		homeActive: true,
+	});
+	const lyrics = buildLyricsVisualSnapshot({
+		lines: [{
+			t: 1,
+			text: "你好",
+			duration: 2,
+			charCount: 2,
+			words: [{ text: "你", t: 1, d: 0.5, c0: 0, c1: 1 }],
+		}],
+		fallbackText: "Song - Artist",
+		hasNativeKaraoke: true,
+	});
+	const shelf = buildShelfVisualSnapshot({
+		items: [{ type: "playlist", title: "A", cover: "proxy-a.jpg", playlistId: "7", provider: "netease" }],
+		pane: "fav",
+		mode: "stage",
+		cameraMode: "dynamic",
+		presence: "auto",
+		mergeCollections: true,
+		mineCount: 3,
+		favCount: 4,
+		secondaryLeftDisplaySeamGuard: true,
+	});
+	const settings = buildVisualSettingsSnapshot({
+		fxDefaults: { intensity: 0.7, performanceBackground: "keep" },
+		fxState: sourceFx,
+		coverResolution: 1.8,
+		wallpaperSafe: false,
+		prefersReducedMotion: true,
+	});
+
+	expect(playback.beatMap).toBe(beatMap);
+	expect(playback).toEqual({
+		trackKey: "netease:42",
+		playing: true,
+		durationMs: 210_000,
+		coverUrl: "http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg",
+		beatMapKey: "netease:42",
+		beatMap,
+		splashActive: false,
+		homeActive: true,
+	});
+	expect(lyrics.lines).toEqual([{
+		t: 1,
+		text: "你好",
+		duration: 2,
+		charCount: 2,
+		words: [{ text: "你", t: 1, d: 0.5, c0: 0, c1: 1 }],
+	}]);
+	expect(shelf).toEqual({
+		items: [{ type: "playlist", title: "A", cover: "proxy-a.jpg", playlistId: "7", provider: "netease" }],
+		pane: "fav",
+		mode: "stage",
+		cameraMode: "dynamic",
+		presence: "auto",
+		mergeCollections: true,
+		mineCount: 3,
+		favCount: 4,
+		secondaryLeftDisplaySeamGuard: true,
+	});
+	expect(settings.fx).toEqual({ ...sourceFx, mouseXy: { x: 0.25, y: -0.5 } });
+	expect(settings.fx.backgroundMedia).toBe(backgroundMedia);
+	expect(settings.fx.preset).toBe(6);
+	expect(settings.backgroundPolicy).toBe("keep");
+	expect(settings.foregroundFramePolicy).toEqual({ mode: "fixed", fps: 24 });
+	expect(settings.coverResolution).toBe(1.8);
+
+	expect(Object.isFrozen(playback)).toBe(true);
+	expect(Object.isFrozen(lyrics)).toBe(true);
+	expect(Object.isFrozen(lyrics.lines)).toBe(true);
+	expect(Object.isFrozen(lyrics.lines[0])).toBe(true);
+	expect(Object.isFrozen(lyrics.lines[0]?.words)).toBe(true);
+	expect(Object.isFrozen(shelf)).toBe(true);
+	expect(Object.isFrozen(shelf.items)).toBe(true);
+	expect(Object.isFrozen(shelf.items[0])).toBe(true);
+	expect(Object.isFrozen(settings)).toBe(true);
+	expect(Object.isFrozen(settings.fx)).toBe(true);
+	expect(Object.isFrozen(settings.fx.mouseXy)).toBe(true);
+});
+
+test("visual media clock prefers live audio state and falls back to React playback state", () => {
+	let audio: HTMLAudioElement | null = {
+		currentTime: 12.345,
+		duration: 180,
+		paused: false,
+		ended: false,
+	} as HTMLAudioElement;
+	let positionMs = 10_000;
+	let playback = buildPlaybackVisualSnapshot({
+		trackKey: "track",
+		playing: false,
+		durationMs: 210_000,
+		coverUrl: "",
+		beatMapKey: "",
+		beatMap: null,
+		splashActive: false,
+		homeActive: false,
+	});
+	const clock = createVisualMediaClock({
+		getAudioElement: () => audio,
+		getPositionMs: () => positionMs,
+		getPlaybackSnapshot: () => playback,
+	});
+
+	expect(clock.currentTimeSeconds()).toBe(12.345);
+	expect(clock.durationSeconds()).toBe(180);
+	expect(clock.isPlaying()).toBe(true);
+
+	audio = { currentTime: NaN, duration: NaN } as HTMLAudioElement;
+	positionMs = 15_500;
+	playback = buildPlaybackVisualSnapshot({ ...playback, playing: true });
+	expect(clock.currentTimeSeconds()).toBe(15.5);
+	expect(clock.durationSeconds()).toBe(210);
+	expect(clock.isPlaying()).toBe(true);
+
+	audio = null;
+	playback = buildPlaybackVisualSnapshot({ ...playback, playing: false, durationMs: null });
+	expect(clock.currentTimeSeconds()).toBe(15.5);
+	expect(clock.durationSeconds()).toBeNull();
+	expect(clock.isPlaying()).toBe(false);
+});
+
+test("snapshot builder remains independent of providers, HTTP routes, and Sidecar configuration", async () => {
+	const source = await fetch(new URL("./visual-snapshot-builders.ts", import.meta.url)).then((response) => response.text());
+	expect(source).not.toContain("ProviderId");
+	expect(source).not.toContain("image-proxy");
+	expect(source).not.toContain("sidecarBaseUrl");
+});

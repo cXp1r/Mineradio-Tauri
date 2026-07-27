@@ -45,6 +45,8 @@ export interface HomeVisualOptions {
 
 export interface HomeVisual {
 	update(ctx: FrameContext): void;
+	updateCore(ctx: FrameContext): void;
+	updateRipples(dtSeconds: number): void;
 	dispose(): void;
 	getPreset(): number;
 	setPreset(p: number, opts?: PresetOpts): void;
@@ -253,7 +255,6 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 
 		const tU = field.materialUniforms.uTime as { value: unknown } | undefined;
 		if (tU && typeof ctx.uniforms.uTime.value === "number") tU.value = ctx.uniforms.uTime.value;
-		ripples.update(ctx.dt);
 		const alphaUniform = field.materialUniforms.uAlpha as { value: unknown } | undefined;
 		if (alphaUniform && typeof alphaUniform.value === "number") {
 			const target = 0.96;
@@ -275,7 +276,14 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	}
 
 	return {
-		update: stepBody,
+		update(ctx) {
+			stepBody(ctx);
+			ripples.update(ctx.dt);
+		},
+		updateCore: stepBody,
+		updateRipples(dtSeconds) {
+			ripples.update(dtSeconds);
+		},
 		dispose() {
 			backCoverLayer?.dispose();
 			skullParticles.dispose();
