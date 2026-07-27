@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
 	createBudgetTaskQueue,
+	createCancellationScope,
 	createVisualResourceLedger,
 	createVisualResourceScope,
 	type VisualResourceBudget,
@@ -218,4 +219,104 @@ test("reentrant enqueue publishes only the final current replacement", async () 
 	expect(commits).toEqual(["reentrant"]);
 	expect(queue.getSnapshot().staleResultsDropped).toBe(0);
 	expect(queue.getSnapshot().cancelled).toBe(1);
+});
+
+test("replacement enqueue rejects work when abort closes its resource scope", () => {
+	const { ledger, queue, scope } = createQueue();
+	queue.enqueue({
+		owner: "cover",
+		key: "art",
+		priority: "visible",
+		cost: 1,
+		run: ({ signal }) => {
+			signal.addEventListener("abort", () => scope.dispose());
+			return new Promise(() => {});
+		},
+		commit() {},
+	});
+	queue.runSlice(1);
+
+	const accepted = queue.enqueue({ owner: "cover", key: "art", priority: "visible", cost: 2, run() {}, commit() {} });
+
+	expect(accepted).toBe(false);
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(0);
+});
+
+test("hard-pressure cancellation cannot publish after an abort handler closes resources", () => {
+	const { ledger, queue, scope } = createQueue();
+	queue.enqueue({
+		owner: "scene",
+		key: "normal",
+		priority: "normal",
+		cost: 1,
+		run: ({ signal }) => {
+			signal.addEventListener("abort", () => scope.dispose());
+			return new Promise(() => {});
+		},
+		commit() {},
+	});
+	queue.runSlice(1);
+
+	const accepted = queue.enqueue({ owner: "scene", key: "critical", priority: "critical", cost: 11, run() {}, commit() {} });
+
+	expect(accepted).toBe(false);
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(0);
+});
+
+test("parent cancellation disposes queued work before runSlice can start it", () => {
+	const ledger = createVisualResourceLedger({ budget });
+	const resourceScope = createVisualResourceScope("tasks");
+	const parent = createCancellationScope("parent");
+	const queue = createBudgetTaskQueue({ ledger, resourceScope, cancellationScope: parent });
+	let starts = 0;
+	queue.enqueue({ owner: "cover", key: "art", priority: "visible", cost: 2, run: () => { starts += 1; }, commit() {} });
+
+	parent.dispose();
+
+	expect(queue.runSlice(2)).toBe(0);
+	expect(starts).toBe(0);
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(0);
+});
+
+test("a synchronous resource close stops the rest of the current slice", () => {
+	const { ledger, queue, scope } = createQueue();
+	const starts: string[] = [];
+	queue.enqueue({ owner: "scene", key: "first", priority: "visible", cost: 1, run: () => { starts.push("first"); scope.dispose(); }, commit() {} });
+	queue.enqueue({ owner: "scene", key: "second", priority: "visible", cost: 1, run: () => starts.push("second"), commit() {} });
+
+	expect(queue.runSlice(2)).toBe(1);
+	expect(starts).toEqual(["first"]);
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(0);
+});
+
+test("queue disposal owns only a child cancellation scope", () => {
+	const parent = createCancellationScope("parent");
+	const unrelated = parent.issue("unrelated", "ticket");
+	const firstLedger = createVisualResourceLedger({ budget });
+	const firstResources = createVisualResourceScope("first-resources");
+	const firstQueue = createBudgetTaskQueue({ ledger: firstLedger, resourceScope: firstResources, cancellationScope: parent });
+	let firstSignal: AbortSignal | undefined;
+	firstQueue.enqueue({ owner: "first", key: "running", priority: "visible", cost: 1, run: ({ signal }) => { firstSignal = signal; return new Promise(() => {}); }, commit() {} });
+	firstQueue.runSlice(1);
+
+	firstQueue.dispose();
+
+	expect(firstSignal?.aborted).toBe(true);
+	expect(parent.isOpen()).toBe(true);
+	expect(unrelated.signal.aborted).toBe(false);
+
+	const secondLedger = createVisualResourceLedger({ budget });
+	const secondResources = createVisualResourceScope("second-resources");
+	const secondQueue = createBudgetTaskQueue({ ledger: secondLedger, resourceScope: secondResources, cancellationScope: parent });
+	let secondSignal: AbortSignal | undefined;
+	secondQueue.enqueue({ owner: "second", key: "running", priority: "visible", cost: 1, run: ({ signal }) => { secondSignal = signal; return new Promise(() => {}); }, commit() {} });
+	secondQueue.runSlice(1);
+
+	parent.dispose();
+
+	expect(secondSignal?.aborted).toBe(true);
 });
