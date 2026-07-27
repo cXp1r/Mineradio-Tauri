@@ -396,3 +396,58 @@ test("queue disposal shares the non-recursive cleanup guard", () => {
 	expect(result.ledger.current.queuedTaskCost).toBe(0);
 	expect(result.ledger.releases).toBe(5);
 });
+
+test("hard-pressure cancellation keeps nested critical enqueue non-recursive", () => {
+	const { ledger, queue } = createQueue();
+	const nestedAccepted: boolean[] = [];
+	let listenerDepth = 0;
+	let maxListenerDepth = 0;
+	for (let index = 0; index < 3; index += 1) {
+		queue.enqueue({
+			owner: "low",
+			key: `task-${index}`,
+			priority: index % 2 === 0 ? "normal" : "background",
+			cost: 1,
+			run: ({ signal }) => {
+				signal.addEventListener("abort", () => {
+					listenerDepth += 1;
+					maxListenerDepth = Math.max(maxListenerDepth, listenerDepth);
+					try {
+						nestedAccepted.push(queue.enqueue({ owner: "critical", key: `nested-${index}`, priority: "critical", cost: 1, run() {}, commit() {} }));
+					} finally {
+						listenerDepth -= 1;
+					}
+				});
+				return new Promise(() => {});
+			},
+			commit() {},
+		});
+	}
+	queue.runSlice(3);
+	let triggerAccepted = false;
+	let thrown: unknown;
+	try {
+		triggerAccepted = queue.enqueue({ owner: "critical", key: "trigger", priority: "critical", cost: 11, run() {}, commit() {} });
+	} catch (error) {
+		thrown = error;
+	}
+
+	expect(thrown).toBeUndefined();
+	expect(triggerAccepted).toBe(true);
+	expect(nestedAccepted).toEqual([true, true, true]);
+	expect(maxListenerDepth).toBe(1);
+	expect(queue.getSnapshot().queued).toBe(4);
+	expect(queue.getSnapshot().running).toBe(0);
+	expect(queue.getSnapshot().cancelled).toBe(3);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(14);
+	expect(ledger.getSnapshot().allocations).toBe(7);
+	expect(ledger.getSnapshot().releases).toBe(3);
+
+	queue.dispose();
+
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(queue.getSnapshot().cancelled).toBe(7);
+	expect(ledger.getSnapshot().current.queuedTaskCost).toBe(0);
+	expect(ledger.getSnapshot().allocations).toBe(7);
+	expect(ledger.getSnapshot().releases).toBe(7);
+});

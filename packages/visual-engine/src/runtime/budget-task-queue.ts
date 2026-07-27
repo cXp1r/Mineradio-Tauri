@@ -96,6 +96,7 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 	let failed = 0;
 	let peakQueueDepth = 0;
 	let cleaning = false;
+	let cancellingHardPressure = false;
 
 	const isQueueLive = () =>
 		!disposed &&
@@ -158,11 +159,27 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		return true;
 	};
 	const cancelLowPriorityForHardPressure = () => {
-		if (options.ledger.getSnapshot().pressure !== "hard") return;
-		for (const entry of [...queued, ...activeById.values()]) {
-			if (entry.task.priority === "normal" || entry.task.priority === "background") {
-				cancelEntry(entry);
+		if (
+			cancellingHardPressure ||
+			options.ledger.getSnapshot().pressure !== "hard"
+		) {
+			return;
+		}
+		cancellingHardPressure = true;
+		try {
+			while (options.ledger.getSnapshot().pressure === "hard") {
+				const lowPriorityEntries = [
+					...new Set([...queued, ...activeById.values()]),
+				].filter(
+					(entry) =>
+						entry.task.priority === "normal" ||
+						entry.task.priority === "background",
+				);
+				if (lowPriorityEntries.length === 0) break;
+				for (const entry of lowPriorityEntries) cancelEntry(entry);
 			}
+		} finally {
+			cancellingHardPressure = false;
 		}
 	};
 
