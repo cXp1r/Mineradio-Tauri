@@ -603,6 +603,71 @@ test("setCoverUrl(url) reuses prepared cover heuristic and AI depth across contr
 	expect(secondUniforms.uEdgeTex.value.image).toBe(mergedAiCanvas);
 });
 
+test("a cache hit reconciles image leases into the current resource scope", async () => {
+	const makeTrackingScope = (name: string) => {
+		const raw = createVisualResourceScope(name);
+		const handles: Array<{ disposed: boolean }> = [];
+		const disposeCounts: number[] = [];
+		const scope = {
+			get name() { return raw.name; },
+			get closed() { return raw.closed; },
+			isOpen: () => raw.isOpen(),
+			register(registration: Parameters<typeof raw.register>[0]) {
+				const index = disposeCounts.push(0) - 1;
+				const handle = raw.register({
+					...registration,
+					dispose() {
+						disposeCounts[index] += 1;
+						registration.dispose();
+					},
+				});
+				handles.push(handle);
+				return handle;
+			},
+			createChild: (childName: string) => raw.createChild(childName),
+			releaseRetention: (retention: Parameters<typeof raw.releaseRetention>[0]) => raw.releaseRetention(retention),
+			dispose: () => raw.dispose(),
+		};
+		return { scope, handles, disposeCounts };
+	};
+	const firstScope = makeTrackingScope("first-cover-cache");
+	const secondScope = makeTrackingScope("second-cover-cache");
+	const heuristic = { width: 16, height: 16 };
+	let loads = 0;
+	const makeController = (resourceScope: typeof firstScope.scope) => createHomeCoverTextureController({
+		uniforms: makeUniforms() as never,
+		loadImage: async () => { loads += 1; return { width: 8, height: 8 }; },
+		buildEdgeDepth: () => heuristic as never,
+		runtime: { resourceScope: resourceScope as never },
+	});
+	const first = makeController(firstScope.scope);
+	first.setCoverUrl("https://img.example/reconcile.jpg");
+	await first.whenIdle();
+	const bytes = estimateHomeCoverTextureCacheBytes();
+	expect(firstScope.handles.length).toBe(2);
+	firstScope.scope.dispose();
+	expect(firstScope.handles.every((handle) => handle.disposed)).toBe(true);
+
+	const secondUniforms = makeUniforms();
+	const second = createHomeCoverTextureController({
+		uniforms: secondUniforms as never,
+		loadImage: async () => { loads += 1; return { width: 8, height: 8 }; },
+		buildEdgeDepth: () => heuristic as never,
+		runtime: { resourceScope: secondScope.scope as never },
+	});
+	second.setCoverUrl("https://img.example/reconcile.jpg");
+	await second.whenIdle();
+
+	expect(loads).toBe(1);
+	expect(secondUniforms.uHasCover.value).toBe(1);
+	expect(secondScope.handles.length).toBe(2);
+	expect(secondScope.handles.every((handle) => !handle.disposed)).toBe(true);
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(bytes);
+	trimHomeCoverTextureCache(0);
+	expect(firstScope.disposeCounts).toEqual([1, 1]);
+	expect(secondScope.disposeCounts).toEqual([1, 1]);
+});
+
 test("coverTextureSizeForResolution preserves baseline 256/384/512 thresholds", () => {
 	expect(coverTextureSizeForResolution(0.75)).toBe(256);
 	expect(coverTextureSizeForResolution(1.09)).toBe(256);

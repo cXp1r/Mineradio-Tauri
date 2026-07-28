@@ -68,20 +68,17 @@ function emitAiDepthStatus(
 async function loadPipeline(
 	importModule: RemoteImport,
 	onStatus?: (detail: AiDepthStatusDetail) => void,
-	signal?: AbortSignal,
 ): Promise<DepthPipeline> {
 	if (!sharedPipelinePromise) {
 		emitAiDepthStatus({ visible: true, text: "加载 AI 深度模型 (首次需下载 50MB)…" }, onStatus);
 		sharedPipelinePromise = (async () => {
 				const mod = await importModule(TRANSFORMERS_JSDELIVR_URL);
-				throwIfAborted(signal);
 				if (mod.env) {
 					mod.env.allowLocalModels = false;
 					const wasm = mod.env.backends?.onnx?.wasm;
 					if (wasm) wasm.numThreads = 1;
 				}
 				const pipeline = await mod.pipeline("depth-estimation", AI_DEPTH_MODEL_ID);
-				throwIfAborted(signal);
 				return pipeline;
 			})()
 			.catch((error) => {
@@ -89,9 +86,7 @@ async function loadPipeline(
 				throw error;
 			});
 	}
-	const pipeline = await sharedPipelinePromise;
-	throwIfAborted(signal);
-	return pipeline;
+	return await sharedPipelinePromise;
 }
 
 function throwIfAborted(signal?: AbortSignal): void {
@@ -160,7 +155,7 @@ export function createJsDelivrAiDepthEstimator(
 		try {
 			throwIfAborted(signal);
 			emitAiDepthStatus({ visible: true, text: "后台增强封面深度…" }, onStatus);
-			const pipeline = await loadPipeline(importModule, onStatus, signal);
+			const pipeline = await loadPipeline(importModule, onStatus);
 			throwIfAborted(signal);
 			inputCanvas = inputCanvas ?? createCanvas(160);
 			const inputCanvasImage = inputCanvas

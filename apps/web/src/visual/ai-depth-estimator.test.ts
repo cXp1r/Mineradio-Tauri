@@ -172,30 +172,96 @@ test("createJsDelivrAiDepthEstimator reuses its 160px input canvas across runs",
 	]);
 });
 
-test("aborting while the transformers module imports returns null without toast, cooldown, or min-gap", async () => {
+test("aborting while the transformers module imports leaves shared bootstrap reusable without cooldown or min-gap", async () => {
 	const statuses: AiDepthStatusDetail[] = [];
-	let resolveImport: ((module: { env: {}; pipeline: () => Promise<never> }) => void) | undefined;
+	let resolveImport: ((module: {
+		env: {};
+		pipeline: () => Promise<(input: unknown) => Promise<unknown>>;
+	}) => void) | undefined;
 	let imports = 0;
+	let pipelineCreations = 0;
+	let inferenceCalls = 0;
 	const estimator = createJsDelivrAiDepthEstimator({
 		createCanvas: makeCanvasHarness().createCanvas,
 		now: () => 1000,
 		onStatus: (detail) => statuses.push(detail),
 		importModule: () => {
 			imports += 1;
-			if (imports === 1) return new Promise((done) => { resolveImport = done as never; });
-			return Promise.resolve({ env: {}, pipeline: async () => async () => ({ depth: { toCanvas: async () => ({ label: "depth" }) } }) });
+			return new Promise((done) => { resolveImport = done; });
 		},
 	});
 	const controller = new AbortController();
 	const pending = estimator({ width: 64, height: 64 } as never, controller.signal);
 	controller.abort();
-	resolveImport?.({ env: {}, pipeline: async () => { throw new Error("pipeline must not start after abort"); } } as never);
+	resolveImport?.({
+		env: {},
+		pipeline: async () => {
+			pipelineCreations += 1;
+			return async () => {
+				inferenceCalls += 1;
+				return { depth: { toCanvas: async () => ({ label: "depth" }) } };
+			};
+		},
+	});
 
 	expect(await pending).toBeNull();
-	resetJsDelivrAiDepthPipelineForTests();
+	expect(inferenceCalls).toBe(0);
 	expect(await estimator({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
+	expect(imports).toBe(1);
+	expect(pipelineCreations).toBe(1);
+	expect(inferenceCalls).toBe(1);
 	expect(statuses.filter((status) => status.toast).length).toBe(1);
 	expect(statuses.filter((status) => !status.visible).length).toBe(2);
+});
+
+test("one caller abort cannot poison a concurrent caller sharing the AI pipeline bootstrap", async () => {
+	let resolveImport: ((module: {
+		env: {};
+		pipeline: () => Promise<(input: unknown) => Promise<unknown>>;
+	}) => void) | undefined;
+	let imports = 0;
+	let pipelineCreations = 0;
+	const importModule = () => {
+		imports += 1;
+		return new Promise<{
+			env: {};
+			pipeline: () => Promise<(input: unknown) => Promise<unknown>>;
+		}>((done) => { resolveImport = done; });
+	};
+	const statusesA: AiDepthStatusDetail[] = [];
+	const statusesB: AiDepthStatusDetail[] = [];
+	const estimatorA = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statusesA.push(detail),
+		importModule,
+	});
+	const estimatorB = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statusesB.push(detail),
+		importModule,
+	});
+	const abortA = new AbortController();
+	const pendingA = estimatorA({ width: 64, height: 64 } as never, abortA.signal);
+	const pendingB = estimatorB({ width: 64, height: 64 } as never);
+	abortA.abort();
+	resolveImport?.({
+		env: {},
+		pipeline: async () => {
+			pipelineCreations += 1;
+			return async () => ({ depth: { toCanvas: async () => ({ label: "depth" }) } });
+		},
+	});
+
+	expect(await pendingA).toBeNull();
+	expect(await pendingB).toEqual({ label: "depth" });
+	expect(statusesA.some((status) => !!status.toast)).toBe(false);
+	expect(await estimatorA({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
+	expect(imports).toBe(1);
+	expect(pipelineCreations).toBe(1);
+	expect(statusesA.some((status) => !!status.toast)).toBe(true);
+	expect(statusesB.some((status) => !!status.toast)).toBe(true);
 });
 
 test("aborting while the depth pipeline is created does not start inference or poison retry guards", async () => {

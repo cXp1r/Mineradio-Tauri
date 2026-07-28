@@ -77,7 +77,7 @@ interface HomeCoverTextureCacheEntry {
 	heuristicImage: HomeCoverImage | null;
 	aiMergedImage: HomeCoverImage | null;
 	heuristicImageIsAiMerged: boolean;
-	readonly leases: Map<HomeCoverImage, VisualResourceHandle>;
+	readonly leasesByScope: Map<VisualResourceScope, Map<HomeCoverImage, VisualResourceHandle>>;
 }
 
 const homeCoverTextureCache = new Map<string, HomeCoverTextureCacheEntry>();
@@ -110,8 +110,11 @@ export function estimateHomeCoverTextureCacheBytes(): number {
 }
 
 function disposeCacheEntry(entry: HomeCoverTextureCacheEntry): void {
-	for (const lease of entry.leases.values()) lease.dispose();
-	entry.leases.clear();
+	for (const leases of entry.leasesByScope.values()) {
+		for (const lease of leases.values()) lease.dispose();
+		leases.clear();
+	}
+	entry.leasesByScope.clear();
 }
 
 export function trimHomeCoverTextureCache(maxEntries = HOME_COVER_TEXTURE_CACHE_LIMIT): void {
@@ -129,9 +132,63 @@ function coverTextureCacheKey(url: string, coverResolution: number): string {
 	return `${url}|tex=${coverTextureSizeForResolution(coverResolution)}`;
 }
 
-function getHomeCoverTextureCache(key: string): HomeCoverTextureCacheEntry | null {
+function cacheEntryImages(entry: HomeCoverTextureCacheEntry): Set<HomeCoverImage> {
+	return new Set<HomeCoverImage>([
+		entry.preparedImage,
+		...(entry.heuristicImage ? [entry.heuristicImage] : []),
+		...(entry.aiMergedImage ? [entry.aiMergedImage] : []),
+	]);
+}
+
+function reconcileHomeCoverTextureCacheLeases(
+	key: string,
+	entry: HomeCoverTextureCacheEntry,
+	resourceScope?: VisualResourceScope,
+): boolean {
+	const images = cacheEntryImages(entry);
+	const added: Array<[HomeCoverImage, VisualResourceHandle]> = [];
+	let currentLeases = resourceScope ? entry.leasesByScope.get(resourceScope) : undefined;
+	if (resourceScope) {
+		currentLeases ??= new Map();
+		try {
+			for (const image of images) {
+				const existing = currentLeases.get(image);
+				if (existing && !existing.disposed) continue;
+				if (existing?.disposed) currentLeases.delete(image);
+				const lease = resourceScope.register({
+					owner: `home-cover-cache:${key}`,
+					kind: "cache",
+					retention: "rebuildable",
+					estimatedBytes: estimateImageBytes(image),
+					dispose() {},
+				});
+				currentLeases.set(image, lease);
+				added.push([image, lease]);
+			}
+		} catch {
+			for (const [image, lease] of added) {
+				lease.dispose();
+				currentLeases.delete(image);
+			}
+			return false;
+		}
+		entry.leasesByScope.set(resourceScope, currentLeases);
+	}
+	for (const [scope, leases] of entry.leasesByScope) {
+		for (const [image, lease] of leases) {
+			if (images.has(image) && !lease.disposed) continue;
+			if (!lease.disposed) lease.dispose();
+			leases.delete(image);
+		}
+		if (leases.size === 0) entry.leasesByScope.delete(scope);
+	}
+	return true;
+}
+
+function getHomeCoverTextureCache(key: string, resourceScope?: VisualResourceScope): HomeCoverTextureCacheEntry | null {
 	const cached = homeCoverTextureCache.get(key);
 	if (!cached) return null;
+	reconcileHomeCoverTextureCacheLeases(key, cached, resourceScope);
 	homeCoverTextureCache.delete(key);
 	homeCoverTextureCache.set(key, cached);
 	return cached;
@@ -148,37 +205,11 @@ function setHomeCoverTextureCache(
 		heuristicImage: entry.heuristicImage ?? null,
 		aiMergedImage: entry.aiMergedImage ?? null,
 		heuristicImageIsAiMerged: entry.heuristicImageIsAiMerged === true,
-		leases: new Map(previous?.leases ?? []),
+		leasesByScope: new Map(
+			[...(previous?.leasesByScope ?? [])].map(([scope, leases]) => [scope, new Map(leases)]),
+		),
 	};
-	const images = new Set<HomeCoverImage>([
-		next.preparedImage,
-		...(next.heuristicImage ? [next.heuristicImage] : []),
-		...(next.aiMergedImage ? [next.aiMergedImage] : []),
-	]);
-	const added: HomeCoverImage[] = [];
-	try {
-		if (resourceScope) {
-			for (const image of images) {
-				if (next.leases.has(image)) continue;
-				next.leases.set(image, resourceScope.register({
-					owner: `home-cover-cache:${key}`,
-					kind: "cache",
-					retention: "rebuildable",
-					estimatedBytes: estimateImageBytes(image),
-					dispose() {},
-				}));
-				added.push(image);
-			}
-		}
-	} catch {
-		for (const image of added) next.leases.get(image)?.dispose();
-		return previous ?? null;
-	}
-	for (const [image, lease] of next.leases) {
-		if (images.has(image)) continue;
-		lease.dispose();
-		next.leases.delete(image);
-	}
+	if (!reconcileHomeCoverTextureCacheLeases(key, next, resourceScope)) return previous ?? null;
 	homeCoverTextureCache.delete(key);
 	homeCoverTextureCache.set(key, next);
 	trimHomeCoverTextureCache();
@@ -186,7 +217,7 @@ function setHomeCoverTextureCache(
 }
 
 function patchHomeCoverTextureCache(key: string, patch: Partial<HomeCoverTextureCacheEntry>, resourceScope?: VisualResourceScope): HomeCoverTextureCacheEntry | null {
-	const cached = getHomeCoverTextureCache(key);
+	const cached = getHomeCoverTextureCache(key, resourceScope);
 	if (!cached) return null;
 	return setHomeCoverTextureCache(key, { ...cached, ...patch, preparedImage: patch.preparedImage ?? cached.preparedImage }, resourceScope);
 }
@@ -347,6 +378,7 @@ export function createHomeCoverTextureController(
 	let disposed = false;
 	let coverPending = false;
 	let aiPending = false;
+	let aiEnhancementNeedsResume = false;
 	let preparedCoverImage: HomeCoverImage | null = null;
 	let heuristicEdgeImage: HomeCoverImage | null = null;
 	let aiMergedEdgeImage: HomeCoverImage | null = null;
@@ -421,6 +453,7 @@ export function createHomeCoverTextureController(
 
 	function beginGeneration(): IdleGeneration {
 		token += 1;
+		aiEnhancementNeedsResume = false;
 		cancelCoverAndAi();
 		idleGeneration = createIdleGeneration(token);
 		return idleGeneration;
@@ -439,6 +472,7 @@ export function createHomeCoverTextureController(
 		currentEdgeIsAiMerged = false;
 		heuristicEdgeIsAiMerged = false;
 		currentCoverCacheKey = "";
+		aiEnhancementNeedsResume = false;
 		uniforms.uHasCover.value = 0;
 		uniforms.uColorMixT.value = 1;
 		if (uniforms.uLoading) uniforms.uLoading.value = 0;
@@ -452,6 +486,7 @@ export function createHomeCoverTextureController(
 		aiMergedEdgeImage = null;
 		currentEdgeIsAiMerged = false;
 		heuristicEdgeIsAiMerged = false;
+		aiEnhancementNeedsResume = false;
 		if (uniforms.uHasCover.value > 0.5 && uniforms.uCoverTex.value.image) {
 			markTextureImage(uniforms.uPrevCoverTex.value, uniforms.uCoverTex.value.image as HomeCoverImage);
 		}
@@ -592,6 +627,7 @@ export function createHomeCoverTextureController(
 	function scheduleAiDepth(generation: IdleGeneration): void {
 		if (!aiDepthEnabled || !opts.estimateAiDepth || !preparedCoverImage || !heuristicEdgeImage || !uniforms.uEdgeTex) return;
 		if (aiMergedEdgeImage) {
+			aiEnhancementNeedsResume = false;
 			markTextureImage(uniforms.uEdgeTex.value, aiMergedEdgeImage);
 			currentEdgeIsAiMerged = true;
 			depthTween?.setTarget(1, 1, 180);
@@ -600,6 +636,7 @@ export function createHomeCoverTextureController(
 		const prepared = preparedCoverImage;
 		const heuristic = heuristicEdgeImage;
 		const runToken = generation.token;
+		aiEnhancementNeedsResume = false;
 		aiPending = true;
 		runTask<HomeCoverImage | null>({
 			generation,
@@ -638,7 +675,21 @@ export function createHomeCoverTextureController(
 			clearCover();
 			return;
 		}
-		if (url === currentUrl && uniforms.uHasCover.value > 0.5) return;
+		if (url === currentUrl && uniforms.uHasCover.value > 0.5) {
+			if (
+				runtimeActive &&
+				aiEnhancementNeedsResume &&
+				aiDepthEnabled &&
+				!aiMergedEdgeImage &&
+				preparedCoverImage &&
+				heuristicEdgeImage
+			) {
+				token += 1;
+				idleGeneration = createIdleGeneration(token);
+				scheduleAiDepth(idleGeneration);
+			}
+			return;
+		}
 		const generation = beginGeneration();
 		if (!runtimeActive) {
 			currentUrl = url;
@@ -649,7 +700,7 @@ export function createHomeCoverTextureController(
 		const runToken = generation.token;
 		currentCoverCacheKey = coverTextureCacheKey(url, coverResolution);
 		if (uniforms.uLoading) uniforms.uLoading.value = 1;
-		const cached = getHomeCoverTextureCache(currentCoverCacheKey);
+		const cached = getHomeCoverTextureCache(currentCoverCacheKey, resourceScope);
 		coverPending = true;
 		runTask<{ preparedImage: HomeCoverImage; heuristicImage: HomeCoverImage | null; cached: HomeCoverTextureCacheEntry | null }>({
 			generation,
@@ -711,6 +762,7 @@ export function createHomeCoverTextureController(
 			aiDepthEnabled = next;
 			if (!currentUrl) return;
 			if (!aiDepthEnabled) {
+				aiEnhancementNeedsResume = false;
 				if (aiPending) taskQueue?.cancelOwner(owner);
 				aiTicket = issueTicket("ai-depth");
 				aiPending = false;
@@ -750,6 +802,14 @@ export function createHomeCoverTextureController(
 			if (disposed || runtimeActive === !!active) return;
 			runtimeActive = !!active;
 			if (!runtimeActive) {
+				aiEnhancementNeedsResume = !!(
+					aiPending &&
+					aiDepthEnabled &&
+					!aiMergedEdgeImage &&
+					currentUrl &&
+					preparedCoverImage &&
+					heuristicEdgeImage
+				);
 				cancelCoverAndAi();
 				if (uniforms.uLoading) uniforms.uLoading.value = 0;
 			}

@@ -8,6 +8,10 @@ import { cloneFxState } from "./fx-defaults";
 import { SKULL_PRESET_INDEX } from "./preset-state";
 import { skullBreathOffset } from "./skull-particles";
 import { resetHomeCoverTextureCacheForTests } from "./cover-texture";
+import { createCancellationScope } from "../runtime/cancellation-scope";
+import { createBudgetTaskQueue } from "../runtime/budget-task-queue";
+import { createVisualResourceLedger } from "../runtime/resource-ledger";
+import { createVisualResourceScope } from "../runtime/resource-scope";
 
 beforeEach(() => {
 	resetHomeCoverTextureCacheForTests();
@@ -595,6 +599,72 @@ test("HomeVisual suspend retains cover uniforms, releases back-cover, and wake r
 	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
 	await hv.whenIdle();
 	expect(scene.added.length).toBe(mountedCount + 1);
+});
+
+test("HomeVisual wake requeues a cancelled current-cover AI enhancement exactly once", async () => {
+	const scene = makeFakeScene();
+	const cancellationScope = createCancellationScope("home-visual");
+	const resourceScope = createVisualResourceScope("home-visual-resources");
+	const ledger = createVisualResourceLedger({
+		budget: { textureBytes: 1_000_000, geometryBytes: 1_000_000, meshCount: 100, queuedTaskCost: 10, cacheBytes: 10_000_000 },
+	});
+	const taskQueue = createBudgetTaskQueue({ ledger, resourceScope, cancellationScope });
+	const heuristic = { width: 16, height: 16, label: "heuristic" };
+	const enhanced = { width: 16, height: 16, label: "enhanced" };
+	let firstResolve: ((image: typeof enhanced) => void) | undefined;
+	let firstSignal: AbortSignal | undefined;
+	let loads = 0;
+	let aiRuns = 0;
+	let merges = 0;
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		fx: { ...cloneFxState(), aiDepth: true },
+		loadCoverImage: async () => { loads += 1; return { width: 16, height: 16 }; },
+		buildCoverEdgeDepth: () => heuristic,
+		estimateAiDepth: async (_image, signal) => {
+			aiRuns += 1;
+			if (aiRuns === 1) {
+				firstSignal = signal;
+				return await new Promise((done) => { firstResolve = done; });
+			}
+			return enhanced;
+		},
+		mergeAiDepth: (_heuristic, ai) => { merges += 1; return ai; },
+		runtime: { cancellationScope, taskQueue, resourceScope },
+	});
+	hv.setCoverUrl("https://img.example/resume-ai.jpg");
+	taskQueue.runSlice(1);
+	for (let index = 0; index < 10 && taskQueue.getSnapshot().queued === 0; index += 1) await Promise.resolve();
+	taskQueue.runSlice(1);
+	expect(aiRuns).toBe(1);
+	const coverTexture = hv.getField().materialUniforms.uCoverTex.value;
+	const coverImage = (coverTexture as { image: unknown }).image;
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(heuristic);
+
+	hv.setRuntimeActive(false);
+	expect(firstSignal?.aborted).toBe(true);
+	hv.setRuntimeActive(true);
+	expect(taskQueue.getSnapshot().queued).toBe(0);
+	expect(loads).toBe(1);
+	expect(hv.getField().materialUniforms.uCoverTex.value).toBe(coverTexture);
+	expect((coverTexture as { image: unknown }).image).toBe(coverImage);
+
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(taskQueue.getSnapshot().queued).toBe(1);
+	expect(aiRuns).toBe(1);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(taskQueue.getSnapshot().queued).toBe(1);
+	taskQueue.runSlice(1);
+	await hv.getCoverController().whenIdle();
+
+	expect(aiRuns).toBe(2);
+	expect(merges).toBe(1);
+	expect(loads).toBe(1);
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(enhanced);
+	firstResolve?.(enhanced);
+	await Promise.resolve();
+	await Promise.resolve();
 });
 
 test("HomeVisual dispose makes a late back-cover resolve release itself instead of reviving", async () => {
