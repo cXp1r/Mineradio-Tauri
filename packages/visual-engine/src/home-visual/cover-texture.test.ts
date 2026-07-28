@@ -1,6 +1,13 @@
 import { beforeEach, expect, test } from "bun:test";
 import { createBudgetTaskQueue, createCancellationScope, createVisualResourceLedger, createVisualResourceScope } from "../index";
-import { createHomeCoverTextureController, coverTextureSizeForResolution, estimateHomeCoverTextureCacheBytes, prepareSquareCoverCanvas, resetHomeCoverTextureCacheForTests, trimHomeCoverTextureCache } from "./cover-texture";
+import { countHomeCoverTextureCacheLeaseScopesForTests, createHomeCoverTextureController, coverTextureSizeForResolution, estimateHomeCoverTextureCacheBytes, prepareSquareCoverCanvas, resetHomeCoverTextureCacheForTests, trimHomeCoverTextureCache } from "./cover-texture";
+
+const rejectionProcess = (globalThis as unknown as {
+	process: {
+		on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+		off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+	};
+}).process;
 
 function makeTexture(label: string) {
 	return {
@@ -668,6 +675,26 @@ test("a cache hit reconciles image leases into the current resource scope", asyn
 	expect(secondScope.disposeCounts).toEqual([1, 1]);
 });
 
+test("disposing a resource scope detaches its cache lease bucket without a future hit or trim", async () => {
+	const resourceScope = createVisualResourceScope("detached-cover-cache");
+	const heuristic = { width: 16, height: 16 };
+	const ctl = createHomeCoverTextureController({
+		uniforms: makeUniforms() as never,
+		loadImage: async () => ({ width: 8, height: 8 }),
+		buildEdgeDepth: () => heuristic as never,
+		runtime: { resourceScope },
+	});
+	ctl.setCoverUrl("https://img.example/detach-scope.jpg");
+	await ctl.whenIdle();
+	const bytes = estimateHomeCoverTextureCacheBytes();
+	expect(countHomeCoverTextureCacheLeaseScopesForTests()).toBe(1);
+
+	resourceScope.dispose();
+
+	expect(countHomeCoverTextureCacheLeaseScopesForTests()).toBe(0);
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(bytes);
+});
+
 test("coverTextureSizeForResolution preserves baseline 256/384/512 thresholds", () => {
 	expect(coverTextureSizeForResolution(0.75)).toBe(256);
 	expect(coverTextureSizeForResolution(1.09)).toBe(256);
@@ -778,6 +805,81 @@ test("whenIdle settles for queue denial, queued cancellation, and task failure",
 	failed.setCoverUrl("https://img.example/failed.jpg");
 	failedRuntime.taskQueue.runSlice(1);
 	await failed.whenIdle();
+});
+
+test("direct AI commit failure settles without an unhandled rejection", async () => {
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+	rejectionProcess.on("unhandledRejection", onUnhandled);
+	try {
+		const uniforms = makeUniforms();
+		const heuristic = { width: 16, height: 16, label: "heuristic" };
+		const ctl = createHomeCoverTextureController({
+			uniforms: uniforms as never,
+			loadImage: async () => ({ width: 16, height: 16 }),
+			buildEdgeDepth: () => heuristic as never,
+			aiDepthEnabled: true,
+			estimateAiDepth: async () => ({ width: 16, height: 16, label: "ai" }) as never,
+			mergeAiDepth: () => { throw new Error("merge boom"); },
+		});
+		ctl.setCoverUrl("https://img.example/direct-commit-failure.jpg");
+
+		await ctl.whenIdle();
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+		expect(unhandled).toEqual([]);
+		expect(uniforms.uEdgeTex.value.image).toBe(heuristic);
+	} finally {
+		rejectionProcess.off("unhandledRejection", onUnhandled);
+	}
+});
+
+test("a direct aborted AI task ignores its late result so the newer task remains resumable", async () => {
+	const uniforms = makeUniforms();
+	const heuristic = { width: 16, height: 16, label: "heuristic" };
+	const enhanced = { width: 16, height: 16, label: "enhanced" };
+	const resolvers: Array<(image: typeof enhanced) => void> = [];
+	const signals: AbortSignal[] = [];
+	let aiRuns = 0;
+	let merges = 0;
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async () => ({ width: 16, height: 16 }),
+		buildEdgeDepth: () => heuristic as never,
+		aiDepthEnabled: true,
+		estimateAiDepth: async (_image, signal) => {
+			aiRuns += 1;
+			if (signal) signals.push(signal);
+			return await new Promise<typeof enhanced>((resolve) => { resolvers.push(resolve); });
+		},
+		mergeAiDepth: (_base, ai) => { merges += 1; return ai; },
+	});
+	const url = "https://img.example/direct-late-ai.jpg";
+	ctl.setCoverUrl(url);
+	for (let index = 0; index < 10 && aiRuns < 1; index += 1) await Promise.resolve();
+	expect(aiRuns).toBe(1);
+
+	ctl.setAiDepthEnabled(false);
+	ctl.setAiDepthEnabled(true);
+	expect(aiRuns).toBe(2);
+	expect(signals[0]?.aborted).toBe(true);
+	resolvers[0]?.(enhanced);
+	await Promise.resolve();
+	await Promise.resolve();
+
+	ctl.setRuntimeActive(false);
+	expect(signals[1]?.aborted).toBe(true);
+	ctl.setRuntimeActive(true);
+	ctl.setCoverUrl(url);
+	expect(aiRuns).toBe(3);
+
+	resolvers[2]?.(enhanced);
+	await ctl.whenIdle();
+	resolvers[1]?.(enhanced);
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(merges).toBe(1);
+	expect(uniforms.uEdgeTex.value.image).toBe(enhanced);
 });
 
 test("the global cache keeps 18 LRU entries and promotes hits", async () => {

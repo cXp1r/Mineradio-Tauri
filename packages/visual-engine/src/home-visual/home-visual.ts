@@ -361,6 +361,8 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 			if (!runtimeActive) {
 				runtimeWakePending = false;
 				backCoverGeneration += 1;
+				// 旧 generation 仍会自行收尾，但不能继续阻塞唤醒后的当前任务。
+				backCoverPending = null;
 				backCoverLayer?.dispose();
 				backCoverLayer = null;
 			} else {

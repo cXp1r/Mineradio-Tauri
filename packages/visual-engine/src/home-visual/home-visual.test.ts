@@ -13,6 +13,13 @@ import { createBudgetTaskQueue } from "../runtime/budget-task-queue";
 import { createVisualResourceLedger } from "../runtime/resource-ledger";
 import { createVisualResourceScope } from "../runtime/resource-scope";
 
+const rejectionProcess = (globalThis as unknown as {
+	process: {
+		on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+		off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+	};
+}).process;
+
 beforeEach(() => {
 	resetHomeCoverTextureCacheForTests();
 });
@@ -599,6 +606,75 @@ test("HomeVisual suspend retains cover uniforms, releases back-cover, and wake r
 	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
 	await hv.whenIdle();
 	expect(scene.added.length).toBe(mountedCount + 1);
+});
+
+test("HomeVisual wake detaches stale back-cover work and whenIdle observes only the current generation", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let creatingBackCover = false;
+	let backCoverCalls = 0;
+	const pendingFactories: Array<{
+		resolve(module: Awaited<ReturnType<ThreeFactory>>): void;
+		reject(error: Error): void;
+	}> = [];
+	const factory = (async () => {
+		if (!creatingBackCover) return await baseFactory();
+		backCoverCalls += 1;
+		return await new Promise<Awaited<ReturnType<ThreeFactory>>>((resolve, reject) => {
+			pendingFactories.push({ resolve, reject });
+		});
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	creatingBackCover = true;
+	hv.getFx().backCover = true;
+
+	// A 保持悬而未决；挂起后唤醒必须允许当前 generation 的 B 启动。
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(1);
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(2);
+
+	let currentIdleSettled = false;
+	const currentIdle = hv.whenIdle().then(() => { currentIdleSettled = true; });
+	await Promise.resolve();
+	expect(currentIdleSettled).toBe(false);
+	const module = await baseFactory();
+	pendingFactories[1]?.resolve(module);
+	await currentIdle;
+	expect(currentIdleSettled).toBe(true);
+	expect(scene.added.length).toBe(3);
+
+	// 陈旧 A 晚到时只释放自己，不能替换已经挂载的 B。
+	pendingFactories[0]?.resolve(module);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	const lateBackCover = scene.added.at(-1);
+	expect(scene.added.length).toBe(4);
+	expect(scene.removed).toContain(lateBackCover);
+
+	// 另一个已分离的旧任务晚到 reject 时也必须已有 catch，不能产生未处理拒绝。
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(3);
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(4);
+	pendingFactories[3]?.resolve(module);
+	await hv.whenIdle();
+
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+	rejectionProcess.on("unhandledRejection", onUnhandled);
+	try {
+		pendingFactories[2]?.reject(new Error("stale back-cover failure"));
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(unhandled).toEqual([]);
+	} finally {
+		rejectionProcess.off("unhandledRejection", onUnhandled);
+	}
 });
 
 test("HomeVisual wake requeues a cancelled current-cover AI enhancement exactly once", async () => {

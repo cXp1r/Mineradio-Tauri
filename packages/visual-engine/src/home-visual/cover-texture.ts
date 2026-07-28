@@ -109,9 +109,15 @@ export function estimateHomeCoverTextureCacheBytes(): number {
 	return total;
 }
 
+export function countHomeCoverTextureCacheLeaseScopesForTests(): number {
+	let count = 0;
+	for (const entry of homeCoverTextureCache.values()) count += entry.leasesByScope.size;
+	return count;
+}
+
 function disposeCacheEntry(entry: HomeCoverTextureCacheEntry): void {
-	for (const leases of entry.leasesByScope.values()) {
-		for (const lease of leases.values()) lease.dispose();
+	for (const leases of [...entry.leasesByScope.values()]) {
+		for (const lease of [...leases.values()]) lease.dispose();
 		leases.clear();
 	}
 	entry.leasesByScope.clear();
@@ -150,17 +156,24 @@ function reconcileHomeCoverTextureCacheLeases(
 	let currentLeases = resourceScope ? entry.leasesByScope.get(resourceScope) : undefined;
 	if (resourceScope) {
 		currentLeases ??= new Map();
+		entry.leasesByScope.set(resourceScope, currentLeases);
 		try {
 			for (const image of images) {
 				const existing = currentLeases.get(image);
 				if (existing && !existing.disposed) continue;
 				if (existing?.disposed) currentLeases.delete(image);
-				const lease = resourceScope.register({
+				let lease: VisualResourceHandle | null = null;
+				lease = resourceScope.register({
 					owner: `home-cover-cache:${key}`,
 					kind: "cache",
 					retention: "rebuildable",
 					estimatedBytes: estimateImageBytes(image),
-					dispose() {},
+					dispose() {
+						const leases = entry.leasesByScope.get(resourceScope);
+						if (!lease || !leases || leases !== currentLeases || leases.get(image) !== lease) return;
+						leases.delete(image);
+						if (leases.size === 0) entry.leasesByScope.delete(resourceScope);
+					},
 				});
 				currentLeases.set(image, lease);
 				added.push([image, lease]);
@@ -168,19 +181,21 @@ function reconcileHomeCoverTextureCacheLeases(
 		} catch {
 			for (const [image, lease] of added) {
 				lease.dispose();
-				currentLeases.delete(image);
+				if (currentLeases.get(image) === lease) currentLeases.delete(image);
+			}
+			if (currentLeases.size === 0 && entry.leasesByScope.get(resourceScope) === currentLeases) {
+				entry.leasesByScope.delete(resourceScope);
 			}
 			return false;
 		}
-		entry.leasesByScope.set(resourceScope, currentLeases);
 	}
-	for (const [scope, leases] of entry.leasesByScope) {
-		for (const [image, lease] of leases) {
+	for (const [scope, leases] of [...entry.leasesByScope]) {
+		for (const [image, lease] of [...leases]) {
 			if (images.has(image) && !lease.disposed) continue;
 			if (!lease.disposed) lease.dispose();
-			leases.delete(image);
+			if (leases.get(image) === lease) leases.delete(image);
 		}
-		if (leases.size === 0) entry.leasesByScope.delete(scope);
+		if (leases.size === 0 && entry.leasesByScope.get(scope) === leases) entry.leasesByScope.delete(scope);
 	}
 	return true;
 }
@@ -205,9 +220,7 @@ function setHomeCoverTextureCache(
 		heuristicImage: entry.heuristicImage ?? null,
 		aiMergedImage: entry.aiMergedImage ?? null,
 		heuristicImageIsAiMerged: entry.heuristicImageIsAiMerged === true,
-		leasesByScope: new Map(
-			[...(previous?.leasesByScope ?? [])].map(([scope, leases]) => [scope, new Map(leases)]),
-		),
+		leasesByScope: previous?.leasesByScope ?? new Map(),
 	};
 	if (!reconcileHomeCoverTextureCacheLeases(key, next, resourceScope)) return previous ?? null;
 	homeCoverTextureCache.delete(key);
@@ -563,6 +576,19 @@ export function createHomeCoverTextureController(
 		readonly onSettled?: (settlement: BudgetTaskSettlement) => void;
 	}): boolean {
 		const finish = config.generation.add();
+		let settled = false;
+		const settle = (settlement: BudgetTaskSettlement): boolean => {
+			if (settled) return false;
+			settled = true;
+			try {
+				config.onSettled?.(settlement);
+			} catch {
+				// 结算回调不能让任务链再次失败或阻断 idle 收口。
+			} finally {
+				finish();
+			}
+			return true;
+		};
 		if (taskQueue) {
 			const accepted = taskQueue.enqueue({
 				owner,
@@ -572,54 +598,49 @@ export function createHomeCoverTextureController(
 				run: ({ signal }) => config.run(signal),
 				commit: (result, { signal }) => config.commit(result, signal),
 				onSettled(settlement) {
-					try {
-						config.onSettled?.(settlement);
-					} finally {
-						finish();
-					}
+					settle(settlement);
 				},
 			});
-			if (!accepted) {
-				config.onSettled?.("cancelled");
-				finish();
-			}
+			if (!accepted) settle("cancelled");
 			return accepted;
 		}
 		const ticket = config.key.startsWith("cover-load")
 			? (coverTicket = issueTicket("cover-load"))
 			: (aiTicket = issueTicket("ai-depth"));
 		if (!ticket) {
-			config.onSettled?.("cancelled");
-			finish();
+			settle("cancelled");
 			return false;
 		}
-		const settleCancelled = () => {
-			config.onSettled?.("cancelled");
-			finish();
-		};
+		const settleCancelled = () => { settle("cancelled"); };
 		ticket.signal.addEventListener("abort", settleCancelled, { once: true });
 		let result: Result | Promise<Result>;
 		try {
 			result = config.run(ticket.signal);
 		} catch {
-			config.onSettled?.(ticket.signal.aborted ? "cancelled" : "failed");
-			finish();
+			ticket.signal.removeEventListener("abort", settleCancelled);
+			settle(ticket.signal.aborted ? "cancelled" : "failed");
 			return false;
 		}
 		void Promise.resolve(result)
 			.then((result) => {
 				if (!isCurrent(config.generation.token, ticket.signal) || !ticket.isCurrent()) {
-					config.onSettled?.("stale");
+					settle("stale");
 					return;
 				}
-				config.commit(result, ticket.signal);
-				config.onSettled?.("completed");
+				try {
+					config.commit(result, ticket.signal);
+					settle("completed");
+				} catch {
+					settle("failed");
+				}
 			}, () => {
-				config.onSettled?.(ticket.signal.aborted ? "cancelled" : "failed");
+				settle(ticket.signal.aborted ? "cancelled" : "failed");
 			})
 			.finally(() => {
 				ticket.signal.removeEventListener("abort", settleCancelled);
-				finish();
+			})
+			.catch(() => {
+				settle(ticket.signal.aborted ? "cancelled" : "failed");
 			});
 		return true;
 	}
