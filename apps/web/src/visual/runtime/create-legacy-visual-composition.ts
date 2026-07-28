@@ -1724,10 +1724,21 @@ export function createLegacyVisualComposition(
 			disposed = true;
 			generation += 1;
 			if (refs) refs.lifecycleRef.current = null;
-			ownedScope?.dispose();
+			const disposalErrors: unknown[] = [];
+			try {
+				const report = ownedScope?.dispose();
+				if (report) {
+					for (const error of report.errors) disposalErrors.push(error.cause);
+				}
+			} catch (error) {
+				disposalErrors.push(error);
+			}
 			ownedScope = null;
 			subsystems = null;
 			context = null;
+			if (disposalErrors.length > 0) {
+				throw new AggregateError(disposalErrors, "Legacy visual composition resource disposal failed.");
+			}
 		},
 	};
 }

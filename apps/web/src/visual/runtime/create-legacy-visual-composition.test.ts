@@ -1,5 +1,11 @@
 import { expect, test } from "bun:test";
-import { createVisualResourceScope } from "@mineradio/visual-engine";
+import "../../../../../packages/visual-engine/src/runtime/happy-dom-preload";
+import {
+	createVisualEngine,
+	createVisualResourceScope,
+	type VisualEngineCompositionContext,
+	type VisualResourceScope,
+} from "@mineradio/visual-engine";
 import {
 	createLegacyVisualComposition,
 	LEGACY_VISUAL_LANE_CADENCE,
@@ -73,6 +79,84 @@ test("Stage Lyrics ownership releases the lifecycle immediately when registratio
 	}
 	expect((caught as Error).message).toContain("cancelled");
 	expect(disposeCalls).toBe(1);
+});
+
+test("legacy composition surfaces child disposal failures through facade cleanup without skipping releases", async () => {
+	const childCreated = deferred();
+	const disposalFailure = new Error("legacy child disposal failed");
+	const disposalOrder: string[] = [];
+	const reported: unknown[][] = [];
+	const legacy = createLegacyVisualComposition({
+		audioElementRef: { current: null },
+		events: createLegacyVisualEventBridge(),
+	});
+	const engine = createVisualEngine({
+		mediaClock: {
+			currentTimeSeconds: () => 0,
+			durationSeconds: () => null,
+			isPlaying: () => false,
+		},
+		createComposition: () => ({
+			mount(context: VisualEngineCompositionContext) {
+				const rootResources = context.resources;
+				const resources: VisualResourceScope = {
+					get name() { return rootResources.name; },
+					get closed() { return rootResources.closed; },
+					isOpen: () => rootResources.isOpen(),
+					register: (registration) => rootResources.register(registration),
+					createChild(name) {
+						const child = rootResources.createChild(name);
+						child.register({
+							owner: "failing-cleanup",
+							kind: "listener",
+							retention: "persistent",
+							dispose() {
+								disposalOrder.push("failing");
+								throw disposalFailure;
+							},
+						});
+						child.register({
+							owner: "healthy-cleanup",
+							kind: "listener",
+							retention: "persistent",
+							dispose() { disposalOrder.push("healthy"); },
+						});
+						childCreated.resolve();
+						return child;
+					},
+					releaseRetention: (retention) => rootResources.releaseRetention(retention),
+					dispose: () => rootResources.dispose(),
+				};
+				return legacy.mount({ ...context, resources });
+			},
+			applyFrameSnapshot: (snapshot) => legacy.applyFrameSnapshot(snapshot),
+			applyPreset: (preset) => legacy.applyPreset(preset),
+			setVisibility: (visibility) => legacy.setVisibility(visibility),
+			dispose: () => legacy.dispose(),
+		}),
+	});
+	const mountResultPromise = engine.mount(document.createElement("div")).then(
+		() => ({ status: "fulfilled" as const, error: null }),
+		(error: unknown) => ({ status: "rejected" as const, error }),
+	);
+	await childCreated.promise;
+	const originalConsoleError = console.error;
+	console.error = (...args: unknown[]) => { reported.push(args); };
+	try {
+		engine.dispose();
+		engine.dispose();
+	} finally {
+		console.error = originalConsoleError;
+	}
+	const mountResult = await mountResultPromise;
+
+	expect(mountResult.status).toBe("rejected");
+	expect(mountResult.error instanceof Error).toBe(true);
+	expect(disposalOrder).toEqual(["healthy", "failing"]);
+	expect(reported.length).toBe(1);
+	expect(reported[0]?.[0]).toContain("composition dispose");
+	expect(reported[0]?.[1] instanceof AggregateError).toBe(true);
+	expect((reported[0]?.[1] as AggregateError).errors).toEqual([disposalFailure]);
 });
 
 test("legacy event bridge forwards Shelf payloads by identity and updates callbacks without replacing the sink", () => {

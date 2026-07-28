@@ -1016,24 +1016,24 @@ test("useVisualEngine handles a late mount rejection after cleanup without repor
 	container.remove();
 });
 
-test("useVisualEngine reports an active mount rejection", async () => {
+test("useVisualEngine reports and closes an active mount rejection exactly once", async () => {
 	await prepareReactDom();
 	const failure = new Error("active mount rejection");
 	const facade = createFacadeRecord(async () => { throw failure; });
 	const environment = createEnvironmentRecord();
 	const reported: unknown[] = [];
 	const events = createLegacyVisualEventBridge();
-	function Harness() {
+	function Harness({ label }: { label: string }) {
 		const hostRef = useRef<HTMLDivElement | null>(null);
 		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
 			audioElementRef,
 			positionMs: 0,
-			playbackSnapshot: playback("failed"),
-			lyricsSnapshot: lyrics("failed"),
-			shelfSnapshot: shelf("failed"),
-			settingsSnapshot: settings("failed"),
+			playbackSnapshot: playback(label),
+			lyricsSnapshot: lyrics(label),
+			shelfSnapshot: shelf(label),
+			settingsSnapshot: settings(label),
 			events,
 		}, {
 			createFacade: () => facade.facade,
@@ -1045,10 +1045,23 @@ test("useVisualEngine reports an active mount rejection", async () => {
 	const container = document.createElement("div");
 	document.body.appendChild(container);
 	const root = createRoot(container);
-	await renderAndFlush(root, React.createElement(Harness));
+	await renderAndFlush(root, React.createElement(Harness, { label: "failed" }));
 	await act(async () => { await Promise.resolve(); await Promise.resolve(); });
 
 	expect(reported).toEqual([failure]);
+	expect(facade.disposeCalls).toBe(1);
+	expect(environment.unsubscribeCalls).toBe(1);
+	expect(environment.disposeCalls).toBe(1);
+	const operationCountAfterFailure = facade.order.length;
+	await renderAndFlush(root, React.createElement(Harness, { label: "after-failure" }));
+	await act(async () => {
+		environment.emit(HIDDEN);
+		await Promise.resolve();
+	});
+	expect(facade.order.length).toBe(operationCountAfterFailure);
 	await unmountAndFlush(root);
+	expect(facade.disposeCalls).toBe(1);
+	expect(environment.unsubscribeCalls).toBe(1);
+	expect(environment.disposeCalls).toBe(1);
 	container.remove();
 });

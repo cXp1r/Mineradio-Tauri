@@ -178,7 +178,9 @@ export function useVisualEngine(
 					return facade?.mount(host);
 				})
 				.catch((error) => {
-					if (active) safelyReportError(resolved, error);
+					if (!active) return;
+					safelyReportError(resolved, error);
+					cleanup();
 				});
 		} catch (error) {
 			if (active) safelyReportError(resolved, error);
