@@ -253,6 +253,136 @@ test("multiple subscriptions clean up independently and retain correct snapshots
 	expect(reducedMotionQuery.listenerCount()).toBe(0);
 });
 
+test("dispose reentry from visibility listener installation stops all later installation", () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	const reducedMotionQuery = createReducedMotionQuery(false);
+	let nativeListenCalls = 0;
+	let adapter!: ReturnType<typeof createVisualEnvironmentAdapter>;
+	adapter = createVisualEnvironmentAdapter({
+		document: {
+			...documentTarget,
+			visibilityState: "visible",
+			hasFocus: () => true,
+			addEventListener(type, listener) {
+				documentTarget.addEventListener(type, listener);
+				adapter.dispose();
+			},
+		},
+		window: windowTarget,
+		reducedMotionMediaQuery: reducedMotionQuery,
+		nativeSource: {
+			getWindowState: async () => ({ isVisible: true, isFocused: true, isMinimized: false }),
+			listenWindowState: async () => {
+				nativeListenCalls += 1;
+				return () => {};
+			},
+		},
+	});
+	const unsubscribe = adapter.subscribe(() => {});
+
+	expect(documentTarget.count("visibilitychange")).toBe(0);
+	expect(windowTarget.count("focus")).toBe(0);
+	expect(windowTarget.count("blur")).toBe(0);
+	expect(reducedMotionQuery.listenerCount()).toBe(0);
+	expect(nativeListenCalls).toBe(0);
+	unsubscribe();
+});
+
+test("dispose reentry from focus listener installation stops blur, media query, and native installation", () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	const reducedMotionQuery = createReducedMotionQuery(false);
+	let nativeListenCalls = 0;
+	let adapter!: ReturnType<typeof createVisualEnvironmentAdapter>;
+	adapter = createVisualEnvironmentAdapter({
+		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		window: {
+			addEventListener(type, listener) {
+				windowTarget.addEventListener(type, listener);
+				if (type === "focus") adapter.dispose();
+			},
+			removeEventListener: windowTarget.removeEventListener,
+		},
+		reducedMotionMediaQuery: reducedMotionQuery,
+		nativeSource: {
+			getWindowState: async () => ({ isVisible: true, isFocused: true, isMinimized: false }),
+			listenWindowState: async () => {
+				nativeListenCalls += 1;
+				return () => {};
+			},
+		},
+	});
+	const unsubscribe = adapter.subscribe(() => {});
+
+	expect(documentTarget.count("visibilitychange")).toBe(0);
+	expect(windowTarget.count("focus")).toBe(0);
+	expect(windowTarget.count("blur")).toBe(0);
+	expect(reducedMotionQuery.listenerCount()).toBe(0);
+	expect(nativeListenCalls).toBe(0);
+	unsubscribe();
+});
+
+test("dispose reentry from the initial emit stops native installation", () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	const reducedMotionQuery = createReducedMotionQuery(false);
+	let nativeListenCalls = 0;
+	let adapter!: ReturnType<typeof createVisualEnvironmentAdapter>;
+	adapter = createVisualEnvironmentAdapter({
+		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		window: windowTarget,
+		reducedMotionMediaQuery: reducedMotionQuery,
+		nativeSource: {
+			getWindowState: async () => ({ isVisible: true, isFocused: true, isMinimized: false }),
+			listenWindowState: async () => {
+				nativeListenCalls += 1;
+				return () => {};
+			},
+		},
+	});
+	const unsubscribe = adapter.subscribe(() => adapter.dispose());
+
+	expect(documentTarget.count("visibilitychange")).toBe(0);
+	expect(windowTarget.count("focus")).toBe(0);
+	expect(windowTarget.count("blur")).toBe(0);
+	expect(reducedMotionQuery.listenerCount()).toBe(0);
+	expect(nativeListenCalls).toBe(0);
+	unsubscribe();
+});
+
+test("dispose reentry inside native listener setup stops initial get and releases the late unlisten", async () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	let getCalls = 0;
+	let unlistenCalls = 0;
+	let adapter!: ReturnType<typeof createVisualEnvironmentAdapter>;
+	adapter = createVisualEnvironmentAdapter({
+		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		window: windowTarget,
+		nativeSource: {
+			getWindowState: async () => {
+				getCalls += 1;
+				return { isVisible: true, isFocused: true, isMinimized: false };
+			},
+			listenWindowState: () => {
+				adapter.dispose();
+				return Promise.resolve(() => { unlistenCalls += 1; });
+			},
+		},
+	});
+	const unsubscribe = adapter.subscribe(() => {});
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(getCalls).toBe(0);
+	expect(unlistenCalls).toBe(1);
+	expect(documentTarget.count("visibilitychange")).toBe(0);
+	expect(windowTarget.count("focus")).toBe(0);
+	expect(windowTarget.count("blur")).toBe(0);
+	unsubscribe();
+});
+
 test("initial listener failure rolls back every installed listener and leaves dispose idempotent", () => {
 	const documentTarget = createListenerTarget();
 	const windowTarget = createListenerTarget();
@@ -278,12 +408,18 @@ test("initial listener failure rolls back every installed listener and leaves di
 	adapter.dispose();
 });
 
-test("synchronous native listener setup failure rolls back the browser subscription", () => {
+test("synchronous native listener setup failure preserves the browser subscription", () => {
 	const documentTarget = createListenerTarget();
 	const windowTarget = createListenerTarget();
 	const reducedMotionQuery = createReducedMotionQuery(false);
+	let visibilityState: DocumentVisibilityState = "visible";
+	let focused = true;
 	const adapter = createVisualEnvironmentAdapter({
-		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		document: {
+			...documentTarget,
+			get visibilityState() { return visibilityState; },
+			hasFocus: () => focused,
+		},
 		window: windowTarget,
 		reducedMotionMediaQuery: reducedMotionQuery,
 		nativeSource: {
@@ -291,26 +427,41 @@ test("synchronous native listener setup failure rolls back the browser subscript
 			listenWindowState: () => { throw new Error("native setup failure"); },
 		},
 	});
-	let caught: unknown = null;
-	try {
-		adapter.subscribe(() => {});
-	} catch (error) {
-		caught = error;
-	}
-
-	expect((caught as Error).message).toBe("native setup failure");
+	const snapshots: unknown[] = [];
+	const unsubscribe = adapter.subscribe((snapshot) => snapshots.push(snapshot));
+	visibilityState = "hidden";
+	documentTarget.emit("visibilitychange");
+	focused = false;
+	windowTarget.emit("blur");
+	expect(snapshots.at(-1)).toEqual({
+		documentVisible: false,
+		windowVisible: true,
+		windowFocused: false,
+		windowMinimized: false,
+	});
+	expect(documentTarget.count("visibilitychange")).toBe(1);
+	expect(windowTarget.count("focus")).toBe(1);
+	expect(windowTarget.count("blur")).toBe(1);
+	expect(reducedMotionQuery.listenerCount()).toBe(1);
+	unsubscribe();
 	expect(documentTarget.count("visibilitychange")).toBe(0);
 	expect(windowTarget.count("focus")).toBe(0);
 	expect(windowTarget.count("blur")).toBe(0);
 	expect(reducedMotionQuery.listenerCount()).toBe(0);
 });
 
-test("rejected native listener setup cleans the subscription without leaking listeners", async () => {
+test("rejected native listener setup preserves browser events until unsubscribe", async () => {
 	const documentTarget = createListenerTarget();
 	const windowTarget = createListenerTarget();
 	const reducedMotionQuery = createReducedMotionQuery(false);
+	let visibilityState: DocumentVisibilityState = "visible";
+	let focused = true;
 	const adapter = createVisualEnvironmentAdapter({
-		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		document: {
+			...documentTarget,
+			get visibilityState() { return visibilityState; },
+			hasFocus: () => focused,
+		},
 		window: windowTarget,
 		reducedMotionMediaQuery: reducedMotionQuery,
 		nativeSource: {
@@ -318,14 +469,82 @@ test("rejected native listener setup cleans the subscription without leaking lis
 			listenWindowState: () => Promise.reject(new Error("native setup rejection")),
 		},
 	});
-	adapter.subscribe(() => {});
+	const snapshots: unknown[] = [];
+	const unsubscribe = adapter.subscribe((snapshot) => snapshots.push(snapshot));
 	await Promise.resolve();
 	await Promise.resolve();
-
+	visibilityState = "hidden";
+	documentTarget.emit("visibilitychange");
+	focused = false;
+	windowTarget.emit("blur");
+	expect(snapshots.at(-1)).toEqual({
+		documentVisible: false,
+		windowVisible: true,
+		windowFocused: false,
+		windowMinimized: false,
+	});
+	expect(documentTarget.count("visibilitychange")).toBe(1);
+	expect(windowTarget.count("focus")).toBe(1);
+	expect(windowTarget.count("blur")).toBe(1);
+	expect(reducedMotionQuery.listenerCount()).toBe(1);
+	unsubscribe();
 	expect(documentTarget.count("visibilitychange")).toBe(0);
 	expect(windowTarget.count("focus")).toBe(0);
 	expect(windowTarget.count("blur")).toBe(0);
 	expect(reducedMotionQuery.listenerCount()).toBe(0);
+});
+
+test("rejected native initial get preserves native and browser event subscriptions", async () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	let visibilityState: DocumentVisibilityState = "visible";
+	const nativeListener: { current?: (state: { isVisible: boolean; isFocused: boolean; isMinimized: boolean }) => void } = {};
+	let unlistenCalls = 0;
+	const adapter = createVisualEnvironmentAdapter({
+		document: {
+			...documentTarget,
+			get visibilityState() { return visibilityState; },
+			hasFocus: () => true,
+		},
+		window: windowTarget,
+		nativeSource: {
+			getWindowState: () => Promise.reject(new Error("initial get rejection")),
+			listenWindowState: async (listener) => {
+				nativeListener.current = listener;
+				return () => { unlistenCalls += 1; };
+			},
+		},
+	});
+	const snapshots: unknown[] = [];
+	const unsubscribe = adapter.subscribe((snapshot) => snapshots.push(snapshot));
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	nativeListener.current?.({ isVisible: false, isFocused: false, isMinimized: true });
+	expect(snapshots.at(-1)).toEqual({
+		documentVisible: true,
+		windowVisible: false,
+		windowFocused: false,
+		windowMinimized: true,
+	});
+	visibilityState = "hidden";
+	documentTarget.emit("visibilitychange");
+	expect(snapshots.at(-1)).toEqual({
+		documentVisible: false,
+		windowVisible: false,
+		windowFocused: false,
+		windowMinimized: true,
+	});
+	expect(documentTarget.count("visibilitychange")).toBe(1);
+	expect(windowTarget.count("focus")).toBe(1);
+	expect(windowTarget.count("blur")).toBe(1);
+	unsubscribe();
+	expect(unlistenCalls).toBe(1);
+	expect(documentTarget.count("visibilitychange")).toBe(0);
+	expect(windowTarget.count("focus")).toBe(0);
+	expect(windowTarget.count("blur")).toBe(0);
 });
 
 test("one remove listener failure does not block the remaining subscription cleanup", () => {

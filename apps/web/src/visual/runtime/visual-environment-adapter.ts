@@ -152,6 +152,7 @@ export function createVisualEnvironmentAdapter(
 			let visibilityListenerInstalled = false;
 			let focusListenerInstalled = false;
 			let blurListenerInstalled = false;
+			const isSubscriptionLive = () => !disposed && !subscriptionDisposed;
 
 			const emit = () => {
 				if (disposed || subscriptionDisposed) return;
@@ -200,52 +201,74 @@ export function createVisualEnvironmentAdapter(
 			try {
 				browserFocused = documentTarget?.hasFocus?.() ?? true;
 				prefersReducedMotion = reducedMotionQuery?.matches ?? false;
+				if (!isSubscriptionLive()) return unsubscribe;
 				if (documentTarget) {
 					visibilityListenerInstalled = true;
 					documentTarget.addEventListener("visibilitychange", onVisibilityChange);
+					if (!isSubscriptionLive()) return unsubscribe;
 				}
 				if (windowTarget) {
 					focusListenerInstalled = true;
 					windowTarget.addEventListener("focus", onFocus);
+					if (!isSubscriptionLive()) return unsubscribe;
 					blurListenerInstalled = true;
 					windowTarget.addEventListener("blur", onBlur);
+					if (!isSubscriptionLive()) return unsubscribe;
 				}
 				unlistenReducedMotion = listenReducedMotionChange(reducedMotionQuery, onReducedMotionChange);
-				emit();
-
-				if (nativeSource && !disposed && !subscriptionDisposed) {
-					const activeGeneration = generation;
-					void nativeSource.listenWindowState((state) => {
-						if (disposed || subscriptionDisposed || generation !== activeGeneration) return;
-						nativeEventRevision += 1;
-						nativeState = copyNativeWindowState(state);
-						emit();
-					}).then((unlisten) => {
-						if (disposed || subscriptionDisposed || generation !== activeGeneration) {
-							safelyRunCleanup(unlisten);
-							return;
-						}
-						unlistenNative = unlisten;
-						const getRevision = nativeEventRevision;
-						return nativeSource.getWindowState().then((state) => {
-							if (
-								disposed ||
-								subscriptionDisposed ||
-								generation !== activeGeneration ||
-								nativeEventRevision !== getRevision
-							) return;
-							nativeState = copyNativeWindowState(state);
-							emit();
-						});
-					}).catch(() => {
-						unsubscribe();
-					});
+				if (!isSubscriptionLive()) {
+					safelyRunCleanup(unlistenReducedMotion);
+					unlistenReducedMotion = null;
+					return unsubscribe;
 				}
-				return unsubscribe;
+				emit();
+				if (!isSubscriptionLive()) return unsubscribe;
 			} catch (error) {
 				unsubscribe();
 				throw error;
 			}
+
+			if (!nativeSource || !isSubscriptionLive()) return unsubscribe;
+			const activeGeneration = generation;
+			let nativeListenPromise: Promise<() => void>;
+			try {
+				nativeListenPromise = nativeSource.listenWindowState((state) => {
+					if (!isSubscriptionLive() || generation !== activeGeneration) return;
+					nativeEventRevision += 1;
+					nativeState = copyNativeWindowState(state);
+					emit();
+				});
+			} catch {
+				return unsubscribe;
+			}
+			if (!isSubscriptionLive()) {
+				void nativeListenPromise.then((unlisten) => safelyRunCleanup(unlisten)).catch(() => {});
+				return unsubscribe;
+			}
+			void nativeListenPromise.then((unlisten) => {
+				if (!isSubscriptionLive() || generation !== activeGeneration) {
+					safelyRunCleanup(unlisten);
+					return;
+				}
+				unlistenNative = unlisten;
+				const getRevision = nativeEventRevision;
+				let initialStatePromise: Promise<VisualNativeWindowState>;
+				try {
+					initialStatePromise = nativeSource.getWindowState();
+				} catch {
+					return;
+				}
+				void initialStatePromise.then((state) => {
+					if (
+						!isSubscriptionLive() ||
+						generation !== activeGeneration ||
+						nativeEventRevision !== getRevision
+					) return;
+					nativeState = copyNativeWindowState(state);
+					emit();
+				}).catch(() => {});
+			}).catch(() => {});
+			return unsubscribe;
 		},
 		dispose() {
 			if (disposed) return;
