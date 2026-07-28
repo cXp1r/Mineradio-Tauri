@@ -44,16 +44,24 @@ export function createLegacyVisualEventBridge(
 	initialHandlers: LegacyVisualEventHandlers = {},
 ): LegacyVisualEventSink {
 	let handlers = initialHandlers;
+	let reportingError = false;
+	const reportHandlerError = (error: unknown) => {
+		if (reportingError || !handlers.reportError) return;
+		reportingError = true;
+		try {
+			handlers.reportError(error);
+		} catch {
+			// 事件桥不能让错误上浮到渲染循环。
+		} finally {
+			reportingError = false;
+		}
+	};
 	const invoke = (callback: (() => void) | undefined) => {
 		if (!callback) return;
 		try {
 			callback();
 		} catch (error) {
-			try {
-				handlers.reportError?.(error);
-			} catch {
-				// 事件桥不能让错误上浮到渲染循环。
-			}
+			reportHandlerError(error);
 		}
 	};
 	return {
@@ -82,7 +90,9 @@ export function createLegacyVisualEventBridge(
 			invoke(() => handlers.onShelfPaneChange?.(pane));
 		},
 		onDesktopLyricsMotion(snapshot) {
-			if (handlers.desktopLyricsMotionRef) handlers.desktopLyricsMotionRef.current = snapshot;
+			invoke(() => {
+				if (handlers.desktopLyricsMotionRef) handlers.desktopLyricsMotionRef.current = snapshot;
+			});
 			invoke(() => handlers.onDesktopLyricsMotion?.(snapshot));
 		},
 	};

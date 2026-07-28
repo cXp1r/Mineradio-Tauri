@@ -56,6 +56,14 @@ function copyVisibility(state: VisualVisibilityState): VisualVisibilityState {
 	return Object.freeze({ ...state });
 }
 
+function copyNativeWindowState(state: VisualNativeWindowState): VisualNativeWindowState {
+	return Object.freeze({
+		isVisible: state.isVisible === true,
+		isFocused: state.isFocused === true,
+		isMinimized: state.isMinimized === true,
+	});
+}
+
 function isSameVisibilityState(
 	left: VisualVisibilityState | null,
 	right: VisualVisibilityState,
@@ -67,17 +75,36 @@ function isSameVisibilityState(
 		&& left.windowMinimized === right.windowMinimized;
 }
 
+function safelyRunCleanup(cleanup: (() => void) | null | undefined): void {
+	if (!cleanup) return;
+	try {
+		cleanup();
+	} catch {
+		// 单个外部清理失败不能阻断其余监听器释放。
+	}
+}
+
 function listenReducedMotionChange(
 	query: VisualEnvironmentMediaQueryList | undefined,
 	listener: () => void,
 ): () => void {
 	if (!query) return () => {};
 	if (query.addEventListener && query.removeEventListener) {
-		query.addEventListener("change", listener);
+		try {
+			query.addEventListener("change", listener);
+		} catch (error) {
+			safelyRunCleanup(() => query.removeEventListener?.("change", listener));
+			throw error;
+		}
 		return () => query.removeEventListener?.("change", listener);
 	}
 	if (query.addListener && query.removeListener) {
-		query.addListener(listener);
+		try {
+			query.addListener(listener);
+		} catch (error) {
+			safelyRunCleanup(() => query.removeListener?.(listener));
+			throw error;
+		}
 		return () => query.removeListener?.(listener);
 	}
 	return () => {};
@@ -120,7 +147,11 @@ export function createVisualEnvironmentAdapter(
 			let generation = 1;
 			let nativeEventRevision = 0;
 			let unlistenNative: (() => void) | null = null;
+			let unlistenReducedMotion: (() => void) | null = null;
 			let previousState: VisualVisibilityState | null = null;
+			let visibilityListenerInstalled = false;
+			let focusListenerInstalled = false;
+			let blurListenerInstalled = false;
 
 			const emit = () => {
 				if (disposed || subscriptionDisposed) return;
@@ -142,58 +173,85 @@ export function createVisualEnvironmentAdapter(
 				prefersReducedMotion = reducedMotionQuery?.matches ?? false;
 			};
 
-			documentTarget?.addEventListener("visibilitychange", onVisibilityChange);
-			windowTarget?.addEventListener("focus", onFocus);
-			windowTarget?.addEventListener("blur", onBlur);
-			const unlistenReducedMotion = listenReducedMotionChange(reducedMotionQuery, onReducedMotionChange);
-			emit();
-
-			if (nativeSource) {
-				const activeGeneration = generation;
-				void nativeSource.listenWindowState((state) => {
-					if (disposed || subscriptionDisposed || generation !== activeGeneration) return;
-					nativeEventRevision += 1;
-					nativeState = state;
-					emit();
-				}).then((unlisten) => {
-					if (disposed || subscriptionDisposed || generation !== activeGeneration) {
-						unlisten();
-						return;
-					}
-					unlistenNative = unlisten;
-					const getRevision = nativeEventRevision;
-					return nativeSource.getWindowState().then((state) => {
-						if (
-							disposed ||
-							subscriptionDisposed ||
-							generation !== activeGeneration ||
-							nativeEventRevision !== getRevision
-						) return;
-						nativeState = state;
-						emit();
-					});
-				}).catch(() => {});
-			}
-
 			const unsubscribe = () => {
 				if (subscriptionDisposed) return;
 				subscriptionDisposed = true;
 				generation += 1;
-				documentTarget?.removeEventListener("visibilitychange", onVisibilityChange);
-				windowTarget?.removeEventListener("focus", onFocus);
-				windowTarget?.removeEventListener("blur", onBlur);
-				unlistenReducedMotion();
-				unlistenNative?.();
-				unlistenNative = null;
 				activeSubscriptions.delete(unsubscribe);
+				if (visibilityListenerInstalled) {
+					visibilityListenerInstalled = false;
+					safelyRunCleanup(() => documentTarget?.removeEventListener("visibilitychange", onVisibilityChange));
+				}
+				if (focusListenerInstalled) {
+					focusListenerInstalled = false;
+					safelyRunCleanup(() => windowTarget?.removeEventListener("focus", onFocus));
+				}
+				if (blurListenerInstalled) {
+					blurListenerInstalled = false;
+					safelyRunCleanup(() => windowTarget?.removeEventListener("blur", onBlur));
+				}
+				safelyRunCleanup(unlistenReducedMotion);
+				unlistenReducedMotion = null;
+				safelyRunCleanup(unlistenNative);
+				unlistenNative = null;
 			};
 			activeSubscriptions.add(unsubscribe);
-			return unsubscribe;
+
+			try {
+				browserFocused = documentTarget?.hasFocus?.() ?? true;
+				prefersReducedMotion = reducedMotionQuery?.matches ?? false;
+				if (documentTarget) {
+					visibilityListenerInstalled = true;
+					documentTarget.addEventListener("visibilitychange", onVisibilityChange);
+				}
+				if (windowTarget) {
+					focusListenerInstalled = true;
+					windowTarget.addEventListener("focus", onFocus);
+					blurListenerInstalled = true;
+					windowTarget.addEventListener("blur", onBlur);
+				}
+				unlistenReducedMotion = listenReducedMotionChange(reducedMotionQuery, onReducedMotionChange);
+				emit();
+
+				if (nativeSource && !disposed && !subscriptionDisposed) {
+					const activeGeneration = generation;
+					void nativeSource.listenWindowState((state) => {
+						if (disposed || subscriptionDisposed || generation !== activeGeneration) return;
+						nativeEventRevision += 1;
+						nativeState = copyNativeWindowState(state);
+						emit();
+					}).then((unlisten) => {
+						if (disposed || subscriptionDisposed || generation !== activeGeneration) {
+							safelyRunCleanup(unlisten);
+							return;
+						}
+						unlistenNative = unlisten;
+						const getRevision = nativeEventRevision;
+						return nativeSource.getWindowState().then((state) => {
+							if (
+								disposed ||
+								subscriptionDisposed ||
+								generation !== activeGeneration ||
+								nativeEventRevision !== getRevision
+							) return;
+							nativeState = copyNativeWindowState(state);
+							emit();
+						});
+					}).catch(() => {
+						unsubscribe();
+					});
+				}
+				return unsubscribe;
+			} catch (error) {
+				unsubscribe();
+				throw error;
+			}
 		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
-			for (const unsubscribe of [...activeSubscriptions]) unsubscribe();
+			for (const unsubscribe of [...activeSubscriptions]) safelyRunCleanup(unsubscribe);
+			activeSubscriptions.clear();
 		},
 	};
 	return adapter;
