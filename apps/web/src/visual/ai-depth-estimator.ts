@@ -42,6 +42,7 @@ export interface JsDelivrAiDepthEstimatorOptions {
 	onStatus?: (detail: AiDepthStatusDetail) => void;
 }
 
+let sharedModulePromise: Promise<TransformersModule> | null = null;
 let sharedPipelinePromise: Promise<DepthPipeline> | null = null;
 
 function defaultImportModule(url: string): Promise<TransformersModule> {
@@ -65,22 +66,32 @@ function emitAiDepthStatus(
 	window.dispatchEvent(new CustomEvent<AiDepthStatusDetail>(AI_DEPTH_STATUS_EVENT, { detail }));
 }
 
-async function loadPipeline(
+async function loadTransformersModule(
 	importModule: RemoteImport,
 	onStatus?: (detail: AiDepthStatusDetail) => void,
-): Promise<DepthPipeline> {
-	if (!sharedPipelinePromise) {
+): Promise<TransformersModule> {
+	if (!sharedModulePromise) {
 		emitAiDepthStatus({ visible: true, text: "加载 AI 深度模型 (首次需下载 50MB)…" }, onStatus);
-		sharedPipelinePromise = (async () => {
-				const mod = await importModule(TRANSFORMERS_JSDELIVR_URL);
+		sharedModulePromise = importModule(TRANSFORMERS_JSDELIVR_URL)
+			.then((mod) => {
 				if (mod.env) {
 					mod.env.allowLocalModels = false;
 					const wasm = mod.env.backends?.onnx?.wasm;
 					if (wasm) wasm.numThreads = 1;
 				}
-				const pipeline = await mod.pipeline("depth-estimation", AI_DEPTH_MODEL_ID);
-				return pipeline;
-			})()
+				return mod;
+			})
+			.catch((error) => {
+				sharedModulePromise = null;
+				throw error;
+			});
+	}
+	return await sharedModulePromise;
+}
+
+async function loadPipeline(mod: TransformersModule): Promise<DepthPipeline> {
+	if (!sharedPipelinePromise) {
+		sharedPipelinePromise = mod.pipeline("depth-estimation", AI_DEPTH_MODEL_ID)
 			.catch((error) => {
 				sharedPipelinePromise = null;
 				throw error;
@@ -155,7 +166,9 @@ export function createJsDelivrAiDepthEstimator(
 		try {
 			throwIfAborted(signal);
 			emitAiDepthStatus({ visible: true, text: "后台增强封面深度…" }, onStatus);
-			const pipeline = await loadPipeline(importModule, onStatus);
+			const transformersModule = await loadTransformersModule(importModule, onStatus);
+			throwIfAborted(signal);
+			const pipeline = await loadPipeline(transformersModule);
 			throwIfAborted(signal);
 			inputCanvas = inputCanvas ?? createCanvas(160);
 			const inputCanvasImage = inputCanvas
@@ -190,5 +203,6 @@ export function createJsDelivrAiDepthEstimator(
 }
 
 export function resetJsDelivrAiDepthPipelineForTests(): void {
+	sharedModulePromise = null;
 	sharedPipelinePromise = null;
 }

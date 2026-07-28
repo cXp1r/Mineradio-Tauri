@@ -205,7 +205,11 @@ test("aborting while the transformers module imports leaves shared bootstrap reu
 	});
 
 	expect(await pending).toBeNull();
+	expect(imports).toBe(1);
+	expect(pipelineCreations).toBe(0);
 	expect(inferenceCalls).toBe(0);
+	expect(statuses.some((status) => !!status.toast)).toBe(false);
+	expect(statuses.filter((status) => !status.visible).length).toBe(1);
 	expect(await estimator({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
 	expect(imports).toBe(1);
 	expect(pipelineCreations).toBe(1);
