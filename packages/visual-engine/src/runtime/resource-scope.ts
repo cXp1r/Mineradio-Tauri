@@ -80,7 +80,7 @@ interface ResourceEntry {
 	readonly kind: VisualResourceKind;
 	readonly retention: VisualResourceRetention;
 	readonly estimatedBytes?: number;
-	readonly disposer: () => void;
+	disposer: (() => void) | null;
 	disposed: boolean;
 }
 
@@ -90,6 +90,55 @@ interface ChildEntry {
 }
 
 type ScopeEntry = ResourceEntry | ChildEntry;
+
+export interface VisualResourceScopeTestDiagnostics {
+	readonly entryCount: number;
+	readonly resourceEntryCount: number;
+	readonly childEntryCount: number;
+	readonly activeResourceEntryCount: number;
+	readonly retainedDisposerCount: number;
+}
+
+export interface VisualResourceHandleTestDiagnostics {
+	readonly disposed: boolean;
+	readonly retainsDisposer: boolean;
+}
+
+const scopeEntriesForTests = new WeakMap<VisualResourceScope, ScopeEntry[]>();
+const handleEntriesForTests = new WeakMap<VisualResourceHandle, ResourceEntry>();
+
+// 仅供本模块测试确定性检查引用释放，不从包入口导出。
+export function __inspectVisualResourceScopeForTests(
+	scope: VisualResourceScope,
+): VisualResourceScopeTestDiagnostics {
+	const entries = scopeEntriesForTests.get(scope);
+	if (!entries) throw new Error("Unknown visual resource scope.");
+	const resources = entries.filter(
+		(entry): entry is ResourceEntry => entry.type === "resource",
+	);
+	return {
+		entryCount: entries.length,
+		resourceEntryCount: resources.length,
+		childEntryCount: entries.length - resources.length,
+		activeResourceEntryCount: resources.filter((entry) => !entry.disposed)
+			.length,
+		retainedDisposerCount: resources.filter(
+			(entry) => typeof entry.disposer === "function",
+		).length,
+	};
+}
+
+// 句柄可继续持有已移出 scope 的 entry，因此单独检查 disposer 是否仍被保留。
+export function __inspectVisualResourceHandleForTests(
+	handle: VisualResourceHandle,
+): VisualResourceHandleTestDiagnostics {
+	const entry = handleEntriesForTests.get(handle);
+	if (!entry) throw new Error("Unknown visual resource handle.");
+	return {
+		disposed: entry.disposed,
+		retainsDisposer: typeof entry.disposer === "function",
+	};
+}
 
 function emptyReport(): VisualResourceDisposalReport {
 	return { disposed: 0, errors: [] };
@@ -118,8 +167,10 @@ function createVisualResourceScopeAtPath(
 	): VisualResourceDisposalReport => {
 		if (entry.disposed) return emptyReport();
 		entry.disposed = true;
+		const disposer = entry.disposer;
+		entry.disposer = null;
 		try {
-			entry.disposer();
+			disposer?.();
 			return { disposed: 1, errors: [] };
 		} catch (error) {
 			return {
@@ -156,7 +207,7 @@ function createVisualResourceScopeAtPath(
 				disposed: false,
 			};
 			entries.push(entry);
-			return {
+			const handle: VisualResourceHandle = {
 				owner: entry.owner,
 				kind: entry.kind,
 				retention: entry.retention,
@@ -166,6 +217,8 @@ function createVisualResourceScopeAtPath(
 				},
 				dispose: () => disposeResource(entry),
 			};
+			handleEntriesForTests.set(handle, entry);
+			return handle;
 		},
 		createChild(childName) {
 			assertOpen();
@@ -195,6 +248,13 @@ function createVisualResourceScopeAtPath(
 					mergeReports(report, disposeResource(entry));
 				}
 			}
+			let nextEntryIndex = 0;
+			for (const entry of entries) {
+				if (entry.type === "resource" && entry.disposed) continue;
+				entries[nextEntryIndex] = entry;
+				nextEntryIndex += 1;
+			}
+			entries.length = nextEntryIndex;
 			return report;
 		},
 		dispose() {
@@ -213,9 +273,11 @@ function createVisualResourceScopeAtPath(
 						: entry.scope.dispose(),
 				);
 			}
+			entries.length = 0;
 			return report;
 		},
 	};
+	scopeEntriesForTests.set(scope, entries);
 
 	return scope;
 }

@@ -3,6 +3,10 @@ import {
 	createVisualResourceScope,
 	VisualResourceScopeClosedError,
 } from "../index";
+import {
+	__inspectVisualResourceHandleForTests as inspectHandle,
+	__inspectVisualResourceScopeForTests as inspectScope,
+} from "./resource-scope";
 
 test("resources and child scopes dispose once in exact reverse creation order", () => {
 	const calls: string[] = [];
@@ -276,4 +280,83 @@ test("releaseRetention recursively releases only matching entries without closin
 		"child-persistent",
 		"root-persistent",
 	]);
+});
+
+test("releaseRetention removes disposed entries and clears captured disposer references across rebuilds", () => {
+	const scope = createVisualResourceScope("rebuild-loop");
+	const handles: ReturnType<typeof scope.register>[] = [];
+	const disposedCaptures: object[] = [];
+
+	for (let cycle = 0; cycle < 4; cycle += 1) {
+		const captured = { cycle };
+		const handle = scope.register({
+			owner: `rebuild-${cycle}`,
+			kind: "geometry",
+			retention: "rebuildable",
+			dispose() {
+				disposedCaptures.push(captured);
+			},
+		});
+		handles.push(handle);
+
+		expect(scope.releaseRetention("rebuildable")).toEqual({
+			disposed: 1,
+			errors: [],
+		});
+		expect(inspectScope(scope)).toEqual({
+			entryCount: 0,
+			resourceEntryCount: 0,
+			childEntryCount: 0,
+			activeResourceEntryCount: 0,
+			retainedDisposerCount: 0,
+		});
+		expect(inspectHandle(handle)).toEqual({
+			disposed: true,
+			retainsDisposer: false,
+		});
+	}
+
+	expect(disposedCaptures).toHaveLength(4);
+	expect(handles.every((handle) => handle.disposed)).toBe(true);
+});
+
+test("full dispose releases parent and child entries and clears every disposer reference", () => {
+	const root = createVisualResourceScope("root-cleanup");
+	const rootHandle = root.register({
+		owner: "root-resource",
+		kind: "mesh",
+		retention: "persistent",
+		dispose() {},
+	});
+	const child = root.createChild("child-cleanup");
+	const childHandle = child.register({
+		owner: "child-resource",
+		kind: "texture",
+		retention: "persistent",
+		dispose() {},
+	});
+
+	expect(root.dispose()).toEqual({ disposed: 2, errors: [] });
+	expect(inspectScope(root)).toEqual({
+		entryCount: 0,
+		resourceEntryCount: 0,
+		childEntryCount: 0,
+		activeResourceEntryCount: 0,
+		retainedDisposerCount: 0,
+	});
+	expect(inspectScope(child)).toEqual({
+		entryCount: 0,
+		resourceEntryCount: 0,
+		childEntryCount: 0,
+		activeResourceEntryCount: 0,
+		retainedDisposerCount: 0,
+	});
+	expect(inspectHandle(rootHandle)).toEqual({
+		disposed: true,
+		retainsDisposer: false,
+	});
+	expect(inspectHandle(childHandle)).toEqual({
+		disposed: true,
+		retainsDisposer: false,
+	});
 });

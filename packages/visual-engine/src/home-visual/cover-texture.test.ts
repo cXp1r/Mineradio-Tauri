@@ -277,6 +277,56 @@ test("stale cover loads are ignored when a newer URL is requested", async () => 
 	expect(uniforms.uHasCover.value).toBe(1);
 });
 
+test("wake retries an uncommitted requested cover while retaining the last committed cover", async () => {
+	const uniforms = makeUniforms();
+	const aUrl = "https://img.example/committed-a.jpg";
+	const bUrl = "https://img.example/requested-b.jpg";
+	const aImage = { width: 32, height: 32, label: "A" };
+	const staleB = { width: 32, height: 32, label: "B-stale" };
+	const committedB = { width: 32, height: 32, label: "B" };
+	const loads: string[] = [];
+	const pendingB: Array<{
+		resolve(image: typeof committedB): void;
+		signal?: AbortSignal;
+	}> = [];
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: (url, signal) => {
+			loads.push(url);
+			if (url === aUrl) return Promise.resolve(aImage);
+			return new Promise((resolve) => { pendingB.push({ resolve, signal }); });
+		},
+	});
+	ctl.setCoverUrl(aUrl);
+	await ctl.whenIdle();
+	expect(uniforms.uCoverTex.value.image).toBe(aImage);
+
+	ctl.setCoverUrl(bUrl);
+	expect(loads).toEqual([aUrl, bUrl]);
+	expect(uniforms.uCoverTex.value.image).toBe(aImage);
+	ctl.setRuntimeActive(false);
+	expect(pendingB[0]?.signal?.aborted).toBe(true);
+	ctl.setRuntimeActive(true);
+
+	ctl.setCoverUrl(bUrl);
+	expect(loads).toEqual([aUrl, bUrl, bUrl]);
+	expect(uniforms.uCoverTex.value.image).toBe(aImage);
+	ctl.setCoverUrl(bUrl);
+	expect(loads).toEqual([aUrl, bUrl, bUrl]);
+
+	pendingB[0]?.resolve(staleB);
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(uniforms.uCoverTex.value.image).toBe(aImage);
+	pendingB[1]?.resolve(committedB);
+	await ctl.whenIdle();
+
+	expect(uniforms.uPrevCoverTex.value.image).toBe(aImage);
+	expect(uniforms.uCoverTex.value.image).toBe(committedB);
+	ctl.setCoverUrl(bUrl);
+	expect(loads).toEqual([aUrl, bUrl, bUrl]);
+});
+
 test("changing covers aborts the previous runtime loader", () => {
 	const uniforms = makeUniforms();
 	const signals: AbortSignal[] = [];

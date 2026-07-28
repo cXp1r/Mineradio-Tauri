@@ -385,6 +385,7 @@ export function createHomeCoverTextureController(
 		? createCoverDepthTween({ uHasDepth: uniforms.uHasDepth, uAiBoost: uniforms.uAiBoost })
 		: null;
 	let currentUrl = "";
+	let committedUrl = "";
 	let token = 0;
 	let aiDepthEnabled = !!opts.aiDepthEnabled;
 	let runtimeActive = true;
@@ -479,6 +480,7 @@ export function createHomeCoverTextureController(
 	function clearCover(): void {
 		beginGeneration().cancel();
 		currentUrl = "";
+		committedUrl = "";
 		preparedCoverImage = null;
 		heuristicEdgeImage = null;
 		aiMergedEdgeImage = null;
@@ -561,6 +563,7 @@ export function createHomeCoverTextureController(
 
 	function onCoverFailure(runToken: number): void {
 		if (!isCurrent(runToken)) return;
+		committedUrl = "";
 		uniforms.uHasCover.value = 0;
 		if (uniforms.uLoading) uniforms.uLoading.value = 0;
 		depthTween?.setTarget(0, 0, 1);
@@ -696,7 +699,8 @@ export function createHomeCoverTextureController(
 			clearCover();
 			return;
 		}
-		if (url === currentUrl && uniforms.uHasCover.value > 0.5) {
+		if (url === currentUrl && coverPending) return;
+		if (url === currentUrl && committedUrl === url && uniforms.uHasCover.value > 0.5) {
 			if (
 				runtimeActive &&
 				aiEnhancementNeedsResume &&
@@ -744,6 +748,7 @@ export function createHomeCoverTextureController(
 				coverPending = false;
 				if (!isCurrent(runToken, signal)) return;
 				applyPreparedCoverImage(result.preparedImage);
+				committedUrl = url;
 				if (result.cached) {
 					if (applyCachedCoverDepth(runToken, result.cached)) scheduleAiDepth(generation);
 					return;
