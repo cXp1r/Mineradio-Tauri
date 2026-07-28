@@ -77,6 +77,19 @@ export function getLyricSunBloomTexture(THREE: ThreeModule): THREE.Texture | nul
 }
 
 export function resetLyricSunBloomCache(): void {
+	const texture = cachedTexture as unknown as {
+		dispose?: () => void;
+		image?: { width?: number; height?: number };
+	} | null;
+	try {
+		texture?.dispose?.();
+	} catch {
+		// 缓存 owner 释放失败时仍要清空引用，避免复用失效资源。
+	}
+	if (texture?.image) {
+		texture.image.width = 1;
+		texture.image.height = 1;
+	}
 	cachedTexture = null;
 	cachedFor = null;
 }

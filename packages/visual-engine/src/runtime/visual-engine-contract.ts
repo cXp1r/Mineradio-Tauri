@@ -5,6 +5,11 @@ import type { CancellationScope } from "./cancellation-scope";
 import type { PerformanceCollector } from "./performance-collector";
 import type { VisualResourceScope } from "./resource-scope";
 import type { VisualScheduler } from "./visual-scheduler";
+import type { VisualSchedulerDriver } from "./visual-scheduler";
+import type {
+	VisualSubsystemDiagnosticsPublisher,
+	VisualSubsystemDiagnosticsSnapshot,
+} from "./subsystem-diagnostics";
 
 export type VisualPresetId = number;
 
@@ -55,6 +60,7 @@ export interface VisualLyricWord {
 export interface VisualLyricLine {
 	readonly t: number;
 	readonly text: string;
+	readonly translation?: string;
 	readonly duration?: number;
 	readonly charCount?: number;
 	readonly fallback?: boolean;
@@ -167,6 +173,7 @@ export interface VisualPerformanceSnapshot {
 		readonly failed: number;
 		readonly peakQueueDepth: number;
 	};
+	readonly subsystems: VisualSubsystemDiagnosticsSnapshot;
 }
 
 export interface VisualEngineFacade {
@@ -189,6 +196,7 @@ export interface VisualEngineCompositionContext {
 	readonly tasks: BudgetTaskQueue;
 	readonly scheduler: VisualScheduler;
 	readonly performance: PerformanceCollector;
+	readonly diagnostics: VisualSubsystemDiagnosticsPublisher;
 	getFrameSnapshot(): VisualFrameSnapshot;
 	refreshPerformanceSnapshots(): void;
 }
@@ -206,4 +214,6 @@ export interface VisualEngineOptions {
 	readonly createComposition: () => VisualEngineComposition;
 	readonly resourceBudget?: Partial<VisualResourceBudget>;
 	readonly initialVisibility?: VisualVisibilityState;
+	/** 仅供确定性宿主或测试注入；生产默认使用浏览器调度器。 */
+	readonly schedulerDriver?: VisualSchedulerDriver;
 }

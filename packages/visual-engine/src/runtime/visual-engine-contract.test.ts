@@ -148,6 +148,7 @@ test("visual engine exports the M3 snapshot and facade contracts", () => {
 			failed: 0,
 			peakQueueDepth: 0,
 		},
+		subsystems: {},
 	};
 	const engine: VisualEngineFacade = {
 		async mount() {},

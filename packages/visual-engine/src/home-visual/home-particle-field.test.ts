@@ -105,6 +105,17 @@ test("createHomeParticleField builds geometry with position(3)/aUv(2)/aRand(1) a
 	expect(geo.attributes.aRand.array.length).toBe(183 * 183);
 });
 
+test("createHomeParticleField uses the injected random source for deterministic attributes", async () => {
+	const scene = makeFakeScene();
+	const field = await createHomeParticleField(scene as never, {
+		threeFactory: makeFakeThree(),
+		coverResolution: 0.75,
+		random: () => 0.375,
+	});
+	const values = (field.geometry.attributes.aRand as { array: Float32Array }).array;
+	expect(Array.from(values.slice(0, 4))).toEqual([0.375, 0.375, 0.375, 0.375]);
+});
+
 test("createHomeParticleField adds bloomPoints(renderOrder=0) then points(renderOrder=1) to scene; frustumCulled=false for both", async () => {
 	const scene = makeFakeScene();
 	const field = await createHomeParticleField(scene as never, { threeFactory: makeFakeThree() });

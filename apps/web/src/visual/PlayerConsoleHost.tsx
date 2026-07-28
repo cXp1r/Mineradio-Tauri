@@ -349,7 +349,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	}, []);
 	const lyricSourceMode = props.lyricSourceMode === "custom" ? "custom" : "original";
 	const shelfMode = props.shelfMode ?? "side";
-	const shelfCameraMode = props.shelfCameraMode ?? "static";
+	const shelfCameraMode = props.shelfCameraMode ?? "dynamic";
 	const shelfPresence = props.shelfPresence ?? "always";
 	const shelfShowPodcasts = props.shelfShowPodcasts !== false;
 	const shelfMergeCollections = props.shelfMergeCollections === true;

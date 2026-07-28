@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, t
 import type { LyricPayload, LyricLine as SharedLyricLine, PlaylistSummary, PodcastCollection, Track } from "@mineradio/shared";
 import {
 	type FxState,
-	type LyricLine as VisualLyricLine,
+	type VisualLyricLine,
 	type ShelfItem,
 	type ShelfOpenDetailContentPayload,
 	type ShelfPane,
@@ -64,7 +64,7 @@ export function resolveVisualShelfSettings(
 ): { mode: ShelfMode; cameraMode: ShelfCameraMode; presence: ShelfPresence; showPodcasts: boolean; mergeCollections: boolean } {
 	return {
 		mode: settings?.mode ?? (fxDefaults?.shelf as ShelfMode | undefined) ?? "side",
-		cameraMode: settings?.cameraMode ?? (fxDefaults?.shelfCameraMode as ShelfCameraMode | undefined) ?? "static",
+		cameraMode: settings?.cameraMode ?? (fxDefaults?.shelfCameraMode as ShelfCameraMode | undefined) ?? "dynamic",
 		presence: settings?.presence ?? (fxDefaults?.shelfPresence as ShelfPresence | undefined) ?? "always",
 		showPodcasts: settings?.showPodcasts ?? (fxDefaults?.shelfShowPodcasts !== false),
 		mergeCollections: settings?.mergeCollections ?? (fxDefaults?.shelfMergeCollections === true),
@@ -87,6 +87,7 @@ export function mapLyricPayload(payload: LyricPayload | null): VisualLyricLine[]
 		.map((line: SharedLyricLine, originalIndex): VisualLyricLine & { originalIndex: number } => ({
 			t: Math.max(0, line.timeMs) / 1000,
 			text: line.text ?? "",
+			translation: line.translation,
 			duration: typeof line.durationMs === "number" ? Math.max(0, line.durationMs) / 1000 : undefined,
 			charCount: line.charCount,
 			words: Array.isArray(line.words)
@@ -114,6 +115,7 @@ export function mapLyricPayload(payload: LyricPayload | null): VisualLyricLine[]
 		.map((line) => ({
 			t: line.t,
 			text: line.text,
+			translation: line.translation,
 			duration: line.duration,
 			charCount: line.charCount,
 			words: line.words,

@@ -1,5 +1,6 @@
 import type * as THREE from "three";
 import type { FrameContext } from "../runtime/frame-context";
+import type { VisualResourceScope } from "../runtime/resource-scope";
 import { computeBreathPulse } from "./breath";
 import {
 	SHELF_MAX_RENDER,
@@ -7,6 +8,16 @@ import {
 	computeCardLayout,
 } from "./card-position";
 import { getDefaultShelfLayoutProfile, type ShelfLayoutProfileOverrides } from "./shelf-layout-profile";
+import {
+	registerShelfResourceBundle,
+	type ShelfRenderableResource,
+	type ShelfResourceBundle,
+} from "./shelf-resource-bundle";
+import {
+	createReusableObjectPool,
+	type ReusableObjectPool,
+	type ReusableObjectPoolSnapshot,
+} from "./object-pool";
 import { computePaneRaw, computeRevealRaw } from "./reveal";
 import {
 	createShelfCardMesh,
@@ -57,8 +68,12 @@ export interface ShelfManagerOptions {
 	three?: typeof import("three") | null;
 	document?: Document | null;
 	now?: () => number;
+	buildNow?: () => number;
 	getLayoutProfileOverrides?: () => ShelfLayoutProfileOverrides;
 	onOpenDetailContent?: (payload: ShelfOpenDetailContentPayload) => void;
+	onDetailPhaseChange?: (phase: ShelfDetailPhase) => void;
+	/** Shelf 独占的 child scope；manager.dispose() 会关闭它。 */
+	resourceScope?: VisualResourceScope;
 }
 
 export interface ShelfOpenDetailContentPayload {
@@ -82,6 +97,14 @@ export interface ShelfSnapshot {
 	pinnedOpen: boolean;
 	breathPulse: number;
 }
+
+export interface ShelfResourceDiagnostics {
+	readonly cards: ReusableObjectPoolSnapshot;
+	readonly detailRows: ReusableObjectPoolSnapshot;
+	readonly detailPanels: number;
+}
+
+export type ShelfDetailPhase = "closed" | "open" | "closing";
 
 export interface ShelfRaycastCardHit {
 	index: number;
@@ -129,8 +152,10 @@ export interface ShelfManager {
 	openDetail(idx: number, opts?: { playlistId?: string; title?: string }): void;
 	closeDetail(opts?: { immediate?: boolean }): void;
 	hasOpenContent(): boolean;
+	getDetailPhase(): ShelfDetailPhase;
 	getContentList(): ShelfContentList | null;
 	getSnapshot(): ShelfSnapshot;
+	getResourceDiagnostics(): ShelfResourceDiagnostics;
 	getRenderedCardCount(): number;
 	raycastCards(raycaster: THREE.Raycaster): ShelfRaycastCardHit | null;
 	raycastContentRows(raycaster: THREE.Raycaster): ShelfRaycastContentRowHit | null;
@@ -158,9 +183,10 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 	}
 	const data: ShelfItem[] = [];
 	const renderedCards = new Map<number, ShelfCardSprite>();
+	let cardPool: ReusableObjectPool<ShelfCardSprite> | null = null;
 	let renderedWindowSig = "";
 	let renderedWindowAsync = false;
-	let asyncBuildJob: { start: number; end: number; next: number; sig: string } | null = null;
+	let asyncBuildJob: { indexes: number[]; next: number; sig: string } | null = null;
 	let breathPulseLast = 0;
 	let lastFrameNow = 0;
 	let lastUpdateDtSeconds = 1 / 60;
@@ -168,14 +194,23 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 	const nowFn =
 		opts.now ??
 		(() => (typeof performance !== "undefined" ? performance.now() : Date.now()));
+	const buildNow = opts.buildNow ?? nowFn;
 	const contentList = createShelfContentList({ now: () => lastVisualTime });
+	const resourceScope = opts.resourceScope;
+	const resourceBundles = new Map<ShelfRenderableResource, ShelfResourceBundle>();
+	let resourceOwnerGeneration = 0;
 	let openDetailCardKey: string | null = null;
 	let detailGroup: THREE.Group | null = null;
 	let detailPanel: ShelfContentPanelSprite | null = null;
 	const detailRows = new Map<number, ShelfContentRowSprite>();
+	let detailRowPool: ReusableObjectPool<ShelfContentRowSprite> | null = null;
 	let detailRowsSig = "";
 	let detailRowsLoadedContentSig = "";
 	let rowSettleStartedAt = -Infinity;
+	let detailPhase: ShelfDetailPhase = "closed";
+	let detailGeneration = 0;
+	let detailClosingStartedAt = -Infinity;
+	let detailClosingGeneration = 0;
 
 	return {
 		getState() {
@@ -187,7 +222,8 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			state.lastSig = `${items.length}::${state.shelfPane}`;
 			clampStateToDataLength(items.length);
 			renderedWindowSig = "";
-			renderedWindowAsync = !!setDataOpts?.asyncBuild;
+			// 生产默认始终走帧预算；仅保留显式 false 作为低层确定性测试缝。
+			renderedWindowAsync = setDataOpts?.asyncBuild !== false;
 			asyncBuildJob = null;
 		},
 		getData() {
@@ -195,6 +231,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		},
 		update(ctx) {
 			lastVisualTime = ctx.uniforms.uTime.value;
+			advanceDetailClose(lastVisualTime);
 			if (lastFrameNow === 0) lastFrameNow = ctx.now;
 			const dtMs = Math.max(0, ctx.now - lastFrameNow);
 			lastFrameNow = ctx.now;
@@ -331,6 +368,9 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			state.paneSwitchDir = dir < 0 ? -1 : 1;
 		},
 		openDetail(idx, detailOpts) {
+			detailGeneration += 1;
+			setDetailPhase("open");
+			detailClosingStartedAt = -Infinity;
 			state.openCardIdx = idx;
 			state.pinnedOpen = true;
 			const item = data[idx];
@@ -355,11 +395,18 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 				item,
 			});
 		},
-		closeDetail() {
-			closeOpenDetail();
+		closeDetail(closeOptions) {
+			if (closeOptions?.immediate) {
+				closeOpenDetail();
+				return;
+			}
+			beginDetailClose();
 		},
 		hasOpenContent() {
 			return contentList.isOpen();
+		},
+		getDetailPhase() {
+			return detailPhase;
 		},
 		getContentList() {
 			return contentList.isOpen() ? contentList : null;
@@ -375,6 +422,13 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 				openCardIdx: state.openCardIdx,
 				pinnedOpen: state.pinnedOpen,
 				breathPulse: breathPulseLast,
+			};
+		},
+		getResourceDiagnostics() {
+			return {
+				cards: cardPool?.getSnapshot() ?? emptyPoolSnapshot(SHELF_MAX_RENDER),
+				detailRows: detailRowPool?.getSnapshot() ?? emptyPoolSnapshot(CONTENT_MAX_RENDER),
+				detailPanels: detailPanel ? 1 : 0,
 			};
 		},
 		getRenderedCardCount() {
@@ -405,7 +459,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			return null;
 		},
 		raycastContentRows(raycaster) {
-			if (!group || !group.visible || !contentList.isOpen() || detailRows.size === 0) return null;
+			if (detailPhase !== "open" || !group || !group.visible || !contentList.isOpen() || detailRows.size === 0) return null;
 			const visibleMeshes: THREE.Mesh[] = [];
 			for (const sprite of detailRows.values()) {
 				if (sprite.mesh.visible) visibleMeshes.push(sprite.mesh);
@@ -452,8 +506,14 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		},
 		dispose() {
 			disposeDetailContentMeshes();
+			detailRowPool?.dispose();
+			detailRowPool = null;
 			contentList.clearScreenTargets();
 			disposeRenderedCards();
+			cardPool?.dispose();
+			cardPool = null;
+			resourceScope?.dispose();
+			resourceBundles.clear();
 			if (group && scene && ownsGroup) {
 				scene.remove(group);
 			} else if (group && scene && opts.group) {
@@ -571,21 +631,30 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		const window = computeRenderWindow();
 		const sig = `${window.start}:${window.end}:${data.length}:${state.shelfPane}`;
 		if (sig !== renderedWindowSig) {
-			disposeRenderedCards();
+			const targetIndexes = new Set<number>();
+			for (let index = window.start; index <= window.end; index++) targetIndexes.add(index);
+			for (const [index, card] of renderedCards) {
+				if (targetIndexes.has(index)) continue;
+				releaseRenderedCard(index, card);
+			}
 			renderedWindowSig = sig;
 			if (renderedWindowAsync) {
-				asyncBuildJob = { start: window.start, end: window.end, next: window.start, sig };
-				buildAsyncCards(3);
+				asyncBuildJob = {
+					indexes: [...targetIndexes].filter((index) => !renderedCards.has(index)),
+					next: 0,
+					sig,
+				};
+				buildAsyncCards(2);
 				return;
 			}
 			asyncBuildJob = null;
-			for (let index = window.start; index <= window.end; index++) {
+			for (const index of targetIndexes) {
 				buildRenderedCard(index);
 			}
 			return;
 		}
 		if (asyncBuildJob?.sig === sig) {
-			buildAsyncCards(3);
+			buildAsyncCards(2);
 		}
 	}
 
@@ -645,13 +714,15 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 
 	function buildAsyncCards(maxPerFrame: number): void {
 		if (!asyncBuildJob || !group || !three || !doc) return;
+		const startedAt = buildNow();
 		let built = 0;
-		while (asyncBuildJob.next <= asyncBuildJob.end && built < maxPerFrame) {
-			buildRenderedCard(asyncBuildJob.next);
+		while (asyncBuildJob.next < asyncBuildJob.indexes.length && built < maxPerFrame) {
+			if (built > 0 && buildNow() - startedAt >= 7) break;
+			buildRenderedCard(asyncBuildJob.indexes[asyncBuildJob.next]!);
 			asyncBuildJob.next += 1;
 			built += 1;
 		}
-		if (asyncBuildJob.next > asyncBuildJob.end) {
+		if (asyncBuildJob.next >= asyncBuildJob.indexes.length) {
 			asyncBuildJob = null;
 		}
 	}
@@ -660,22 +731,84 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		if (!group || !three || !doc || renderedCards.has(index)) return;
 		const item = data[index];
 		if (!item) return;
-		const card = createShelfCardMesh({
-			item,
+		const pool = ensureCardPool();
+		const card = pool?.acquire() ?? null;
+		if (!card) return;
+		card.update(item, {
 			index,
-			three,
-			createCanvas: () => doc.createElement("canvas"),
-			drawState: {
-				index,
-				centered: index === Math.round(state.centerSmooth),
-				selected: index === state.selectedIdx,
-				beatProgress: 0,
-				dimmed: state.openCardIdx >= 0 && state.openCardIdx !== index,
-			},
+			centered: index === Math.round(state.centerSmooth),
+			selected: index === state.selectedIdx,
+			beatProgress: 0,
+			dimmed: state.openCardIdx >= 0 && state.openCardIdx !== index,
 		});
+		card.mesh.visible = true;
 		card.mesh.renderOrder = 50 + index;
 		group.add(card.mesh);
 		renderedCards.set(index, card);
+	}
+
+	function registerManagedResource<T extends ShelfRenderableResource>(
+		resource: T,
+		owner: string,
+		onRelease: () => void,
+	): T {
+		const bundle = registerShelfResourceBundle({
+			owner,
+			resource,
+			resourceScope,
+			onRelease: () => {
+				resourceBundles.delete(resource);
+				onRelease();
+			},
+		});
+		resourceBundles.set(resource, bundle);
+		return resource;
+	}
+
+	function disposeManagedResource(resource: ShelfRenderableResource): void {
+		const bundle = resourceBundles.get(resource);
+		if (bundle) {
+			bundle.release();
+			return;
+		}
+		resource.dispose();
+	}
+
+	function releaseCardOwnership(card: ShelfCardSprite): void {
+		try {
+			group?.remove(card.mesh);
+		} catch {
+		}
+		card.mesh.visible = false;
+		for (const [index, current] of [...renderedCards]) {
+			if (current === card) renderedCards.delete(index);
+		}
+		cardPool?.discard(card);
+		renderedWindowSig = "";
+		asyncBuildJob = null;
+	}
+
+	function ensureCardPool(): ReusableObjectPool<ShelfCardSprite> | null {
+		if (cardPool) return cardPool;
+		if (!three || !doc) return null;
+		cardPool = createReusableObjectPool<ShelfCardSprite>({
+			capacity: SHELF_MAX_RENDER,
+			create: () => {
+				const card = createShelfCardMesh({
+					item: { type: "empty" },
+					index: 0,
+					three,
+					createCanvas: () => doc.createElement("canvas"),
+				});
+				return registerManagedResource(
+					card,
+					`shelf-card:${++resourceOwnerGeneration}`,
+					() => releaseCardOwnership(card),
+				);
+			},
+			dispose: disposeManagedResource,
+		});
+		return cardPool;
 	}
 
 	function applyGroupPose(ctx: FrameContext): void {
@@ -727,6 +860,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			item.podcastKey || "",
 			item.queueIndex == null ? "" : item.queueIndex,
 			item.cover || "",
+			item.provider || "",
 			drawState.centered ? 1 : 0,
 			drawState.selected ? 1 : 0,
 			drawState.dimmed ? 1 : 0,
@@ -763,7 +897,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		detailPanel.material.opacity = computeContentPanelOpacity({
 			now: ctx.uniforms.uTime.value,
 			openAnimAt: snapshot.openAnimAt,
-		});
+		}) * detailCloseOpacity(ctx.uniforms.uTime.value);
 		detailPanel.mesh.visible = true;
 
 		syncDetailRows(ctx);
@@ -773,11 +907,16 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 	function ensureDetailPanel(): void {
 		const targetGroup = ensureDetailGroup();
 		if (detailPanel || !targetGroup || !three || !doc) return;
-		detailPanel = createShelfContentPanelSprite({
+		const panel = createShelfContentPanelSprite({
 			three,
 			createCanvas: () => doc.createElement("canvas"),
 		}, contentList.getSnapshot().playlistTitle);
-		targetGroup.add(detailPanel.mesh);
+		detailPanel = registerManagedResource(
+			panel,
+			`shelf-detail-panel:${++resourceOwnerGeneration}`,
+			() => releaseDetailPanelOwnership(panel),
+		);
+		targetGroup.add(panel.mesh);
 	}
 
 	function ensureDetailGroup(): THREE.Group | null {
@@ -794,20 +933,21 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		const layout = getDefaultShelfLayoutProfile(opts.getLayoutProfileOverrides?.()).detail;
 		const snapshot = contentList.getSnapshot();
 		const intro = 1 - smoothstep01(clampRange((ctx.uniforms.uTime.value - snapshot.openAnimAt) / 0.48, 0, 1));
+		const closing = detailCloseProgress(ctx.uniforms.uTime.value);
 		const parX = ctx.pointerParallax?.x || 0;
 		const parY = ctx.pointerParallax?.y || 0;
 		targetGroup.visible = true;
 		targetGroup.position.set(
-			layout.x + intro * 0.16 + parX * 0.030,
-			layout.y - intro * 0.024 + parY * 0.026,
-			layout.z - intro * 0.070 + parY * 0.016 - parX * 0.010,
+			layout.x + intro * 0.16 + parX * 0.030 + closing * 0.14,
+			layout.y - intro * 0.024 + parY * 0.026 - closing * 0.10,
+			layout.z - intro * 0.070 + parY * 0.016 - parX * 0.010 - closing * 0.08,
 		);
 		targetGroup.rotation.set(
 			layout.rx - parY * 0.010,
-			layout.ry + intro * 0.018 + parX * 0.014,
+			layout.ry + intro * 0.018 + parX * 0.014 + closing * 0.028,
 			0,
 		);
-		targetGroup.scale.setScalar(layout.scale * (1 - intro * 0.035));
+		targetGroup.scale.setScalar(layout.scale * (1 - intro * 0.035) * (1 - closing * 0.10));
 	}
 
 	function syncDetailRows(ctx: FrameContext): void {
@@ -838,17 +978,16 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			maybeStartRowsLoadedIntro(rows, ctx.uniforms.uTime.value);
 			for (const [index, sprite] of detailRows) {
 				if (indexes.includes(index)) continue;
-				disposeDetailRow(sprite);
-				detailRows.delete(index);
+				releaseDetailRow(index, sprite);
 			}
 			for (const index of indexes) {
 				const row = rows[index];
 				if (!row || detailRows.has(index)) continue;
 				const centered = Math.abs(index - contentList.getSnapshot().centerSmooth) < 0.5;
-				const sprite = createShelfContentRowSprite({
-					three,
-					createCanvas: () => doc.createElement("canvas"),
-				}, row, index, centered);
+				const sprite = ensureDetailRowPool()?.acquire() ?? null;
+				if (!sprite) continue;
+				sprite.update(row, index, centered);
+				sprite.mesh.visible = true;
 				targetGroup.add(sprite.mesh);
 				detailRows.set(index, sprite);
 			}
@@ -869,7 +1008,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			sprite.mesh.position.set(layout.position.x, layout.position.y, layout.position.z);
 			sprite.mesh.rotation.set(layout.rotation.x, layout.rotation.y, 0);
 			sprite.mesh.scale.setScalar(layout.scale);
-			sprite.material.opacity = layout.opacity;
+			sprite.material.opacity = layout.opacity * detailCloseOpacity(ctx.uniforms.uTime.value);
 			const centered = Math.abs(index - contentList.getSnapshot().centerSmooth) < 0.5;
 			if (sprite.row !== row || sprite.index !== index || sprite.lastCenter !== centered) {
 				sprite.update(row, index, centered);
@@ -1004,13 +1143,10 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 
 	function disposeDetailContentMeshes(): void {
 		disposeDetailRows();
+		detailRowPool?.dispose();
+		detailRowPool = null;
 		if (detailPanel) {
-			try {
-				detailGroup?.remove(detailPanel.mesh);
-			} catch {
-			}
-			detailPanel.dispose();
-			detailPanel = null;
+			disposeManagedResource(detailPanel);
 		}
 		if (detailGroup) {
 			try {
@@ -1026,19 +1162,64 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 
 	function disposeDetailRows(): void {
 		if (detailRows.size === 0) return;
-		for (const sprite of detailRows.values()) {
-			disposeDetailRow(sprite);
+		for (const [index, sprite] of [...detailRows]) {
+			releaseDetailRow(index, sprite);
 		}
-		detailRows.clear();
 		detailRowsSig = "";
 	}
 
-	function disposeDetailRow(sprite: ShelfContentRowSprite): void {
+	function releaseDetailPanelOwnership(panel: ShelfContentPanelSprite): void {
+		try {
+			detailGroup?.remove(panel.mesh);
+		} catch {
+		}
+		panel.mesh.visible = false;
+		if (detailPanel === panel) detailPanel = null;
+		contentList.clearScreenTargets();
+	}
+
+	function releaseDetailRowOwnership(sprite: ShelfContentRowSprite): void {
 		try {
 			detailGroup?.remove(sprite.mesh);
 		} catch {
 		}
-		sprite.dispose();
+		sprite.mesh.visible = false;
+		for (const [index, current] of [...detailRows]) {
+			if (current === sprite) detailRows.delete(index);
+		}
+		detailRowPool?.discard(sprite);
+		detailRowsSig = "";
+	}
+
+	function releaseDetailRow(index: number, sprite: ShelfContentRowSprite): void {
+		try {
+			detailGroup?.remove(sprite.mesh);
+		} catch {
+		}
+		sprite.mesh.visible = false;
+		detailRows.delete(index);
+		detailRowPool?.release(sprite);
+	}
+
+	function ensureDetailRowPool(): ReusableObjectPool<ShelfContentRowSprite> | null {
+		if (detailRowPool) return detailRowPool;
+		if (!three || !doc) return null;
+		detailRowPool = createReusableObjectPool<ShelfContentRowSprite>({
+			capacity: CONTENT_MAX_RENDER,
+			create: () => {
+				const sprite = createShelfContentRowSprite({
+					three,
+					createCanvas: () => doc.createElement("canvas"),
+				}, { name: "", kind: "empty" }, 0, false);
+				return registerManagedResource(
+					sprite,
+					`shelf-detail-row:${++resourceOwnerGeneration}`,
+					() => releaseDetailRowOwnership(sprite),
+				);
+			},
+			dispose: disposeManagedResource,
+		});
+		return detailRowPool;
 	}
 
 	function computeRenderWindow(): { start: number; end: number } {
@@ -1062,14 +1243,19 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 
 	function disposeRenderedCards(): void {
 		if (renderedCards.size === 0) return;
-		for (const card of renderedCards.values()) {
-			try {
-				group?.remove(card.mesh);
-			} catch {
-			}
-			card.dispose();
+		for (const [index, card] of [...renderedCards]) {
+			releaseRenderedCard(index, card);
 		}
-		renderedCards.clear();
+	}
+
+	function releaseRenderedCard(index: number, card: ShelfCardSprite): void {
+		try {
+			group?.remove(card.mesh);
+		} catch {
+		}
+		card.mesh.visible = false;
+		renderedCards.delete(index);
+		cardPool?.release(card);
 	}
 
 	function screenHitCard(
@@ -1139,7 +1325,39 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		}
 	}
 
-	function closeOpenDetail(): void {
+	function beginDetailClose(): void {
+		if (detailPhase === "closed" || detailPhase === "closing") return;
+		detailGeneration += 1;
+		detailClosingGeneration = detailGeneration;
+		detailClosingStartedAt = Number.isFinite(lastVisualTime) && lastVisualTime > 0
+			? lastVisualTime
+			: nowFn() / 1000;
+		setDetailPhase("closing");
+		state.selectedIdx = -1;
+		contentList.clearScreenTargets();
+	}
+
+	function advanceDetailClose(nowSeconds: number): void {
+		if (detailPhase !== "closing") return;
+		if (detailClosingGeneration !== detailGeneration) return;
+		if (nowSeconds - detailClosingStartedAt + 1e-9 < 0.18) return;
+		closeOpenDetail(detailClosingGeneration);
+	}
+
+	function detailCloseOpacity(nowSeconds: number): number {
+		return 1 - detailCloseProgress(nowSeconds);
+	}
+
+	function detailCloseProgress(nowSeconds: number): number {
+		if (detailPhase !== "closing") return 0;
+		return smoothstep01(clampRange((nowSeconds - detailClosingStartedAt) / 0.18, 0, 1));
+	}
+
+	function closeOpenDetail(expectedGeneration?: number): void {
+		if (expectedGeneration != null && expectedGeneration !== detailGeneration) return;
+		detailGeneration += 1;
+		setDetailPhase("closed");
+		detailClosingStartedAt = -Infinity;
 		state.openCardIdx = -1;
 		openDetailCardKey = null;
 		contentList.close();
@@ -1147,11 +1365,27 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		contentList.clearScreenTargets();
 		detailRowsSig = "";
 	}
+
+	function setDetailPhase(next: ShelfDetailPhase): void {
+		if (detailPhase === next) return;
+		detailPhase = next;
+		opts.onDetailPhaseChange?.(next);
+	}
 }
 
 function clampInt(value: number, min: number, max: number): number {
 	if (!Number.isFinite(value)) return min;
 	return Math.max(min, Math.min(max, value));
+}
+
+function emptyPoolSnapshot(capacity: number): ReusableObjectPoolSnapshot {
+	return {
+		capacity,
+		created: 0,
+		active: 0,
+		idle: 0,
+		disposed: false,
+	};
 }
 
 function clampRange(value: number, min: number, max: number): number {

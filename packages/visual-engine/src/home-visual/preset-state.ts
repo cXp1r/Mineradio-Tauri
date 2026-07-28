@@ -1,7 +1,8 @@
 import type { FxState } from "./fx-defaults";
 
-export const PRESET_COUNT = 7;
+export const PRESET_COUNT = 8;
 export const SKULL_PRESET_INDEX = 6;
+export const SONIC_PRESET_INDEX = 7;
 
 export interface PresetOpts {
 	skipTransition?: boolean;
@@ -12,7 +13,11 @@ export interface PresetOpts {
 }
 
 export function clampPreset(n: number): number {
-	return Math.max(0, Math.min(PRESET_COUNT - 1, Number(n) || 0));
+	const value = Number(n);
+	if (!Number.isFinite(value)) return 0;
+	const rounded = Math.round(value);
+	if (rounded === 8) return SONIC_PRESET_INDEX;
+	return Math.max(0, Math.min(PRESET_COUNT - 1, rounded));
 }
 
 export function applyPreset(fx: FxState, next: number, _opts?: PresetOpts): FxState {

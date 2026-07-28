@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { createRequire } from "node:module";
-import { readdirSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import {
 	runConvergenceBaselineCli,
@@ -390,6 +390,82 @@ test("visual-engine package source stays framework and application independent",
 		}
 	}
 
+	expect(violations).toEqual([]);
+});
+
+test("Stage, Sonic, and Shelf reuse the shared frame and audio runtime", () => {
+	const roots = ["stage-lyrics", "sonic-topography", "shelf"]
+		.map((name) => resolve(visualEngineSourceRoot, name))
+		.filter((root) => existsSync(root));
+	const violations: string[] = [];
+
+	for (const root of roots) {
+		for (const absolutePath of listSourceFiles(root)) {
+			const sourceFile = ts.createSourceFile(
+				absolutePath,
+				readFileSync(absolutePath, "utf8"),
+				ts.ScriptTarget.Latest,
+				true,
+				ts.ScriptKind.TS,
+			);
+			const visit = (node: import("typescript").Node): void => {
+				if (
+					ts.isCallExpression(node)
+					&& (
+						isNamedCall(node, "requestAnimationFrame")
+						|| isNamedCall(node, "requestIdleCallback")
+					)
+				) {
+					violations.push(`${relative(repositoryRoot, absolutePath)}:${node.expression.getText(sourceFile)}`);
+				}
+				if (ts.isNewExpression(node)) {
+					const name = node.expression.getText(sourceFile);
+					if (name === "AudioContext" || name.endsWith(".AudioContext") || name.endsWith(".webkitAudioContext")) {
+						violations.push(`${relative(repositoryRoot, absolutePath)}:new ${name}`);
+					}
+				}
+				ts.forEachChild(node, visit);
+			};
+			visit(sourceFile);
+		}
+	}
+
+	expect(violations).toEqual([]);
+});
+
+test("the shared task queue has one production pump", () => {
+	const allowed = new Set([
+		resolve(visualEngineSourceRoot, "runtime/visual-maintenance-lane.ts"),
+		resolve(visualEngineSourceRoot, "runtime/visual-engine.ts"),
+	]);
+	const violations: string[] = [];
+	for (const absolutePath of listSourceFiles(visualEngineSourceRoot)) {
+		const source = readFileSync(absolutePath, "utf8");
+		if (source.includes(".runSlice(") && !allowed.has(absolutePath)) {
+			violations.push(relative(repositoryRoot, absolutePath));
+		}
+	}
+	expect(violations).toEqual([]);
+});
+
+test("visual controls do not import Three.js", () => {
+	const controlsRoot = resolve(repositoryRoot, "apps/web/src/visual/controls");
+	if (!existsSync(controlsRoot)) return;
+	const violations: string[] = [];
+	for (const absolutePath of listSourceFiles(controlsRoot)) {
+		const sourceFile = ts.createSourceFile(
+			absolutePath,
+			readFileSync(absolutePath, "utf8"),
+			ts.ScriptTarget.Latest,
+			true,
+			absolutePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+		);
+		for (const reference of collectModuleReferences(sourceFile)) {
+			if (reference.specifier === "three" || reference.specifier.startsWith("three/")) {
+				violations.push(formatReference(sourceFile, reference));
+			}
+		}
+	}
 	expect(violations).toEqual([]);
 });
 

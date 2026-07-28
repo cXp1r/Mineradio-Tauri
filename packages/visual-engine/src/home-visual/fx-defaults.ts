@@ -1,3 +1,12 @@
+import {
+	DEFAULT_STAGE_LYRICS_SETTINGS,
+	type StageLyricsSettings,
+} from "../stage-lyrics/model/stage-lyrics-settings";
+import {
+	SONIC_TOPOGRAPHY_DEFAULTS,
+	type SonicTopographySettings,
+} from "../sonic-topography/sonic-settings";
+
 export interface FxState {
 	preset: number;
 	intensity: number;
@@ -85,7 +94,21 @@ export interface FxState {
 	burstAmt: number;
 	vinylSpin: number;
 	particleDim: number;
+	/** M4 歌词舞台的完整、已归一化设置快照。 */
+	stageLyrics: Readonly<StageLyricsSettings>;
+	/** M4 Sonic Topography 的完整、已归一化设置快照。 */
+	sonic: Readonly<SonicTopographySettings>;
 }
+
+export type DeepPartial<T> = {
+	readonly [K in keyof T]?: T[K] extends object ? DeepPartial<T[K]> : T[K];
+};
+
+/** UI 与持久化输入允许嵌套增量；运行时快照始终为完整的 FxState。 */
+export type FxStatePatch = Omit<Partial<FxState>, "stageLyrics" | "sonic"> & {
+	readonly stageLyrics?: Partial<StageLyricsSettings>;
+	readonly sonic?: DeepPartial<SonicTopographySettings>;
+};
 
 export const FX_DEFAULTS: FxState = {
 	preset: 0,
@@ -152,7 +175,7 @@ export const FX_DEFAULTS: FxState = {
 	particleLyrics: true,
 	backCover: false,
 	shelf: "side",
-	shelfCameraMode: "static",
+	shelfCameraMode: "dynamic",
 	shelfPresence: "always",
 	shelfShowPodcasts: false,
 	shelfMergeCollections: false,
@@ -174,10 +197,14 @@ export const FX_DEFAULTS: FxState = {
 	burstAmt: 0,
 	vinylSpin: 0,
 	particleDim: 1,
+	stageLyrics: DEFAULT_STAGE_LYRICS_SETTINGS,
+	sonic: SONIC_TOPOGRAPHY_DEFAULTS,
 };
 
 export function cloneFxState(): FxState {
 	const base: FxState = { ...FX_DEFAULTS };
 	base.mouseXy = { ...FX_DEFAULTS.mouseXy };
+	base.stageLyrics = FX_DEFAULTS.stageLyrics;
+	base.sonic = FX_DEFAULTS.sonic;
 	return base;
 }

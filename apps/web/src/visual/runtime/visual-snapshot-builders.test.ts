@@ -31,6 +31,7 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 		lines: [{
 			t: 1,
 			text: "你好",
+			translation: "Hello",
 			duration: 2,
 			charCount: 2,
 			words: [{ text: "你", t: 1, d: 0.5, c0: 0, c1: 1 }],
@@ -71,6 +72,7 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 	expect(lyrics.lines).toEqual([{
 		t: 1,
 		text: "你好",
+		translation: "Hello",
 		duration: 2,
 		charCount: 2,
 		words: [{ text: "你", t: 1, d: 0.5, c0: 0, c1: 1 }],
@@ -97,6 +99,7 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 	expect(Object.isFrozen(lyrics)).toBe(true);
 	expect(Object.isFrozen(lyrics.lines)).toBe(true);
 	expect(Object.isFrozen(lyrics.lines[0])).toBe(true);
+	expect(lyrics.lines[0]?.translation).toBe("Hello");
 	expect(Object.isFrozen(lyrics.lines[0]?.words)).toBe(true);
 	expect(Object.isFrozen(shelf)).toBe(true);
 	expect(Object.isFrozen(shelf.items)).toBe(true);

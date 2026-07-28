@@ -11,6 +11,11 @@ import {
 	createLegacyHomeVisualRuntimeGovernor,
 	LEGACY_VISUAL_LANE_CADENCE,
 	mountOwnedStageLyricsLifecycle,
+	normalizeSonicPerformanceQuality,
+	resolveLegacyVisualCameraPolicyInput,
+	resolveSonicPointerRippleStrength,
+	resolveSonicShelfMode,
+	shouldActivateSonicTopography,
 } from "./create-legacy-visual-composition";
 import { createLegacyVisualEventBridge } from "./legacy-visual-events";
 
@@ -30,6 +35,48 @@ test("legacy visual composition factory is side-effect free", () => {
 	expect(typeof composition.mount).toBe("function");
 	expect(typeof composition.applyFrameSnapshot).toBe("function");
 	expect(typeof composition.dispose).toBe("function");
+});
+
+test("Sonic production route activates only for preset 7 and normalizes quality", () => {
+	expect(shouldActivateSonicTopography(7)).toBe(true);
+	expect(shouldActivateSonicTopography(6)).toBe(false);
+	expect(shouldActivateSonicTopography(8)).toBe(false);
+	expect(normalizeSonicPerformanceQuality("eco")).toBe("eco");
+	expect(normalizeSonicPerformanceQuality("ultra")).toBe("ultra");
+	expect(normalizeSonicPerformanceQuality("unknown")).toBe("high");
+});
+
+test("legacy composition camera policy exposes only the eligible Stage target", () => {
+	const stageTarget = { x: 0.4, y: 0.2, z: -0.3 };
+	expect(resolveLegacyVisualCameraPolicyInput({ preset: 7, lyricCameraLock: false, particleLyrics: true }, stageTarget)).toEqual({
+		activePreset: 7,
+		lyricCameraLock: false,
+		wallpaperLyricLock: false,
+		stageWorldTarget: stageTarget,
+	});
+	expect(resolveLegacyVisualCameraPolicyInput({ preset: 7, lyricCameraLock: false, particleLyrics: false }, stageTarget).stageWorldTarget).toBeNull();
+	expect(resolveLegacyVisualCameraPolicyInput({ preset: 7, lyricCameraLock: true, particleLyrics: true }, stageTarget).lyricCameraLock).toBe(true);
+	expect(resolveLegacyVisualCameraPolicyInput({ preset: 5, lyricCameraLock: true, particleLyrics: true }, stageTarget).wallpaperLyricLock).toBe(true);
+});
+
+test("Sonic lane is ordered between skull and Stage Lyrics", () => {
+	expect(LEGACY_VISUAL_LANE_CADENCE.SonicTopography).toBe("presentation");
+});
+
+test("Sonic pointer release rejects drag/UI/free-camera and caps long press strength", () => {
+	expect(resolveSonicPointerRippleStrength({ preset: 6, dragged: false, overUi: false, freeCameraActive: false, heldMs: 0 })).toBeNull();
+	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: true, overUi: false, freeCameraActive: false, heldMs: 0 })).toBeNull();
+	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: true, freeCameraActive: false, heldMs: 0 })).toBeNull();
+	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: true, heldMs: 0 })).toBeNull();
+	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: false, heldMs: 0 })).toBe(0.8);
+	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: false, heldMs: 10_000 })).toBe(3);
+});
+
+test("Sonic suppresses the Shelf unless an already-open detail must remain usable", () => {
+	expect(resolveSonicShelfMode(7, "side", false)).toBe("off");
+	expect(resolveSonicShelfMode(7, "stage", false)).toBe("off");
+	expect(resolveSonicShelfMode(7, "side", true)).toBe("side");
+	expect(resolveSonicShelfMode(6, "stage", false)).toBe("stage");
 });
 
 test("late Stage Lyrics mount cannot revive a disposed composition and its owned lifecycle disposes exactly once", async () => {
@@ -185,6 +232,7 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 		Ripples: 60,
 		Shelf: 30,
 		LyricParticles: 45,
+		SonicTopography: "presentation",
 		StageLyrics: 45,
 		DesktopOverlaySync: 12,
 		HomeVisual: "presentation",
@@ -196,9 +244,11 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 	expect(source).toContain("nextContext.getFrameSnapshot()");
 	expect(source).toContain("options.getPrefersReducedMotion?.()");
 	expect(source).toContain("RenderStepSlot.Beatmap");
+	expect(source).toContain("RenderStepSlot.Maintenance");
 	expect(source).toContain("RenderStepSlot.Ripples");
 	expect(source).toContain("RenderStepSlot.Shelf");
 	expect(source).toContain("RenderStepSlot.LyricParticles");
+	expect(source).toContain("RenderStepSlot.SonicTopography");
 	expect(source).toContain("RenderStepSlot.StageLyrics");
 	expect(source).toContain("RenderStepSlot.DesktopOverlaySync");
 	expect(source).not.toContain("scheduler.start(");
@@ -207,27 +257,8 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 	expect(source).not.toContain("audioEngine.update(ctx.dt)");
 	expect(source).toContain("runtimeGovernor?.sync(context?.scheduler.getMode()");
 	expect(source.match(/runtimeGovernor\?\.sync\(context\?\.scheduler\.getMode\(\)/g)?.length).toBe(2);
-	expect(source).toContain("runtimeGovernor?.pump(nextContext.scheduler.getMode())");
-});
-
-test("home visual runtime governor pumps one active slice and refreshes performance", () => {
-	const calls: string[] = [];
-	const governor = createLegacyHomeVisualRuntimeGovernor({
-		homeVisual: { setRuntimeActive: (active) => calls.push(`active:${active}`) },
-		tasks: {
-			cancelPriority: (priority) => calls.push(`cancel:${priority}`),
-			runSlice: (cost) => { calls.push(`slice:${cost}`); return 1; },
-		},
-		resources: { releaseRetention: () => ({ disposed: 0, errors: [] }) },
-		refreshPerformanceSnapshots: () => calls.push("refresh"),
-	});
-
-	governor.pump("foreground");
-	governor.pump("background");
-	governor.pump("deep-sleep");
-	governor.pump("released");
-
-	expect(calls).toEqual(["slice:1", "refresh", "slice:1", "refresh"]);
+	expect(source).toContain("maintenanceLane.pump(nextContext.scheduler.getMode())");
+	expect(source).not.toContain("runtimeGovernor?.pump(");
 });
 
 test("home visual runtime governor releases in exact order and wakes only in an active mode", () => {
@@ -236,7 +267,6 @@ test("home visual runtime governor releases in exact order and wakes only in an 
 		homeVisual: { setRuntimeActive: (active) => calls.push(`active:${active}`) },
 		tasks: {
 			cancelPriority: (priority) => calls.push(`cancel:${priority}`),
-			runSlice: () => 0,
 		},
 		resources: {
 			releaseRetention: (retention) => {
@@ -274,4 +304,24 @@ test("legacy composition registers resources with semantic ownership kinds", asy
 	expect(normalizedSource).toContain('"audio-beat-subscription", "subscription"');
 	expect(normalizedSource).toContain('"audio-frame-source", "async-task"');
 	expect(source).not.toContain('registerOwnedDisposable(scope, isCurrent, "renderer", await');
+});
+
+test("legacy composition keeps both production Shelf data sync paths on the budgeted builder", async () => {
+	const source = await fetch(new URL("./create-legacy-visual-composition.ts", import.meta.url)).then((response) => response.text());
+	const calls = source.match(/shelfManager\.setData\([^\n]+/g) ?? [];
+	expect(calls.length).toBe(2);
+	for (const call of calls) expect(call).toContain("{ asyncBuild: true }");
+});
+
+test("legacy composition routes every Shelf portrait decision through the shared 1.08 policy", async () => {
+	const source = await fetch(new URL("./create-legacy-visual-composition.ts", import.meta.url)).then((response) => response.text());
+	expect(source.match(/isShelfPortraitViewport\(/g)?.length).toBeGreaterThanOrEqual(5);
+	expect(source).not.toContain("window.innerHeight > window.innerWidth");
+});
+
+test("legacy composition clears camera focus from the Shelf detail phase callback", async () => {
+	const source = await fetch(new URL("./create-legacy-visual-composition.ts", import.meta.url)).then((response) => response.text());
+	expect(source).toContain("onDetailPhaseChange: (phase)");
+	expect(source).toContain('if (phase !== "closing") return;');
+	expect(source).toContain("cinema.setFocusZone(null");
 });

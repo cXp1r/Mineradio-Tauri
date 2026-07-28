@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PlaybackQualityRequest } from "@mineradio/shared";
-import type { FxState } from "@mineradio/visual-engine";
+import type { FxState, FxStatePatch } from "@mineradio/visual-engine";
 import {
   loadShelfSettingsFromStorage,
   saveShelfSettingsToStorage,
@@ -116,7 +116,7 @@ export interface ShellPreferencesResult {
   updateShelfShowPodcasts(show: boolean): void;
   updateShelfMergeCollections(merge: boolean): void;
   updateVisualPreset(preset: number): void;
-  updateVisualFxPatch(patch: Partial<FxState>): void;
+  updateVisualFxPatch(patch: FxStatePatch): void;
   updateVisualNumberSetting(key: keyof FxState, value: number): void;
   updateVisualBooleanSetting(key: keyof FxState, value: boolean): void;
   updateVisualStringSetting(key: keyof FxState, value: string): void;
@@ -266,7 +266,7 @@ export function useShellPreferences({
   );
 
   const updateVisualFxPatch = useCallback(
-    (patch: Partial<FxState>) => {
+    (patch: FxStatePatch) => {
       setVisualFxPatch(patch);
       persistVisual();
     },

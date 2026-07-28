@@ -6,6 +6,16 @@ import type { FrameContext } from "../runtime/frame-context";
 import type { AudioSnapshot } from "../audio/audio-snapshot";
 import { createStageLyricsLifecycle, type StageLyricsLifecycle } from "./lifecycle";
 import { RenderStepSlot } from "../runtime/render-step-slot";
+import { createBudgetTaskQueue } from "../runtime/budget-task-queue";
+import { createVisualResourceLedger } from "../runtime/resource-ledger";
+import {
+	__inspectVisualResourceScopeForTests,
+	createVisualResourceScope,
+	type VisualResourceRegistration,
+	type VisualResourceScope,
+} from "../runtime/resource-scope";
+import { createCancellationScope } from "../runtime/cancellation-scope";
+import { createVisualSubsystemDiagnosticsRegistry } from "../runtime/subsystem-diagnostics";
 
 type RecordedCall = { method: string; args: unknown[] };
 type ThreeConstructorCalls = {
@@ -226,6 +236,39 @@ function makeFakeThree(constructorCalls?: ThreeConstructorCalls): ThreeFactory {
 	return (() => module) as unknown as ThreeFactory;
 }
 
+async function makeDisposalTrackedThree(): Promise<{
+	three: ThreeModule;
+	resetDisposeCalls(): void;
+	getDisposeCalls(): number;
+}> {
+	const three = await makeFakeThree()();
+	const constructors = three as unknown as Record<string, new (...args: unknown[]) => { dispose?: () => void }>;
+	let disposeCalls = 0;
+	for (const name of ["PlaneGeometry", "BufferGeometry", "MeshBasicMaterial", "ShaderMaterial", "CanvasTexture", "Texture"]) {
+		const Original = constructors[name];
+		constructors[name] = function TrackedDisposable(...args: unknown[]) {
+			const resource = Reflect.construct(Original, args) as { dispose?: () => void };
+			const dispose = resource.dispose?.bind(resource);
+			if (dispose) {
+				resource.dispose = () => {
+					disposeCalls += 1;
+					dispose();
+				};
+			}
+			return resource;
+		} as unknown as new (...args: unknown[]) => { dispose?: () => void };
+	}
+	return {
+		three,
+		resetDisposeCalls() {
+			disposeCalls = 0;
+		},
+		getDisposeCalls() {
+			return disposeCalls;
+		},
+	};
+}
+
 function makeFakeCamera(position = { x: 0, y: 0, z: 0 }, quaternion = { x: 0, y: 0, z: 0, w: 1 }) {
 	return {
 		isPerspectiveCamera: true,
@@ -318,7 +361,7 @@ function makeCtx(now: number, dt: number, snap?: Partial<AudioSnapshot>, uniform
 	};
 }
 
-function findLyricChild(group: { children: Array<{ userData?: { lyric?: unknown } }> }) {
+function findLyricChild(group: { children: Array<{ userData?: { lyric?: unknown; lastLyricProgress?: number } }> }) {
 	return group.children.find((c) => c.userData?.lyric);
 }
 
@@ -326,12 +369,14 @@ async function buildLifecycleWithCurrent(opts: {
 	lyrics: Array<{ t: number; text: string }>;
 	currentTime: number;
 	playing?: boolean;
+	pauseHold?: boolean;
 	shelfVisibility?: number;
 	gsapRecorder?: RecordedCall[];
-}): Promise<{ lifecycle: StageLyricsLifecycle; scene: { children: unknown[]; add(c: unknown): void; remove(c: unknown): void }; recorder: RecordedCall[]; setNow: (v: number) => void }> {
+}): Promise<{ lifecycle: StageLyricsLifecycle; scene: { children: unknown[]; add(c: unknown): void; remove(c: unknown): void }; recorder: RecordedCall[]; setNow: (v: number) => void; setPlaying: (v: boolean) => void }> {
 	const recorder: RecordedCall[] = [];
 	const scene = makeFakeScene();
 	let mutableTime = opts.currentTime;
+	let mutablePlaying = opts.playing ?? true;
 	const lifecycle = createStageLyricsLifecycle({
 		scene: scene as never,
 		threeFactory: makeFakeThree(),
@@ -339,7 +384,8 @@ async function buildLifecycleWithCurrent(opts: {
 		customEaseProvider: async () => null,
 		lyricLinesSupplier: () => opts.lyrics as never,
 		currentTimeSupplier: () => mutableTime,
-		isPlayingSupplier: () => opts.playing ?? true,
+		isPlayingSupplier: () => mutablePlaying,
+		stageLyricsSettingsSupplier: () => ({ pauseHold: opts.pauseHold ?? true }),
 		getShelfVisibility: () => opts.shelfVisibility ?? 0,
 		audioDurationSupplier: () => 9999,
 		dotTexture: makeFakeDotTexture(),
@@ -362,6 +408,9 @@ async function buildLifecycleWithCurrent(opts: {
 		setNow: (v: number) => {
 			mutableTime = v;
 		},
+		setPlaying: (v: boolean) => {
+			mutablePlaying = v;
+		},
 	};
 }
 
@@ -377,6 +426,62 @@ test("mount() creates a group with renderOrder=38 and adds to scene", async () =
 	expect(group).not.toBeNull();
 	expect((group as unknown as { renderOrder: number }).renderOrder).toBe(38);
 	expect((scene.children as unknown[]).length).toBe(1);
+});
+
+test("getWorldLookAtTarget exposes a finite Stage group world position only while lyrics are visible", async () => {
+	const { lifecycle } = await buildLifecycleWithCurrent({
+		lyrics: [{ t: 0, text: "hello" }],
+		currentTime: 0.2,
+	});
+	const group = lifecycle.group as unknown as {
+		position: { x: number; y: number; z: number };
+		updateMatrixWorld?: (force?: boolean) => void;
+		getWorldPosition?: (target: { x: number; y: number; z: number }) => { x: number; y: number; z: number };
+	};
+	let updateCalls = 0;
+	group.position.x = 0.4;
+	group.position.y = 0.2;
+	group.position.z = -0.3;
+	group.updateMatrixWorld = () => { updateCalls += 1; };
+	group.getWorldPosition = (target) => {
+		target.x = group.position.x;
+		target.y = group.position.y;
+		target.z = group.position.z;
+		return target;
+	};
+
+	expect(lifecycle.getWorldLookAtTarget()).toEqual({ x: 0.4, y: 0.2, z: -0.3 });
+	expect(updateCalls).toBe(1);
+
+	group.position.x = Number.NaN;
+	expect(lifecycle.getWorldLookAtTarget()).toBeNull();
+	lifecycle.dispose();
+	expect(lifecycle.getWorldLookAtTarget()).toBeNull();
+});
+
+test("getWorldLookAtTarget uses a real Three.js Vector3 target", async () => {
+	const THREE = await import("three");
+	const scene = new THREE.Scene();
+	const lifecycle = createStageLyricsLifecycle({
+		scene,
+		threeFactory: async () => THREE,
+		currentTimeSupplier: () => 0.2,
+		isPlayingSupplier: () => true,
+		particleLyricsFlagSupplier: () => true,
+		rand: () => 0.5,
+	});
+	await lifecycle.mount(scene);
+	lifecycle.setLyricLines([{ t: 0, text: "真实 Three 目标" }]);
+	lifecycle.update(makeCtx(0.2, 0.1));
+	await lifecycle.whenIdle();
+	lifecycle.update(makeCtx(0.3, 0.1));
+
+	const target = lifecycle.getWorldLookAtTarget();
+	expect(target).not.toBeNull();
+	expect(Number.isFinite(target?.x)).toBe(true);
+	expect(Number.isFinite(target?.y)).toBe(true);
+	expect(Number.isFinite(target?.z)).toBe(true);
+	lifecycle.dispose();
 });
 
 test("dispose while mount awaits Three.js prevents late stage lyric revival", async () => {
@@ -475,6 +580,45 @@ test("tickLyricsParticles advances currentIdx to 1 when currentTime reaches line
 	expect(lifecycle.getCurrentText()).toBe("B");
 	lifecycle.dispose();
 	expect((scene.children as unknown[]).length).toBe(0);
+});
+
+test("pause hold keeps the committed lyric and progress visible", async () => {
+	const { lifecycle, setNow, setPlaying } = await buildLifecycleWithCurrent({
+		lyrics: [{ t: 0, text: "A" }, { t: 2, text: "B" }],
+		currentTime: 1,
+		pauseHold: true,
+	});
+	const group = lifecycle.group as unknown as { children: Array<{ userData?: { lyric?: unknown; lastLyricProgress?: number } }> };
+	const before = findLyricChild(group);
+	const beforeProgress = before?.userData?.lastLyricProgress;
+	setPlaying(false);
+	setNow(3);
+	lifecycle.update(makeCtx(3, 0.1));
+	await lifecycle.whenIdle();
+	expect(lifecycle.getCurrentIdx()).toBe(0);
+	expect(findLyricChild(group)).toBe(before);
+	expect(before?.userData?.lastLyricProgress).toBe(beforeProgress);
+});
+
+test("pause hold can be disabled to preserve the legacy hide-on-pause behavior", async () => {
+	const { lifecycle, setPlaying } = await buildLifecycleWithCurrent({
+		lyrics: [{ t: 0, text: "A" }],
+		currentTime: 0.5,
+		pauseHold: false,
+	});
+	setPlaying(false);
+	lifecycle.update(makeCtx(1, 0.1));
+	expect(lifecycle.getCurrentIdx()).toBe(-1);
+	expect(lifecycle.getCurrentText()).toBe("");
+});
+
+test("seek selection chooses the last duplicate timestamp", async () => {
+	const { lifecycle } = await buildLifecycleWithCurrent({
+		lyrics: [{ t: 0, text: "A" }, { t: 2, text: "B" }, { t: 2, text: "C" }],
+		currentTime: 2,
+	});
+	expect(lifecycle.getCurrentIdx()).toBe(2);
+	expect(lifecycle.getCurrentText()).toBe("C");
 });
 
 test("setLyricLines sorts interleaved input before stage line selection", async () => {
@@ -2204,4 +2348,1631 @@ test("dispose removes group from scene without stage-lyric GSAP timelines", asyn
 	const killsAfterDispose = rec.filter((r) => r.method === "tl.kill").length;
 	expect(killsAfterDispose).toBe(0);
 	expect((sceneAny.children as unknown[]).length).toBe(0);
+});
+
+test("Sonic preset applies the unlocked Stage lyric offset policy", async () => {
+	const scene = makeFakeScene();
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		lyricLinesSupplier: () => [{ t: 0, text: "Sonic lyric" }] as never,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		dotTexture: makeFakeDotTexture(),
+		particleLyricsFlagSupplier: () => true,
+		lyricGlowStrengthSupplier: () => 0,
+		lyricGlowBeatFlagSupplier: () => false,
+		lyricSunEnergyHolder: { get: () => 0, set: () => {} },
+		lyricLayoutOptionsSupplier: () => ({ preset: 7, lyricOffsetY: 0.1, lyricOffsetZ: 0.2 }),
+		rand: () => 0.35,
+	});
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Sonic lyric" }]);
+	lifecycle.update(makeCtx(0.5, 0.1));
+	await lifecycle.whenIdle();
+	lifecycle.update(makeCtx(0.6, 0.1));
+	const group = lifecycle.group as unknown as { position: { y: number; z: number } };
+	expect(group.position.y).toBeCloseTo(-0.24, 6);
+	expect(group.position.z).toBeCloseTo(0.36, 6);
+	lifecycle.dispose();
+});
+
+test("shared queue and renderer upload gate keep the committed lyric until replacement textures are ready", async () => {
+	const scope = createVisualResourceScope("stage-lifecycle");
+	const cancellation = createCancellationScope("stage-lifecycle");
+	const ledger = createVisualResourceLedger({
+		budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+	});
+	const queue = createBudgetTaskQueue({
+		ledger,
+		resourceScope: scope,
+		cancellationScope: cancellation,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		cancellationScope: cancellation,
+		textureUploadExecutor: () => { uploads.push(1); },
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+	} as never);
+	const scene = makeFakeScene();
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let step = 0; step < 6; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	// 一帧只有一次真实 renderer-backed uploader 调用。
+	lifecycle.update(makeCtx(0.6, 0.016));
+	expect(uploads.length).toBe(1);
+	for (let frame = 0; frame < 8; frame += 1) lifecycle.update(makeCtx(0.7 + frame * 0.016, 0.016));
+	const first = findLyricChild(lifecycle.group as never);
+	expect(first).toBeDefined();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBeGreaterThan(0);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.clarityBytes).toBeGreaterThan(0);
+
+	now = 2.1;
+	lifecycle.update(makeCtx(2.1, 0.016));
+	for (let step = 0; step < 6; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	// 新候选已经 rasterize，但在下一个 Stage frame 提交 GPU 前，旧 lyric 仍保持可见。
+	expect(findLyricChild(lifecycle.group as never)).toBe(first);
+	lifecycle.update(makeCtx(2.12, 0.016));
+	for (let frame = 0; frame < 8; frame += 1) lifecycle.update(makeCtx(2.14 + frame * 0.016, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("B");
+	const active = (lifecycle.group as unknown as {
+		children: Array<{ userData?: { lyric?: unknown; state?: string } }>;
+	}).children.find((child) => child.userData?.lyric && child.userData.state !== "out");
+	expect(active).toBeDefined();
+	expect(active).not.toBe(first);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.pendingUploads).toBe(0);
+	// current 与 outgoing 在过渡期可临时占用一个 replacement 槽。
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+	for (let frame = 0; frame < 24; frame += 1) lifecycle.update(makeCtx(2.3 + frame * 0.016, 0.016));
+	// outgoing 完成后释放旧行，并把 replacement 恢复为稳定 resident。
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(1);
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	cancellation.dispose();
+	scope.dispose();
+});
+
+test("renderer upload failure releases only the pending replacement and retains the old lyric", async () => {
+	const scope = createVisualResourceScope("stage-upload-failure");
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	let now = 0.5;
+	let failReplacement = false;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {
+			if (failReplacement) throw new Error("GPU upload failed");
+		},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let step = 0; step < 6; step += 1) { queue.runSlice(1); await new Promise<void>((resolve) => setTimeout(resolve, 0)); }
+	for (let frame = 0; frame < 8; frame += 1) lifecycle.update(makeCtx(0.6 + frame * 0.016, 0.016));
+	const first = findLyricChild(lifecycle.group as never);
+	const stableResourceCount = __inspectVisualResourceScopeForTests(scope).activeResourceEntryCount;
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+	failReplacement = true;
+	now = 2.1;
+	lifecycle.update(makeCtx(2.1, 0.016));
+	for (let step = 0; step < 6; step += 1) { queue.runSlice(1); await new Promise<void>((resolve) => setTimeout(resolve, 0)); }
+	lifecycle.update(makeCtx(2.12, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(first);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(1);
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBeLessThan(stableResourceCount);
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("rapid line replacement keeps one tracked current and at most one outgoing clarity row", async () => {
+	const scope = createVisualResourceScope("stage-rapid-replacement");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }, { t: 4, text: "C" }]);
+
+	const settleLine = async (time: number) => {
+		now = time;
+		lifecycle.update(makeCtx(time, 0.016));
+		for (let step = 0; step < 6; step += 1) {
+			queue.runSlice(1);
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		}
+		for (let frame = 0; frame < 8; frame += 1) {
+			lifecycle.update(makeCtx(time + 0.02 + frame * 0.016, 0.016));
+		}
+	};
+
+	await settleLine(0.5);
+	await settleLine(2.1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(3);
+	await settleLine(4.1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBeLessThanOrEqual(3);
+	const outgoingCount = (lifecycle.group as unknown as {
+		children: Array<{ userData?: { lyric?: unknown; state?: string } }>;
+	}).children.filter((child) => child.userData?.lyric && child.userData.state === "out").length;
+	expect(outgoingCount).toBeLessThanOrEqual(1);
+	for (let frame = 0; frame < 30; frame += 1) lifecycle.update(makeCtx(4.4 + frame * 0.016, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("C");
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("prewarmed next row stays off the upload gate until activation", async () => {
+	const scope = createVisualResourceScope("stage-prewarm-next");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let step = 0; step < 20; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("A");
+	expect(uploads).toHaveLength(1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+
+	// 激活预热行时不再推进 raster queue，同一 Stage frame 只执行一次 GPU upload。
+	now = 2.1;
+	lifecycle.update(makeCtx(2.1, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("B");
+	expect(uploads).toHaveLength(2);
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("activating a prewarmed row promotes its resource retention before rebuildable release", async () => {
+	type DisposableFlag = { disposed?: boolean };
+	type ActiveLyricResources = {
+		mask?: { texture?: DisposableFlag | null };
+		textMesh?: { geometry?: DisposableFlag };
+		readability?: { geometry?: DisposableFlag };
+		glow?: { geometry?: DisposableFlag };
+		sparks?: { geometry?: DisposableFlag };
+		sun?: { geometry?: DisposableFlag };
+		glowMat?: { uniforms?: { uMap?: { value?: DisposableFlag | null } } };
+		readabilityMat?: { uniforms?: { uMap?: { value?: DisposableFlag | null } } };
+	};
+	type ActiveLyricChild = {
+		children?: unknown[];
+		userData?: { lyric?: ActiveLyricResources | null; state?: string };
+	};
+	const scope = createVisualResourceScope("stage-prewarm-promotion");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: (texture: unknown) => { uploads.push(texture); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	const getActiveLyric = () => (lifecycle.group as unknown as {
+		children: ActiveLyricChild[];
+	}).children.find((child) => child.userData?.lyric && child.userData.state !== "out");
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 20; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	let activeA: ActiveLyricChild | undefined;
+	for (let frame = 0; frame < 8; frame += 1) {
+		lifecycle.update(makeCtx(0.6 + frame * 0.016, 0.016));
+		activeA = getActiveLyric();
+		if (activeA && diagnostics.snapshot()["stage-lyrics"]?.pendingUploads === 0) break;
+	}
+	expect(activeA).toBeDefined();
+	expect(diagnostics.snapshot()["stage-lyrics"]?.pendingUploads).toBe(0);
+	expect(lifecycle.getCurrentText()).toBe("A");
+
+	const uploadsBeforeActivation = uploads.length;
+	now = 2.1;
+	let activeB: ActiveLyricChild | undefined;
+	for (let frame = 0; frame < 8; frame += 1) {
+		lifecycle.update(makeCtx(now + frame * 0.016, 0.016));
+		const candidate = getActiveLyric();
+		if (
+			candidate
+			&& candidate !== activeA
+			&& diagnostics.snapshot()["stage-lyrics"]?.pendingUploads === 0
+		) {
+			activeB = candidate;
+			break;
+		}
+	}
+	expect(activeB).toBeDefined();
+	expect(activeB).not.toBe(activeA);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.pendingUploads).toBe(0);
+	expect(lifecycle.getCurrentText()).toBe("B");
+	expect(uploads.length).toBeGreaterThan(uploadsBeforeActivation);
+
+	const bResources = activeB?.userData?.lyric;
+	expect(bResources).toBeDefined();
+	const bTextures = [...new Set([
+		bResources?.mask?.texture,
+		bResources?.glowMat?.uniforms?.uMap?.value,
+		bResources?.readabilityMat?.uniforms?.uMap?.value,
+		...uploads.slice(uploadsBeforeActivation) as DisposableFlag[],
+	].filter((resource): resource is DisposableFlag => !!resource))];
+	const bGeometries = [
+		bResources?.textMesh?.geometry,
+		bResources?.readability?.geometry,
+		bResources?.glow?.geometry,
+		bResources?.sparks?.geometry,
+		bResources?.sun?.geometry,
+	].filter((resource): resource is DisposableFlag => !!resource);
+	expect(activeB?.children).toHaveLength(5);
+	expect(bTextures.length).toBeGreaterThan(0);
+	expect(bGeometries).toHaveLength(5);
+	expect(bTextures.every((resource) => resource.disposed === false)).toBe(true);
+	expect(bGeometries.every((resource) => resource.disposed === false)).toBe(true);
+
+	scope.releaseRetention("rebuildable");
+	lifecycle.update(makeCtx(2.3, 0.016));
+	const activeAfterRelease = getActiveLyric();
+	expect(activeAfterRelease).toBe(activeB);
+	expect(activeB?.userData?.lyric).toBe(bResources);
+	expect(activeB?.children).toHaveLength(5);
+	expect(bTextures.every((resource) => resource.disposed === false)).toBe(true);
+	expect(bGeometries.every((resource) => resource.disposed === false)).toBe(true);
+	expect(lifecycle.getCurrentText()).toBe("B");
+
+	lifecycle.dispose();
+	expect(activeB?.userData?.lyric).toBeNull();
+	expect(bTextures.every((resource) => resource.disposed === true)).toBe(true);
+	expect(bGeometries.every((resource) => resource.disposed === true)).toBe(true);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("production lifecycle registers current and resident prewarm allocations exactly once", async () => {
+	const rawLifecycleScope = createVisualResourceScope("stage-production-reservations");
+	const queueScope = createVisualResourceScope("stage-production-reservation-queue");
+	const registrations: Array<{ kind: string; retention: string }> = [];
+	const lifecycleScope: VisualResourceScope = {
+		get name() { return rawLifecycleScope.name; },
+		get closed() { return rawLifecycleScope.closed; },
+		isOpen: () => rawLifecycleScope.isOpen(),
+		register(registration) {
+			registrations.push({ kind: registration.kind, retention: registration.retention });
+			return rawLifecycleScope.register(registration);
+		},
+		createChild: (name) => rawLifecycleScope.createChild(name),
+		releaseRetention: (retention) => rawLifecycleScope.releaseRetention(retention),
+		dispose: () => rawLifecycleScope.dispose(),
+	};
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: queueScope,
+	});
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: lifecycleScope,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let step = 0; step < 20; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(registrations).toHaveLength(24);
+	expect(registrations.filter((entry) => entry.retention === "persistent")).toHaveLength(12);
+	expect(registrations.filter((entry) => entry.retention === "rebuildable")).toHaveLength(12);
+	expect(__inspectVisualResourceScopeForTests(rawLifecycleScope).activeResourceEntryCount).toBe(24);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(rawLifecycleScope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	rawLifecycleScope.dispose();
+	queueScope.dispose();
+});
+
+test("external rebuildable release invalidates a prewarm cache entry before activation", async () => {
+	const scope = createVisualResourceScope("stage-prewarm-release-observer");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 20; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
+
+	scope.releaseRetention("rebuildable");
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(1);
+	now = 2.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 8; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) lifecycle.update(makeCtx(2.2 + frame * 0.016, 0.016));
+	await lifecycle.whenIdle();
+	expect(lifecycle.getCurrentText()).toBe("B");
+	expect((lifecycle.group as unknown as {
+		children: Array<{ userData?: { lyric?: unknown; state?: string } }>;
+	}).children.some((child) => child.userData?.lyric && child.userData.state !== "out")).toBe(true);
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("balanced prewarm fills the six-row resident window without extra uploads", async () => {
+	const scope = createVisualResourceScope("stage-prewarm-window");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 5.1,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 12 }, (_, index) => ({ t: index, text: `L${index}` })));
+	lifecycle.update(makeCtx(5.1, 0.016));
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(5.2, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("L5");
+	expect(uploads).toHaveLength(1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(6);
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("balanced resident window evicts old adjacent rows and prewarms the new neighborhood", async () => {
+	const scope = createVisualResourceScope("stage-prewarm-window-slide");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let now = 2.1;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 12 }, (_, index) => ({ t: index, text: `L${index}` })));
+
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(2.2, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("L2");
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(6);
+
+	// 跳到新窗口后，旧 adjacent 必须允许 LRU 驱逐，当前行与新邻接行才能进入 resident pool。
+	now = 8.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 40; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 8; frame += 1) {
+		lifecycle.update(makeCtx(8.2 + frame * 0.016, 0.016));
+	}
+	expect(lifecycle.getCurrentText()).toBe("L8");
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(6);
+
+	// L9 已由新窗口预热；激活时无需再运行 raster queue，只进入 upload gate。
+	const uploadsBeforeActivation = uploads.length;
+	now = 9.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("L9");
+	expect(uploads).toHaveLength(uploadsBeforeActivation + 1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBeLessThanOrEqual(6);
+	expect(uploads.length).toBeGreaterThanOrEqual(3);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("setLyricLines cancels an awaiting current lyric before late Three allocation", async () => {
+	const scope = createVisualResourceScope("stage-current-build-cancel");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const tracked = await makeDisposalTrackedThree();
+	let resolveBuild!: (three: ThreeModule) => void;
+	const pendingBuild = new Promise<ThreeModule>((resolve) => {
+		resolveBuild = resolve;
+	});
+	let factoryCalls = 0;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: () => {
+			factoryCalls += 1;
+			return factoryCalls === 1 ? tracked.three : pendingBuild;
+		},
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	tracked.resetDisposeCalls();
+	lifecycle.setLyricLines([{ t: 0, text: "A" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	expect(queue.runSlice(1)).toBe(1);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(queue.runSlice(1)).toBe(1);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(factoryCalls).toBe(2);
+
+	lifecycle.setLyricLines([{ t: 0, text: "B" }]);
+	resolveBuild(tracked.three);
+	await lifecycle.whenIdle();
+	const snapshot = diagnostics.snapshot()["stage-lyrics"];
+	expect(snapshot?.pendingBuilds).toBe(0);
+	expect(snapshot?.pendingUploads).toBe(0);
+	expect(snapshot?.residentRows).toBe(0);
+	expect(snapshot?.clarityBytes).toBe(0);
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	// generation 已失效时，factory 返回后立即在 builder gate 退出，不再创建需要释放的 Three 资源。
+	expect(tracked.getDisposeCalls()).toBe(0);
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("dispose cancels an awaiting prewarm before late Three allocation", async () => {
+	const scope = createVisualResourceScope("stage-prewarm-build-cancel");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 64, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const tracked = await makeDisposalTrackedThree();
+	let resolvePrewarm!: (three: ThreeModule) => void;
+	const pendingPrewarm = new Promise<ThreeModule>((resolve) => {
+		resolvePrewarm = resolve;
+	});
+	let factoryCalls = 0;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: () => {
+			factoryCalls += 1;
+			return factoryCalls <= 2 ? tracked.three : pendingPrewarm;
+		},
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "A" }, { t: 2, text: "B" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let phase = 0; phase < 4; phase += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	expect(factoryCalls).toBe(3);
+
+	lifecycle.dispose();
+	const disposeCallsAtCancellation = tracked.getDisposeCalls();
+	resolvePrewarm(tracked.three);
+	await lifecycle.whenIdle();
+	expect(tracked.getDisposeCalls()).toBe(disposeCallsAtCancellation);
+	expect(queue.getSnapshot().queued).toBe(0);
+	expect(queue.getSnapshot().running).toBe(0);
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	expect(diagnostics.snapshot()["stage-lyrics"]).toBeUndefined();
+
+	queue.dispose();
+	scope.dispose();
+});
+
+test("clarity tier one bypasses the pool while keeping renderer upload behavior", async () => {
+	const scope = createVisualResourceScope("stage-tier-one");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 16 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 128, queuedTaskCost: 16, cacheBytes: 16 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 1 }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Tier one" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let step = 0; step < 6; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBeDefined();
+	expect(uploads).toHaveLength(1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(0);
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("runtime clarity downgrade to tier one preserves the visible lyric and keeps renderer uploads working", async () => {
+	const scope = createVisualResourceScope("stage-runtime-tier-one");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let textureClarity: 1 | 2 = 2;
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 8 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	const visibleBeforeDowngrade = findLyricChild(lifecycle.group as never);
+	expect(visibleBeforeDowngrade).toBeDefined();
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(6);
+	expect(uploads).toHaveLength(1);
+
+	textureClarity = 1;
+	lifecycle.update(makeCtx(0.7, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(visibleBeforeDowngrade);
+	for (let step = 0; step < 16; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) {
+		lifecycle.update(makeCtx(0.72 + frame * 0.016, 0.016));
+	}
+	await lifecycle.whenIdle();
+	const downgraded = diagnostics.snapshot()["stage-lyrics"];
+	expect(findLyricChild(lifecycle.group as never)).not.toBe(visibleBeforeDowngrade);
+	expect(uploads).toHaveLength(2);
+	expect(downgraded?.clarityTier).toBe(1);
+	expect(downgraded?.clarityAdmissionEnabled).toBe(false);
+	expect(downgraded?.clarityBudgetBytes).toBe(0);
+	expect(downgraded?.residentRows).toBe(0);
+	expect(downgraded?.pendingBuilds).toBe(0);
+
+	now = 2.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 8; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(2.2, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("L1");
+	expect(uploads).toHaveLength(3);
+	for (let frame = 0; frame < 40; frame += 1) {
+		lifecycle.update(makeCtx(2.3 + frame * 0.016, 0.016));
+	}
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(0);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("runtime clarity upgrade from tier one admits the visible current and prewarms the balanced window", async () => {
+	const scope = createVisualResourceScope("stage-runtime-tier-two");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let textureClarity: 1 | 2 = 1;
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 8 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 8; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	const visibleBeforeUpgrade = findLyricChild(lifecycle.group as never);
+	expect(visibleBeforeUpgrade).toBeDefined();
+	expect(uploads).toHaveLength(1);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(0);
+
+	textureClarity = 2;
+	lifecycle.update(makeCtx(0.7, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(visibleBeforeUpgrade);
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) {
+		lifecycle.update(makeCtx(0.72 + frame * 0.016, 0.016));
+	}
+	await lifecycle.whenIdle();
+	const upgraded = diagnostics.snapshot()["stage-lyrics"];
+	expect(findLyricChild(lifecycle.group as never)).not.toBe(visibleBeforeUpgrade);
+	expect(uploads).toHaveLength(2);
+	expect(upgraded?.clarityTier).toBe(2);
+	expect(upgraded?.clarityAdmissionEnabled).toBe(true);
+	expect(upgraded?.clarityResidentLimit).toBe(6);
+	expect(upgraded?.residentRows).toBe(6);
+
+	now = 2.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	expect(lifecycle.getCurrentText()).toBe("L1");
+	expect(uploads).toHaveLength(3);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("runtime performance quality reconfigures the resident window from balanced to low and high", async () => {
+	const scope = createVisualResourceScope("stage-runtime-quality");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 96 * 1024 * 1024, geometryBytes: 24 * 1024 * 1024, meshCount: 768, queuedTaskCost: 192, cacheBytes: 96 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	let quality: "low" | "balanced" | "high" = "balanced";
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 10.1,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => quality,
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => { uploads.push(1); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 16 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(10.1, 0.016));
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(10.2, 0.016));
+	const visible = findLyricChild(lifecycle.group as never);
+	const balanced = diagnostics.snapshot()["stage-lyrics"];
+	expect(balanced?.clarityQuality).toBe("balanced");
+	expect(balanced?.clarityResidentLimit).toBe(6);
+	expect(balanced?.residentRows).toBe(6);
+
+	quality = "low";
+	lifecycle.update(makeCtx(10.3, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(visible);
+	for (let step = 0; step < 24; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	const low = diagnostics.snapshot()["stage-lyrics"];
+	expect(low?.clarityQuality).toBe("low");
+	expect(low?.clarityResidentLimit).toBe(4);
+	expect(low?.residentRows).toBe(4);
+	expect(uploads).toHaveLength(1);
+
+	quality = "high";
+	lifecycle.update(makeCtx(10.4, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(visible);
+	for (let step = 0; step < 48; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	const high = diagnostics.snapshot()["stage-lyrics"];
+	expect(high?.clarityQuality).toBe("high");
+	expect(high?.clarityResidentLimit).toBe(8);
+	expect(high?.residentRows).toBe(8);
+	expect(uploads).toHaveLength(1);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("runtime quality change cancels an awaiting old prewarm generation before the new window commits", async () => {
+	const scope = createVisualResourceScope("stage-runtime-quality-generation");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const baseThree = await makeFakeThree()();
+	const oldGenerationThree = await makeDisposalTrackedThree();
+	let resolveOldPrewarm!: (three: ThreeModule) => void;
+	const pendingOldPrewarm = new Promise<ThreeModule>((resolve) => {
+		resolveOldPrewarm = resolve;
+	});
+	let factoryCalls = 0;
+	let quality: "low" | "balanced" = "balanced";
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: () => {
+			factoryCalls += 1;
+			if (factoryCalls <= 2) return baseThree;
+			if (factoryCalls === 3) return pendingOldPrewarm;
+			return baseThree;
+		},
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 10.1,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => quality,
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 12 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(10.1, 0.016));
+	for (let phase = 0; phase < 2; phase += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(10.2, 0.016));
+	const visible = findLyricChild(lifecycle.group as never);
+	expect(visible).toBeDefined();
+	for (let phase = 0; phase < 12 && factoryCalls < 3; phase += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	expect(factoryCalls).toBe(3);
+
+	quality = "low";
+	lifecycle.update(makeCtx(10.3, 0.016));
+	expect(findLyricChild(lifecycle.group as never)).toBe(visible);
+	resolveOldPrewarm(oldGenerationThree.three);
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) {
+		lifecycle.update(makeCtx(10.4 + frame * 0.016, 0.016));
+	}
+	await lifecycle.whenIdle();
+	expect(oldGenerationThree.getDisposeCalls()).toBe(0);
+	const settled = diagnostics.snapshot()["stage-lyrics"];
+	expect(settled?.clarityQuality).toBe("low");
+	expect(settled?.clarityResidentLimit).toBe(4);
+	// 当前 replacement 尚在原子接管窗口内时，旧行和新行会短暂共占预算；
+	// 因此只要求最新 low-quality 窗口已收敛且不越过四行上限。
+	expect(settled?.residentRows).toBeGreaterThanOrEqual(3);
+	expect(settled?.residentRows).toBeLessThanOrEqual(4);
+	expect(settled?.pendingBuilds).toBe(0);
+	expect(settled?.pendingUploads).toBe(0);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("runtime clarity reconfigure keeps current and outgoing GPU resources alive while the new window prewarms", async () => {
+	const scope = createVisualResourceScope("stage-runtime-visible-retention");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	let quality: "low" | "balanced" = "balanced";
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => quality,
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 8 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 32; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+
+	now = 2.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	const group = lifecycle.group as unknown as {
+		children: Array<{
+			userData?: {
+				lyric?: { textMat?: { disposed?: boolean } };
+				state?: string;
+			};
+		}>;
+	};
+	const current = group.children.find((child) => child.userData?.lyric && child.userData.state !== "out");
+	const outgoing = group.children.find((child) => child.userData?.state === "out");
+	expect(current).toBeDefined();
+	expect(outgoing).toBeDefined();
+	expect(outgoing?.userData?.lyric?.textMat?.disposed).toBe(false);
+
+	quality = "low";
+	lifecycle.update(makeCtx(2.12, 0.016));
+	for (let step = 0; step < 24; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	expect(group.children).toContain(current);
+	expect(group.children).toContain(outgoing);
+	expect(outgoing?.userData?.lyric?.textMat?.disposed).toBe(false);
+	const reconfigured = diagnostics.snapshot()["stage-lyrics"];
+	expect(reconfigured?.clarityQuality).toBe("low");
+	expect(reconfigured?.clarityResidentLimit).toBe(4);
+	expect(reconfigured?.residentRows).toBe(4);
+
+	lifecycle.dispose();
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+	queue.dispose();
+	scope.dispose();
+});
+
+test("unmount resets takeover ownership so a remount adopts only the rebuilt current", async () => {
+	const scope = createVisualResourceScope("stage-remount");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const scene = makeFakeScene();
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Remount" }]);
+	const buildCurrent = async (time: number) => {
+		lifecycle.update(makeCtx(time, 0.016));
+		for (let step = 0; step < 6; step += 1) {
+			queue.runSlice(1);
+			await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		}
+		lifecycle.update(makeCtx(time + 0.1, 0.016));
+	};
+
+	await lifecycle.mount(scene as never);
+	await buildCurrent(0.5);
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(1);
+	lifecycle.unmount();
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(0);
+	expect(__inspectVisualResourceScopeForTests(scope).activeResourceEntryCount).toBe(0);
+
+	await lifecycle.mount(scene as never);
+	await buildCurrent(1);
+	expect(findLyricChild(lifecycle.group as never)).toBeDefined();
+	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(1);
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("lifecycle rasterizes display context and translation as independent structured rows", async () => {
+	const scene = makeFakeScene();
+	const lines = [
+		{ t: 0, text: "上一句", translation: "Previous line" },
+		{ t: 1, text: "当前句", translation: "Current line" },
+		{ t: 2, text: "下一句", translation: "Next line" },
+	];
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => 1.2,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 30,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		stageLyricsSettingsSupplier: () => ({
+			displayMode: "triple",
+			translationMode: "multi",
+			contextSpread: 1.4,
+			edgeFade: 0.5,
+		}),
+		rand: () => 0.35,
+	});
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines(lines);
+	lifecycle.update(makeCtx(1.2, 0.016, undefined, 3.25));
+	await lifecycle.whenIdle();
+
+	const current = findLyricChild(lifecycle.group as never) as {
+		userData?: {
+			lyric?: {
+				mask?: {
+					rasterRows?: ReadonlyArray<{ text: string; active: boolean; translationLine: boolean }>;
+				};
+			};
+		};
+	} | undefined;
+	const rows = current?.userData?.lyric?.mask?.rasterRows ?? [];
+	expect(rows.length).toBeGreaterThan(1);
+	expect(rows.map((row) => row.text)).toContain("上一句");
+	expect(rows.map((row) => row.text)).toContain("当前句");
+	expect(rows.map((row) => row.text)).toContain("Current line");
+	expect(rows.map((row) => row.text)).toContain("下一句");
+	expect(rows.find((row) => row.active)?.text).toBe("当前句");
+	expect(rows.find((row) => row.text === "Current line")?.translationLine).toBe(true);
+
+	lifecycle.dispose();
+});
+
+test("lifecycle drives Stage motion time and glitch uniforms from the render loop", async () => {
+	const scene = makeFakeScene();
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 30,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		stageLyricsSettingsSupplier: () => ({
+			motionStyle: "glitch",
+			glitchCameraBind: false,
+			glitchIntensity: 1.25,
+			glitchSlice: 1.1,
+			glitchChroma: 1.4,
+			glitchRate: 1.8,
+			glitchJitter: 1.2,
+		}),
+		rand: () => 0.35,
+	});
+	await lifecycle.mount(scene as never);
+	lifecycle.setLyricLines([{ t: 0, text: "glitch line" }]);
+	lifecycle.update(makeCtx(0.5, 0.016, { beatPulse: 0.9 }, 2.5));
+	await lifecycle.whenIdle();
+	lifecycle.update(makeCtx(3, 0.1, { beatPulse: 1.1 }, 7.75));
+
+	const current = findLyricChild(lifecycle.group as never) as {
+		userData?: {
+			lyric?: {
+				textMat?: {
+					uniforms?: Record<string, { value: number }>;
+				};
+			};
+		};
+	} | undefined;
+	const uniforms = current?.userData?.lyric?.textMat?.uniforms ?? {};
+	expect(uniforms.uTime?.value).toBe(7.75);
+	expect(uniforms.uGlitch?.value).toBe(1.25);
+	expect(uniforms.uGlitchSlice?.value).toBe(1.1);
+	expect(uniforms.uGlitchChroma?.value).toBe(1.4);
+	expect(uniforms.uGlitchRate?.value).toBe(1.8);
+	expect(uniforms.uGlitchBurst?.value ?? 0).toBeGreaterThan(0);
+	expect(Number.isFinite(uniforms.uGlitchSeed?.value)).toBe(true);
+
+	lifecycle.dispose();
+});
+
+test("runtime clarity change cancels an awaiting current generation and rebuilds the same line", async () => {
+	const scope = createVisualResourceScope("stage-current-clarity-generation");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const baseThree = await makeFakeThree()();
+	const staleThree = await makeDisposalTrackedThree();
+	let resolveStaleBuild!: (three: ThreeModule) => void;
+	const pendingStaleBuild = new Promise<ThreeModule>((resolve) => {
+		resolveStaleBuild = resolve;
+	});
+	let factoryCalls = 0;
+	let textureClarity: 1 | 2 = 2;
+	const uploads: unknown[] = [];
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: () => {
+			factoryCalls += 1;
+			if (factoryCalls === 1) return baseThree;
+			if (factoryCalls === 2) return pendingStaleBuild;
+			return baseThree;
+		},
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity }),
+		textureUploadExecutor: (texture: unknown) => { uploads.push(texture); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Current generation" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	expect(queue.runSlice(1)).toBe(1);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(queue.runSlice(1)).toBe(1);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(factoryCalls).toBe(2);
+
+	textureClarity = 1;
+	lifecycle.update(makeCtx(0.6, 0.016));
+	resolveStaleBuild(staleThree.three);
+	for (let step = 0; step < 12; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) {
+		lifecycle.update(makeCtx(0.7 + frame * 0.016, 0.016));
+	}
+	await lifecycle.whenIdle();
+
+	expect(staleThree.getDisposeCalls()).toBe(0);
+	expect(factoryCalls).toBeGreaterThanOrEqual(3);
+	expect(findLyricChild(lifecycle.group as never)).toBeDefined();
+	expect(uploads).toHaveLength(1);
+	const settled = diagnostics.snapshot()["stage-lyrics"];
+	expect(settled?.clarityTier).toBe(1);
+	expect(settled?.activeBuilds).toBe(0);
+	expect(settled?.pendingBuilds).toBe(0);
+	expect(settled?.pendingUploads).toBe(0);
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("seek cancels the previous resident-window prewarm before the latest window commits", async () => {
+	const scope = createVisualResourceScope("stage-seek-prewarm-generation");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 64 * 1024 * 1024, geometryBytes: 16 * 1024 * 1024, meshCount: 512, queuedTaskCost: 128, cacheBytes: 64 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const baseThree = await makeFakeThree()();
+	const stalePrewarmThree = await makeDisposalTrackedThree();
+	let resolveStalePrewarm!: (three: ThreeModule) => void;
+	const pendingStalePrewarm = new Promise<ThreeModule>((resolve) => {
+		resolveStalePrewarm = resolve;
+	});
+	let factoryCalls = 0;
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: () => {
+			factoryCalls += 1;
+			if (factoryCalls <= 2) return baseThree;
+			if (factoryCalls === 3) return pendingStalePrewarm;
+			return baseThree;
+		},
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines(Array.from({ length: 16 }, (_, index) => ({ t: index * 2, text: `L${index}` })));
+	lifecycle.update(makeCtx(now, 0.016));
+	for (let step = 0; step < 2; step += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	lifecycle.update(makeCtx(0.6, 0.016));
+	for (let step = 0; step < 16 && factoryCalls < 3; step += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	expect(factoryCalls).toBe(3);
+
+	now = 20.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	resolveStalePrewarm(stalePrewarmThree.three);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(stalePrewarmThree.getDisposeCalls()).toBe(0);
+
+	for (let step = 0; step < 48; step += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	for (let frame = 0; frame < 4; frame += 1) {
+		lifecycle.update(makeCtx(now + 0.1 + frame * 0.016, 0.016));
+	}
+	await lifecycle.whenIdle();
+	expect(lifecycle.getCurrentText()).toBe("L10");
+	const settled = diagnostics.snapshot()["stage-lyrics"];
+	expect(settled?.residentRows).toBe(6);
+	expect(settled?.pendingBuilds).toBe(0);
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("whenIdle waits for renderer uploads and atomic takeover without deadlocking", async () => {
+	const scope = createVisualResourceScope("stage-complete-idle");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
+	const uploads: unknown[] = [];
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		diagnostics,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: (texture: unknown) => { uploads.push(texture); },
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Complete idle" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let phase = 0; phase < 2; phase += 1) {
+		expect(queue.runSlice(1)).toBe(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+	expect(diagnostics.snapshot()["stage-lyrics"]?.pendingUploads).toBeGreaterThan(0);
+
+	let idleResolved = false;
+	const idle = lifecycle.whenIdle().then(() => {
+		idleResolved = true;
+	});
+	await Promise.resolve();
+	expect(idleResolved).toBe(false);
+
+	for (let frame = 0; frame < 8 && !idleResolved; frame += 1) {
+		lifecycle.update(makeCtx(0.6 + frame * 0.016, 0.016));
+		await Promise.resolve();
+	}
+	await Promise.race([
+		idle,
+		new Promise<never>((_resolve, reject) => setTimeout(() => reject(new Error("Stage lyrics whenIdle deadlocked.")), 250)),
+	]);
+	expect(idleResolved).toBe(true);
+	expect(uploads.length).toBeGreaterThan(0);
+	expect(findLyricChild(lifecycle.group as never)).toBeDefined();
+	expect(diagnostics.snapshot()["stage-lyrics"]?.pendingUploads).toBe(0);
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("whenIdle does not resolve after cooperative rasterization while the current upload is still pending", async () => {
+	const scope = createVisualResourceScope("stage-idle-pending-upload");
+	const queue = createBudgetTaskQueue({
+		ledger: createVisualResourceLedger({
+			budget: { textureBytes: 32 * 1024 * 1024, geometryBytes: 8 * 1024 * 1024, meshCount: 256, queuedTaskCost: 32, cacheBytes: 32 * 1024 * 1024 },
+		}),
+		resourceScope: scope,
+	});
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		taskQueue: queue,
+		resourceScope: scope,
+		clarityQualitySupplier: () => "balanced",
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+		textureUploadExecutor: () => {},
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Pending upload" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	for (let phase = 0; phase < 3; phase += 1) {
+		queue.runSlice(1);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	}
+
+	let idleResolved = false;
+	const idle = lifecycle.whenIdle().then(() => {
+		idleResolved = true;
+	});
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	expect(idleResolved).toBe(false);
+
+	lifecycle.update(makeCtx(0.6, 0.016));
+	await idle;
+	expect(findLyricChild(lifecycle.group as never)).toBeDefined();
+
+	lifecycle.dispose();
+	queue.dispose();
+	scope.dispose();
+});
+
+test("production lifecycle denies the current lyric before Canvas and Three allocation", async () => {
+	const rawScope = createVisualResourceScope("stage-production-admission");
+	let denyAdmission = false;
+	let admissionAttempts = 0;
+	const resourceScope: VisualResourceScope = {
+		get name() { return rawScope.name; },
+		get closed() { return rawScope.closed; },
+		isOpen: () => rawScope.isOpen(),
+		register(registration: VisualResourceRegistration) {
+			admissionAttempts += 1;
+			if (denyAdmission) {
+				const error = new Error("Stage lyric resource admission denied by test budget.");
+				error.name = "VisualResourceBudgetAdmissionError";
+				throw error;
+			}
+			return rawScope.register(registration);
+		},
+		createChild: (name) => rawScope.createChild(name),
+		releaseRetention: (retention) => rawScope.releaseRetention(retention),
+		dispose: () => rawScope.dispose(),
+	};
+	const constructorCalls: ThreeConstructorCalls = {
+		group: 0,
+		geometry: 0,
+		material: 0,
+		points: 0,
+	};
+	const threeFactory = makeFakeThree(constructorCalls);
+	let factoryCalls = 0;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: async () => {
+			factoryCalls += 1;
+			return await threeFactory();
+		},
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 999,
+		particleLyricsFlagSupplier: () => true,
+		dotTexture: makeFakeDotTexture(),
+		resourceScope,
+		stageLyricsSettingsSupplier: () => ({ textureClarity: 2 }),
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	factoryCalls = 0;
+	constructorCalls.group = 0;
+	constructorCalls.geometry = 0;
+	constructorCalls.material = 0;
+	constructorCalls.points = 0;
+	admissionAttempts = 0;
+	denyAdmission = true;
+	let canvasCreations = 0;
+	const originalCreateElement = document.createElement.bind(document);
+	Object.defineProperty(document, "createElement", {
+		configurable: true,
+		value: (tagName: string, options?: ElementCreationOptions) => {
+			if (tagName.toLowerCase() === "canvas") canvasCreations += 1;
+			return originalCreateElement(tagName, options);
+		},
+	});
+
+	try {
+		lifecycle.setLyricLines([{ t: 0, text: "Budget denied" }]);
+		lifecycle.update(makeCtx(0.5, 0.016));
+		await lifecycle.whenIdle();
+	} finally {
+		Object.defineProperty(document, "createElement", {
+			configurable: true,
+			value: originalCreateElement,
+		});
+	}
+
+	expect(admissionAttempts).toBe(1);
+	expect(factoryCalls).toBe(0);
+	expect(canvasCreations).toBe(0);
+	expect(constructorCalls).toEqual({ group: 0, geometry: 0, material: 0, points: 0 });
+	expect(findLyricChild(lifecycle.group as never)).toBeUndefined();
+	expect(__inspectVisualResourceScopeForTests(rawScope).activeResourceEntryCount).toBe(0);
+
+	lifecycle.dispose();
+	rawScope.dispose();
 });

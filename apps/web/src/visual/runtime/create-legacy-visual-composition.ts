@@ -7,6 +7,8 @@ import {
 	createConnectorParticles,
 	createLyricParticles,
 	createHomeVisual,
+	createVisualMaintenanceLane,
+	createGpuFrameTimer,
 	trimHomeCoverTextureCache,
 	createDefaultFreeCameraState,
 	cloneFxState,
@@ -20,6 +22,7 @@ import {
 	createShelfPointerStrictRaycastHitGetter,
 	createShelfSelectSoundPlayer,
 	createShelfStep,
+	createSonicTopographyPlugin,
 	createStageLyricsLifecycle,
 	RenderStepSlot,
 	type AudioFrameBytes,
@@ -28,6 +31,7 @@ import {
 	type CinemaCamera,
 	type FxState,
 	type HomeVisual,
+	type GpuFrameTimingSnapshot,
 	type LyricLine as VisualLyricLine,
 	type LyricPalette,
 	type LyricParticles,
@@ -36,12 +40,17 @@ import {
 	type ConnectorParticles,
 	type ShelfManager,
 	type ShelfItem,
+	type ShelfContentRow,
 	type ShelfOpenDetailContentPayload,
 	type ShelfPane,
 	type ShelfSelectSoundPlayer,
+	type SonicPerformanceQuality,
+	type SonicTopographyRuntime,
 	type StageLyricsLifecycle,
 	type StageLyricsLifecycleOpts,
 	type StageLyricsMotionSnapshot,
+	type VisualCameraPolicyInput,
+	type VisualCameraTarget,
 	type VisualEngineComposition,
 	type VisualEngineCompositionContext,
 	type VisualFrameSnapshot,
@@ -67,8 +76,12 @@ import {
 	createSecondaryPlaylistEdgeGuard,
 	isQueueFocusActive,
 	isWallpaperSafeShelfPreset,
+	shouldClearShelfFocusOnCameraModeChange,
 	type QueueFocusPanelInfo,
+	type ShelfFocusCameraMode,
 } from "../shelf-focus-zone";
+import { createShelfTrackChangeGuard } from "../shelf-track-change-guard";
+import { isShelfPortraitViewport } from "../shelf-viewport";
 import { createVisualAudioDebugger } from "../visual-audio-debug";
 import type { LegacyVisualEventSink } from "./legacy-visual-events";
 
@@ -555,6 +568,19 @@ export function shouldRetryVisualCoverLoad(input: {
 	return input.nowMs - input.lastAttemptAtMs >= interval;
 }
 
+export interface SonicPointerReleaseState {
+	readonly preset: number;
+	readonly dragged: boolean;
+	readonly overUi: boolean;
+	readonly freeCameraActive: boolean;
+	readonly heldMs: number;
+}
+
+export function resolveSonicPointerRippleStrength(state: SonicPointerReleaseState): number | null {
+	if (state.preset !== 7 || state.dragged || state.overUi || state.freeCameraActive) return null;
+	return Math.min(3, 0.8 + Math.max(0, state.heldMs) / 420);
+}
+
 function attachBaselineCanvasPointerInput(input: {
 	target: HTMLElement;
 	windowTarget: Window;
@@ -564,8 +590,12 @@ function attachBaselineCanvasPointerInput(input: {
 	camera: THREE.PerspectiveCamera;
 	pointerTarget: { x: number; y: number };
 	isPointerOverUi: (event: MouseEvent | WheelEvent) => boolean;
+	getPreset?: () => number;
+	onSonicPointerRipple?: (x: number, z: number, strength: number) => void;
 }): () => void {
 	let rotating = false;
+	let dragged = false;
+	let pointerDownAt = 0;
 	let lastX = 0;
 	let lastY = 0;
 	let lastT = 0;
@@ -635,6 +665,8 @@ function attachBaselineCanvasPointerInput(input: {
 	const onMouseDown = (event: MouseEvent) => {
 		if (event.button === 2 || input.isPointerOverUi(event)) return;
 		rotating = true;
+		dragged = false;
+		pointerDownAt = performance.now();
 		lastX = event.clientX;
 		lastY = event.clientY;
 		lastT = performance.now();
@@ -649,6 +681,7 @@ function attachBaselineCanvasPointerInput(input: {
 		}
 		updatePointerTarget(event.clientX, event.clientY);
 		if (!rotating || input.freeCamera.active) return;
+		if (Math.hypot(event.clientX - lastX, event.clientY - lastY) > 2) dragged = true;
 		const now = performance.now();
 		const dt = Math.max(1 / 120, Math.min(0.08, (now - lastT) / 1000 || 1 / 60));
 		input.homeVisual.applyPointerSpinDrag(event.clientX - lastX, event.clientY - lastY, dt);
@@ -660,8 +693,22 @@ function attachBaselineCanvasPointerInput(input: {
 		lastT = now;
 	};
 
-	const endDrag = () => {
+	const endDrag = (event?: MouseEvent) => {
+		if (rotating && event) {
+			const strength = resolveSonicPointerRippleStrength({
+				preset: input.getPreset?.() ?? 0,
+				dragged,
+				overUi: input.isPointerOverUi(event),
+				freeCameraActive: input.freeCamera.active,
+				heldMs: performance.now() - pointerDownAt,
+			});
+			if (strength !== null) {
+				const local = particleLocalPointFromNdc(input.pointerTarget.x, input.pointerTarget.y);
+				input.onSonicPointerRipple?.(local?.x ?? input.pointerTarget.x * 4, local?.y ?? input.pointerTarget.y * 4, strength);
+			}
+		}
 		rotating = false;
+		dragged = false;
 		input.cinema.getState().orbit.rotating = false;
 	};
 
@@ -669,6 +716,7 @@ function attachBaselineCanvasPointerInput(input: {
 		clearPointer();
 		endDrag();
 	};
+	const onWindowBlur = () => endDrag();
 
 	const onWheel = (event: WheelEvent) => {
 		if (input.isPointerOverUi(event) || input.freeCamera.active) return;
@@ -682,14 +730,14 @@ function attachBaselineCanvasPointerInput(input: {
 	input.target.addEventListener("mousedown", onMouseDown);
 	input.windowTarget.addEventListener("mousemove", onMouseMove);
 	input.windowTarget.addEventListener("mouseup", endDrag);
-	input.windowTarget.addEventListener("blur", endDrag);
+	input.windowTarget.addEventListener("blur", onWindowBlur);
 	input.target.addEventListener("mouseleave", onMouseLeave);
 	input.target.addEventListener("wheel", onWheel, { passive: false });
 	return () => {
 		input.target.removeEventListener("mousedown", onMouseDown);
 		input.windowTarget.removeEventListener("mousemove", onMouseMove);
 		input.windowTarget.removeEventListener("mouseup", endDrag);
-		input.windowTarget.removeEventListener("blur", endDrag);
+		input.windowTarget.removeEventListener("blur", onWindowBlur);
 		input.target.removeEventListener("mouseleave", onMouseLeave);
 		input.target.removeEventListener("wheel", onWheel);
 	};
@@ -910,6 +958,13 @@ export function resolveHomeVisualPreset(
 			changed: currentPreset !== defaultPreset,
 		};
 	}
+	if (homeActive && defaultPreset === 7) {
+		return {
+			preset: 7,
+			previousPreset: null,
+			changed: currentPreset !== 7,
+		};
+	}
 	if (homeActive) {
 		const nextPreviousPreset = previousPreset ?? currentPreset;
 		return {
@@ -949,6 +1004,20 @@ export function resolveStageLyricLayoutOptions(
 			preset: fx.preset,
 			skullParticlesVisible: opts.skullParticlesVisible,
 		}),
+	};
+}
+
+export function resolveLegacyVisualCameraPolicyInput(
+	fx: Partial<FxState>,
+	stageWorldTarget: VisualCameraTarget | null,
+): Omit<VisualCameraPolicyInput, "shelfFocusTarget"> {
+	const preset = Number(fx.preset) || 0;
+	const lyricCameraLock = !!fx.lyricCameraLock;
+	return {
+		activePreset: preset,
+		lyricCameraLock,
+		wallpaperLyricLock: preset === 5 && lyricCameraLock,
+		stageWorldTarget: fx.particleLyrics === false ? null : stageWorldTarget,
 	};
 }
 
@@ -1009,6 +1078,31 @@ export interface CreateLegacyVisualCompositionOptions {
 	readonly audioElementRef: RefObject<HTMLAudioElement | null>;
 	readonly events: LegacyVisualEventSink;
 	readonly getPrefersReducedMotion?: () => boolean;
+	/** M4 确定性证据使用；产品路径不注入。 */
+	readonly createAudioFrameSource?: () => ManagedAudioFrameSource | Promise<ManagedAudioFrameSource>;
+	/** M4 clean-room golden 使用；产品路径继续使用默认随机源。 */
+	readonly random?: () => number;
+	/** 仅暴露正式运行时的有限控制面给隔离 parity route。 */
+	readonly onDebugController?: (controller: LegacyVisualDebugController | null) => void;
+	/** 仅在 M4 parity 证据页启用；正式产品路径默认不发起 timer query。 */
+	readonly enableGpuTimerQuery?: boolean;
+}
+
+export interface LegacyVisualDebugController {
+	seekShelf(index: number): void;
+	openShelfDetail(index: number, rows: readonly ShelfContentRow[]): void;
+	scrollShelfDetail(delta: number): void;
+	closeShelfDetail(immediate?: boolean): void;
+	getRendererDiagnostics(): {
+		readonly drawCalls: number;
+		readonly triangles: number;
+		readonly points: number;
+		readonly lines: number;
+		readonly geometries: number;
+		readonly textures: number;
+		readonly gpuTimerQuerySupported: boolean;
+		readonly gpuTiming: GpuFrameTimingSnapshot | null;
+	};
 }
 
 export const LEGACY_VISUAL_LANE_CADENCE = Object.freeze({
@@ -1016,6 +1110,7 @@ export const LEGACY_VISUAL_LANE_CADENCE = Object.freeze({
 	Ripples: 60,
 	Shelf: 30,
 	LyricParticles: 45,
+	SonicTopography: "presentation",
 	StageLyrics: 45,
 	DesktopOverlaySync: 12,
 	HomeVisual: "presentation",
@@ -1025,17 +1120,36 @@ export const LEGACY_VISUAL_LANE_CADENCE = Object.freeze({
 interface MountedLegacySubsystems {
 	homeVisual: HomeVisual;
 	shelfManager: ShelfManager;
+	sonic: SonicTopographyRuntime;
 	lifecycle: StageLyricsLifecycle;
+}
+
+export function normalizeSonicPerformanceQuality(value: string | null | undefined): SonicPerformanceQuality {
+	return value === "eco" || value === "balanced" || value === "high" || value === "ultra"
+		? value
+		: "high";
+}
+
+export function shouldActivateSonicTopography(preset: number | null | undefined): boolean {
+	return Number(preset) === 7;
+}
+
+export function resolveSonicShelfMode(
+	preset: number | null | undefined,
+	mode: string | null | undefined,
+	hasOpenContent: boolean,
+): string {
+	if (Number(preset) !== 7 || hasOpenContent) return mode ?? "side";
+	return "off";
 }
 
 export interface LegacyHomeVisualRuntimeGovernor {
 	sync(mode: VisualRuntimeMode): void;
-	pump(mode: VisualRuntimeMode): void;
 }
 
 export function createLegacyHomeVisualRuntimeGovernor(input: {
 	readonly homeVisual: Pick<HomeVisual, "setRuntimeActive">;
-	readonly tasks: Pick<VisualEngineCompositionContext["tasks"], "cancelPriority" | "runSlice">;
+	readonly tasks: Pick<VisualEngineCompositionContext["tasks"], "cancelPriority">;
 	readonly resources: Pick<VisualResourceScope, "releaseRetention">;
 	readonly trimCache?: (maxEntries: number) => void;
 	readonly refreshPerformanceSnapshots: () => void;
@@ -1061,11 +1175,6 @@ export function createLegacyHomeVisualRuntimeGovernor(input: {
 			}
 			previousMode = mode;
 		},
-		pump(mode) {
-			if (mode !== "foreground" && mode !== "background") return;
-			input.tasks.runSlice(1);
-			input.refreshPerformanceSnapshots();
-		},
 	};
 }
 
@@ -1073,6 +1182,17 @@ function mutableFxCopy(fx: Readonly<Partial<FxState>>): Partial<FxState> {
 	return {
 		...fx,
 		...(fx.mouseXy ? { mouseXy: { ...fx.mouseXy } } : {}),
+		...(fx.stageLyrics ? { stageLyrics: { ...fx.stageLyrics } } : {}),
+		...(fx.sonic ? {
+			sonic: {
+				...fx.sonic,
+				terrain: { ...fx.sonic.terrain },
+				eq: { ...fx.sonic.eq },
+				colors: { ...fx.sonic.colors },
+				floating: { ...fx.sonic.floating },
+				trigger: { ...fx.sonic.trigger },
+			},
+		} : {}),
 	};
 }
 
@@ -1104,7 +1224,7 @@ function createRuntimeRefs(
 		splashActiveRef: { current: false },
 		homeActiveRef: { current: false },
 		shelfModeRef: { current: "side" },
-		shelfCameraModeRef: { current: "static" },
+		shelfCameraModeRef: { current: "dynamic" },
 		shelfPresenceRef: { current: "always" },
 		shelfMergeCollectionsRef: { current: false },
 		shelfMineCountRef: { current: 0 },
@@ -1219,7 +1339,7 @@ export function createLegacyVisualComposition(
 				isCurrent,
 				"audio-frame-source",
 				"async-task",
-				await initAudioSource(() => options.audioElementRef.current),
+				await (options.createAudioFrameSource?.() ?? initAudioSource(() => options.audioElementRef.current)),
 			);
 			const audioEngine = registerOwnedDisposable(scope, isCurrent, "audio-reactivity", "subscription", createAudioReactivity({
 				frameSource,
@@ -1272,9 +1392,14 @@ export function createLegacyVisualComposition(
 			const offResize = attachRendererResizeSync(host, resizeAwareRenderer);
 			registerOwnedCleanup(scope, isCurrent, "renderer-resize", "listener", offResize);
 			resizeAwareRenderer.resize();
+			let lifecycle: StageLyricsLifecycle | null = null;
 			const cinema = registerOwnedDisposable(scope, isCurrent, "cinema-camera", "subscription", createCinemaCamera({
 				camera: renderer.camera,
 				getCurrentTime: () => nextContext.mediaClock.currentTimeSeconds(),
+				cameraPolicyInputSupplier: () => {
+					const fx = mergeFxState(cloneFxState(), refs?.fxRef?.current);
+					return resolveLegacyVisualCameraPolicyInput(fx, lifecycle?.getWorldLookAtTarget() ?? null);
+				},
 			}));
 			const shelfSelectSound = createShelfSelectSoundPlayer({
 				audioContext: frameSource.audioContext,
@@ -1315,6 +1440,8 @@ export function createLegacyVisualComposition(
 					lastAppliedLyricPaletteKey = "";
 					applyStageLyricPalette();
 				},
+				backCoverRandom: options.random,
+				random: options.random,
 			}));
 			runtimeGovernor = createLegacyHomeVisualRuntimeGovernor({
 				homeVisual,
@@ -1322,10 +1449,17 @@ export function createLegacyVisualComposition(
 				resources: scope,
 				refreshPerformanceSnapshots: nextContext.refreshPerformanceSnapshots,
 			});
+			const maintenanceLane = createVisualMaintenanceLane({
+				tasks: nextContext.tasks,
+				refreshPerformanceSnapshots: nextContext.refreshPerformanceSnapshots,
+			});
 			let homeVisualPreviousPreset: number | null = null;
 			let homeVisualPreviewActive = false;
 			let homePresetPreviewEnabled = false;
 			let homePresetPreviewSourcePreset: number | null = null;
+			let sonicActive = false;
+			let configuredSonicSettings: FxState["sonic"] | null = null;
+			let configuredSonicQuality: SonicPerformanceQuality | null = null;
 			let syncedCoverUrlVersion = refs.coverUrlVersionRef?.current ?? 0;
 			const syncRendererPerformancePolicy = () => {
 				const policy = readVisualPerformancePolicy();
@@ -1352,26 +1486,87 @@ export function createLegacyVisualComposition(
 			requestHomeVisualCover(lastCoverLoadAttemptUrl, lastCoverLoadAttemptAt);
 
 			let shelfManagerForCallback: ShelfManager | null = null;
+			const shelfResourceScope = scope.createChild("shelf");
 			const shelfManager = registerOwnedDisposable(scope, isCurrent, "shelf-manager", "mesh", await createShelfManagerWithThree({
 				scene: renderer.scene,
 				document,
+				resourceScope: shelfResourceScope,
 				getLayoutProfileOverrides: () => {
 					const width = window.innerWidth || host.clientWidth || 0;
 					const height = window.innerHeight || host.clientHeight || 0;
-					const portrait = height > width * 1.08;
+					const portrait = isShelfPortraitViewport(width, height);
 					const fx = mergeFxState(cloneFxState(), refs?.fxRef?.current);
 					return {
 						portrait,
 						narrow: !portrait && width > 0 && width < 980,
-						skullSafe: Number(fx.preset) === 6,
+						 skullSafe: Number(fx.preset) === 6,
 					};
+				},
+				onDetailPhaseChange: (phase) => {
+					if (phase !== "closing") return;
+					cinema.setFocusZone(null, {
+						immediate: true,
+						portrait: isShelfPortraitViewport(window.innerWidth, window.innerHeight),
+						wallpaperSafe: refs?.wallpaperSafeRef?.current ?? false,
+					});
 				},
 				onOpenDetailContent: (payload) => {
 					const contentList = shelfManagerForCallback?.getContentList();
 					if (contentList) options.events.onShelfOpenDetailContent(payload, contentList);
 				},
 			}));
+			const sonicPlugin = createSonicTopographyPlugin();
+			const sonic = registerOwnedDisposable(
+				scope,
+				isCurrent,
+				"sonic-topography",
+				"subscription",
+				sonicPlugin.create({
+					scene: renderer.scene,
+					renderer: renderer.renderer,
+					resources: scope,
+					cancellation: nextContext.cancellation,
+					tasks: nextContext.tasks,
+					diagnostics: nextContext.diagnostics,
+					audio: () => {
+						const snapshot = audioEngine.getSnapshot().sonic;
+						if (!snapshot) throw new Error("Sonic audio snapshot is unavailable.");
+						return snapshot;
+					},
+					random: options.random,
+				}),
+			);
 			shelfManagerForCallback = shelfManager;
+			const shelfTrackChangeGuard = createShelfTrackChangeGuard({
+				getTrackKey: () => nextContext.getFrameSnapshot().playback.trackKey,
+				onChange: () => {
+					if (!shelfManager.getShelfPinnedOpen() && !shelfManager.hasOpenContent()) {
+						shelfManager.clearShelfHoverCue();
+						shelfManager.clearSelected();
+					}
+					cinema.setFocusZone(null, {
+						immediate: true,
+						portrait: isShelfPortraitViewport(window.innerWidth, window.innerHeight),
+						wallpaperSafe: refs?.wallpaperSafeRef?.current ?? false,
+					});
+				},
+			});
+			const unregisterShelfDiagnostics = nextContext.diagnostics.register("shelf", () => {
+				const resources = shelfManager.getResourceDiagnostics();
+				return {
+					detailPhase: shelfManager.getDetailPhase(),
+					cards: { ...resources.cards },
+					detailRows: { ...resources.detailRows },
+					detailPanels: resources.detailPanels,
+				};
+			});
+			registerOwnedCleanup(
+				scope,
+				isCurrent,
+				"shelf-diagnostics",
+				"subscription",
+				unregisterShelfDiagnostics,
+			);
 			const connectorParticles = registerOwnedDisposable(scope, isCurrent, "connector-particles", "mesh", await createConnectorParticles({
 				scene: renderer.scene,
 				dotTexture: homeVisual.getField().materialUniforms.uDotTex?.value ?? null,
@@ -1386,7 +1581,7 @@ export function createLegacyVisualComposition(
 			}));
 			if (lyricParticles.object) lyricParticles.object.visible = runtimeFx.particleLyrics !== false;
 
-			const lifecycle = createStageLyricsLifecycle({
+			lifecycle = createStageLyricsLifecycle({
 				scene: renderer.scene,
 				currentTimeSupplier: () => nextContext.mediaClock.currentTimeSeconds(),
 				isPlayingSupplier: () => nextContext.mediaClock.isPlaying(),
@@ -1408,6 +1603,16 @@ export function createLegacyVisualComposition(
 						lyricWeight: fx.lyricWeight,
 					};
 				},
+				stageLyricsSettingsSupplier: () => mergeFxState(cloneFxState(), refs?.fxRef?.current).stageLyrics,
+				rand: options.random,
+				taskQueue: nextContext.tasks,
+				resourceScope: scope,
+				cancellationScope: nextContext.cancellation,
+				textureUploadExecutor: (texture) => renderer.renderer.initTexture(texture),
+				diagnostics: nextContext.diagnostics,
+				clarityQualitySupplier: () => normalizeSonicPerformanceQuality(
+					mergeFxState(cloneFxState(), refs?.fxRef?.current).performanceQuality,
+				),
 				lyricLayoutOptionsSupplier: () => {
 					const fx = mergeFxState(cloneFxState(), refs?.fxRef?.current);
 					const orbit = cinema.getState().orbit;
@@ -1466,9 +1671,10 @@ export function createLegacyVisualComposition(
 			let syncedShelfItemsVersion = refs.shelfItemsVersionRef.current;
 			let syncedBeatMapVersion = refs.beatMapVersionRef?.current ?? 0;
 			let syncedShelfContentOpen = false;
+			let syncedShelfCameraMode: ShelfFocusCameraMode = refs.shelfCameraModeRef?.current === "static" ? "static" : "dynamic";
 			const pointerTarget = { x: 0, y: 0 };
 			const pointerParallax = { x: 0, y: 0 };
-			shelfManager.setData(refs.shelfItemsRef.current);
+			shelfManager.setData(refs.shelfItemsRef.current, { asyncBuild: true });
 			shelfManager.setShelfPane(nextContext.getFrameSnapshot().shelf.pane);
 			const beatMapScheduler = createBeatMapScheduler({
 				scheduleCameraBeat: (beat) => cinema.applyBeat(Math.max(Number(beat.strength) || 0, Number(beat.impact) || 0), true),
@@ -1489,6 +1695,9 @@ export function createLegacyVisualComposition(
 				isMainSceneCoveredBySplash: () => refs?.splashActiveRef.current === true,
 				prefersReducedMotion: readPrefersReducedMotion,
 				onCacheTrim: () => {},
+				gpuFrameTimer: options.enableGpuTimerQuery
+					? createGpuFrameTimer(renderer.renderer.getContext())
+					: undefined,
 			}));
 			const visualAudioDebugger = registerOwnedDisposable(scope, isCurrent, "visual-audio-debugger", "subscription", createVisualAudioDebugger({
 				frameSource,
@@ -1508,11 +1717,34 @@ export function createLegacyVisualComposition(
 				}
 				beatMapScheduler.update(nextContext.mediaClock.currentTimeSeconds());
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.Beatmap }));
+			registerOwnedCleanup(scope, isCurrent, "maintenance-lane", "subscription", renderLoop.registerStep(RenderStepSlot.Maintenance, () => {
+				maintenanceLane.pump(nextContext.scheduler.getMode());
+			}));
 			registerOwnedCleanup(scope, isCurrent, "ripples-lane", "subscription", renderLoop.registerStep(RenderStepSlot.Ripples, (frame) => {
 				homeVisual.updateRipples(frame.dt);
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.Ripples }));
 			registerOwnedCleanup(scope, isCurrent, "home-visual-lane", "subscription", renderLoop.registerStep(RenderStepSlot.HomeVisual, (frame) => {
 				mergeFxState(homeVisual.getFx(), refs?.fxRef?.current);
+				const sonicRequested = shouldActivateSonicTopography(homeVisual.getFx().preset);
+				if (sonicRequested) {
+					const settings = homeVisual.getFx().sonic;
+					const quality = normalizeSonicPerformanceQuality(homeVisual.getFx().performanceQuality);
+					if (!sonicActive) {
+						sonic.activate(settings, quality);
+						sonicActive = true;
+						configuredSonicSettings = settings;
+						configuredSonicQuality = quality;
+					} else if (configuredSonicSettings !== settings || configuredSonicQuality !== quality) {
+						sonic.configure(settings, quality);
+						configuredSonicSettings = settings;
+						configuredSonicQuality = quality;
+					}
+				} else if (sonicActive) {
+					sonic.deactivate();
+					sonicActive = false;
+					configuredSonicSettings = null;
+					configuredSonicQuality = null;
+				}
 				const visualPolicy = syncRendererPerformancePolicy();
 				applyRuntimeVisualPerformancePolicy(homeVisual.getFx(), visualPolicy);
 				syncHomeVisualPixelRatio();
@@ -1592,7 +1824,6 @@ export function createLegacyVisualComposition(
 					hasOpenContent: shelfManager.hasOpenContent(),
 				}));
 				homeVisual.updateCore(frame);
-				runtimeGovernor?.pump(nextContext.scheduler.getMode());
 				visualAudioDebugger.tick(frame);
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.HomeVisual }));
 			registerOwnedCleanup(scope, isCurrent, "camera-lane", "subscription", renderLoop.registerStep(RenderStepSlot.CameraCinematic, (frame) => {
@@ -1606,7 +1837,7 @@ export function createLegacyVisualComposition(
 				if (Number(fx.preset) === 6) {
 					cinema.applySkullCameraPose(frame, {
 						active: true,
-						portrait: window.innerHeight > window.innerWidth * 1.08,
+						portrait: isShelfPortraitViewport(window.innerWidth, window.innerHeight),
 						shelfComposition: resolveSkullShelfCompositionActive({
 							preset: fx.preset,
 							shelfMode: shelfManager.getMode(),
@@ -1619,16 +1850,30 @@ export function createLegacyVisualComposition(
 				}
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.CameraCinematic }));
 			const shelfStep = createShelfStep(shelfManager, {
-				getShelfMode: () => refs?.shelfModeRef?.current ?? "side",
+				getShelfMode: () => resolveSonicShelfMode(
+					refs?.fxRef?.current?.preset,
+					refs?.shelfModeRef?.current ?? "side",
+					shelfManager.hasOpenContent(),
+				),
 				getShelfPresence: () => refs?.shelfPresenceRef?.current ?? "always",
 				getSplashActive: () => refs?.splashActiveRef.current === true,
 			});
 			registerOwnedCleanup(scope, isCurrent, "shelf-lane", "subscription", renderLoop.registerStep(RenderStepSlot.Shelf, (frame) => {
+				shelfTrackChangeGuard.sync();
 				if (refs && syncedShelfItemsVersion !== refs.shelfItemsVersionRef.current) {
 					syncedShelfItemsVersion = refs.shelfItemsVersionRef.current;
-					shelfManager.setData(refs.shelfItemsRef.current);
+					shelfManager.setData(refs.shelfItemsRef.current, { asyncBuild: true });
 					shelfManager.setShelfPane(nextContext.getFrameSnapshot().shelf.pane);
 				}
+				const nextShelfCameraMode = refs?.shelfCameraModeRef?.current === "static" ? "static" : "dynamic";
+				if (shouldClearShelfFocusOnCameraModeChange(syncedShelfCameraMode, nextShelfCameraMode)) {
+					cinema.setFocusZone(null, {
+						immediate: true,
+						portrait: isShelfPortraitViewport(window.innerWidth, window.innerHeight),
+						wallpaperSafe: refs?.wallpaperSafeRef?.current ?? false,
+					});
+				}
+				syncedShelfCameraMode = nextShelfCameraMode;
 				shelfStep(frame);
 				const shelfContentOpen = shelfManager.hasOpenContent();
 				if (shelfContentOpen !== syncedShelfContentOpen) {
@@ -1642,6 +1887,10 @@ export function createLegacyVisualComposition(
 				connectorParticles.setIntensity(connectorVisible ? shelfManager.getShelfVisibility() : 0);
 				connectorParticles.update(frame);
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.Shelf }));
+			registerOwnedCleanup(scope, isCurrent, "sonic-topography-lane", "subscription", renderLoop.registerStep(RenderStepSlot.SonicTopography, (frame) => {
+				if (!sonicActive) return;
+				sonic.update(frame);
+			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.SonicTopography }));
 			registerOwnedCleanup(scope, isCurrent, "lyric-particles-lane", "subscription", renderLoop.registerStep(RenderStepSlot.LyricParticles, (frame) => {
 				const fx = mergeFxState(cloneFxState(), refs?.fxRef?.current);
 				if (lyricParticles.object) lyricParticles.object.visible = fx.particleLyrics !== false;
@@ -1687,8 +1936,8 @@ export function createLegacyVisualComposition(
 				cinema,
 				shelfManager,
 				getSplashActive: () => refs?.splashActiveRef.current === true,
-				getShelfCameraMode: () => refs?.shelfCameraModeRef?.current ?? "static",
-				getPortrait: () => window.innerHeight > window.innerWidth,
+				getShelfCameraMode: () => refs?.shelfCameraModeRef?.current ?? "dynamic",
+				getPortrait: () => isShelfPortraitViewport(window.innerWidth, window.innerHeight),
 				getWallpaperSafe: () => refs?.wallpaperSafeRef?.current ?? false,
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
@@ -1697,6 +1946,7 @@ export function createLegacyVisualComposition(
 					secondaryEdgeGuard: secondaryPlaylistEdgeGuard,
 				}),
 				getSideShelfFocusHit,
+				trackChangeGuard: shelfTrackChangeGuard,
 				onFocusZoneChange: (result) => {
 					if (result.wallpaperSafe && (result.type === "shelf-side" || result.type === "shelf-detail")) lifecycle.requestCameraSnap(10);
 				},
@@ -1710,12 +1960,15 @@ export function createLegacyVisualComposition(
 				getStrictHit: getStrictShelfPointerHit,
 				getStrictDetailRowHit: getStrictShelfDetailRowHit,
 				getSplashActive: () => refs?.splashActiveRef.current === true,
-				getPortrait: () => window.innerHeight > window.innerWidth,
+				getPortrait: () => isShelfPortraitViewport(window.innerWidth, window.innerHeight),
 				getWallpaperSafe: () => refs?.wallpaperSafeRef?.current ?? false,
 				getViewportWidth: () => window.innerWidth || host.clientWidth || 0,
 				getViewportHeight: () => window.innerHeight || host.clientHeight || 0,
 				getShelfPresence: () => refs?.shelfPresenceRef?.current ?? "always",
 				getShelfPreviewActive: () => isRuntimeShelfPreviewActive(refs?.shelfPresenceRef?.current, shelfManager.getShelfVisibility()),
+				getShelfCameraMode: () => refs?.shelfCameraModeRef?.current ?? "dynamic",
+				getTrackKey: () => nextContext.getFrameSnapshot().playback.trackKey,
+				trackChangeGuard: shelfTrackChangeGuard,
 				isDetailWheelTarget: (event) => shelfManager.getContentList()?.hasScreenTargetAt({ x: event.clientX, y: event.clientY }) === true,
 				setShelfMode: (mode) => setRuntimeShelfMode(refs?.shelfModeRef, mode, options.events.onShelfModeChange),
 				onBeforeShelfWheelScroll: (direction) => shelfPaneWheelSwitcher.step(direction),
@@ -1741,6 +1994,8 @@ export function createLegacyVisualComposition(
 				camera: renderer.camera,
 				pointerTarget,
 				isPointerOverUi: isPointerOverRuntimeUi,
+				getPreset: () => homeVisual.getFx().preset,
+				onSonicPointerRipple: (x, z, strength) => sonic.pointerRipple(x, z, strength),
 			});
 			registerOwnedCleanup(scope, isCurrent, "canvas-pointer-wiring", "listener", offCanvasPointer);
 			const offFreeCamera = attachFreeCameraHost({
@@ -1753,7 +2008,36 @@ export function createLegacyVisualComposition(
 			});
 			registerOwnedCleanup(scope, isCurrent, "free-camera-wiring", "listener", offFreeCamera);
 			syncRuntimeRefs(refs, nextContext.getFrameSnapshot());
-			subsystems = { homeVisual, shelfManager, lifecycle };
+			subsystems = { homeVisual, shelfManager, sonic, lifecycle };
+			options.onDebugController?.({
+				seekShelf(index) {
+					shelfManager.scrollBy(index - shelfManager.getCenterIdx());
+				},
+				openShelfDetail(index, rows) {
+					shelfManager.openDetail(index);
+					shelfManager.getContentList()?.setRows([...rows]);
+				},
+				scrollShelfDetail(delta) {
+					shelfManager.getContentList()?.scrollBy(delta);
+				},
+				closeShelfDetail(immediate = false) {
+					shelfManager.closeDetail({ immediate });
+				},
+				getRendererDiagnostics() {
+					const info = renderer.renderer.info;
+					const gpuTiming = renderLoop.getGpuTimingSnapshot();
+					return {
+						drawCalls: info.render.calls,
+						triangles: info.render.triangles,
+						points: info.render.points,
+						lines: info.render.lines,
+						geometries: info.memory.geometries,
+						textures: info.memory.textures,
+						gpuTimerQuerySupported: gpuTiming?.extensionSupported ?? false,
+						gpuTiming,
+					};
+				},
+			});
 			renderLoop.start();
 		},
 		applyFrameSnapshot(snapshot) {
@@ -1777,9 +2061,10 @@ export function createLegacyVisualComposition(
 			currentVisibility = { ...state };
 			runtimeGovernor?.sync(context?.scheduler.getMode() ?? "foreground");
 		},
-		dispose() {
+			dispose() {
 			if (disposed) return;
-			disposed = true;
+				disposed = true;
+				options.onDebugController?.(null);
 			generation += 1;
 			if (refs) refs.lifecycleRef.current = null;
 			const disposalErrors: unknown[] = [];

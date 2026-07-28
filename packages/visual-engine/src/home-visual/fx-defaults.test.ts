@@ -30,9 +30,10 @@ const EXPECTED_KEYS = [
 	"performanceBackground", "performanceQuality", "liveBackgroundKeep",
 	"cam",
 	"mouseActive", "mouseXy", "burstAmt", "vinylSpin", "particleDim",
+	"stageLyrics", "sonic",
 ] as const;
 
-test("FX_DEFAULTS exposes the verbatim baseline fxDefaults literal (81 baseline keys + 5 runtime keys = 86)", () => {
+test("FX_DEFAULTS exposes 81 baseline keys, 5 runtime keys, and 2 M4 typed settings", () => {
 	expect(Object.keys(FX_DEFAULTS).length).toBe(EXPECTED_KEYS.length);
 	for (const key of EXPECTED_KEYS) {
 		expect(Object.prototype.hasOwnProperty.call(FX_DEFAULTS, key)).toBe(true);
@@ -104,7 +105,7 @@ test("FX_DEFAULTS baseline scalar values match baseline index.html 3196-3268", (
 	expect(FX_DEFAULTS.particleLyrics).toBe(true);
 	expect(FX_DEFAULTS.backCover).toBe(false);
 	expect(FX_DEFAULTS.shelf).toBe("side");
-	expect(FX_DEFAULTS.shelfCameraMode).toBe("static");
+	expect(FX_DEFAULTS.shelfCameraMode).toBe("dynamic");
 	expect(FX_DEFAULTS.shelfPresence).toBe("always");
 	expect(FX_DEFAULTS.shelfShowPodcasts).toBe(false);
 	expect(FX_DEFAULTS.shelfMergeCollections).toBe(false);

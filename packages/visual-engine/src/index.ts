@@ -86,7 +86,70 @@ export type {
 	BeatHandler,
 	AudioReactivityOptions,
 	AudioReactivityEngine,
+	SonicSpectrumFrame,
+	SonicBand,
+	SonicBandLevels,
+	SonicAudioSnapshot,
 } from "./audio/audio-snapshot";
+export {
+	SONIC_BAND_HZ,
+	SONIC_SPECTRUM_BIN_COUNT,
+	analyzeSonicBands,
+	analyzeSonicSpectrum,
+	createSonicAudioProfile,
+	createSonicSpectrumFrame,
+} from "./sonic-topography/sonic-audio-profile";
+export type {
+	SonicAudioProfile,
+	SonicAudioProfileInput,
+	SonicSpectrumAnalysis,
+	SonicSpectrumFrameInput,
+} from "./sonic-topography/sonic-audio-profile";
+export {
+	SONIC_TERRAIN_GRID_CAP,
+	SONIC_TOPOGRAPHY_DEFAULTS,
+	mapSonicTerrainAmplitude,
+	normalizeSonicTopographySettings,
+	resolveSonicTerrainGrid,
+} from "./sonic-topography/sonic-settings";
+export type {
+	SonicColorMode,
+	SonicColorSettings,
+	SonicEqSettings,
+	SonicFloatingSettings,
+	SonicPerformanceQuality,
+	SonicTerrainSettings,
+	SonicTopographySettings,
+	SonicTriggerSettings,
+} from "./sonic-topography/sonic-settings";
+export {
+	createSonicTopographyPlugin,
+	SONIC_TOPOGRAPHY_PRESET_ID,
+} from "./sonic-topography/sonic-plugin";
+export type { SonicTopographyPlugin } from "./sonic-topography/sonic-plugin";
+export {
+	createSonicTopographyRuntime,
+	SONIC_TOPOGRAPHY_MAX_INSTANCES,
+	SONIC_TOPOGRAPHY_MESH_COUNT,
+	SONIC_TOPOGRAPHY_ROOT_NAME,
+} from "./sonic-topography/sonic-topography";
+export type {
+	SonicAudioSnapshotSupplier,
+	SonicTopographyDiagnostics,
+	SonicTopographyPluginContext,
+	SonicTopographyRuntime,
+	SonicTopographyRuntimeDependencies,
+} from "./sonic-topography/sonic-topography";
+export {
+	DEFAULT_STAGE_LYRICS_SETTINGS,
+	normalizeStageLyricsSettings,
+} from "./stage-lyrics/model/stage-lyrics-settings";
+export type {
+	StageLyricDisplayMode,
+	StageLyricMotionStyle,
+	StageLyricTranslationMode,
+	StageLyricsSettings,
+} from "./stage-lyrics/model/stage-lyrics-settings";
 export { createPeakFollower } from "./audio/peak-followers";
 export type { PeakFollower, PeakFollowerParams } from "./audio/peak-followers";
 export {
@@ -119,6 +182,12 @@ export { attachRendererResizeSync, createRenderer } from "./runtime/renderer-set
 export type { RendererHandle, RendererResizeOptions, RendererResizeSyncOptions, RendererSetupOptions, ThreeModule, ThreeFactory } from "./runtime/renderer-setup";
 export { createRenderLoop } from "./runtime/render-loop";
 export type { RenderLoop, RenderLoopOptions, RenderStepOptions } from "./runtime/render-loop";
+export { createGpuFrameTimer } from "./runtime/gpu-frame-timer";
+export type {
+	GpuFrameTimer,
+	GpuFrameTimerOptions,
+	GpuFrameTimingSnapshot,
+} from "./runtime/gpu-frame-timer";
 export { createCinemaCamera } from "./runtime/cinema-camera";
 export type {
 	CinemaCamera,
@@ -168,10 +237,30 @@ export type {
 	FocusZoneTarget,
 	FocusZoneType,
 } from "./runtime/focus-zone";
+export { resolveVisualCameraPolicy } from "./runtime/visual-camera-policy";
+export type {
+	VisualCameraPolicyInput,
+	VisualCameraPolicyResult,
+	VisualCameraTarget,
+} from "./runtime/visual-camera-policy";
 export { createRuntimeUniforms } from "./runtime/uniforms";
 export type { RuntimeUniforms, UniformValue } from "./runtime/uniforms";
 export { RenderStepSlot, RENDER_STEP_ORDER } from "./runtime/render-step-slot";
 export type { RenderStepSlot as RenderStepSlotName } from "./runtime/render-step-slot";
+export { createVisualMaintenanceLane } from "./runtime/visual-maintenance-lane";
+export type {
+	VisualMaintenanceLane,
+	VisualMaintenanceLaneOptions,
+} from "./runtime/visual-maintenance-lane";
+export { createVisualSubsystemDiagnosticsRegistry } from "./runtime/subsystem-diagnostics";
+export type {
+	VisualDiagnosticObject,
+	VisualDiagnosticValue,
+	VisualSubsystemDiagnosticsPublisher,
+	VisualSubsystemDiagnosticsRegistry,
+	VisualSubsystemDiagnosticsSnapshot,
+	VisualSubsystemDiagnosticsSupplier,
+} from "./runtime/subsystem-diagnostics";
 export { createPerfState, projectPerfState } from "./runtime/perf-state";
 export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/perf-state";
 export type { FrameContext } from "./runtime/frame-context";
@@ -242,8 +331,8 @@ export { scanThreeResourceUsage } from "./runtime/three-resource-scanner";
 export type { ThreeResourceObjectLike } from "./runtime/three-resource-scanner";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
-export type { FxState } from "./home-visual/fx-defaults";
-export { applyPreset, clampPreset, PRESET_COUNT, SKULL_PRESET_INDEX } from "./home-visual/preset-state";
+export type { DeepPartial, FxState, FxStatePatch } from "./home-visual/fx-defaults";
+export { applyPreset, clampPreset, PRESET_COUNT, SKULL_PRESET_INDEX, SONIC_PRESET_INDEX } from "./home-visual/preset-state";
 export type { PresetOpts } from "./home-visual/preset-state";
 export { syncFxUniforms, lerp } from "./home-visual/sync-uniforms";
 export type { SyncUniformsOpts, UniformContainer, UniformSlot } from "./home-visual/sync-uniforms";
@@ -478,6 +567,7 @@ export type {
 export { createShelfManager, createShelfManagerWithThree } from "./shelf/shelf-animate";
 export type {
 	ShelfItem,
+	ShelfDetailPhase,
 	ShelfManagerOptions,
 	ShelfOpenDetailContentPayload,
 	ShelfSnapshot,

@@ -19,6 +19,7 @@ export interface ShelfContentPanelSprite {
 	readonly material: THREE.MeshBasicMaterial;
 	readonly mesh: THREE.Mesh;
 	update(next: ShelfContentPanelUpdate): void;
+	retire(): void;
 	dispose(): void;
 }
 
@@ -32,6 +33,7 @@ export interface ShelfContentRowSprite {
 	row: ShelfContentRow;
 	lastCenter: boolean;
 	update(row: ShelfContentRow, index: number, centered: boolean): void;
+	retire(): void;
 	dispose(): void;
 }
 
@@ -80,6 +82,8 @@ export function createShelfContentPanelSprite(
 	mesh.renderOrder = 232;
 	mesh.userData.shelfContentDetail = true;
 	mesh.userData.shelfContentKind = "panel";
+	let retired = false;
+	let resourcesDisposed = false;
 
 	const sprite: ShelfContentPanelSprite = {
 		canvas,
@@ -88,10 +92,17 @@ export function createShelfContentPanelSprite(
 		material,
 		mesh,
 		update(nextTitle) {
+			if (retired) return;
 			drawPanel(canvas, nextTitle);
 			texture.needsUpdate = true;
 		},
+		retire() {
+			retired = true;
+		},
 		dispose() {
+			if (resourcesDisposed) return;
+			resourcesDisposed = true;
+			sprite.retire();
 			texture.dispose();
 			material.dispose();
 			geometry.dispose();
@@ -130,6 +141,10 @@ export function createShelfContentRowSprite(
 	mesh.userData.shelfContentDetail = true;
 	mesh.userData.shelfContentKind = "row";
 	mesh.userData.shelfContentRowIndex = index;
+	let bindingGeneration = 0;
+	let bindingKey = "";
+	let retired = false;
+	let resourcesDisposed = false;
 
 	const sprite: ShelfContentRowSprite = {
 		canvas,
@@ -141,14 +156,30 @@ export function createShelfContentRowSprite(
 		row,
 		lastCenter: centered,
 		update(nextRow, nextIndex, nextCentered) {
+			if (retired) return;
+			const nextBindingKey = makeShelfContentRowBindingKey(nextRow, nextIndex);
+			if (nextBindingKey !== bindingKey) {
+				bindingKey = nextBindingKey;
+				bindingGeneration += 1;
+			}
 			this.index = nextIndex;
 			this.row = nextRow;
 			this.lastCenter = nextCentered;
 			mesh.userData.shelfContentRowIndex = nextIndex;
+			mesh.userData.shelfBindingGeneration = bindingGeneration;
+			mesh.renderOrder = 240 + nextIndex;
 			drawRow(canvas, nextRow, nextIndex, nextCentered);
 			texture.needsUpdate = true;
 		},
+		retire() {
+			if (retired) return;
+			retired = true;
+			bindingGeneration += 1;
+		},
 		dispose() {
+			if (resourcesDisposed) return;
+			resourcesDisposed = true;
+			sprite.retire();
 			texture.dispose();
 			material.dispose();
 			geometry.dispose();
@@ -156,6 +187,22 @@ export function createShelfContentRowSprite(
 	};
 	sprite.update(row, index, centered);
 	return sprite;
+}
+
+function makeShelfContentRowBindingKey(row: ShelfContentRow, index: number): string {
+	return [
+		index,
+		row.id || "",
+		row.name || "",
+		row.title || "",
+		row.artist || "",
+		row.album || "",
+		row.provider || "",
+		row.kind || "",
+		row.type || "",
+		row.cover || "",
+		row.coverUrl || "",
+	].join("|");
 }
 
 function makeTexture(

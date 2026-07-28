@@ -408,6 +408,11 @@ test("resolveHomeVisualPreset stops forcing idle wallpaper after a committed DIY
 	expect(held).toEqual({ preset: 4, previousPreset: null, changed: false });
 });
 
+test("resolveHomeVisualPreset preserves Sonic instead of replacing it with the idle wallpaper preset", () => {
+	const sonic = resolveHomeVisualPreset(true, 7, 7, null);
+	expect(sonic).toEqual({ preset: 7, previousPreset: null, changed: false });
+});
+
 test("resolveStageLyricLayoutOptions carries baseline camera lock and layout controls", () => {
 	const layout = resolveStageLyricLayoutOptions({
 		lyricCameraLock: true,

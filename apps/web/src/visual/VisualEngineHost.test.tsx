@@ -115,7 +115,7 @@ test("resolveVisualShelfSettings prefers explicit shelf store settings over fx d
 	});
 	expect(resolveVisualShelfSettings({ shelf: "off" }, null)).toEqual({
 		mode: "off",
-		cameraMode: "static",
+		cameraMode: "dynamic",
 		presence: "always",
 		showPodcasts: true,
 		mergeCollections: false,
@@ -198,6 +198,25 @@ test("mapLyricPayload preserves native karaoke timing for stage lyrics", () => {
 			],
 		},
 	]);
+});
+
+test("mapLyricPayload preserves translation for the visual-engine contract", () => {
+	const lines = mapLyricPayload({
+		provider: "netease",
+		trackId: "42",
+		hasTranslation: true,
+		isWordByWord: false,
+		lines: [
+			{
+				timeMs: 1000,
+				text: "你好",
+				translation: "Hello",
+			},
+		],
+	});
+
+	expect(lines.length).toBe(1);
+	expect(lines[0]?.translation).toBe("Hello");
 });
 
 test("mapLyricPayload sorts stage lyrics and native words like the Electron baseline parser", () => {

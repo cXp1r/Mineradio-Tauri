@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
-import { FX_DEFAULTS, type FxState } from "@mineradio/visual-engine";
+import { clampPreset, FX_DEFAULTS, type FxState, type FxStatePatch } from "@mineradio/visual-engine";
+import { SonicTopographyControls } from "./controls/SonicTopographyControls";
+import { StageLyricsControls } from "./controls/StageLyricsControls";
 
 const FX_FAB_AUTO_HIDE_STORE_KEY = "mineradio-fx-fab-auto-hide-v1";
 
@@ -11,6 +13,7 @@ const PRESETS = [
   { id: 4, name: "黑胶", desc: "Vinyl pulse" },
   { id: 5, name: "星河", desc: "静默流光" },
   { id: 6, name: "安魂", desc: "骷髅 · YUI7W" },
+  { id: 7, name: "声景", desc: "Sonic Topography" },
 ] as const;
 
 type NumberKey = Extract<keyof FxState, string>;
@@ -317,12 +320,12 @@ const LYRIC_FONTS = [
 export interface VisualControlPanelHostProps {
   preset?: number;
   intensity?: number;
-  settings?: Partial<FxState>;
+  settings?: FxStatePatch;
   onPresetChange?: (preset: number) => void;
   onNumberSettingChange?: (key: keyof FxState, value: number) => void;
   onBooleanSettingChange?: (key: keyof FxState, value: boolean) => void;
   onStringSettingChange?: (key: keyof FxState, value: string) => void;
-  onFxPatchChange?: (patch: Partial<FxState>) => void;
+  onFxPatchChange?: (patch: FxStatePatch) => void;
   onNotice?: (message: string) => void;
 }
 
@@ -462,7 +465,7 @@ export function VisualControlPanelHost(
   const [peek, setPeek] = useState(false);
   const revealArmedRef = useRef(true);
   const previousAutoHideRef = useRef(autoHide);
-  const preset = Math.max(0, Math.min(6, Math.round(props.preset ?? 0)));
+  const preset = clampPreset(props.preset ?? 0);
   useEffect(() => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("fx-fab-auto-hide", autoHide);
@@ -919,7 +922,7 @@ export function VisualControlPanelHost(
             <Segment
               id="shelf-camera-seg"
               keyName="shelfCameraMode"
-              value={stringValue(props, "shelfCameraMode") || "static"}
+			  value={stringValue(props, "shelfCameraMode") || "dynamic"}
               dataName="shelf-camera"
               options={[
                 { value: "dynamic", label: "动态镜头" },
@@ -945,6 +948,15 @@ export function VisualControlPanelHost(
             </div>
           </div>
         </div>
+
+        <StageLyricsControls
+          settings={props.settings}
+          onFxPatchChange={props.onFxPatchChange}
+        />
+        <SonicTopographyControls
+          settings={props.settings}
+          onFxPatchChange={props.onFxPatchChange}
+        />
 
         <div className="fx-advanced open" id="fx-advanced">
           <div className="fx-advanced-head">

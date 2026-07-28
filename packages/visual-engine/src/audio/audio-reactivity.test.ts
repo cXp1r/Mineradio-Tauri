@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createAudioReactivity } from "./audio-reactivity";
 import { AUDIO_SPECTRUM_BAND_COUNT, type AudioFrameBytes } from "./audio-snapshot";
+import { M4_SONIC_AUDIO_FRAMES } from "../fixtures/m4/sonic-audio-frames";
 
 const FS = 44100;
 const FFT = 2048;
@@ -261,4 +262,42 @@ test("paused frames decay lyric sun energy with the original idle branch", () =>
 		engine.update(DT);
 	}
 	expect(engine.getSnapshot().lyricSunEnergy ?? 0).toBeLessThan(before * 0.5);
+});
+
+test("audio reactivity publishes immutable Sonic data from the same frame-source read", () => {
+	let reads = 0;
+	const sourceBins = M4_SONIC_AUDIO_FRAMES.kick.createBins();
+	const frame: AudioFrameBytes = {
+		mainFreqData: sourceBins,
+		mainTimeData: new Uint8Array(1024).fill(128),
+		mainSampleRate: 48_000,
+		mainFftSize: 1024,
+		beatFreqData: sourceBins,
+		beatTimeData: new Uint8Array(1024).fill(128),
+		beatSampleRate: 48_000,
+		beatFftSize: 1024,
+		playing: true,
+		currentTimeSeconds: 1,
+		trackKey: "track-a",
+	};
+	const engine = createAudioReactivity({
+		frameSource: () => {
+			reads += 1;
+			return frame;
+		},
+	});
+
+	engine.update(DT);
+	const sonic = engine.getSnapshot().sonic;
+	expect(reads).toBe(1);
+	expect(sonic?.spectrum?.bin(2)).toBe(255);
+	expect(sonic?.lowDrive ?? 0).toBeGreaterThan(0.58);
+	expect(Object.isFrozen(sonic)).toBe(true);
+	expect(Object.isFrozen(sonic?.bands)).toBe(true);
+
+	sourceBins.fill(0);
+	expect(sonic?.spectrum?.bin(2)).toBe(255);
+	engine.update(DT);
+	expect(reads).toBe(2);
+	expect(sonic?.spectrum?.bin(2)).toBe(255);
 });

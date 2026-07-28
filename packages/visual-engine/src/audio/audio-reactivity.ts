@@ -6,6 +6,7 @@ import {
 	type AudioFrameBytes,
 	type AudioFrameSource,
 	type BeatHandler,
+	type SonicAudioSnapshot,
 } from "./audio-snapshot";
 import {
 	createPeakFollower,
@@ -22,6 +23,10 @@ import {
 	clamp01,
 } from "./frequency-bands";
 import { createBeatEngine, type BeatSamples } from "./beat-engine";
+import {
+	createSonicAudioProfile,
+	createSonicSpectrumFrame,
+} from "../sonic-topography/sonic-audio-profile";
 
 const PEAK_BASS_RELEASE_MS = -1000 / 60 / Math.log(0.994);
 const PEAK_MID_RELEASE_MS = -1000 / 60 / Math.log(0.993);
@@ -46,6 +51,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let prefersReducedMotionValue = false;
 	let waitingForBeatMap = true;
 	let beatMapReadyForCamera = false;
+	let sonicMonitorEnabled = opts.sonicMonitorEnabled ?? true;
 
 	const bassPeak = createPeakFollower(0.12, 0, PEAK_BASS_RELEASE_MS, 0.030);
 	const midPeak = createPeakFollower(0.10, 0, PEAK_MID_RELEASE_MS, 0.026);
@@ -81,6 +87,8 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let rt = 0;
 	let re = 0;
 	const frequencyBands = new Float32Array(AUDIO_SPECTRUM_BAND_COUNT);
+	const sonicProfile = createSonicAudioProfile();
+	let sonicSnapshot: SonicAudioSnapshot = sonicProfile.getSnapshot();
 
 	const beatSubscribers = new Set<BeatHandler>();
 
@@ -151,6 +159,32 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		treble = Math.min(0.62, smoothTreb * 1.20);
 	}
 
+	function updateSonicSnapshot(frame: AudioFrameBytes | null, dtSeconds: number): void {
+		const spectrum = frame && sonicMonitorEnabled
+			? createSonicSpectrumFrame({
+				bins: frame.mainFreqData,
+				sampleRate: frame.mainSampleRate,
+				fftSize: frame.mainFftSize,
+				currentTimeSeconds: frame.currentTimeSeconds,
+				playing: frame.playing,
+			})
+			: null;
+		sonicSnapshot = sonicProfile.update({
+			spectrum,
+			dtSeconds,
+			trackKey: frame?.trackKey ?? null,
+			monitorEnabled: sonicMonitorEnabled,
+			reducedMotion: prefersReducedMotionValue,
+			fallback: {
+				bass,
+				mid,
+				treble,
+				energy: audioEnergy,
+				beatPulse,
+			},
+		});
+	}
+
 	function update(dt: number) {
 		const dtSec = Math.max(0.001, Math.min(0.05, dt));
 		beatOnsetFlag = false;
@@ -177,6 +211,8 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			rt = 0;
 			re = 0;
 			frequencyBands.fill(0);
+			sonicProfile.reset();
+			sonicSnapshot = sonicProfile.getSnapshot();
 			return;
 		}
 
@@ -186,6 +222,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		if (!frame || !playing) {
 			decayIdle(dtSec);
 			applySnapshotPostBlock(dtSec);
+			updateSonicSnapshot(frame, dtSec);
 			return;
 		}
 
@@ -304,6 +341,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		prevBeatSnap = prevBeatSnap * 0.38 + beat.snap * 0.62;
 
 		applySnapshotPostBlock(dtSec);
+		updateSonicSnapshot(frame, dtSec);
 	}
 
 	function getSnapshot(): AudioSnapshot {
@@ -321,6 +359,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			scheduledBeatPulse,
 			beatOnsetFlag,
 			frequencyBands,
+			sonic: sonicSnapshot,
 		};
 	}
 
@@ -374,6 +413,10 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		beatMapReadyForCamera = !!value;
 	}
 
+	function setSonicMonitorEnabled(value: boolean) {
+		sonicMonitorEnabled = !!value;
+	}
+
 	function dispose() {
 		beatSubscribers.clear();
 		scheduledBeatFlag = false;
@@ -390,6 +433,8 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		midPeak.reset();
 		treblePeak.reset();
 		energyPeak.reset();
+		sonicProfile.reset();
+		sonicSnapshot = sonicProfile.getSnapshot();
 	}
 
 	const engine: AudioReactivityEngine = {
@@ -403,6 +448,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		setPrefersReducedMotion,
 		setWaitingForBeatMap,
 		setBeatMapReady,
+		setSonicMonitorEnabled,
 		dispose,
 		smoothingTimeConstant: {
 			main: mainAnalyserConfig.smoothingTimeConstant,

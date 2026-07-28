@@ -10,6 +10,13 @@ import {
 	type ShelfSelectSoundVariant,
 	type ShelfCardAction,
 } from "@mineradio/visual-engine";
+import {
+	createShelfTrackChangeGuard,
+	type ShelfTrackChangeGuard,
+} from "./shelf-track-change-guard";
+import { isShelfPortraitViewport } from "./shelf-viewport";
+
+export { SHELF_TRACK_CHANGE_GUARD_MS } from "./shelf-track-change-guard";
 
 export interface ShelfPointerInteractionTarget {
 	addEventListener(type: string, listener: EventListener, options?: boolean | AddEventListenerOptions): void;
@@ -46,6 +53,7 @@ export interface ShelfPointerInteractionOptions {
 		| "openDetail"
 		| "closeDetail"
 		| "hasOpenContent"
+		| "getDetailPhase"
 		| "getContentList"
 		| "getShelfPinnedOpen"
 		| "setShelfPinnedOpen"
@@ -65,6 +73,10 @@ export interface ShelfPointerInteractionOptions {
 	getViewportHeight: () => number;
 	getShelfPresence?: () => string | null | undefined;
 	getShelfPreviewActive?: () => boolean;
+	getShelfCameraMode?: () => string | null | undefined;
+	getTrackKey?: () => string | null | undefined;
+	nowMs?: () => number;
+	trackChangeGuard?: ShelfTrackChangeGuard;
 	isDetailWheelTarget?: (event: WheelEvent) => boolean;
 	setShelfMode?: (mode: "side") => void;
 	onBeforeShelfWheelScroll?: (direction: number) => boolean;
@@ -107,7 +119,7 @@ const WHEEL_LISTENER_OPTIONS: AddEventListenerOptions = { passive: false, captur
 const WHEEL_REMOVE_OPTIONS: EventListenerOptions = { capture: true };
 
 function getShelfWheelZoneWidth(viewportWidth: number, viewportHeight: number): number {
-	const portrait = viewportHeight > viewportWidth * 1.08;
+	const portrait = isShelfPortraitViewport(viewportWidth, viewportHeight);
 	const hotZoneRatio = portrait ? 0.26 : 0.18;
 	const hotZoneWidth = Math.min(portrait ? 280 : 360, Math.max(148, viewportWidth * hotZoneRatio));
 	const ratioWidth = viewportWidth * (portrait ? 0.24 : 0.18);
@@ -115,7 +127,7 @@ function getShelfWheelZoneWidth(viewportWidth: number, viewportHeight: number): 
 }
 
 function getShelfHotZoneWidth(viewportWidth: number, viewportHeight: number): number {
-	const portrait = viewportHeight > viewportWidth * 1.08;
+	const portrait = isShelfPortraitViewport(viewportWidth, viewportHeight);
 	const ratio = portrait ? 0.26 : 0.18;
 	return Math.min(portrait ? 280 : 360, Math.max(148, viewportWidth * ratio));
 }
@@ -215,6 +227,7 @@ export function attachShelfPointerInteractionWiring(
 ): () => void {
 	let disposed = false;
 	let pointerDownAt: { x: number; y: number } | null = null;
+	let pointerDownGeneration: number | null = null;
 	let hadDrag = false;
 	let suppressNextClick = false;
 
@@ -229,6 +242,18 @@ export function attachShelfPointerInteractionWiring(
 		opts.shelfManager.clearSelected();
 	};
 
+	const trackChangeGuard = opts.trackChangeGuard ?? createShelfTrackChangeGuard({
+		getTrackKey: () => opts.getTrackKey?.() ?? "",
+		nowMs: opts.nowMs,
+		onChange: () => {
+			if (!opts.shelfManager.getShelfPinnedOpen() && !opts.shelfManager.hasOpenContent()) {
+				clearHoverCueAndSelection();
+			}
+		},
+	});
+
+	const syncTrackGuard = () => trackChangeGuard.sync();
+
 	const isShelfPinnedOpen = (): boolean => {
 		return opts.shelfManager.getShelfPinnedOpen();
 	};
@@ -237,8 +262,10 @@ export function attachShelfPointerInteractionWiring(
 		type: Parameters<CinemaCamera["setFocusZone"]>[0],
 		zoneOpts: Parameters<CinemaCamera["setFocusZone"]>[1],
 	): void => {
-		opts.cinema.setFocusZone(type, zoneOpts);
-		opts.onFocusZoneChange?.(type, zoneOpts);
+		const isShelfFocus = type === "shelf-side" || type === "shelf-stage" || type === "shelf-detail";
+		const effectiveType = isShelfFocus && opts.getShelfCameraMode?.() === "static" ? null : type;
+		opts.cinema.setFocusZone(effectiveType, zoneOpts);
+		opts.onFocusZoneChange?.(effectiveType, zoneOpts);
 	};
 
 	const focusSide = (): void => {
@@ -263,6 +290,7 @@ export function attachShelfPointerInteractionWiring(
 	};
 
 	const canStartInteraction = (event: Event): boolean => {
+		if (syncTrackGuard().blocking) return false;
 		if (opts.getSplashActive()) return false;
 		if (opts.shelfManager.getMode() === "off") return false;
 		if (opts.shelfManager.getSnapshot().openCardIdx >= 0) return false;
@@ -272,6 +300,7 @@ export function attachShelfPointerInteractionWiring(
 	};
 
 	const canShowShelfHoverCueAt = (event: PointerEvent | MouseEvent): boolean => {
+		if (syncTrackGuard().blocking) return false;
 		if (opts.getSplashActive()) return false;
 		if (opts.shelfManager.getMode() !== "side") return false;
 		if (isShelfPinnedOpen()) return false;
@@ -333,6 +362,7 @@ export function attachShelfPointerInteractionWiring(
 		if (opts.getSplashActive()) return false;
 		if (opts.shelfManager.getMode() === "off") return false;
 		if (!opts.shelfManager.hasOpenContent()) return false;
+		if (opts.shelfManager.getDetailPhase() !== "open") return false;
 		if (isShelfInteractionUiTarget(event.target)) return false;
 		if (!isShelfInteractionBackgroundTarget(event.target)) return false;
 		if (opts.isDetailWheelTarget) return opts.isDetailWheelTarget(event);
@@ -345,6 +375,7 @@ export function attachShelfPointerInteractionWiring(
 		if (opts.getSplashActive()) return false;
 		if (opts.shelfManager.getMode() === "off") return false;
 		if (!opts.shelfManager.hasOpenContent()) return false;
+		if (opts.shelfManager.getDetailPhase() !== "open") return false;
 		if (isShelfInteractionUiTarget(event.target)) return false;
 		if (!isShelfInteractionBackgroundTarget(event.target)) return false;
 		return true;
@@ -365,6 +396,7 @@ export function attachShelfPointerInteractionWiring(
 
 	const onPointerMove: EventListener = (event) => {
 		const pointerEvent = event as PointerEvent;
+		if (syncTrackGuard().blocking) return;
 		if (pointerDownAt) {
 			const dx = pointerEvent.clientX - pointerDownAt.x;
 			const dy = pointerEvent.clientY - pointerDownAt.y;
@@ -392,19 +424,31 @@ export function attachShelfPointerInteractionWiring(
 
 	const onPointerDown: EventListener = (event) => {
 		const pointerEvent = event as PointerEvent;
+		const guard = syncTrackGuard();
+		if (guard.blocking) {
+			pointerDownAt = null;
+			pointerDownGeneration = guard.generation;
+			return;
+		}
 		pointerDownAt = { x: pointerEvent.clientX, y: pointerEvent.clientY };
+		pointerDownGeneration = guard.generation;
 		hadDrag = false;
 		suppressNextClick = false;
 	};
 
 	const onPointerUp: EventListener = () => {
+		const guard = syncTrackGuard();
 		pointerDownAt = null;
-		suppressNextClick = hadDrag;
+		suppressNextClick = hadDrag || (
+			pointerDownGeneration != null && pointerDownGeneration !== guard.generation
+		);
+		pointerDownGeneration = null;
 		hadDrag = false;
 	};
 
 	const onPointerCancel: EventListener = () => {
 		pointerDownAt = null;
+		pointerDownGeneration = null;
 		hadDrag = false;
 		suppressNextClick = false;
 		clearHoverCueAndSelection();
@@ -416,6 +460,7 @@ export function attachShelfPointerInteractionWiring(
 
 	const onClick: EventListener = (event) => {
 		pointerDownAt = null;
+		const trackGuardActive = syncTrackGuard().blocking;
 		if (suppressNextClick || hadDrag) {
 			suppressNextClick = false;
 			hadDrag = false;
@@ -427,6 +472,7 @@ export function attachShelfPointerInteractionWiring(
 			const contentList = opts.shelfManager.getContentList();
 			const pick = contentList?.pickRowAtScreen?.({ x: mouseEvent.clientX, y: mouseEvent.clientY }) ?? null;
 			if (!pick) {
+				if (trackGuardActive) return;
 				const returnHit = opts.getStrictHit?.(pointerInfoFromEvent(mouseEvent)) ?? null;
 				mouseEvent.preventDefault?.();
 				mouseEvent.stopImmediatePropagation?.();
@@ -448,6 +494,7 @@ export function attachShelfPointerInteractionWiring(
 			});
 			return;
 		}
+		if (trackGuardActive) return;
 		if (!canStartInteraction(event)) return;
 		const hit = opts.getHit(pointerInfoFromEvent(event as MouseEvent));
 		if (!canUseHit(hit)) return;
@@ -482,6 +529,7 @@ export function attachShelfPointerInteractionWiring(
 
 	const onWheel: EventListener = (event) => {
 		const wheelEvent = event as WheelEvent;
+		const trackGuardActive = syncTrackGuard().blocking;
 		if (opts.shelfManager.hasOpenContent()) {
 			if (!canUseDetailWheel(wheelEvent)) return;
 			const contentList = opts.shelfManager.getContentList();
@@ -493,6 +541,7 @@ export function attachShelfPointerInteractionWiring(
 			opts.onShelfSelectFeedback?.(direction, "row");
 			return;
 		}
+		if (trackGuardActive) return;
 		if (!canStartInteraction(event)) return;
 		const hit = opts.getHit(pointerInfoFromEvent(wheelEvent));
 		if (
@@ -514,6 +563,7 @@ export function attachShelfPointerInteractionWiring(
 	};
 
 	const onContextMenu: EventListener = (event) => {
+		const trackGuardActive = syncTrackGuard().blocking;
 		if (opts.getSplashActive()) return;
 		if (isShelfInteractionUiTarget(event.target)) return;
 		if (!isShelfInteractionBackgroundTarget(event.target)) return;
@@ -526,6 +576,7 @@ export function attachShelfPointerInteractionWiring(
 			mode = "side";
 		}
 		if (opts.shelfManager.getSnapshot().openCardIdx >= 0) {
+			if (opts.shelfManager.getDetailPhase() !== "open") return;
 			const contentList = opts.shelfManager.getContentList();
 			const pick = opts.getStrictDetailRowHit?.(pointerInfoFromEvent(event as MouseEvent)) ?? null;
 			if (pick && canQueueShelfDetailRowNext(pick.row)) {
@@ -537,9 +588,11 @@ export function attachShelfPointerInteractionWiring(
 				});
 				return;
 			}
+			if (trackGuardActive) return;
 			closeDetailToSide();
 			return;
 		}
+		if (trackGuardActive) return;
 		const nextOpen = !isShelfPinnedOpen();
 		opts.shelfManager.setShelfPinnedOpen(nextOpen);
 		setFocusZone(nextOpen ? "shelf-side" : null, {

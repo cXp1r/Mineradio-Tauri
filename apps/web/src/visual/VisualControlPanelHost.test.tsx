@@ -15,10 +15,11 @@ test("VisualControlPanelHost server-renders the baseline fx fab and panel shell"
   expect(html).toContain("MINERADIO VISUALS");
   expect(html).toContain('id="preset-grid"');
   expect(html).toContain('class="preset-card');
-  expect(html.match(/class="preset-card/g)?.length).toBe(7);
-  expect(html).toContain('data-preset="6"');
+  expect(html.match(/class="preset-card/g)?.length).toBe(8);
+  expect(html).toContain('data-preset="7"');
   expect(html).toContain("安魂");
   expect(html).toContain("YUI7W");
+  expect(html).toContain("Sonic Topography");
 });
 
 test("VisualControlPanelHost renders baseline DIY control sections", () => {
@@ -350,6 +351,41 @@ test("VisualControlPanelHost emits baseline stage lyric color controls", async (
     "lyricGlowColor:#778899",
     "lyricColorMode:auto",
   ]);
+  root.unmount();
+  container.remove();
+});
+
+test("VisualControlPanelHost delegates nested Stage and dormant Sonic settings through one fx patch", async () => {
+  await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+  const patches: Array<Record<string, unknown>> = [];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  root.render(
+    React.createElement(VisualControlPanelHost, {
+      settings: {
+        stageLyrics: { displayMode: "cinema", customLineCount: 10 },
+        sonic: { terrain: { density: 46 }, trigger: { monitorEnabled: true } },
+      },
+      onFxPatchChange: (patch) => patches.push(patch as Record<string, unknown>),
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  expect(container.querySelector("#fx-stage-lyrics-fold")).not.toBeNull();
+  expect(container.querySelector("#fx-sonic-fold")).not.toBeNull();
+  (container.querySelector('[data-stage-display-mode="dual"]') as HTMLButtonElement).click();
+  const density = container.querySelector("#sonic-terrain-density") as HTMLInputElement;
+  const valueSetter = Object.getOwnPropertyDescriptor(
+    window.HTMLInputElement.prototype,
+    "value",
+  )?.set;
+  valueSetter?.call(density, "73");
+  density.dispatchEvent(new window.Event("input", { bubbles: true }));
+
+  expect(patches.length).toBe(2);
+  expect((patches[0]?.stageLyrics as { displayMode?: string } | undefined)?.displayMode).toBe("dual");
+  expect((patches[1]?.sonic as { terrain?: { density?: number } } | undefined)?.terrain?.density).toBe(73);
   root.unmount();
   container.remove();
 });

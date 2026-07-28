@@ -5,6 +5,7 @@ import {
 	isWallpaperSafeShelfPreset,
 	isQueueFocusActive,
 	resolveShelfFocusZone,
+	shouldClearShelfFocusOnCameraModeChange,
 } from "./shelf-focus-zone";
 
 const baseInput = {
@@ -27,6 +28,13 @@ test("isWallpaperSafeShelfPreset follows baseline preset 5 semantics", () => {
 	expect(isWallpaperSafeShelfPreset(4)).toBe(false);
 	expect(isWallpaperSafeShelfPreset(true)).toBe(false);
 	expect(isWallpaperSafeShelfPreset(undefined)).toBe(false);
+});
+
+test("shouldClearShelfFocusOnCameraModeChange only clears when dynamic becomes static", () => {
+	expect(shouldClearShelfFocusOnCameraModeChange("dynamic", "static")).toBe(true);
+	expect(shouldClearShelfFocusOnCameraModeChange("static", "static")).toBe(false);
+	expect(shouldClearShelfFocusOnCameraModeChange("dynamic", "dynamic")).toBe(false);
+	expect(shouldClearShelfFocusOnCameraModeChange("static", "dynamic")).toBe(false);
 });
 
 test("resolveShelfFocusZone returns null while splash is active", () => {
@@ -76,6 +84,22 @@ test("resolveShelfFocusZone clears shelf focus while shelf camera mode is static
 	}
 });
 
+test("resolveShelfFocusZone keeps queue priority but suppresses every Shelf focus during the track guard", () => {
+	expect(resolveShelfFocusZone({
+		...baseInput,
+		trackGuardActive: true,
+		sideShelfFocusHit: true,
+		shelfMode: "side",
+	}).type).toBeNull();
+	expect(resolveShelfFocusZone({
+		...baseInput,
+		trackGuardActive: true,
+		queueFocusActive: true,
+		sideShelfFocusHit: true,
+		shelfMode: "side",
+	}).type).toBe("queue");
+});
+
 test("resolveShelfFocusZone resolves shelf detail before side and stage focus", () => {
 	expect(resolveShelfFocusZone({
 		...baseInput,
@@ -83,6 +107,16 @@ test("resolveShelfFocusZone resolves shelf detail before side and stage focus", 
 		sideShelfFocusHit: true,
 		pointerY: 800,
 	}).type).toBe("shelf-detail");
+});
+
+test("resolveShelfFocusZone clears detail focus throughout the closing phase", () => {
+	expect(resolveShelfFocusZone({
+		...baseInput,
+		shelfHasOpenContent: true,
+		shelfDetailPhase: "closing",
+		sideShelfFocusHit: true,
+		shelfMode: "side",
+	}).type).toBeNull();
 });
 
 test("resolveShelfFocusZone resolves shelf side before stage focus", () => {

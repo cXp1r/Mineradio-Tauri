@@ -253,3 +253,20 @@ test("ShelfContentPanelSprite keeps legacy title update and supports richer head
 	expect(made.calls.some((call) => call.kind === "roundRect" && call.x <= 82 && call.w >= 96 && call.h >= 96)).toBe(true);
 	expect(made.calls.some((call) => call.kind === "createLinearGradient")).toBe(true);
 });
+
+test("ShelfContentRowSprite fully rebinds index, render order and generation when reused", () => {
+	const made = makeCanvasLike();
+	const sprite = createShelfContentRowSprite({
+		three: makeThreeLike(),
+		createCanvas: () => made.canvas as unknown as HTMLCanvasElement,
+	}, { id: "old", name: "Old" }, 1, false);
+	const firstGeneration = Number(sprite.mesh.userData.shelfBindingGeneration);
+
+	sprite.update({ id: "new", name: "New" }, 7, true);
+
+	expect(sprite.index).toBe(7);
+	expect(sprite.row.id).toBe("new");
+	expect(sprite.mesh.userData.shelfContentRowIndex).toBe(7);
+	expect(sprite.mesh.renderOrder).toBe(247);
+	expect(Number(sprite.mesh.userData.shelfBindingGeneration)).toBeGreaterThan(firstGeneration);
+});

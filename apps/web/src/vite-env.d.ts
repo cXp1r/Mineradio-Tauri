@@ -7,3 +7,5 @@ interface ImportMetaEnv {
 interface ImportMeta {
 	readonly env: ImportMetaEnv;
 }
+
+declare const __MINERADIO_BUILD_COMMIT__: string;

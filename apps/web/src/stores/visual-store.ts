@@ -3,7 +3,14 @@ import {
   PersistedVisualState,
   PersistedVisualStateSchema,
 } from "@mineradio/shared";
-import { cloneFxState, type FxState } from "@mineradio/visual-engine";
+import {
+  clampPreset,
+  cloneFxState,
+  normalizeSonicTopographySettings,
+  normalizeStageLyricsSettings,
+  type FxState,
+  type FxStatePatch,
+} from "@mineradio/visual-engine";
 
 export const VISUAL_SETTINGS_STORE_KEY = "mineradio-tauri-visual-settings-v1";
 
@@ -92,14 +99,14 @@ function desktopLyricsFpsValue(value: unknown, fallback: number): number {
 }
 
 export function normalizeVisualFxState(
-  input?: Partial<FxState> | null,
+  input?: FxStatePatch | null,
 ): FxState {
   const fx = cloneFxState();
   if (!input) return fx;
   return {
     ...fx,
     ...input,
-    preset: Math.round(clamp(input.preset, fx.preset, 0, 6)),
+    preset: input.preset === undefined ? fx.preset : clampPreset(Number(input.preset)),
     intensity: clamp(input.intensity, fx.intensity, 0.2, 1.6),
     cinemaShake: clamp(input.cinemaShake, fx.cinemaShake, 0, 1.8),
     depth: clamp(input.depth, fx.depth, 0.2, 1.8),
@@ -237,7 +244,36 @@ export function normalizeVisualFxState(
       fx.performanceQuality,
       PERFORMANCE_QUALITY_VALUES,
     ),
+    // 视觉存储是 Web 设置恢复和更新的唯一归一化入口；运行时只消费此快照。
+    stageLyrics: normalizeStageLyricsSettings(input.stageLyrics),
+    sonic: normalizeSonicTopographySettings(input.sonic),
     mouseXy: { ...fx.mouseXy, ...(input.mouseXy ?? {}) },
+  };
+}
+
+/**
+ * 嵌套视觉设置的 patch 必须以当前完整快照为基准合并，不能让缺失字段回落默认值。
+ */
+function mergeVisualFxPatch(base: FxState, patch: FxStatePatch): FxStatePatch {
+  const sonicPatch = patch.sonic;
+  return {
+    ...base,
+    ...patch,
+    stageLyrics: patch.stageLyrics
+      ? { ...base.stageLyrics, ...patch.stageLyrics }
+      : base.stageLyrics,
+    sonic: sonicPatch
+      ? {
+          ...base.sonic,
+          ...sonicPatch,
+          terrain: { ...base.sonic.terrain, ...sonicPatch.terrain },
+          eq: { ...base.sonic.eq, ...sonicPatch.eq },
+          colors: { ...base.sonic.colors, ...sonicPatch.colors },
+          floating: { ...base.sonic.floating, ...sonicPatch.floating },
+          trigger: { ...base.sonic.trigger, ...sonicPatch.trigger },
+        }
+      : base.sonic,
+    mouseXy: { ...base.mouseXy, ...patch.mouseXy },
   };
 }
 
@@ -251,7 +287,7 @@ export interface VisualState {
   setNumberSetting: (key: keyof FxState, value: number) => void;
   setBooleanSetting: (key: keyof FxState, value: boolean) => void;
   setStringSetting: (key: keyof FxState, value: string) => void;
-  setFxPatch: (patch: Partial<FxState>) => void;
+  setFxPatch: (patch: FxStatePatch) => void;
   setCustom: (key: string, value: unknown) => void;
   serialize: () => PersistedVisualState;
 }
@@ -279,7 +315,7 @@ export function loadVisualFxFromStorage(storage?: StorageLike): FxState | null {
   try {
     const raw = target.getItem(VISUAL_SETTINGS_STORE_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as Partial<FxState>;
+    const parsed = JSON.parse(raw) as FxStatePatch;
     return normalizeVisualFxState(parsed);
   } catch {
     return null;
@@ -331,7 +367,7 @@ export const useVisualStore = create<VisualState>()((set, get) => ({
     }),
   setFxPatch: (patch) =>
     set((state) => {
-      const fx = normalizeVisualFxState({ ...state.fx, ...patch });
+      const fx = normalizeVisualFxState(mergeVisualFxPatch(state.fx, patch));
       return { fx, preset: fx.preset, intensity: fx.intensity };
     }),
   setCustom: (key, value) =>

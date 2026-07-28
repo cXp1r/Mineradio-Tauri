@@ -360,3 +360,24 @@ test("full dispose releases parent and child entries and clears every disposer r
 		retainsDisposer: false,
 	});
 });
+
+test("a live resource handle can change retention without releasing the resource", () => {
+	const scope = createVisualResourceScope("retention-promotion");
+	let disposals = 0;
+	const handle = scope.register({
+		owner: "stage-prewarm",
+		kind: "texture",
+		retention: "rebuildable",
+		dispose() {
+			disposals += 1;
+		},
+	});
+
+	expect(handle.setRetention?.("persistent")).toBe(true);
+	expect(handle.retention).toBe("persistent");
+	expect(scope.releaseRetention("rebuildable").disposed).toBe(0);
+	expect(disposals).toBe(0);
+	expect(scope.dispose().disposed).toBe(1);
+	expect(disposals).toBe(1);
+	expect(handle.setRetention?.("ephemeral")).toBe(false);
+});

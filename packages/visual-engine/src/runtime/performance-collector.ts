@@ -1,5 +1,9 @@
 import type { VisualTaskQueueSnapshot } from "./budget-task-queue";
 import type { VisualResourceLedgerSnapshot } from "./resource-ledger";
+import {
+	cloneVisualSubsystemDiagnosticsSnapshot,
+	type VisualSubsystemDiagnosticsSnapshot,
+} from "./subsystem-diagnostics";
 import type {
 	VisualPerformanceSnapshot,
 	VisualResourceBudget,
@@ -40,6 +44,7 @@ export interface PerformanceCollector {
 	recordGate(name: string, sample: PerformanceGateSample): void;
 	setTaskSnapshot(snapshot: VisualTaskQueueSnapshot): void;
 	setResourceSnapshot(snapshot: VisualResourceLedgerSnapshot): void;
+	setSubsystemSnapshot(snapshot: VisualSubsystemDiagnosticsSnapshot): void;
 	getSnapshot(): VisualPerformanceSnapshot;
 }
 
@@ -119,6 +124,7 @@ export function createPerformanceCollector(options: PerformanceCollectorOptions)
 		allocations: 0,
 		releases: 0,
 	};
+	let subsystems: VisualSubsystemDiagnosticsSnapshot = Object.freeze({});
 	let rafTicks = 0;
 	let timerTicks = 0;
 	let renders = 0;
@@ -178,6 +184,9 @@ export function createPerformanceCollector(options: PerformanceCollectorOptions)
 				releases: snapshot.releases,
 			};
 		},
+		setSubsystemSnapshot(snapshot) {
+			subsystems = cloneVisualSubsystemDiagnosticsSnapshot(snapshot);
+		},
 		getSnapshot() {
 			const gateSnapshot: Record<
 				string,
@@ -215,6 +224,7 @@ export function createPerformanceCollector(options: PerformanceCollectorOptions)
 					releases: resources.releases,
 				},
 				tasks: { ...tasks },
+				subsystems: cloneVisualSubsystemDiagnosticsSnapshot(subsystems),
 			};
 		},
 	};

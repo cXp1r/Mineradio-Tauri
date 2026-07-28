@@ -22,7 +22,7 @@ export function normalizeShelfMode(value: unknown): ShelfMode {
 }
 
 export function normalizeShelfCameraMode(value: unknown): ShelfCameraMode {
-	return value === "dynamic" || value === "static" ? value : "static";
+	return value === "dynamic" || value === "static" ? value : "dynamic";
 }
 
 export function normalizeShelfPresence(value: unknown): ShelfPresence {
@@ -100,7 +100,7 @@ export interface ShelfState {
 
 export const useShelfStore = create<ShelfState>()((set, get) => ({
 	mode: "side",
-	cameraMode: "static",
+	cameraMode: "dynamic",
 	presence: "always",
 	showPodcasts: true,
 	mergeCollections: false,

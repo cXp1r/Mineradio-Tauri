@@ -57,6 +57,8 @@ export interface VisualResourceHandle {
 	readonly retention: VisualResourceRetention;
 	readonly estimatedBytes?: number;
 	readonly disposed: boolean;
+	/** 在不释放底层资源的前提下调整生命周期保留级别。 */
+	setRetention?(retention: VisualResourceRetention): boolean;
 	dispose(): VisualResourceDisposalReport;
 }
 
@@ -78,7 +80,7 @@ interface ResourceEntry {
 	readonly type: "resource";
 	readonly owner: string;
 	readonly kind: VisualResourceKind;
-	readonly retention: VisualResourceRetention;
+	retention: VisualResourceRetention;
 	readonly estimatedBytes?: number;
 	disposer: (() => void) | null;
 	disposed: boolean;
@@ -208,12 +210,23 @@ function createVisualResourceScopeAtPath(
 			};
 			entries.push(entry);
 			const handle: VisualResourceHandle = {
-				owner: entry.owner,
-				kind: entry.kind,
-				retention: entry.retention,
+				get owner() {
+					return entry.owner;
+				},
+				get kind() {
+					return entry.kind;
+				},
+				get retention() {
+					return entry.retention;
+				},
 				estimatedBytes: entry.estimatedBytes,
 				get disposed() {
 					return entry.disposed;
+				},
+				setRetention(retention) {
+					if (entry.disposed) return false;
+					entry.retention = retention;
+					return true;
 				},
 				dispose: () => disposeResource(entry),
 			};

@@ -1339,6 +1339,42 @@ test("manual stepOnce keeps gate diagnostics without fabricating RAF frame metri
 	loop.dispose();
 });
 
+test("唯一 presentation render seam 负责 GPU timer capture 与释放", () => {
+	let captures = 0;
+	let disposals = 0;
+	const gpuFrameTimer = {
+		capture<T>(render: () => T): T {
+			captures += 1;
+			return render();
+		},
+		getSnapshot: () => ({
+			extensionSupported: true,
+			sampleCount: captures,
+			pendingQueryCount: 0,
+			p50Ms: 1,
+			p95Ms: 1,
+			disjointQueryCount: 0,
+			droppedQueryCount: 0,
+			errorCount: 0,
+			contextLost: false,
+		}),
+		dispose() { disposals += 1; },
+	};
+	const { loop, renderer } = makeLoop({ gpuFrameTimer });
+
+	loop.stepOnce();
+	expect(captures).toBe(1);
+	expect(renderer.renderCount).toBe(1);
+	expect(loop.getGpuTimingSnapshot()?.sampleCount).toBe(1);
+	loop.stop();
+	loop.stepOnce();
+	expect(captures).toBe(1);
+
+	loop.dispose();
+	loop.dispose();
+	expect(disposals).toBe(1);
+});
+
 test("duplicate scheduler registration fails without fallback and dispose unregisters idempotently", () => {
 	const driver = new FakeVisualSchedulerDriver();
 	const scheduler = createVisualScheduler({ driver });

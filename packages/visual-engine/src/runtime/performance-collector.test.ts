@@ -51,9 +51,12 @@ test("collector projects task and resource snapshots and returns deep copies", (
 		allocations: 11,
 		releases: 12,
 	});
+	const subsystemSource = { stageLyrics: { pendingBuilds: 2 } };
+	collector.setSubsystemSnapshot(subsystemSource);
 	const first = collector.getSnapshot();
 	(first.resources.current as { textureBytes: number }).textureBytes = 99;
 	(first.gates as Record<string, unknown>).newGate = {};
+	subsystemSource.stageLyrics.pendingBuilds = 99;
 
 	const second = collector.getSnapshot();
 	expect(second.runtime).toEqual({ mode: "foreground", running: true, mounted: true, generation: 4 });
@@ -64,6 +67,9 @@ test("collector projects task and resource snapshots and returns deep copies", (
 	expect(second.resources.pressure).toBe("soft");
 	expect(second.resources.allocations).toBe(11);
 	expect(second.resources.releases).toBe(12);
+	expect(second.subsystems.stageLyrics).toEqual({ pendingBuilds: 2 });
+	expect(Object.isFrozen(first.subsystems)).toBe(true);
+	expect(Object.isFrozen(first.subsystems.stageLyrics)).toBe(true);
 });
 
 test("a full collector keeps percentile samples within its fixed capacity", () => {

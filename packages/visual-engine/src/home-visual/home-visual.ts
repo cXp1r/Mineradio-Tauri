@@ -39,6 +39,7 @@ export interface HomeVisualOptions {
 	mergeAiDepth?: HomeAiDepthMerger;
 	onCoverLyricPalette?: (palette: LyricPalette) => void;
 	backCoverRandom?: () => number;
+	random?: () => number;
 	skullAssetData?: Float32Array | null;
 	loadSkullAsset?: () => Promise<Float32Array | null>;
 	orbitCenterLockedSupplier?: () => boolean;
@@ -115,6 +116,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	const fieldOpts: HomeParticleFieldOptions = {
 		threeFactory: opts.threeFactory,
 		coverResolution: opts.coverResolution ?? fx.coverResolution,
+		random: opts.random,
 	};
 	const field = await createHomeParticleField(opts.scene, fieldOpts);
 	const skullAssetData = opts.skullAssetData !== undefined
@@ -159,7 +161,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 			});
 		},
 	});
-	const ripples = createHomeRipples(field.materialUniforms as never);
+	const ripples = createHomeRipples(field.materialUniforms as never, { random: opts.random });
 	let wallpaperShelfDimActive = false;
 	let backCoverLayer: BackCoverLayer | null = null;
 	let backCoverPending: Promise<void> | null = null;
@@ -169,8 +171,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	let backCoverGeneration = 0;
 	let runtimeWakePending = false;
 	field.applyFxState(fx);
-	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && fx.preset !== SKULL_PRESET_INDEX;
-	field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
+	const initialHomeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && initialHomeFieldVisible;
+	field.points.visible = initialHomeFieldVisible;
 
 	function syncBackCoverLayer(): void {
 		if (!runtimeActive || disposed) return;
@@ -264,8 +267,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		}
 		field.applyFxState(fx);
 		coverController.setAiDepthEnabled(fx.aiDepth);
-		field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
-		const bloomAllowed = !!(fx.bloom && fx.bloomStrength > 0.01) && fx.preset !== SKULL_PRESET_INDEX;
+		const homeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+		field.points.visible = homeFieldVisible;
+		const bloomAllowed = !!(fx.bloom && fx.bloomStrength > 0.01) && homeFieldVisible;
 		field.bloomPoints.visible = bloomAllowed;
 		syncBackCoverLayer();
 
@@ -321,8 +325,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 			const next = applyPreset(fx, p, setOpts);
 			fx.preset = next.preset;
 			field.applyFxState(fx);
-			field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
-			field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && fx.preset !== SKULL_PRESET_INDEX;
+			const homeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+			field.points.visible = homeFieldVisible;
+			field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && homeFieldVisible;
 		},
 		getFx() {
 			return fx;

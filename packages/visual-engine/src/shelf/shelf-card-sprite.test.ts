@@ -10,8 +10,10 @@ import {
 
 function makeCanvasLike() {
 	const calls: string[] = [];
+	const drawnImages: unknown[] = [];
 	return {
 		calls,
+		drawnImages,
 		canvas: {
 			width: 0,
 			height: 0,
@@ -55,8 +57,9 @@ function makeCanvasLike() {
 					fillText() {
 						calls.push("fillText");
 					},
-					drawImage() {
+					drawImage(image: unknown) {
 						calls.push("drawImage");
+						drawnImages.push(image);
 					},
 				};
 			},
@@ -236,4 +239,77 @@ test("createShelfCardMesh redraws with the loaded cover image like baseline draw
 	await new Promise((resolve) => setTimeout(resolve, 5));
 	expect(made.calls).toContain("drawImage");
 	expect(card.texture.needsUpdate).toBe(true);
+});
+
+test("createShelfCardMesh rejects a stale cover completion after the sprite is rebound", async () => {
+	const made = makeCanvasLike();
+	class FakePlaneGeometry {
+		dispose() {}
+	}
+	class FakeCanvasTexture {
+		needsUpdate = false;
+		minFilter: unknown = null;
+		magFilter: unknown = null;
+		generateMipmaps = true;
+		dispose() {}
+	}
+	class FakeMaterial {
+		color = { setScalar() {} };
+		constructor(init: Record<string, unknown>) {
+			Object.assign(this, init);
+		}
+		dispose() {}
+	}
+	class FakeMesh {
+		renderOrder = 0;
+		userData: Record<string, unknown> = {};
+		position = { set() {} };
+		rotation = { set() {} };
+		scale = { setScalar() {} };
+		visible = true;
+		constructor(public geometry: unknown, public material: unknown) {}
+	}
+	const three = {
+		PlaneGeometry: FakePlaneGeometry,
+		CanvasTexture: FakeCanvasTexture,
+		MeshBasicMaterial: FakeMaterial,
+		Mesh: FakeMesh,
+		LinearFilter: "LinearFilter",
+		DoubleSide: "DoubleSide",
+	} as unknown as typeof import("three");
+	const images = ["old", "new"].map((id) => ({
+		id,
+		crossOrigin: "",
+		onload: null as null | (() => void),
+		onerror: null as null | (() => void),
+		src: "",
+	})) as unknown as HTMLImageElement[];
+	let imageIndex = 0;
+	const card = createShelfCardMesh({
+		item: { type: "playlist", title: "Old", playlistId: "old", cover: "https://img.example/m4-old.jpg" },
+		index: 0,
+		three,
+		createCanvas: () => made.canvas as unknown as HTMLCanvasElement,
+		createImage: () => images[imageIndex++]!,
+	});
+
+	card.update(
+		{ type: "playlist", title: "New", playlistId: "new", cover: "https://img.example/m4-new.jpg" },
+		{ index: 7 },
+	);
+	(images[0] as unknown as { onload: () => void }).onload();
+	await new Promise((resolve) => setTimeout(resolve, 5));
+
+	expect(made.drawnImages).not.toContain(images[0]);
+	expect(card.mesh.userData.shelfCardIndex).toBe(7);
+	expect(card.mesh.userData.action).toEqual({
+		kind: "loadPlaylist",
+		playlistId: "new",
+		title: "New",
+		provider: undefined,
+	});
+
+	(images[1] as unknown as { onload: () => void }).onload();
+	await new Promise((resolve) => setTimeout(resolve, 5));
+	expect(made.drawnImages).toContain(images[1]);
 });

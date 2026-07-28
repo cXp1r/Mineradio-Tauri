@@ -36,6 +36,7 @@ import type {
 	VisualSettingsSnapshot,
 	VisualVisibilityState,
 } from "./visual-engine-contract";
+import { createVisualSubsystemDiagnosticsRegistry } from "./subsystem-diagnostics";
 
 type VisualEngineState = "idle" | "mounting" | "mounted" | "disposing" | "disposed";
 
@@ -75,7 +76,7 @@ const DEFAULT_SHELF: ShelfVisualSnapshot = Object.freeze({
 	items: Object.freeze([]),
 	pane: "mine",
 	mode: "side",
-	cameraMode: "static",
+	cameraMode: "dynamic",
 	presence: "always",
 	mergeCollections: false,
 	mineCount: 0,
@@ -482,10 +483,11 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 		onOwnershipViolation: () => handleOwnershipViolation(),
 	});
 	const performance = createPerformanceCollector({ resourceBudget: budget });
+	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
 	let visibility = copyVisibility(options.initialVisibility ?? DEFAULT_VISIBILITY);
 	let frame = makeFrame(0, DEFAULT_PLAYBACK, DEFAULT_LYRICS, DEFAULT_SHELF, DEFAULT_SETTINGS);
 	const rawScheduler = createVisualScheduler({
-		driver: createBrowserSchedulerDriver(),
+		driver: options.schedulerDriver ?? createBrowserSchedulerDriver(),
 		initialVisibility: visibility,
 		initialBackgroundPolicy: frame.settings.backgroundPolicy,
 		initialForegroundFramePolicy: frame.settings.foregroundFramePolicy,
@@ -515,6 +517,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 	const updatePerformance = () => {
 		performance.setResourceSnapshot(ledger.getSnapshot());
 		performance.setTaskSnapshot(tasks.getSnapshot());
+		performance.setSubsystemSnapshot(diagnostics.snapshot());
 		performance.setRuntimeState({
 			mode: rawScheduler.getMode(),
 			running,
@@ -562,6 +565,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 			reportCleanupError("scheduler dispose", error);
 		}
 		disposeComposition();
+		diagnostics.clear();
 		try {
 			const report = resources.dispose();
 			for (const error of report.errors) reportCleanupError("resource dispose", error.cause);
@@ -823,6 +827,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 				tasks: runtimeServices.tasks,
 				scheduler,
 				performance,
+				diagnostics,
 				getFrameSnapshot: () => frame,
 				refreshPerformanceSnapshots: updatePerformance,
 			};

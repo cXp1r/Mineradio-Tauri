@@ -142,14 +142,14 @@ test("createHomeVisual returns the lifecycle API {update, dispose, getPreset, se
 	expect(hv.getPreset()).toBe(0);
 });
 
-test("HomeVisual.setPreset clamps p to [0,6] and mutates fx.preset; field sees fx.preset through applyFxState", async () => {
+test("HomeVisual.setPreset clamps p to [0,7] and mutates fx.preset; field sees fx.preset through applyFxState", async () => {
 	const scene = makeFakeScene();
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
 	hv.setPreset(99);
-	expect(hv.getPreset()).toBe(6);
-	expect(hv.getFx().preset).toBe(6);
+	expect(hv.getPreset()).toBe(7);
+	expect(hv.getFx().preset).toBe(7);
 	const uniforms = hv.getField().materialUniforms;
-	expect(uniforms.uPreset.value).toBe(6);
+	expect(uniforms.uPreset.value).toBe(7);
 	hv.setPreset(2);
 	expect(uniforms.uPreset.value).toBe(2);
 });
@@ -418,6 +418,18 @@ test("preset 6 (skull) suppresses points visibility; non-skull leaves points vis
 	hv.setPreset(SKULL_PRESET_INDEX);
 	hv.update(makeFrameCtx() as unknown as FrameContext);
 	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
+});
+
+test("initial preset 7 suppresses Home particles before the first update", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		fx: { ...cloneFxState(), preset: 7 },
+	});
+
+	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
+	expect((hv.getField().bloomPoints as { visible: boolean }).visible).toBe(false);
 });
 
 test("HomeVisual mounts baseline skull particle layer from asset data for preset 6", async () => {

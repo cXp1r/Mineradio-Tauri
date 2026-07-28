@@ -1,9 +1,14 @@
 import type * as THREE from "three";
 import type { ThreeModule } from "../runtime/renderer-setup";
 import { lyricFillText, lyricFontCss, lyricMeasureText, lyricStrokeText, type LyricTextOptions } from "./lyric-text";
+import type { LyricMaskRasterRow } from "./lyric-mask";
 
 export interface LyricGlowTextureOptions extends LyricTextOptions {
 	maxAnisotropy?: number;
+	structuredRows?: readonly LyricMaskRasterRow[];
+	canvasWidth?: number;
+	canvasHeight?: number;
+	structuredScale?: number;
 }
 
 export function makeLyricGlowTexture(
@@ -20,6 +25,10 @@ export function makeLyricGlowTexture(
 		.replace(/\s+/g, " ")
 		.trim();
 	const drawLines = Array.isArray(lines) && lines.length ? lines : [cleaned];
+	const structuredRows = opts.structuredRows ?? [];
+	const structuredScale = structuredRows.length > 0
+		? Math.max(0.25, Math.min(1, Number(opts.structuredScale) || 0.4))
+		: 1;
 	if (typeof document === "undefined") return null;
 	const canvas = document.createElement("canvas");
 	const measureCanvas = document.createElement("canvas");
@@ -41,8 +50,12 @@ export function makeLyricGlowTexture(
 	const padY = Math.max(86, fontSize * 0.78);
 	const lh = lineHeight || fontSize * 1.04;
 	const blockH = fontSize + (drawLines.length - 1) * lh;
-	const W = Math.ceil(measuredWidth + padX * 2);
-	const H = Math.ceil(blockH + padY * 2);
+	const W = structuredRows.length > 0
+		? Math.max(1, Math.round((opts.canvasWidth ?? 2048) * structuredScale))
+		: Math.ceil(measuredWidth + padX * 2);
+	const H = structuredRows.length > 0
+		? Math.max(1, Math.round((opts.canvasHeight ?? 384) * structuredScale))
+		: Math.ceil(blockH + padY * 2);
 	canvas.width = W;
 	canvas.height = H;
 	const ctx = canvas.getContext("2d") as CanvasRenderingContext2D | null;
@@ -52,7 +65,32 @@ export function makeLyricGlowTexture(
 	ctx.textBaseline = "alphabetic";
 	ctx.font = lyricFontCss(fontSize, textOpts);
 	const y0 = H / 2 - blockH / 2 + fontSize * 0.82;
-	const drawGlowText = (dx: number, dy: number) => {
+	const drawGlowText = (dx: number, dy: number, layerAlpha: number) => {
+		if (structuredRows.length > 0) {
+			for (const row of structuredRows) {
+				const rowOpts = {
+					...textOpts,
+					...(row.weight === undefined ? {} : { lyricWeight: row.weight }),
+				};
+				ctx.save();
+				ctx.globalAlpha = layerAlpha * row.alpha;
+				const rowFontSize = row.fontSize * structuredScale;
+				const baselineY = row.baselineY * structuredScale;
+				ctx.font = lyricFontCss(rowFontSize, rowOpts);
+				if (row.fitScaleX < 1) {
+					ctx.translate(W / 2 + dx, 0);
+					ctx.scale(row.fitScaleX, 1);
+					if (ctx.lineWidth > 0) lyricStrokeText(ctx, row.text, 0, baselineY + dy, rowFontSize, rowOpts);
+					lyricFillText(ctx, row.text, 0, baselineY + dy, rowFontSize, rowOpts);
+				} else {
+					if (ctx.lineWidth > 0) lyricStrokeText(ctx, row.text, W / 2 + dx, baselineY + dy, rowFontSize, rowOpts);
+					lyricFillText(ctx, row.text, W / 2 + dx, baselineY + dy, rowFontSize, rowOpts);
+				}
+				ctx.restore();
+			}
+			return;
+		}
+		ctx.globalAlpha = layerAlpha;
 		for (let i = 0; i < drawLines.length; i++) {
 			const y = y0 + i * lh + (dy || 0);
 			if (fit < 1) {
@@ -68,46 +106,42 @@ export function makeLyricGlowTexture(
 			}
 		}
 	};
+	const effectFontSize = fontSize * structuredScale;
 	ctx.save();
 	ctx.filter = "blur(14px)";
-	ctx.globalAlpha = 0.46;
 	ctx.fillStyle = "#fff";
-	ctx.lineWidth = Math.max(10, fontSize * 0.1);
+	ctx.lineWidth = Math.max(5, effectFontSize * 0.1);
 	ctx.strokeStyle = "#fff";
-	drawGlowText(0, 0);
+	drawGlowText(0, 0, 0.46);
 	ctx.restore();
 	ctx.save();
 	ctx.filter = "blur(34px)";
-	ctx.globalAlpha = 0.34;
 	ctx.fillStyle = "#fff";
-	ctx.lineWidth = Math.max(18, fontSize * 0.18);
+	ctx.lineWidth = Math.max(8, effectFontSize * 0.18);
 	ctx.strokeStyle = "#fff";
-	drawGlowText(0, 0);
+	drawGlowText(0, 0, 0.34);
 	ctx.restore();
 	ctx.save();
 	ctx.filter = "blur(78px)";
-	ctx.globalAlpha = 0.22;
 	ctx.fillStyle = "#fff";
-	ctx.lineWidth = Math.max(28, fontSize * 0.26);
+	ctx.lineWidth = Math.max(12, effectFontSize * 0.26);
 	ctx.strokeStyle = "#fff";
-	drawGlowText(0, 0);
+	drawGlowText(0, 0, 0.22);
 	ctx.restore();
 	ctx.save();
 	ctx.filter = "blur(116px)";
-	ctx.globalAlpha = 0.13;
 	ctx.fillStyle = "#fff";
-	ctx.lineWidth = Math.max(42, fontSize * 0.4);
+	ctx.lineWidth = Math.max(18, effectFontSize * 0.4);
 	ctx.strokeStyle = "#fff";
-	drawGlowText(0, 0);
+	drawGlowText(0, 0, 0.13);
 	ctx.restore();
 	ctx.save();
 	ctx.globalCompositeOperation = "lighter";
 	ctx.filter = "blur(8px)";
-	ctx.globalAlpha = 0.26;
 	ctx.fillStyle = "#fff";
 	for (let ri = 0; ri < 8; ri++) {
 		const ang = (ri / 8) * Math.PI * 2;
-		drawGlowText(Math.cos(ang) * 7, Math.sin(ang) * 4);
+		drawGlowText(Math.cos(ang) * 7, Math.sin(ang) * 4, 0.26);
 	}
 	ctx.restore();
 	ctx.save();
@@ -132,7 +166,11 @@ export function makeLyricGlowTexture(
 	(tex as unknown as { minFilter: number }).minFilter = THREE.LinearFilter;
 	(tex as unknown as { magFilter: number }).magFilter = THREE.LinearFilter;
 	(tex as unknown as { generateMipmaps: boolean }).generateMipmaps = false;
-	(tex as unknown as { userData: Record<string, unknown> }).userData = { width: W, height: H, textWidth: measuredWidth };
+	(tex as unknown as { userData: Record<string, unknown> }).userData = {
+		width: W,
+		height: H,
+		textWidth: structuredRows.length > 0 ? measuredWidth * structuredScale : measuredWidth,
+	};
 	(tex as unknown as { anisotropy: number }).anisotropy = Math.min(8, opts.maxAnisotropy ?? 1);
 	return tex;
 }

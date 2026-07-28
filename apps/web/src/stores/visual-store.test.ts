@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
+import type { FxStatePatch } from "@mineradio/visual-engine";
 import {
   loadFromStorage,
   loadVisualFxFromStorage,
+  normalizeVisualFxState,
+  saveVisualFxToStorage,
   useVisualStore,
   VISUAL_SETTINGS_STORE_KEY,
 } from "./visual-store";
@@ -210,4 +213,89 @@ test("loadVisualFxFromStorage normalizes baseline stage lyric color controls", (
   expect(fx?.lyricHighlightColor).toBe("#abcdef");
   expect(fx?.lyricGlowLinked).toBe(false);
   expect(fx?.lyricGlowColor).toBe("#fedcba");
+});
+
+test("loadVisualFxFromStorage migrates legacy preset 8 to Sonic preset 7", () => {
+  const storage = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  };
+  fakeStorage.setItem(VISUAL_SETTINGS_STORE_KEY, JSON.stringify({ preset: 8 }));
+  expect(loadVisualFxFromStorage(fakeStorage)?.preset).toBe(7);
+});
+
+test("visual settings owns nested Stage and Sonic normalization before persistence", () => {
+  const normalized = normalizeVisualFxState({
+    stageLyrics: {
+      displayMode: "invalid",
+      customLineCount: 99,
+      contextOpacity: -4,
+    },
+    sonic: {
+      terrain: { amplitude: 101.4, density: -8 },
+      colors: { mode: "custom", base: "#abc" },
+      trigger: { bandStart: 511, bandEnd: 0 },
+    },
+  } as unknown as FxStatePatch);
+
+  expect(normalized.stageLyrics.displayMode).toBe("single");
+  expect(normalized.stageLyrics.customLineCount).toBe(10);
+  expect(normalized.stageLyrics.contextOpacity).toBe(0.25);
+  expect(normalized.sonic.terrain.amplitude).toBe(100);
+  expect(normalized.sonic.terrain.density).toBe(0);
+  expect(normalized.sonic.colors.mode).toBe("custom");
+  expect(normalized.sonic.colors.base).toBe("#aabbcc");
+  expect(normalized.sonic.trigger.bandStart).toBe(510);
+  expect(normalized.sonic.trigger.bandEnd).toBe(512);
+});
+
+test("visual settings round-trip preserves normalized nested Stage and Sonic snapshots", () => {
+  const storage = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => {
+      storage.set(key, value);
+    },
+  };
+  const original = useVisualStore.getState();
+  useVisualStore.getState().setFxPatch({
+    stageLyrics: { ...original.fx.stageLyrics, displayMode: "dual", translationMode: "current" },
+    sonic: { ...original.fx.sonic, terrain: { ...original.fx.sonic.terrain, density: 83 } },
+  });
+
+  saveVisualFxToStorage(fakeStorage);
+  const loaded = loadVisualFxFromStorage(fakeStorage);
+
+  expect(loaded?.stageLyrics.displayMode).toBe("dual");
+  expect(loaded?.stageLyrics.translationMode).toBe("current");
+  expect(loaded?.sonic.terrain.density).toBe(83);
+  useVisualStore.setState(original, true);
+});
+
+test("setFxPatch deep-merges nested Stage and Sonic changes against the current snapshot", () => {
+  const original = useVisualStore.getState();
+  const before = normalizeVisualFxState({
+    stageLyrics: { displayMode: "cinema", translationMode: "current", contextOpacity: 0.73 },
+    sonic: {
+      terrain: { amplitude: 22, density: 46 },
+      colors: { mode: "custom", base: "#123456" },
+    },
+  });
+  useVisualStore.setState({ fx: before, preset: before.preset, intensity: before.intensity });
+
+  useVisualStore.getState().setFxPatch({
+    stageLyrics: { displayMode: "dual" },
+    sonic: { terrain: { density: 83 } },
+  });
+
+  const after = useVisualStore.getState().fx;
+  expect(after.stageLyrics.displayMode).toBe("dual");
+  expect(after.stageLyrics.translationMode).toBe("current");
+  expect(after.stageLyrics.contextOpacity).toBe(0.73);
+  expect(after.sonic.terrain.density).toBe(83);
+  expect(after.sonic.terrain.amplitude).toBe(22);
+  expect(after.sonic.colors.mode).toBe("custom");
+  expect(after.sonic.colors.base).toBe("#123456");
+  useVisualStore.setState(original, true);
 });

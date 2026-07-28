@@ -11,6 +11,7 @@ import type {
 	VisualVisibilityState,
 } from "./visual-engine-contract";
 import type { VisualResourceHandle, VisualResourceScope } from "./resource-scope";
+import type { VisualSchedulerDriver } from "./visual-scheduler";
 
 const clock = {
 	currentTimeSeconds: () => 0,
@@ -104,6 +105,72 @@ function installAnimationFrameHarness(): {
 	};
 }
 
+function createManualSchedulerDriver(): VisualSchedulerDriver & {
+	flush(nowMs: number): void;
+} {
+	let nextHandle = 0;
+	let nowMs = 0;
+	const frames = new Map<number, (timeMs: number) => void>();
+	return {
+		now: () => nowMs,
+		requestFrame(callback) {
+			const handle = ++nextHandle;
+			frames.set(handle, callback);
+			return handle;
+		},
+		cancelFrame(handle) {
+			frames.delete(handle);
+		},
+		setTimer() {
+			return ++nextHandle;
+		},
+		clearTimer() {},
+		flush(nextNowMs) {
+			nowMs = nextNowMs;
+			const callbacks = [...frames.values()];
+			frames.clear();
+			for (const callback of callbacks) callback(nowMs);
+		},
+	};
+}
+
+test("VisualEngine uses an injected scheduler driver without touching global RAF", async () => {
+	const originalRequest = globalThis.requestAnimationFrame;
+	let globalRafCalls = 0;
+	globalThis.requestAnimationFrame = (() => {
+		globalRafCalls += 1;
+		return 1;
+	}) as typeof globalThis.requestAnimationFrame;
+	const driver = createManualSchedulerDriver();
+	let animationRuns = 0;
+	const engine = createVisualEngine({
+		mediaClock: clock,
+		schedulerDriver: driver,
+		createComposition: () => ({
+			async mount(context) {
+				context.scheduler.registerRuntimeCallbacks({
+					onAnimation() {
+						animationRuns += 1;
+					},
+				});
+			},
+			applyFrameSnapshot() {},
+			applyPreset() {},
+			setVisibility() {},
+			dispose() {},
+		}),
+	});
+	try {
+		await engine.mount(document.createElement("div"));
+		driver.flush(16.67);
+		expect(animationRuns).toBe(1);
+		expect(globalRafCalls).toBe(0);
+	} finally {
+		engine.dispose();
+		globalThis.requestAnimationFrame = originalRequest;
+	}
+});
+
 test("composition refreshPerformanceSnapshots projects root queue and ledger snapshots without exposing ownership", async () => {
 	const raf = installAnimationFrameHarness();
 	const contextRef: { current: VisualEngineCompositionContext | null } = { current: null };
@@ -126,12 +193,17 @@ test("composition refreshPerformanceSnapshots projects root queue and ledger sna
 		if (!context) throw new Error("missing composition context");
 		context.resources.register({ owner: "cache", kind: "cache", retention: "rebuildable", estimatedBytes: 7, dispose() {} });
 		context.tasks.enqueue({ owner: "cover", key: "load", priority: "visible", cost: 1, run() {}, commit() {} });
+		const unregisterDiagnostics = context.diagnostics.register("stageLyrics", () => ({ pendingBuilds: 2 }));
 		expect(context.performance.getSnapshot().resources.current.cacheBytes).toBe(0);
 
 		context.refreshPerformanceSnapshots();
 
 		expect(context.performance.getSnapshot().resources.current.cacheBytes).toBe(7);
 		expect(context.performance.getSnapshot().tasks.queued).toBe(1);
+		expect(context.performance.getSnapshot().subsystems.stageLyrics).toEqual({ pendingBuilds: 2 });
+		unregisterDiagnostics();
+		context.refreshPerformanceSnapshots();
+		expect(context.performance.getSnapshot().subsystems).toEqual({});
 		expect("ledger" in context).toBe(false);
 	} finally {
 		engine.dispose();

@@ -7,6 +7,7 @@ import { RENDER_STEP_ORDER, RenderStepSlot } from "./render-step-slot";
 import type { FrameContext } from "./frame-context";
 import { createFrameGate, type FrameGate, type FrameGateDecision, type FrameGateRate } from "./frame-gate";
 import type { PerformanceCollector } from "./performance-collector";
+import type { GpuFrameTimer, GpuFrameTimingSnapshot } from "./gpu-frame-timer";
 import type { VisualRuntimeMode } from "./visual-engine-contract";
 import type { VisualScheduler } from "./visual-scheduler";
 
@@ -24,6 +25,8 @@ export interface RenderLoopOptions {
 	pointerTarget?: { x: number; y: number };
 	now?: () => number;
 	onCacheTrim?: (now: number) => void;
+	/** 可选 GPU 计时适配器；render loop 接管其生命周期。 */
+	gpuFrameTimer?: GpuFrameTimer;
 }
 
 type StepCallback = (ctx: FrameContext) => void;
@@ -131,6 +134,7 @@ export interface RenderLoop {
 	dispose(): void;
 	getFps(): number;
 	getPerfState(): PerfStateSnapshot;
+	getGpuTimingSnapshot(): GpuFrameTimingSnapshot | null;
 	getPointerParallax(): { x: number; y: number };
 	stepOnce(): void;
 }
@@ -142,6 +146,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 	const audio = opts.audio;
 	const scheduler = opts.scheduler;
 	const performanceCollector = opts.performance;
+	const gpuFrameTimer = opts.gpuFrameTimer;
 	const uniforms = opts.uniforms ?? createRuntimeUniforms();
 	const isMainSceneCoveredBySplash = opts.isMainSceneCoveredBySplash ?? (() => false);
 	const prefersReducedMotion = opts.prefersReducedMotion ?? (() => false);
@@ -322,7 +327,10 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 		pipelineEpochAtTickStart: number,
 	): boolean {
 		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
-		const result = runMeasured(PRESENTATION_GATE_NAME, () => renderer.render(scene, camera));
+		const result = runMeasured(PRESENTATION_GATE_NAME, () => {
+			if (gpuFrameTimer) return gpuFrameTimer.capture(() => renderer.render(scene, camera));
+			return renderer.render(scene, camera);
+		});
 		recordGateRun(PRESENTATION_GATE_NAME, "presentation", decision.pendingDtSec, result);
 		if (!isCurrentPipeline(pipelineEpochAtTickStart)) return false;
 		if (result.error === undefined) lastRenderAt = now;
@@ -523,6 +531,7 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 			active = false;
 			resetGates();
 			unregisterSchedulerCallbacks();
+			gpuFrameTimer?.dispose();
 			for (const registrations of registry.values()) {
 				for (const registration of registrations) registration.subscribed = false;
 			}
@@ -536,6 +545,9 @@ export function createRenderLoop(opts: RenderLoopOptions): RenderLoop {
 				lastRenderAt,
 				lastSampleAt,
 			});
+		},
+		getGpuTimingSnapshot() {
+			return gpuFrameTimer?.getSnapshot() ?? null;
 		},
 		getPointerParallax() {
 			return pointerParallax;

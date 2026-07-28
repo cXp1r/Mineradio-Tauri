@@ -26,7 +26,7 @@ test("shelf mode helpers normalize baseline values", () => {
 	expect(normalizeShelfMode(null)).toBe("side");
 	expect(normalizeShelfCameraMode("dynamic")).toBe("dynamic");
 	expect(normalizeShelfCameraMode("static")).toBe("static");
-	expect(normalizeShelfCameraMode("stage")).toBe("static");
+	expect(normalizeShelfCameraMode("stage")).toBe("dynamic");
 	expect(normalizeShelfPresence("auto")).toBe("auto");
 	expect(normalizeShelfPresence("always")).toBe("always");
 	expect(normalizeShelfPresence("resident")).toBe("always");
@@ -76,11 +76,25 @@ test("loadShelfSettingsFromStorage normalizes invalid stored values", () => {
 	expect(loaded).toEqual({
 		version: 1,
 		mode: "side",
-		cameraMode: "static",
+		cameraMode: "dynamic",
 		presence: "always",
 		showPodcasts: true,
 		mergeCollections: false,
 	});
+});
+
+test("loadShelfSettingsFromStorage defaults missing camera mode to dynamic and preserves explicit static", () => {
+	const values = [
+		JSON.stringify({ version: 1, mode: "side", presence: "always" }),
+		JSON.stringify({ version: 1, mode: "side", cameraMode: "static", presence: "always" }),
+	];
+	const localStorageLike = {
+		getItem: () => values.shift() ?? null,
+		setItem: () => undefined,
+	};
+
+	expect(loadShelfSettingsFromStorage(localStorageLike)?.cameraMode).toBe("dynamic");
+	expect(loadShelfSettingsFromStorage(localStorageLike)?.cameraMode).toBe("static");
 });
 
 test("shelf content switches persist baseline podcast and collection merge controls", () => {
