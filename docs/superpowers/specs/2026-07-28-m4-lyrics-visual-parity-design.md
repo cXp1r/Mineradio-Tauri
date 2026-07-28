@@ -1,7 +1,7 @@
 # M4 Lyrics 与 Visual Parity 设计
 
 **日期：** 2026-07-28  
-**状态：** Open / Blocked；Stage Lyrics 与 3D Shelf 已通过 clean release evidence，Sonic provenance 未通过
+**状态：** Open / In Progress；Stage Lyrics 与 3D Shelf 已通过 clean release evidence，Sonic 已切换为直接迁移路线，等待代码复核与新的 release evidence
 **基线：** `ab04493`（M3 Visual Runtime Foundation complete）  
 **上游行为基线：** Mineradio Electron 2.0.2，`4abaa19`
 
@@ -426,18 +426,19 @@ composition dispose 必须先取消 generation，再推进或强制收口 rollba
 
 ## 9. Sonic Topography plugin
 
-### 9.0 Clean-room 与许可证硬门
+### 9.0 来源链、公开合作与许可告知
 
-参考项目 `yin-yizhen/sonic-topography` 在审计 commit `3ff303e` 使用 `Non-Commercial Learning License`。该许可证禁止商业使用和打包销售，与本项目 GPL-3.0 的开源发行目标不兼容。因此 M4 Sonic 实现必须满足：
+Sonic 的直接来源为 `XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224` 中的 `public/sonic-topography-preset.js`，该文件明确声明视觉算法由 `yin-yizhen/sonic-topography` 1.1.1（commit `3ff303e`）移植。用户提供的公开社交媒体截图同时记录 Mineradio 作者“与音域回响作者 Ajin 联动”的公开合作证据；维护者据此作出直接迁移的项目决策，但不把该证据表述为书面授权、再许可或许可放宽。
 
-- 不复制参考项目的源码、shader、表达性结构、注释或其他受版权保护实现；
-- 不以参考实现源码为逐行翻译或派生实现基础；
-- 只使用 Electron 2.0.2 已公开的可观察行为、参数、资源上限、交互结果和本设计冻结的 interface 规格；
-- 实现者依据独立测试 fixture 与行为规格编写新实现，并在 review 中检查来源隔离；
-- 若未来需要直接复用任何实现，必须先取得版权方明确书面许可；
-- 可以在研究说明中保留 attribution，但 attribution 不构成许可证兼容或复制授权。
+项目维护者据此决定采用直接迁移路线。实施必须满足：
 
-任何无法证明为独立行为重建的 Sonic 变更都不得合并。
+- 保留 Mineradio commit、原始 Sonic Topography commit、作者 Ajin 和 `Non-Commercial Learning License`；
+- 在 `THIRD_PARTY_NOTICES.md` 与 `docs/parity/sonic-origin-decision.md` 中持续记录来源链、公开合作证据、维护者项目决策、个人非商业限制和修改说明；
+- 将算法适配到 visual-engine plugin、typed settings、共享 analyser、scheduler 和 resource scope，而不是复制 Electron 全局脚本组织；
+- 不把 Tauri 适配表示为 Ajin 或 Sonic Topography contributors 发布的未修改版本；
+- 直接迁移完成后重新生成行为、资源、GPU 和截图 evidence，旧候选证据只作对比基线。
+
+历史 clean-room / non-inclusion 审计继续保留为决策演进记录，但不再作为 M4 blocker。
 
 ### 9.1 Preset identity
 
@@ -874,6 +875,8 @@ composition context 提供 diagnostics registry：module mount 时注册 supplie
 
 GPU p95 仅在支持 `EXT_disjoint_timer_query_webgl2` 的 runner 上作为硬门；扩展存在本身不等于完成测量，只有 production presentation seam 发起的 query 已 resolved、未发生 disjoint 且 `sampleCount > 0` 时，证据才允许标记 `measured=true`。扩展可用但 release run 没有有效样本时，strict gate 必须失败。不支持扩展时记录 renderer CPU、draw calls、实例数和 frame p95 代理指标并明确标记为降级证据，不能把 CPU collector 数据误称为 GPU 时间。最终 release 需至少有一台支持 timer query 的 Windows/WebView2 或 Chromium 机器完成 GPU benchmark。
 
+M4 evidence runner 的 quick Sonic fixture 显式固定为 `eco`，release 默认固定为 `high`；quality 必须写入 URL、runtime snapshot、scene evidence 与 manifest，release strict 不得把 high/ultra 预算套到 eco/balanced 结果。release GPU hard gate 要求固定 timer-query 缓冲达到完整 `240` samples。Sonic baseline 必须由同机、同浏览器、同 viewport/DPR、同 quality 与 release profile 的可追溯 evidence 提供 frame/GPU p95；baseline 数值、source commit 与 source manifest 路径一并写入 manifest。缺少当前 p95、baseline p95、source commit 或 source manifest 时 fail closed；high/ultra 的 CPU、GPU 增量与 frame `+10%` 比较均使用包含等号的上界。
+
 Release strict 还必须 fail closed：worktree 必须 clean；parity contract 内嵌的 build commit 必须与 manifest repository commit 完全一致；三场景 console error 必须为 0；preview 使用固定端口并拒绝静默 fallback。manifest 只记录 Git SHA 而不验证实际构建、或仅把 console 输出写入 artifact，都不能构成 immutable evidence。
 
 ## 13. 测试策略
@@ -947,7 +950,7 @@ packages/visual-engine/src/fixtures/m4/
 - `VisualEngineHost` 不直接创建 Sonic/Stage/Shelf runtime；
 - preset 7 特例不散落到 React 主循环。
 - 全局 `BudgetTaskQueue.runSlice()` 只能由 maintenance lane 调用；
-- Sonic 目录不得包含参考项目源码、shader 文本或逐行派生标记；
+- Sonic 直接迁移代码必须保留来源与修改标记，并通过 origin-attribution 守卫；
 - 每个切片相对 `ab04493` 对 `sidecars/api`、`packages/shared`、Rust sidecar 启动/打包文件执行零差异检查。
 
 ## 15. 文件边界
@@ -1000,7 +1003,7 @@ apps/web/src/visual/controls/
 3. Stage owned texture leases 与 cooperative raster pipeline；
 4. Stage upload gate、clarity pool、prewarm 与 atomic takeover；
 5. Stage pause/seek/resume、motion/glitch、UI 与 diagnostics；
-6. clean-room Sonic settings 与 dormant controls；
+6. Sonic upstream settings 与 dormant controls；
 7. immutable 512-bin typed audio seam 与 8-band profile；
 8. Sonic plugin factory、cooperative render build、lifecycle 和 resource scope；
 9. 原子开放 preset 7、8→7 migration、composition/camera/lyrics/Home/Shelf/pointer integration；
@@ -1041,7 +1044,7 @@ Sonic impulse 接收注入 RNG；golden fixture 固定 seed。
 
 ### 17.6 第三方算法来源
 
-已确认 `yin-yizhen/sonic-topography` 的 Non-Commercial Learning License 与本项目 GPL-3.0 发行目标不兼容。Sonic 必须按 9.0 节执行 clean-room 行为重建；不得复制第三方源码、shader 或派生实现。研究来源说明可保留，但不能替代版权方授权。
+维护者已确认 `XxHuberrr/Mineradio@4abaa190` 到 `yin-yizhen/sonic-topography@3ff303e` 的来源链、作者 Ajin、`Non-Commercial Learning License` 和公开合作证据，并作出直接迁移的项目决策。该证据不等于书面授权、再许可或许可放宽。风险控制从人员隔离改为强制来源/许可证/修改告知，以及直接迁移版本的重新验收；详见 `docs/parity/sonic-origin-decision.md`。
 
 ## 18. 完成标准
 
@@ -1051,10 +1054,10 @@ Sonic impulse 接收注入 RNG；golden fixture 固定 seed。
 | --- | --- | --- |
 | Stage Lyrics 2.0 | `implemented` | clean commit `51ec050` 的 release strict evidence 通过；远端 `background + ephemeral` prewarm 仍未进入 scheduler，作为后续增强而非本次完成声明 |
 | 3D Shelf | `implemented` | clean commit `51ec050` 的 600×600 release strict evidence 通过 |
-| Sonic Topography | `partial` / blocked | clean-room provenance 与既有 exposure remediation；自动 source-isolation guard 只能证明 non-inclusion，不能证明实施者隔离 |
-| M4 | Open / Blocked | Sonic provenance gate |
+| Sonic Topography | `partial` / in progress | 直接迁移代码复核、来源注释复核与新的 release strict evidence |
+| M4 | Open / In Progress | 等待 Sonic 直接迁移与最终 evidence |
 
-旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。`51ec050` 的 manifest 已记录 dirty=false、preview build commit 精确匹配、三场景 console errors=0、真实 GPU samples 与 60/60 hard checks，因此 Stage 与 Shelf 已晋升；Sonic 在 provenance 未通过前仍必须保持 `partial`。
+旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。`51ec050` 的 manifest 已记录 dirty=false、preview build commit 精确匹配、三场景 console errors=0、真实 GPU samples 与 60/60 hard checks，因此 Stage 与 Shelf 已晋升；Sonic 已切换实现来源，必须在直接迁移版本上重跑同等级证据后才能从 `partial` 晋升。
 
 M4 只有同时满足以下条件才算完成：
 
@@ -1072,6 +1075,6 @@ M4 只有同时满足以下条件才算完成：
 - 目标测试、全仓测试、typecheck、Web production build、API freeze 和 `git diff --check` 全部通过；
 - 视觉/性能证据已生成并记录；
 - 第三方声明已审计；
-- Sonic clean-room 来源隔离复审通过；
+- Sonic 来源链、Ajin 署名、许可证、公开合作证据、维护者项目决策、许可限定和代码修改说明通过 origin-attribution 复审；
 - 相对 `ab04493` 的 Sidecar/shared/Rust sidecar 打包文件保持零差异；
 - 独立最终代码审查无 Critical/Important。

@@ -69,10 +69,10 @@
 - plugin 激活时创建独立 child resource scope，离开 preset 7 立即释放；density/count 重建应先成功创建新层再原子替换旧层。
 - Sonic 需要声明式集成 policies：相机基线 `(theta=0, phi=.18, radius=8.4)`、歌词 unlocked 偏移 `Y-0.34/Z+0.16`、歌词 lookAt、Home preserve、Shelf precedence、pointer release ripple。
 - 建议性能门：high 1080p Sonic CPU p95 ≤1.5ms、GPU p95 增量 ≤5ms；ultra ≤2.5ms/8ms；整体 frame p95 ≤当前基线+10%；退出后两个 frame 内 ledger 回到进入前基线。
-- 合并前需要审查 Sonic 算法来源的许可证并更新 `THIRD_PARTY_NOTICES`；不复制上游已知 disposed reference 缺陷。
-- 已确认参考项目 `yin-yizhen/sonic-topography`（审计 commit `3ff303e`）使用 `Non-Commercial Learning License`，其禁止商业使用和打包销售，与 MineRadio-Tauri 的 GPL-3.0 开源发行目标不兼容。
-- Sonic 实现必须采用 clean-room behavior reimplementation：只能依据 Electron 2.0.2 中可观察的行为、参数、公开 interface 与独立测试规格实现；禁止复制第三方源码、shader、表达性结构或制作派生实现。若未来要直接复用，必须先取得版权方明确书面许可。
-- attribution 可以保留研究来源说明，但 attribution 本身不能消除许可证冲突，也不能作为复制代码的授权。
+- 来源链已确认为 `XxHuberrr/Mineradio@4abaa190` 的 `public/sonic-topography-preset.js` → `yin-yizhen/sonic-topography@3ff303e`；原始作者署名为音域回响作者 Ajin，许可证为 `Non-Commercial Learning License`。
+- 用户提供的公开社交媒体截图显示 Mineradio 作者宣称“与音域回响作者 Ajin 联动”，与 Mineradio 文件头的移植声明相互印证。维护者据此作出直接迁移的项目决策；该公开合作证据不等于书面授权、再许可或许可放宽。
+- 直接迁移必须更新 `THIRD_PARTY_NOTICES.md`，保留来源 commit、Ajin、许可证、个人非商业限制和修改说明；不能把 Tauri 适配表示为原作者发布的未修改版本。
+- 旧 clean-room 路线和 source-isolation 结果作为历史审计保留，但不再是 M4 blocker；最终晋升依据改为 origin-attribution 守卫、直接迁移代码复核和新 release evidence。
 
 ## 3D Shelf 审计收敛
 - 当前 Shelf 不是骨架：side/stage/off、always/auto、static/dynamic、右键召唤/pin、hover、wheel、pane memory、中心行、详情 actions 和 11/11 虚拟窗口均已实现。
@@ -123,13 +123,13 @@
 - `VisualResourceHandle.setRetention()` 当前只改变 scope retention；budget ledger allocation priority 仍保留 admission 时的值。ledger 不会按存量 priority 主动驱逐，因此本切片安全，但 reprioritize interface 应作为独立后续设计。
 - `scheduleResidentRowPrewarm()` 先跳过 `!row.resident`，因此 planner 的 `background + ephemeral` 远端预热分支目前不可达。不得把 clarity pool 的 background admission 单元测试误写成生产远端预热已完成。
 - 真实 GPU timer query 已接入 production presentation seam。只有 resolved、non-disjoint 且 `sampleCount > 0` 才能标记 measured；扩展可用但 release 无样本时 strict gate 必须失败。
-- Sonic source-isolation guard 已证明当前目录无外部资产、非白名单依赖或明显 copied/vendor/reference 标记；它不能证明实现者从未接触受限材料，也不能修复既有 exposure。
-- M4 当前统一状态为 Open / Blocked：Stage/Shelf 已由 clean immutable evidence 晋升 `implemented`；Sonic 技术候选为 `partial`，等待未接触实现者独立重写或权利方授权。
+- 历史 Sonic source-isolation guard 曾证明旧候选目录无外部资产和来源标记；切换为直接迁移后，该结论不再是完成条件，守卫已替换为强制来源和署名存在的 origin-attribution 检查。
+- M4 当前统一状态为 Open / In Progress：Stage/Shelf 已由 clean immutable evidence 晋升 `implemented`；Sonic 技术候选仍为 `partial`，等待直接迁移代码复核与新 evidence。
 - 首版 evidence strict 存在三类假通过：console error 只记录不判定、manifest HEAD 未绑定实际 preview build、扩展不可用时 GPU 硬门被跳过；此外 dirty 只记录不阻断。现已统一进入 fail-closed run/scene checks。
 - Vite build 将当前 Git commit 注入 M4 parity contract；runner 对每个场景验证 build commit 与 repository commit 相等，因此旧 4173 preview 无法再冒充当前 clean HEAD。README 同时使用 `--strictPort` 阻止端口自动漂移。
 - clean evidence commit `51ec050` 通过 60/60：dirty=false、preview build SHA=HEAD、三场景 console errors=0、GPU 均 measured 且各 240 samples。
 - Stage release evidence：resident rows=3、pending builds/uploads=0、GPU p95=0.138016ms；Shelf：11 cards、11 detail rows、1 panel、GPU p95=0.167904ms。因此 `lyrics.stage-v2` 与 `shelf.3d` 可晋升 `implemented`。
-- Sonic 技术 evidence 为 4 meshes、console=0、GPU p95=0.069504ms，但这些不能替代 clean-room provenance；`visual.sonic-topography` 继续保持 `partial`。
+- 旧 Sonic 技术 evidence 为 4 meshes、console=0、GPU p95=0.069504ms，可作为直接迁移后的回归基线，但不能替代新版本 evidence；`visual.sonic-topography` 继续保持 `partial`。
 
 ## 遇到的问题
 | 问题 | 解决方案 |

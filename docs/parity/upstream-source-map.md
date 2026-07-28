@@ -2,7 +2,7 @@
 
 Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
 
-本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。
+除 Sonic Topography 外，本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。Sonic 依据已确认的来源链、维护者审阅的公开合作证据与项目决策采用直接迁移；该证据不等于书面授权或许可放宽，实施仍须适配 visual-engine 的 scheduler、resource scope、typed settings 和生命周期 seam。
 
 | 领域 | 上游证据 | 当前 Tauri 证据 | 目标所有权 | 迁移规则 |
 | --- | --- | --- | --- | --- |
@@ -13,6 +13,7 @@ Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
 | Audio Graph | `05-playback/08-audio-graph-controls.js` | `player-controller.ts`、visual audio modules | playback runtime + visual snapshot | 不让 React 每帧驱动 analyser |
 | 歌词请求 | `06-lyrics/00-lyrics-fetch-parse.js` | lyrics store、custom lyrics、`App.tsx` | lyrics controller | 保留 fallback、自定义歌词与 stale request 语义 |
 | 舞台歌词 | `02-visual/10-lyrics-mask-textures.js` 至 `14-stage-lyrics-rendering.js` | `packages/visual-engine/src/stage-lyrics/**` | visual-engine | 保留旧 mesh 直到新正文 ready，双预算上传 |
+| Sonic Topography | `public/sonic-topography-preset.js`、`03-beat/06-sonic-audio-monitor.js`；原始来源 `yin-yizhen/sonic-topography@3ff303e` | `packages/visual-engine/src/sonic-topography/**` | visual-engine | 直接迁移视觉算法，保留 Ajin、来源 commit、Non-Commercial Learning License 和修改说明；不继承全局脚本结构 |
 | 主循环与调度 | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | visual-engine runtime | visual scheduler | analyser/视觉采样可限流，媒体状态不可限流 |
 | 3D 歌单架 | `04-shelf/**` | visual shelf modules、`shelf-detail-data.ts` | visual-engine + library controller | 数据增长时 DOM/GPU 对象保持有界 |
 | Home 2.0 | `05-playback/03-home-discover-weather.js`、`03a-home-dashboard.js`、`05-home-actions.js` | `home/EmptyHomeHost.tsx`、`App.tsx` | home controller/surface | 维持当前 API，允许重做 UI 组织 |

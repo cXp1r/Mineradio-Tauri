@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createAudioReactivity } from "./audio-reactivity";
 import { AUDIO_SPECTRUM_BAND_COUNT, type AudioFrameBytes } from "./audio-snapshot";
 import { M4_SONIC_AUDIO_FRAMES } from "../fixtures/m4/sonic-audio-frames";
+import { SONIC_SPECTRUM_BIN_COUNT } from "../sonic-topography/sonic-audio-profile";
 
 const FS = 44100;
 const FFT = 2048;
@@ -300,4 +301,38 @@ test("audio reactivity publishes immutable Sonic data from the same frame-source
 	engine.update(DT);
 	expect(reads).toBe(2);
 	expect(sonic?.spectrum?.bin(2)).toBe(255);
+});
+
+test("audio reactivity applies live Sonic trigger settings without replacing the analyser", () => {
+	let time = 0;
+	const bins = new Uint8Array(SONIC_SPECTRUM_BIN_COUNT);
+	bins.fill(230, 96, 112);
+	const engine = createAudioReactivity({
+		frameSource: () => ({
+			mainFreqData: bins,
+			mainTimeData: new Uint8Array(1024).fill(128),
+			mainSampleRate: 48_000,
+			mainFftSize: 1024,
+			beatFreqData: bins,
+			beatTimeData: new Uint8Array(1024).fill(128),
+			beatSampleRate: 48_000,
+			beatFftSize: 1024,
+			playing: true,
+			currentTimeSeconds: time,
+			trackKey: "track-a",
+		}),
+	});
+	engine.setSonicTriggerSettings({
+		monitorEnabled: true,
+		autoTrack: false,
+		sensitivity: 100,
+		bandStart: 96,
+		bandEnd: 112,
+		threshold: 32,
+		pulseStrength: 62,
+	});
+	time += DT;
+	engine.update(DT);
+
+	expect(engine.getSnapshot().sonic?.triggerPulse ?? 0).toBeGreaterThan(0);
 });

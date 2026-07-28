@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
 	advanceM4ParityFrames,
 	createM4ParitySceneSettings,
+	normalizeM4ParitySonicQuality,
 } from "./m4-parity-runtime";
 
 test("M4 parity 的 stage 场景启用真实舞台歌词，其他场景保持隔离", () => {
@@ -10,6 +11,13 @@ test("M4 parity 的 stage 场景启用真实舞台歌词，其他场景保持隔
 	expect(stage.fx.stageLyrics?.textureClarity).toBe(2);
 	expect(createM4ParitySceneSettings("sonic").fx.particleLyrics).toBe(false);
 	expect(createM4ParitySceneSettings("shelf").fx.particleLyrics).toBe(false);
+});
+
+test("M4 parity 的 Sonic quality 由证据 URL 显式控制且默认保持 eco", () => {
+	expect(createM4ParitySceneSettings("sonic").fx.performanceQuality).toBe("eco");
+	expect(createM4ParitySceneSettings("sonic", "high").fx.performanceQuality).toBe("high");
+	expect(normalizeM4ParitySonicQuality("ultra")).toBe("ultra");
+	expect(normalizeM4ParitySonicQuality("invalid")).toBe("eco");
 });
 
 test("M4 parity 的确定性帧推进会在相邻帧之间让出 cooperative commit", async () => {

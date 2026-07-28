@@ -13,7 +13,8 @@ import {
 	mountOwnedStageLyricsLifecycle,
 	normalizeSonicPerformanceQuality,
 	resolveLegacyVisualCameraPolicyInput,
-	resolveSonicPointerRippleStrength,
+	sonicPaletteSnapshotFromLyricPalette,
+	resolveSonicPointerRipple,
 	resolveSonicShelfMode,
 	shouldActivateSonicTopography,
 } from "./create-legacy-visual-composition";
@@ -46,6 +47,20 @@ test("Sonic production route activates only for preset 7 and normalizes quality"
 	expect(normalizeSonicPerformanceQuality("unknown")).toBe("high");
 });
 
+test("Sonic cover palette receives Stage primary, secondary, and highlight colors", () => {
+	expect(sonicPaletteSnapshotFromLyricPalette({
+		primary: "#112233",
+		secondary: "#445566",
+		highlight: "#778899",
+		glowColor: "#aabbcc",
+	})).toEqual({
+		primary: "#112233",
+		secondary: "#445566",
+		highlight: "#778899",
+	});
+	expect(sonicPaletteSnapshotFromLyricPalette(null)).toBeNull();
+});
+
 test("legacy composition camera policy exposes only the eligible Stage target", () => {
 	const stageTarget = { x: 0.4, y: 0.2, z: -0.3 };
 	expect(resolveLegacyVisualCameraPolicyInput({ preset: 7, lyricCameraLock: false, particleLyrics: true }, stageTarget)).toEqual({
@@ -63,13 +78,14 @@ test("Sonic lane is ordered between skull and Stage Lyrics", () => {
 	expect(LEGACY_VISUAL_LANE_CADENCE.SonicTopography).toBe("presentation");
 });
 
-test("Sonic pointer release rejects drag/UI/free-camera and caps long press strength", () => {
-	expect(resolveSonicPointerRippleStrength({ preset: 6, dragged: false, overUi: false, freeCameraActive: false, heldMs: 0 })).toBeNull();
-	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: true, overUi: false, freeCameraActive: false, heldMs: 0 })).toBeNull();
-	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: true, freeCameraActive: false, heldMs: 0 })).toBeNull();
-	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: true, heldMs: 0 })).toBeNull();
-	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: false, heldMs: 0 })).toBe(0.8);
-	expect(resolveSonicPointerRippleStrength({ preset: 7, dragged: false, overUi: false, freeCameraActive: false, heldMs: 10_000 })).toBe(3);
+test("Sonic pointer release preserves the Electron 2.0.2 screen mapping and press strength", () => {
+	const base = { preset: 7, dragged: false, overUi: false, freeCameraActive: false, heldMs: 0, ndcX: 0.5, ndcY: -0.25 };
+	expect(resolveSonicPointerRipple({ ...base, preset: 6 })).toBeNull();
+	expect(resolveSonicPointerRipple({ ...base, dragged: true })).toBeNull();
+	expect(resolveSonicPointerRipple({ ...base, overUi: true })).toBeNull();
+	expect(resolveSonicPointerRipple({ ...base, freeCameraActive: true })).toBeNull();
+	expect(resolveSonicPointerRipple(base)).toEqual({ x: 8.5, z: -4.25, strength: 0.25 });
+	expect(resolveSonicPointerRipple({ ...base, heldMs: 10_000 })).toEqual({ x: 8.5, z: -4.25, strength: 3 });
 });
 
 test("Sonic suppresses the Shelf unless an already-open detail must remain usable", () => {

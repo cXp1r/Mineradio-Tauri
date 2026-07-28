@@ -1,8 +1,15 @@
+/**
+ * Sonic Topography 视觉层的 Tauri 修改版本。
+ * 直接上游：XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224，public/sonic-topography-preset.js。
+ * 原始项目：yin-yizhen/sonic-topography@3ff303e，作者 Ajin；适用 Non-Commercial Learning License。
+ * 完整来源、许可范围与修改告知见 THIRD_PARTY_NOTICES.md。
+ */
 import type {
 	SonicAudioSnapshot,
 	SonicBand,
 	SonicBandLevels,
 	SonicSpectrumFrame,
+	SonicTriggerMonitorSettings,
 } from "../audio/audio-snapshot";
 
 export type {
@@ -13,6 +20,16 @@ export type {
 } from "../audio/audio-snapshot";
 
 export const SONIC_SPECTRUM_BIN_COUNT = 512 as const;
+
+export const DEFAULT_SONIC_TRIGGER_MONITOR_SETTINGS: SonicTriggerMonitorSettings = Object.freeze({
+	monitorEnabled: true,
+	autoTrack: true,
+	sensitivity: 100,
+	bandStart: 1,
+	bandEnd: 4,
+	threshold: 32,
+	pulseStrength: 62,
+});
 
 export interface SonicSpectrumAnalysis {
 	readonly bands: SonicBandLevels;
@@ -56,6 +73,7 @@ export interface SonicAudioProfileInput {
 	readonly dtSeconds: number;
 	readonly trackKey: string | null;
 	readonly monitorEnabled: boolean;
+	readonly triggerSettings?: SonicTriggerMonitorSettings;
 	readonly reducedMotion: boolean;
 	readonly fallback?: {
 		readonly bass: number;
@@ -152,6 +170,68 @@ function clamp01(value: number): number {
 	return value < 0 ? 0 : value > 1 ? 1 : value;
 }
 
+function clamp(value: number, minimum: number, maximum: number): number {
+	const safe = Number.isFinite(value) ? value : minimum;
+	return Math.max(minimum, Math.min(maximum, safe));
+}
+
+function normalizeTriggerSettings(input: SonicAudioProfileInput): SonicTriggerMonitorSettings {
+	const source = input.triggerSettings ?? {
+		...DEFAULT_SONIC_TRIGGER_MONITOR_SETTINGS,
+		monitorEnabled: input.monitorEnabled,
+	};
+	const bandStart = Math.round(clamp(source.bandStart, 0, 510));
+	const bandEnd = Math.round(clamp(source.bandEnd, bandStart + 1, 512));
+	return Object.freeze({
+		monitorEnabled: source.monitorEnabled !== false,
+		autoTrack: source.autoTrack !== false,
+		sensitivity: Math.round(clamp(source.sensitivity, 0, 100)),
+		bandStart,
+		bandEnd,
+		threshold: Math.round(clamp(source.threshold, 0, 100)),
+		pulseStrength: Math.round(clamp(source.pulseStrength, 0, 100)),
+	});
+}
+
+function blendForRate(rate: number, dtSeconds: number): number {
+	return clamp01(1 - Math.exp(-Math.max(0, rate) * Math.max(0, dtSeconds)));
+}
+
+function resolveBeatParameters(sensitivity: number): Readonly<{
+	thresholdStdDevGain: number;
+	thresholdFloor: number;
+	minTriggerFlux: number;
+}> {
+	const normalized = clamp(sensitivity, 0, 100);
+	const lower = normalized <= 50 ? normalized / 50 : 1;
+	const upper = normalized > 50 ? (normalized - 50) / 50 : 0;
+	const strict = { thresholdStdDevGain: 2.6, thresholdFloor: 0.05, minTriggerFlux: 0.07 };
+	const normal = { thresholdStdDevGain: 1.8, thresholdFloor: 0.028, minTriggerFlux: 0.045 };
+	const sensitive = { thresholdStdDevGain: 1.1, thresholdFloor: 0.016, minTriggerFlux: 0.025 };
+	const mid = {
+		thresholdStdDevGain: strict.thresholdStdDevGain + (normal.thresholdStdDevGain - strict.thresholdStdDevGain) * lower,
+		thresholdFloor: strict.thresholdFloor + (normal.thresholdFloor - strict.thresholdFloor) * lower,
+		minTriggerFlux: strict.minTriggerFlux + (normal.minTriggerFlux - strict.minTriggerFlux) * lower,
+	};
+	return Object.freeze({
+		thresholdStdDevGain: mid.thresholdStdDevGain + (sensitive.thresholdStdDevGain - mid.thresholdStdDevGain) * upper,
+		thresholdFloor: mid.thresholdFloor + (sensitive.thresholdFloor - mid.thresholdFloor) * upper,
+		minTriggerFlux: mid.minTriggerFlux + (sensitive.minTriggerFlux - mid.minTriggerFlux) * upper,
+	});
+}
+
+function fluxStats(history: Float32Array): Readonly<{ average: number; standardDeviation: number }> {
+	let sum = 0;
+	for (const value of history) sum += value;
+	const average = sum / Math.max(1, history.length);
+	let variance = 0;
+	for (const value of history) variance += (value - average) ** 2;
+	return Object.freeze({
+		average,
+		standardDeviation: Math.sqrt(variance / Math.max(1, history.length)),
+	});
+}
+
 function analyzeSonicBandLevels(bands: SonicBandLevels): SonicSpectrumAnalysis {
 	const orderedBands = [
 		bands.subBass,
@@ -241,11 +321,22 @@ function createEmptySonicSnapshot(): SonicAudioSnapshot {
 		flux: 0,
 		confidence: 0,
 		triggerPulse: 0,
+		kickEnvelope: 0,
 	});
 }
 
 function calculatePositiveFlux(current: SonicBandLevels, previous: SonicBandLevels): number {
 	const keys = Object.keys(SONIC_BAND_HZ) as SonicBand[];
+	let sumSquares = 0;
+	for (const key of keys) {
+		const delta = Math.max(0, current[key] - previous[key]);
+		sumSquares += delta * delta;
+	}
+	return Math.sqrt(sumSquares / keys.length);
+}
+
+function calculatePositiveLowFlux(current: SonicBandLevels, previous: SonicBandLevels): number {
+	const keys = ["subBass", "bass", "lowMid", "mid"] as const;
 	let sumSquares = 0;
 	for (const key of keys) {
 		const delta = Math.max(0, current[key] - previous[key]);
@@ -285,6 +376,27 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 	let hasTimeline = false;
 	let triggerArmed = true;
 	let triggerPulse = 0;
+	let triggerCooldownRemaining = 0;
+	let autoCooldownRemaining = 0;
+	let smoothedFlux = 0;
+	let previousSmoothedFlux = 0;
+	const fluxHistory = new Float32Array(90);
+	let fluxHistoryIndex = 0;
+	let kickNoiseFloor = 0;
+	let kickEnvelope = 0;
+
+	function resetTransientState(): void {
+		triggerArmed = true;
+		triggerPulse = 0;
+		triggerCooldownRemaining = 0;
+		autoCooldownRemaining = 0;
+		smoothedFlux = 0;
+		previousSmoothedFlux = 0;
+		fluxHistory.fill(0);
+		fluxHistoryIndex = 0;
+		kickNoiseFloor = 0;
+		kickEnvelope = 0;
+	}
 
 	function reset(): void {
 		snapshot = createEmptySonicSnapshot();
@@ -294,12 +406,12 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 		previousSampleRate = 0;
 		previousFftSize = 0;
 		hasTimeline = false;
-		triggerArmed = true;
-		triggerPulse = 0;
+		resetTransientState();
 	}
 
 	function update(input: SonicAudioProfileInput): SonicAudioSnapshot {
-		if (!input.monitorEnabled) {
+		const triggerSettings = normalizeTriggerSettings(input);
+		if (!triggerSettings.monitorEnabled) {
 			reset();
 			const fallback = input.fallback;
 			if (!fallback) return snapshot;
@@ -322,6 +434,7 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 				flux: 0,
 				confidence: clamp01(fallback.energy * 0.55 + fallback.bass * 0.45),
 				triggerPulse: input.reducedMotion ? 0 : clamp01(fallback.beatPulse),
+				kickEnvelope: clamp01(fallback.beatPulse),
 			});
 			return snapshot;
 		}
@@ -341,10 +454,10 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 			if (timelineChanged) {
 				snapshot = createEmptySonicSnapshot();
 				previousBands = EMPTY_SONIC_BANDS;
-				triggerPulse = 0;
-				triggerArmed = true;
+				resetTransientState();
 			}
 			const decay = Math.exp(-dt / 0.18);
+			const impulseDecay = Math.pow(0.08, Math.max(0.001, dt));
 			const bands: SonicBandLevels = Object.freeze({
 				subBass: snapshot.bands.subBass * decay,
 				bass: snapshot.bands.bass * decay,
@@ -356,7 +469,8 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 				air: snapshot.bands.air * decay,
 			});
 			const analysis = analyzeSonicBandLevels(bands);
-			triggerPulse *= decay;
+			triggerPulse *= impulseDecay;
+			kickEnvelope *= impulseDecay;
 			if (analysis.lowDrive < 0.32) triggerArmed = true;
 			snapshot = Object.freeze({
 				spectrum,
@@ -365,6 +479,7 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 				flux: 0,
 				confidence: snapshot.confidence * decay,
 				triggerPulse: input.reducedMotion ? 0 : triggerPulse,
+				kickEnvelope,
 			});
 			previousBands = bands;
 			previousTrackKey = input.trackKey;
@@ -377,25 +492,98 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 
 		const rawAnalysis = analyzeSonicSpectrum(spectrum);
 		const flux = timelineChanged ? 0 : calculatePositiveFlux(rawAnalysis.bands, previousBands);
-		let onset = 0;
+		const lowFlux = timelineChanged ? 0 : calculatePositiveLowFlux(rawAnalysis.bands, previousBands);
+		if (timelineChanged) resetTransientState();
+		const beatParameters = resolveBeatParameters(triggerSettings.sensitivity);
+		smoothedFlux += (lowFlux - smoothedFlux) * 0.46;
+		const stats = fluxStats(fluxHistory);
+		const adaptiveThreshold = Math.max(
+			beatParameters.thresholdFloor,
+			stats.average + stats.standardDeviation * beatParameters.thresholdStdDevGain,
+		);
+		autoCooldownRemaining = Math.max(0, autoCooldownRemaining - dt);
+		const drumGate = rawAnalysis.lowDrive > 0.045 && (
+			rawAnalysis.dominance > 0.35
+			|| rawAnalysis.lowDrive > rawAnalysis.vocal * 1.04
+			|| rawAnalysis.kickSub > 0.085
+		);
+		const instantRise = smoothedFlux > adaptiveThreshold && lowFlux >= beatParameters.minTriggerFlux;
+		const peakConfirm = previousSmoothedFlux > adaptiveThreshold
+			&& previousSmoothedFlux >= smoothedFlux
+			&& previousSmoothedFlux >= beatParameters.minTriggerFlux * 0.86;
+		let beatOnset = !timelineChanged
+			&& autoCooldownRemaining <= 0
+			&& drumGate
+			&& (instantRise || peakConfirm);
 		if (timelineChanged) {
 			triggerArmed = rawAnalysis.lowDrive < 0.58;
+			beatOnset = false;
 		} else if (rawAnalysis.lowDrive < 0.32) {
 			triggerArmed = true;
 		} else if (triggerArmed && rawAnalysis.lowDrive >= 0.58) {
-			onset = clamp01((rawAnalysis.lowDrive - 0.58) / 0.42 + flux * 0.45);
+			beatOnset = true;
 			triggerArmed = false;
 		}
+		if (beatOnset) autoCooldownRemaining = 0.12;
+		fluxHistory[fluxHistoryIndex] = smoothedFlux;
+		fluxHistoryIndex = (fluxHistoryIndex + 1) % fluxHistory.length;
+		previousSmoothedFlux = smoothedFlux;
 
-		triggerPulse *= Math.exp(-dt / 0.18);
+		const confidence = clamp01(rawAnalysis.lowDrive * 0.52 + rawAnalysis.dominance * 0.28 + flux * 0.55);
+		let onset = 0;
+		if (triggerSettings.autoTrack) {
+			if (beatOnset) {
+				onset = clamp01(Math.max(lowFlux * 24, confidence * 0.68 + rawAnalysis.lowDrive * 0.32)
+					* (triggerSettings.pulseStrength / 100));
+			}
+		} else {
+			triggerCooldownRemaining = Math.max(0, triggerCooldownRemaining - dt);
+			const selectedEnergy = clamp01(
+				spectrum.mean(triggerSettings.bandStart, triggerSettings.bandEnd) / 255,
+			);
+			const threshold = triggerSettings.threshold / 100;
+			if (triggerCooldownRemaining <= 0 && selectedEnergy > threshold) {
+				triggerCooldownRemaining = 0.18;
+				onset = clamp01(
+					(selectedEnergy - threshold) / Math.max(0.05, 1 - threshold)
+					+ triggerSettings.pulseStrength / 220,
+				);
+			}
+		}
+		if (timelineChanged) {
+			previousBands = EMPTY_SONIC_BANDS;
+		}
+
+		triggerPulse *= Math.pow(0.10, Math.max(0.001, dt));
 		if (!input.reducedMotion) triggerPulse = Math.max(triggerPulse, onset);
+		const rawKickLevel = clamp01(Math.max(
+			rawAnalysis.kickSub,
+			rawAnalysis.kickCore,
+			rawAnalysis.kickPunch,
+			rawAnalysis.lowDrive,
+		));
+		const floorRate = rawKickLevel > kickNoiseFloor ? 1.15 : 0.35;
+		kickNoiseFloor += (rawKickLevel - kickNoiseFloor) * blendForRate(floorRate, dt);
+		const kickLevel = clamp01(rawKickLevel - kickNoiseFloor - 0.025);
+		const breathTarget = Math.min(0.11, kickLevel * 0.18);
+		const onsetTarget = beatOnset ? Math.max(0.48, kickLevel * 0.95) : 0;
+		const targetEnvelope = Math.max(breathTarget, onsetTarget);
+		const envelopeRate = targetEnvelope > kickEnvelope ? 42 : 11.5;
+		kickEnvelope = Math.max(
+			breathTarget,
+			kickEnvelope + (targetEnvelope - kickEnvelope) * blendForRate(envelopeRate, dt),
+		);
+		const combinedKickEnvelope = clamp01(Math.max(
+			kickEnvelope,
+			input.reducedMotion ? 0 : triggerPulse,
+			input.fallback?.beatPulse ?? 0,
+		));
 		const smoothedBands = smoothBandLevels(
 			timelineChanged ? EMPTY_SONIC_BANDS : snapshot.bands,
 			rawAnalysis.bands,
 			dt,
 		);
 		const analysis = analyzeSonicBandLevels(smoothedBands);
-		const confidence = clamp01(rawAnalysis.lowDrive * 0.52 + rawAnalysis.dominance * 0.28 + flux * 0.55);
 		snapshot = Object.freeze({
 			spectrum,
 			...analysis,
@@ -403,6 +591,7 @@ export function createSonicAudioProfile(): SonicAudioProfile {
 			flux,
 			confidence,
 			triggerPulse: input.reducedMotion ? 0 : triggerPulse,
+			kickEnvelope: combinedKickEnvelope,
 		});
 
 		previousBands = rawAnalysis.bands;

@@ -6,7 +6,7 @@ import {
 	SONIC_TOPOGRAPHY_DEFAULTS,
 } from "./sonic-settings";
 
-test("Sonic clean-room settings expose the frozen Electron 2.0.2 effective defaults", () => {
+test("Sonic settings expose the frozen Electron 2.0.2 effective defaults", () => {
 	expect(SONIC_TOPOGRAPHY_DEFAULTS).toEqual({
 		terrain: {
 			amplitude: 50,
@@ -110,7 +110,7 @@ test("Sonic settings normalization fills missing values and clamps persisted con
 			autoTrack: false,
 			sensitivity: 62,
 			bandStart: 510,
-			bandEnd: 512,
+			bandEnd: 511,
 			threshold: 0,
 			pulseStrength: 62,
 		},
@@ -119,7 +119,7 @@ test("Sonic settings normalization fills missing values and clamps persisted con
 	expect(Object.isFrozen(normalized.trigger)).toBe(true);
 });
 
-test("Sonic terrain derivation honors quality caps and the clean-room amplitude curve", () => {
+test("Sonic terrain derivation honors quality caps and the Electron amplitude curve", () => {
 	expect({
 		density46: {
 			eco: resolveSonicTerrainGrid(46, "eco"),

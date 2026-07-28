@@ -111,6 +111,65 @@ test("Sonic trigger hysteresis fires at 0.58 and rearms below 0.32", () => {
 	expect(update("kick", 4 / 60).onset).toBeGreaterThan(0);
 });
 
+test("Sonic manual trigger reads the configured 512-bin range and threshold", () => {
+	const bins = new Uint8Array(SONIC_SPECTRUM_BIN_COUNT);
+	bins.fill(230, 96, 112);
+	const frame = createSonicSpectrumFrame({
+		bins,
+		sampleRate: 48_000,
+		fftSize: 1024,
+		currentTimeSeconds: 1,
+		playing: true,
+	});
+	const run = (bandStart: number, bandEnd: number) => createSonicAudioProfile().update({
+		spectrum: frame,
+		dtSeconds: 1 / 60,
+		trackKey: "track-a",
+		monitorEnabled: true,
+		reducedMotion: false,
+		triggerSettings: {
+			monitorEnabled: true,
+			autoTrack: false,
+			sensitivity: 100,
+			bandStart,
+			bandEnd,
+			threshold: 32,
+			pulseStrength: 62,
+		},
+	});
+
+	expect(run(96, 112).triggerPulse).toBeGreaterThan(0);
+	expect(run(1, 4).triggerPulse).toBe(0);
+});
+
+test("Sonic kick envelope attacks on onset and releases under sustained low-frequency energy", () => {
+	const profile = createSonicAudioProfile();
+	const frame = (name: "silence" | "kick", time: number) => {
+		const fixture = M4_SONIC_AUDIO_FRAMES[name];
+		return createSonicSpectrumFrame({
+			bins: fixture.createBins(),
+			sampleRate: fixture.sampleRate,
+			fftSize: fixture.fftSize,
+			currentTimeSeconds: time,
+			playing: true,
+		});
+	};
+	const update = (name: "silence" | "kick", time: number) => profile.update({
+		spectrum: frame(name, time),
+		dtSeconds: 1 / 60,
+		trackKey: "track-a",
+		monitorEnabled: true,
+		reducedMotion: false,
+	});
+
+	update("silence", 0);
+	const onset = update("kick", 1 / 60);
+	expect(onset.kickEnvelope).toBeGreaterThanOrEqual(0.48);
+	let sustained = onset;
+	for (let index = 2; index <= 120; index += 1) sustained = update("kick", index / 60);
+	expect(sustained.kickEnvelope).toBeLessThan(onset.kickEnvelope * 0.5);
+});
+
 test("Sonic monitor-off mode falls back to the existing generic audio snapshot", () => {
 	const profile = createSonicAudioProfile();
 	const snapshot = profile.update({

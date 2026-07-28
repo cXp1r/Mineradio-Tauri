@@ -7,7 +7,7 @@ import {
 } from "./sonic-terrain";
 import { resolveSonicPalette } from "./sonic-palette";
 
-test("static terrain builds a centered instanced grid with the clean-room material contract", () => {
+test("static terrain preserves the Electron 2.0.2 168-unit local grid contract", () => {
 	const resources = createVisualResourceScope("sonic-terrain-test");
 	const layer = createSonicTerrainLayer({
 		owner: "terrain",
@@ -31,15 +31,30 @@ test("static terrain builds a centered instanced grid with the clean-room materi
 		layer.grid,
 		SONIC_TOPOGRAPHY_DEFAULTS.terrain,
 	);
+	const second = resolveSonicTerrainCellTransform(
+		1,
+		layer.grid,
+		SONIC_TOPOGRAPHY_DEFAULTS.terrain,
+	);
 	const last = resolveSonicTerrainCellTransform(
 		layer.instanceCount - 1,
 		layer.grid,
 		SONIC_TOPOGRAPHY_DEFAULTS.terrain,
 	);
-	expect(first.x).toBeCloseTo(-last.x, 6);
-	expect(first.z).toBeCloseTo(-last.z, 6);
-	expect(first.scaleX).toBeGreaterThan(0);
-	expect(first.scaleZ).toBeGreaterThan(0);
+	const spacing = 168 / layer.grid;
+	const boxWidth = spacing * (0.9 / 1.05);
+	expect(first).toEqual({
+		x: -84,
+		y: 0.5,
+		z: -84,
+		scaleX: boxWidth,
+		scaleY: 1,
+		scaleZ: boxWidth,
+	});
+	expect(second.x).toBe(first.x);
+	expect(second.z).toBeCloseTo(first.z + spacing, 8);
+	expect(last.x).toBeCloseTo(84 - spacing, 8);
+	expect(last.z).toBeCloseTo(84 - spacing, 8);
 
 	let next = 0;
 	while (next < layer.instanceCount) next = layer.fillRange(next, 997);
@@ -55,4 +70,41 @@ test("static terrain builds a centered instanced grid with the clean-room materi
 	resources.dispose();
 	expect(geometryDisposals).toBe(1);
 	expect(materialDisposals).toBe(1);
+});
+
+test("terrain settings map to the Electron 2.0.2 shader controls", () => {
+	const resources = createVisualResourceScope("sonic-terrain-settings-test");
+	const layer = createSonicTerrainLayer({
+		owner: "terrain-settings",
+		resources,
+		settings: SONIC_TOPOGRAPHY_DEFAULTS,
+		quality: "eco",
+		palette: resolveSonicPalette(SONIC_TOPOGRAPHY_DEFAULTS.colors),
+	});
+	const uniforms = layer.material.uniforms;
+
+	expect(Array.from(uniforms.uEq.value)).toEqual([90, 92, 50, 50, 50, 25, 50, 48]);
+	expect(uniforms.uMotionSpeed.value).toBeCloseTo(1.3, 8);
+	expect(uniforms.uAmplitude.value).toBe(1);
+	expect(uniforms.uGlowIntensity.value).toBeCloseTo(0.83, 8);
+
+	const maximum = {
+		...SONIC_TOPOGRAPHY_DEFAULTS,
+		terrain: {
+			...SONIC_TOPOGRAPHY_DEFAULTS.terrain,
+			amplitude: 100,
+			motionSpeed: 100,
+		},
+		colors: {
+			...SONIC_TOPOGRAPHY_DEFAULTS.colors,
+			mode: "custom" as const,
+			glow: 100,
+		},
+	};
+	layer.applySettings(maximum, resolveSonicPalette(maximum.colors));
+	expect(uniforms.uMotionSpeed.value).toBeCloseTo(2.15, 8);
+	expect(uniforms.uAmplitude.value).toBe(15);
+	expect(uniforms.uGlowIntensity.value).toBeCloseTo(1.95, 8);
+
+	resources.dispose();
 });

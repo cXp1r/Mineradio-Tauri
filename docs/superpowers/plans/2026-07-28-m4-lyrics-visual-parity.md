@@ -6,7 +6,7 @@
 
 **Design:** `docs/superpowers/specs/2026-07-28-m4-lyrics-visual-parity-design.md`
 
-**Execution status:** Stage Lyrics 与 3D Shelf 已在 clean commit `51ec050` 通过 release strict evidence 并晋升 `implemented`；Sonic 技术实现为 `partial`，但 clean-room provenance / exposure remediation 未通过，因此 M4 保持 Open / Blocked。
+**Execution status:** Stage Lyrics 与 3D Shelf 已在 clean commit `51ec050` 通过 release strict evidence 并晋升 `implemented`；Sonic 已由 clean-room 候选切换为直接迁移路线，当前等待直接迁移代码复核与新的 release strict evidence，因此 M4 保持 Open / In Progress。
 
 **Baseline verification:**
 
@@ -424,9 +424,9 @@ bun run --filter ./apps/web typecheck
 
 Commit: `feat(stage-lyrics): complete stage lyrics 2 parity`
 
-## Task 7: Add clean-room Sonic settings and dormant controls
+## Task 7: Add upstream Sonic settings and dormant controls
 
-**Clean-room gate:** 本任务及后续 Sonic 任务只依据已冻结的可观察行为、参数和公开 interface 规格实施。禁止复制 `yin-yizhen/sonic-topography` 的源码、shader、表达性结构或制作派生实现；参考项目许可证与 GPL-3.0 发行目标不兼容。
+**Origin gate:** Sonic 采用 `XxHuberrr/Mineradio@4abaa190` 到 `yin-yizhen/sonic-topography@3ff303e` 的直接迁移路线。所有后续任务必须保留 Ajin、`Non-Commercial Learning License`、公开合作证据、维护者项目决策、“不等于书面授权”的限定和修改说明，并继续遵守 visual-engine seam。
 
 **Files:**
 
@@ -452,7 +452,7 @@ Commit: `feat(stage-lyrics): complete stage lyrics 2 parity`
 ### Step 3: Add nested settings without opening preset 7
 
 - `FxState.sonic` 使用嵌套 typed shape；
-- normalizer 缺失字段补 clean-room defaults；
+- normalizer 缺失字段补 upstream effective defaults；
 - controls 可独立渲染测试，但 production selector 仍不可选择 7；
 - `PRESET_COUNT`、store clamp、legacy 8 与 0..6 行为保持不变。
 
@@ -526,7 +526,7 @@ Commit: `feat(sonic): add detailed audio profile`
 
 创建最小 terrain InstancedMesh，验证 grid/layout/material/uniform 和 dispose。
 
-### Step 2: Clean-room shader behavior specification
+### Step 2: Direct-port shader adaptation specification
 
 依据独立行为规格设计并锁定本项目自己的 uniform interface、最多 10 个 ripple、地形波动、distance fade/fog、amplitude/EQ 映射；增加 GLSL compile smoke 或 Three material smoke。不得复制或逐行翻译第三方 shader。
 
@@ -712,12 +712,12 @@ Commit: `feat(shelf): add bounded pools and interaction guards`
 - Add/Modify: architecture guards
 - Modify: `docs/parity/capability-matrix.md`
 - Modify: `docs/superpowers/specs/2026-07-26-mineradio-2.0.2-tauri-convergence-design.md`
-- Do not add the non-included Sonic reference project to `THIRD_PARTY_NOTICES*`; only modify notices if an actually distributed dependency requires it
+- Add the distributed Sonic visual origin, Ajin attribution, source commits, public collaboration statement, and Non-Commercial Learning License to `THIRD_PARTY_NOTICES.md`
 - Modify: planning/progress docs
 
 ### Step 1: License review
 
-记录已确认的许可证不兼容结论，并复核全部 Sonic 变更均为独立 clean-room behavior implementation；保留研究来源说明不能替代授权。
+记录 Mineradio → Sonic Topography 的来源链、Ajin、公开合作证据、维护者项目决策、许可限定和修改说明；运行 origin-attribution 守卫，确保直接迁移不会丢失署名、非商业告知或“不等于书面授权”的限定。
 
 ### Step 2: Deterministic visual evidence
 
@@ -748,7 +748,7 @@ GPU p95 使用 production presentation seam 上的真实 `EXT_disjoint_timer_que
 - `visual.sonic-topography`；
 - `shelf.3d`
 
-Stage/Shelf 已由 `51ec050` 的 clean immutable release evidence 晋升 `implemented`；Sonic 即使性能与视觉证据通过，也必须在 provenance/exposure gate 通过后才能从 `partial` 晋升。
+Stage/Shelf 已由 `51ec050` 的 clean immutable release evidence 晋升 `implemented`；Sonic 只有在直接迁移代码完成复核、origin-attribution 守卫通过并重新取得 release evidence 后才能从 `partial` 晋升。
 
 ### Step 5: Focused verification
 
@@ -786,7 +786,7 @@ Critical/Important 必须清零。
 
 候选提交：`feat(visual): add m4 parity candidates`
 
-禁止使用 `complete m4` 语义，直到 Sonic provenance 与全部 release gate 同时通过。
+禁止使用 `complete m4` 语义，直到 Sonic 直接迁移、来源/许可复审与全部 release gate 同时通过。
 
 ## Completion checklist
 
@@ -805,10 +805,10 @@ Critical/Important 必须清零。
 - [x] Full tests/typecheck/build pass
 - [x] Visual/performance evidence recorded for Stage/Shelf and Sonic technical candidate
 - [x] Capability matrix updated from evidence
-- [ ] License/attribution reviewed
-- [ ] Sonic clean-room source-isolation review passes
+- [x] Origin chain, public collaboration statement, license, and attribution recorded
+- [x] Sonic origin-attribution guard passes
 - [x] Preset 7 opening, 8→7 migration, selector and plugin route landed atomically in the technical candidate
 - [x] Per-slice diff proves Sidecar/shared/Rust sidecar packaging freeze
 - [x] Final independent review has no Critical/Important
 
-Sonic 技术候选条目勾选只表示实现与技术证据存在，不替代 clean-room provenance；在人员隔离或权利授权解决前，`visual.sonic-topography` 仍为 `partial`，M4 仍为 Open / Blocked。
+Sonic 技术候选条目只证明旧候选的结构和性能基础存在。维护者现已选择直接迁移；在直接迁移代码复核和新 release evidence 完成前，`visual.sonic-topography` 仍为 `partial`，M4 仍为 Open / In Progress。

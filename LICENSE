@@ -1,3 +1,17 @@
+MineRadio-Tauri License Scope Notice
+
+MineRadio-Tauri original code, excluding separately identified third-party
+material, is licensed under GPL-3.0-only. The Sonic Topography-derived visual
+layer in packages/visual-engine/src/sonic-topography is separately governed by
+the Non-Commercial Learning License and is not offered under GPL-3.0-only.
+The public collaboration evidence recorded by the project is provenance
+evidence only and does not grant additional redistribution or sublicensing
+rights. See THIRD_PARTY_NOTICES.md for the complete source chain, notices, and
+separately applicable license text.
+
+The GPL-3.0-only text below is preserved verbatim and applies to the project's
+original code within the scope stated above.
+
 GNU GENERAL PUBLIC LICENSE
 Version 3, 29 June 2007
 

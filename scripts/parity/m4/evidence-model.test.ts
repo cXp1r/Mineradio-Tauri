@@ -5,6 +5,7 @@ import {
 	evaluateSceneChecks,
 	parseConsoleErrorCount,
 	projectRuntimeEvidence,
+	resolveSonicEvidenceQuality,
 } from "./evidence-model.mjs";
 
 function makeSnapshot(overrides: Record<string, unknown> = {}) {
@@ -52,7 +53,79 @@ function makeSnapshot(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+function makeMeasuredSonicSnapshot({
+	sampleCount = 240,
+	gpuP95Ms = 7,
+	frameP95Ms = 4.4,
+	sonicCpuP95Ms = 1.5,
+	quality = "high",
+}: {
+	sampleCount?: number;
+	gpuP95Ms?: number | null;
+	frameP95Ms?: number | null;
+	sonicCpuP95Ms?: number | null;
+	quality?: "eco" | "balanced" | "high" | "ultra";
+} = {}) {
+	const base = makeSnapshot();
+	return {
+		...base,
+		scene: "sonic",
+		sonicQuality: quality,
+		performance: {
+			...base.performance,
+			frames: {
+				...base.performance.frames,
+				frameCostP95Ms: frameP95Ms,
+			},
+			gates: {
+				...base.performance.gates,
+				"sonic-topography": {
+					runs: 240,
+					skips: 0,
+					effectiveFps: 60,
+					pendingDtSec: 0,
+					costP50Ms: 0.75,
+					costP95Ms: sonicCpuP95Ms,
+					errors: 0,
+				},
+			},
+			subsystems: {
+				sonicTopography: {
+					active: true,
+					quality,
+					meshCount: 4,
+					residentMeshCount: 4,
+					pendingRebuilds: 0,
+					buildFailures: 0,
+					geometryPressure: "normal",
+				},
+			},
+		},
+		renderer: {
+			...base.renderer,
+			gpuTiming: {
+				extensionSupported: true,
+				sampleCount,
+				p50Ms: 1,
+				p95Ms: gpuP95Ms,
+			},
+		},
+	};
+}
+
+const RELEASE_ENVIRONMENT = {
+	viewport: { width: 1_920, height: 1_080 },
+	devicePixelRatio: 1,
+	webgl: { webgl2: true, timerQuerySupported: true },
+};
+
 describe("M4 evidence model", () => {
+	test("release evidence 默认采 high，quick evidence 默认保持 eco", () => {
+		expect(resolveSonicEvidenceQuality("release", null)).toBe("high");
+		expect(resolveSonicEvidenceQuality("quick", null)).toBe("eco");
+		expect(resolveSonicEvidenceQuality("release", "ultra")).toBe("ultra");
+	});
+
 	test("timer-query capability without actual query samples remains a proxy", () => {
 		const timing = classifyGpuTiming({
 			renderer: makeSnapshot().renderer,
@@ -131,6 +204,170 @@ describe("M4 evidence model", () => {
 
 		expect(checks.find((check) => check.id === "gpu.timer-query-samples")).toMatchObject({
 			severity: "hard",
+			status: "fail",
+		});
+	});
+
+	test("release strict 要求完整的 240 个 GPU timer-query 样本窗口", () => {
+		const snapshot = makeSnapshot({
+			renderer: {
+				...makeSnapshot().renderer,
+				gpuTiming: {
+					extensionSupported: true,
+					sampleCount: 239,
+					p50Ms: 1,
+					p95Ms: 2,
+				},
+			},
+		});
+		const checks = evaluateSceneChecks("stage", snapshot, {
+			viewport: { width: 1_920, height: 1_080 },
+			devicePixelRatio: 1,
+			webgl: { webgl2: true, timerQuerySupported: true },
+		}, { profile: "release", strict: true });
+
+		expect(checks.find((check) => check.id === "gpu.timer-query-samples")).toMatchObject({
+			status: "fail",
+			actual: expect.objectContaining({ sampleCount: 239 }),
+			expected: expect.objectContaining({ sampleCount: ">= 240" }),
+		});
+	});
+
+	test("Sonic high release budget 在 CPU、GPU 增量与整体 frame p95 等于阈值时通过", () => {
+		const checks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot(),
+			RELEASE_ENVIRONMENT,
+			{
+				profile: "release",
+				strict: true,
+				sonicQuality: "high",
+				performanceBaseline: {
+					frameP95Ms: 4,
+					gpuP95Ms: 2,
+					sourceCommit: "baseline-high-commit",
+					sourceManifest: "baseline-manifest.json#sonic/high",
+				},
+			},
+		);
+
+		for (const id of ["sonic.cpu-p95", "sonic.gpu-p95-delta", "runtime.frame-p95-regression", "performance.baseline-source"]) {
+			expect(checks.find((check) => check.id === id)).toMatchObject({ status: "pass" });
+		}
+		expect(checks.find((check) => check.id === "gpu.timer-query-samples")).toMatchObject({ status: "pass" });
+	});
+
+	test("Sonic ultra release budget 在 CPU 与 GPU 增量等于阈值时通过", () => {
+		const checks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot({
+				quality: "ultra",
+				sonicCpuP95Ms: 2.5,
+				gpuP95Ms: 10,
+			}),
+			RELEASE_ENVIRONMENT,
+			{
+				profile: "release",
+				strict: true,
+				sonicQuality: "ultra",
+				performanceBaseline: {
+					frameP95Ms: 4,
+					gpuP95Ms: 2,
+					sourceCommit: "baseline-ultra-commit",
+					sourceManifest: "baseline-manifest.json#sonic/ultra",
+				},
+			},
+		);
+
+		expect(checks.find((check) => check.id === "sonic.cpu-p95")).toMatchObject({ status: "pass" });
+		expect(checks.find((check) => check.id === "sonic.gpu-p95-delta")).toMatchObject({ status: "pass" });
+	});
+
+	test("release strict 不会把 high 预算套到 eco Sonic fixture", () => {
+		const checks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot({ quality: "eco" }),
+			RELEASE_ENVIRONMENT,
+			{
+				profile: "release",
+				strict: true,
+				sonicQuality: "high",
+				performanceBaseline: {
+					frameP95Ms: 4,
+					gpuP95Ms: 2,
+					sourceCommit: "baseline-eco-commit",
+					sourceManifest: "baseline-manifest.json#sonic/eco",
+				},
+			},
+		);
+
+		expect(checks.find((check) => check.id === "sonic.release-quality")).toMatchObject({
+			status: "fail",
+			actual: "eco",
+			expected: "high",
+		});
+	});
+
+	test("Sonic release p95 超过预算即失败", () => {
+		const checks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot({
+				sonicCpuP95Ms: 1.500_001,
+				gpuP95Ms: 7.000_001,
+				frameP95Ms: 4.400_001,
+			}),
+			RELEASE_ENVIRONMENT,
+			{
+				profile: "release",
+				strict: true,
+				performanceBaseline: {
+					frameP95Ms: 4,
+					gpuP95Ms: 2,
+					sourceCommit: "baseline-high-commit",
+					sourceManifest: "baseline-manifest.json#sonic/high",
+				},
+			},
+		);
+
+		for (const id of ["sonic.cpu-p95", "sonic.gpu-p95-delta", "runtime.frame-p95-regression"]) {
+			expect(checks.find((check) => check.id === id)).toMatchObject({ status: "fail" });
+		}
+	});
+
+	test("Sonic release 缺少当前 p95 或 baseline p95 时 fail closed", () => {
+		const missingCurrentChecks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot({
+				sonicCpuP95Ms: null,
+				gpuP95Ms: null,
+				frameP95Ms: null,
+			}),
+			RELEASE_ENVIRONMENT,
+			{
+				profile: "release",
+				strict: true,
+				performanceBaseline: {
+					frameP95Ms: 4,
+					gpuP95Ms: 2,
+					sourceCommit: "baseline-high-commit",
+					sourceManifest: "baseline-manifest.json#sonic/high",
+				},
+			},
+		);
+		const missingBaselineChecks = evaluateSceneChecks(
+			"sonic",
+			makeMeasuredSonicSnapshot(),
+			RELEASE_ENVIRONMENT,
+			{ profile: "release", strict: true },
+		);
+
+		for (const id of ["sonic.cpu-p95", "sonic.gpu-p95-delta", "runtime.frame-p95-regression"]) {
+			expect(missingCurrentChecks.find((check) => check.id === id)).toMatchObject({ status: "fail" });
+		}
+		for (const id of ["sonic.gpu-p95-delta", "runtime.frame-p95-regression"]) {
+			expect(missingBaselineChecks.find((check) => check.id === id)).toMatchObject({ status: "fail" });
+		}
+		expect(missingBaselineChecks.find((check) => check.id === "performance.baseline-source")).toMatchObject({
 			status: "fail",
 		});
 	});

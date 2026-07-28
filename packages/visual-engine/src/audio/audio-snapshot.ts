@@ -43,6 +43,17 @@ export interface SonicAudioSnapshot {
 	readonly flux: number;
 	readonly confidence: number;
 	readonly triggerPulse: number;
+	readonly kickEnvelope: number;
+}
+
+export interface SonicTriggerMonitorSettings {
+	readonly monitorEnabled: boolean;
+	readonly autoTrack: boolean;
+	readonly sensitivity: number;
+	readonly bandStart: number;
+	readonly bandEnd: number;
+	readonly threshold: number;
+	readonly pulseStrength: number;
 }
 
 export interface AudioSnapshot {
@@ -92,6 +103,7 @@ export interface AudioReactivityOptions {
 	};
 	prefersReducedMotion?: () => boolean;
 	sonicMonitorEnabled?: boolean;
+	sonicTriggerSettings?: SonicTriggerMonitorSettings;
 }
 
 export interface AudioReactivityEngine {
@@ -111,6 +123,7 @@ export interface AudioReactivityEngine {
 	setWaitingForBeatMap(waiting: boolean): void;
 	setBeatMapReady(ready: boolean): void;
 	setSonicMonitorEnabled(enabled: boolean): void;
+	setSonicTriggerSettings(settings: SonicTriggerMonitorSettings): void;
 	dispose(): void;
 	readonly smoothingTimeConstant: { main: number; beat: number };
 	readonly binRanges: { kickEnd: number; vocalEnd: number; midEnd: number };

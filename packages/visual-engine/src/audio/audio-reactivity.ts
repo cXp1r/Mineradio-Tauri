@@ -7,6 +7,7 @@ import {
 	type AudioFrameSource,
 	type BeatHandler,
 	type SonicAudioSnapshot,
+	type SonicTriggerMonitorSettings,
 } from "./audio-snapshot";
 import {
 	createPeakFollower,
@@ -26,6 +27,7 @@ import { createBeatEngine, type BeatSamples } from "./beat-engine";
 import {
 	createSonicAudioProfile,
 	createSonicSpectrumFrame,
+	DEFAULT_SONIC_TRIGGER_MONITOR_SETTINGS,
 } from "../sonic-topography/sonic-audio-profile";
 
 const PEAK_BASS_RELEASE_MS = -1000 / 60 / Math.log(0.994);
@@ -51,7 +53,12 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	let prefersReducedMotionValue = false;
 	let waitingForBeatMap = true;
 	let beatMapReadyForCamera = false;
-	let sonicMonitorEnabled = opts.sonicMonitorEnabled ?? true;
+	let sonicTriggerSettings: SonicTriggerMonitorSettings = Object.freeze({
+		...(opts.sonicTriggerSettings ?? DEFAULT_SONIC_TRIGGER_MONITOR_SETTINGS),
+		monitorEnabled: opts.sonicMonitorEnabled
+			?? opts.sonicTriggerSettings?.monitorEnabled
+			?? DEFAULT_SONIC_TRIGGER_MONITOR_SETTINGS.monitorEnabled,
+	});
 
 	const bassPeak = createPeakFollower(0.12, 0, PEAK_BASS_RELEASE_MS, 0.030);
 	const midPeak = createPeakFollower(0.10, 0, PEAK_MID_RELEASE_MS, 0.026);
@@ -160,7 +167,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	}
 
 	function updateSonicSnapshot(frame: AudioFrameBytes | null, dtSeconds: number): void {
-		const spectrum = frame && sonicMonitorEnabled
+		const spectrum = frame && sonicTriggerSettings.monitorEnabled
 			? createSonicSpectrumFrame({
 				bins: frame.mainFreqData,
 				sampleRate: frame.mainSampleRate,
@@ -173,7 +180,8 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 			spectrum,
 			dtSeconds,
 			trackKey: frame?.trackKey ?? null,
-			monitorEnabled: sonicMonitorEnabled,
+			monitorEnabled: sonicTriggerSettings.monitorEnabled,
+			triggerSettings: sonicTriggerSettings,
 			reducedMotion: prefersReducedMotionValue,
 			fallback: {
 				bass,
@@ -414,7 +422,14 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 	}
 
 	function setSonicMonitorEnabled(value: boolean) {
-		sonicMonitorEnabled = !!value;
+		sonicTriggerSettings = Object.freeze({
+			...sonicTriggerSettings,
+			monitorEnabled: !!value,
+		});
+	}
+
+	function setSonicTriggerSettings(value: SonicTriggerMonitorSettings) {
+		sonicTriggerSettings = Object.freeze({ ...value });
 	}
 
 	function dispose() {
@@ -449,6 +464,7 @@ export function createAudioReactivity(opts: AudioReactivityOptions = {}): AudioR
 		setWaitingForBeatMap,
 		setBeatMapReady,
 		setSonicMonitorEnabled,
+		setSonicTriggerSettings,
 		dispose,
 		smoothingTimeConstant: {
 			main: mainAnalyserConfig.smoothingTimeConstant,

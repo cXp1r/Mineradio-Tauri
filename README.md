@@ -126,6 +126,6 @@ MineRadio-Tauri 由 XxHuberrr 主要设计与打造。感谢早期体验、测�
 
 Copyright (C) 2026 XxHuberrr.
 
-本项目采用 GPL-3.0 授权。详见 [LICENSE](./LICENSE)。
+本项目原创核心代码采用 GPL-3.0-only 授权。Sonic Topography 视觉层基于已记录的来源链、维护者审阅的公开合作证据与项目决策进行迁移，并保留其单独的 `Non-Commercial Learning License` 与个人非商业限制；该证据不等于额外书面授权、再许可或许可放宽。完整来源链、适用范围和许可正文见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
 MineRadio-Tauri 名称、界面视觉设计与原创视觉表达归作者所有；第三方依赖和第三方服务分别遵循其各自授权与服务条款。

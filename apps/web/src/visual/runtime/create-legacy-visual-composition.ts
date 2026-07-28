@@ -574,11 +574,19 @@ export interface SonicPointerReleaseState {
 	readonly overUi: boolean;
 	readonly freeCameraActive: boolean;
 	readonly heldMs: number;
+	readonly ndcX: number;
+	readonly ndcY: number;
 }
 
-export function resolveSonicPointerRippleStrength(state: SonicPointerReleaseState): number | null {
+export function resolveSonicPointerRipple(
+	state: SonicPointerReleaseState,
+): Readonly<{ x: number; z: number; strength: number }> | null {
 	if (state.preset !== 7 || state.dragged || state.overUi || state.freeCameraActive) return null;
-	return Math.min(3, 0.8 + Math.max(0, state.heldMs) / 420);
+	return {
+		x: state.ndcX * 17,
+		z: state.ndcY * 17,
+		strength: Math.min(3, 0.25 + (Math.max(0, state.heldMs) / 1000) * 2.6),
+	};
 }
 
 function attachBaselineCanvasPointerInput(input: {
@@ -695,16 +703,17 @@ function attachBaselineCanvasPointerInput(input: {
 
 	const endDrag = (event?: MouseEvent) => {
 		if (rotating && event) {
-			const strength = resolveSonicPointerRippleStrength({
+			const ripple = resolveSonicPointerRipple({
 				preset: input.getPreset?.() ?? 0,
 				dragged,
 				overUi: input.isPointerOverUi(event),
 				freeCameraActive: input.freeCamera.active,
 				heldMs: performance.now() - pointerDownAt,
+				ndcX: input.pointerTarget.x,
+				ndcY: input.pointerTarget.y,
 			});
-			if (strength !== null) {
-				const local = particleLocalPointFromNdc(input.pointerTarget.x, input.pointerTarget.y);
-				input.onSonicPointerRipple?.(local?.x ?? input.pointerTarget.x * 4, local?.y ?? input.pointerTarget.y * 4, strength);
+			if (ripple !== null) {
+				input.onSonicPointerRipple?.(ripple.x, ripple.z, ripple.strength);
 			}
 		}
 		rotating = false;
@@ -1021,6 +1030,22 @@ export function resolveLegacyVisualCameraPolicyInput(
 	};
 }
 
+export function sonicPaletteSnapshotFromLyricPalette(
+	palette: LyricPalette | null | undefined,
+): Readonly<{ primary: string; secondary: string; highlight: string }> | null {
+	if (!palette) return null;
+	return Object.freeze({
+		primary: palette.primary,
+		secondary: palette.secondary,
+		highlight: palette.highlight,
+	});
+}
+
+function sonicPaletteSnapshotKey(palette: LyricPalette | null | undefined): string {
+	const snapshot = sonicPaletteSnapshotFromLyricPalette(palette);
+	return snapshot ? `${snapshot.primary}|${snapshot.secondary}|${snapshot.highlight}` : "none";
+}
+
 class LegacyVisualCompositionCancelledError extends Error {
 	constructor() {
 		super("Legacy visual composition mount was cancelled.");
@@ -1080,7 +1105,7 @@ export interface CreateLegacyVisualCompositionOptions {
 	readonly getPrefersReducedMotion?: () => boolean;
 	/** M4 确定性证据使用；产品路径不注入。 */
 	readonly createAudioFrameSource?: () => ManagedAudioFrameSource | Promise<ManagedAudioFrameSource>;
-	/** M4 clean-room golden 使用；产品路径继续使用默认随机源。 */
+	/** M4 确定性视觉证据使用；产品路径继续使用默认随机源。 */
 	readonly random?: () => number;
 	/** 仅暴露正式运行时的有限控制面给隔离 parity route。 */
 	readonly onDebugController?: (controller: LegacyVisualDebugController | null) => void;
@@ -1443,6 +1468,7 @@ export function createLegacyVisualComposition(
 				backCoverRandom: options.random,
 				random: options.random,
 			}));
+			audioEngine.setSonicTriggerSettings(homeVisual.getFx().sonic.trigger);
 			runtimeGovernor = createLegacyHomeVisualRuntimeGovernor({
 				homeVisual,
 				tasks: nextContext.tasks,
@@ -1460,6 +1486,7 @@ export function createLegacyVisualComposition(
 			let sonicActive = false;
 			let configuredSonicSettings: FxState["sonic"] | null = null;
 			let configuredSonicQuality: SonicPerformanceQuality | null = null;
+			let configuredSonicPaletteKey = "";
 			let syncedCoverUrlVersion = refs.coverUrlVersionRef?.current ?? 0;
 			const syncRendererPerformancePolicy = () => {
 				const policy = readVisualPerformancePolicy();
@@ -1534,6 +1561,8 @@ export function createLegacyVisualComposition(
 						return snapshot;
 					},
 					random: options.random,
+					palette: () => sonicPaletteSnapshotFromLyricPalette(latestCoverLyricPalette),
+					visualRotation: () => homeVisual.getField().points.rotation,
 				}),
 			);
 			shelfManagerForCallback = shelfManager;
@@ -1725,25 +1754,34 @@ export function createLegacyVisualComposition(
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.Ripples }));
 			registerOwnedCleanup(scope, isCurrent, "home-visual-lane", "subscription", renderLoop.registerStep(RenderStepSlot.HomeVisual, (frame) => {
 				mergeFxState(homeVisual.getFx(), refs?.fxRef?.current);
+				audioEngine.setSonicTriggerSettings(homeVisual.getFx().sonic.trigger);
 				const sonicRequested = shouldActivateSonicTopography(homeVisual.getFx().preset);
 				if (sonicRequested) {
 					const settings = homeVisual.getFx().sonic;
 					const quality = normalizeSonicPerformanceQuality(homeVisual.getFx().performanceQuality);
+					const paletteKey = sonicPaletteSnapshotKey(latestCoverLyricPalette);
 					if (!sonicActive) {
 						sonic.activate(settings, quality);
 						sonicActive = true;
 						configuredSonicSettings = settings;
 						configuredSonicQuality = quality;
-					} else if (configuredSonicSettings !== settings || configuredSonicQuality !== quality) {
+						configuredSonicPaletteKey = paletteKey;
+					} else if (
+						configuredSonicSettings !== settings ||
+						configuredSonicQuality !== quality ||
+						configuredSonicPaletteKey !== paletteKey
+					) {
 						sonic.configure(settings, quality);
 						configuredSonicSettings = settings;
 						configuredSonicQuality = quality;
+						configuredSonicPaletteKey = paletteKey;
 					}
 				} else if (sonicActive) {
 					sonic.deactivate();
 					sonicActive = false;
 					configuredSonicSettings = null;
 					configuredSonicQuality = null;
+					configuredSonicPaletteKey = "";
 				}
 				const visualPolicy = syncRendererPerformancePolicy();
 				applyRuntimeVisualPerformancePolicy(homeVisual.getFx(), visualPolicy);

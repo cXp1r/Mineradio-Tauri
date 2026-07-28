@@ -8,6 +8,21 @@ function finiteGpuDuration(value) {
 	return Number.isFinite(duration) && duration >= 0 ? duration : null;
 }
 
+export const M4_RELEASE_GPU_MINIMUM_SAMPLES = 240;
+
+export const M4_RELEASE_PERFORMANCE_BUDGETS = Object.freeze({
+	frameP95RegressionRatio: 1.1,
+	sonic: Object.freeze({
+		high: Object.freeze({ cpuP95Ms: 1.5, gpuP95DeltaMs: 5 }),
+		ultra: Object.freeze({ cpuP95Ms: 2.5, gpuP95DeltaMs: 8 }),
+	}),
+});
+
+export function resolveSonicEvidenceQuality(profile, requestedQuality) {
+	if (["eco", "balanced", "high", "ultra"].includes(requestedQuality)) return requestedQuality;
+	return profile === "release" ? "high" : "eco";
+}
+
 function check(id, condition, actual, expected, severity = "hard") {
 	return {
 		id,
@@ -137,14 +152,21 @@ export function evaluateSceneChecks(scene, snapshot, environment, options = {}) 
 	if (options.profile === "release" && options.strict === true) {
 		checks.push(check(
 			"gpu.timer-query-samples",
-			gpuTiming.extensionSupported && gpuTiming.measured && gpuTiming.sampleCount > 0,
+			gpuTiming.extensionSupported
+				&& gpuTiming.measured
+				&& gpuTiming.sampleCount >= M4_RELEASE_GPU_MINIMUM_SAMPLES,
 			{
 				extensionSupported: gpuTiming.extensionSupported,
 				measured: gpuTiming.measured,
 				sampleCount: gpuTiming.sampleCount,
 				p95Ms: gpuTiming.p95Ms,
 			},
-			{ extensionSupported: true, measured: true, sampleCount: "> 0", p95Ms: "real timer-query duration" },
+			{
+				extensionSupported: true,
+				measured: true,
+				sampleCount: `>= ${M4_RELEASE_GPU_MINIMUM_SAMPLES}`,
+				p95Ms: "real timer-query duration",
+			},
 		));
 	}
 
@@ -171,6 +193,75 @@ export function evaluateSceneChecks(scene, snapshot, environment, options = {}) 
 			check("sonic.build-failures", Number(sonic.buildFailures) === 0, Number(sonic.buildFailures) || 0, 0),
 			check("sonic.geometry-pressure", sonic.geometryPressure !== "hard", sonic.geometryPressure ?? null, "normal|soft"),
 		);
+		if (options.profile === "release" && options.strict === true) {
+			const quality = snapshot?.sonicQuality ?? sonic.quality ?? options.sonicQuality ?? null;
+			const requestedQuality = options.sonicQuality ?? quality;
+			const budget = M4_RELEASE_PERFORMANCE_BUDGETS.sonic[quality] ?? null;
+			const sonicCpuP95Ms = finiteGpuDuration(performance.gates?.["sonic-topography"]?.costP95Ms);
+			const gpuBaselineP95Ms = finiteGpuDuration(options.performanceBaseline?.gpuP95Ms);
+			const baselineSourceCommit = typeof options.performanceBaseline?.sourceCommit === "string"
+				? options.performanceBaseline.sourceCommit.trim()
+				: "";
+			const baselineSourceManifest = typeof options.performanceBaseline?.sourceManifest === "string"
+				? options.performanceBaseline.sourceManifest.trim()
+				: "";
+			const gpuP95DeltaMs = gpuTiming.p95Ms !== null && gpuBaselineP95Ms !== null
+				? gpuTiming.p95Ms - gpuBaselineP95Ms
+				: null;
+			const frameP95Ms = finiteGpuDuration(performance.frames?.frameCostP95Ms);
+			const frameBaselineP95Ms = finiteGpuDuration(options.performanceBaseline?.frameP95Ms);
+			const frameP95LimitMs = frameBaselineP95Ms !== null
+				? frameBaselineP95Ms * M4_RELEASE_PERFORMANCE_BUDGETS.frameP95RegressionRatio
+				: null;
+
+			checks.push(
+				check(
+					"performance.baseline-source",
+					baselineSourceCommit.length > 0 && baselineSourceManifest.length > 0,
+					{
+						commit: baselineSourceCommit || null,
+						manifest: baselineSourceManifest || null,
+					},
+					{ commit: "required", manifest: "required" },
+				),
+				check(
+					"sonic.release-quality",
+					budget !== null && quality === requestedQuality,
+					quality,
+					requestedQuality ?? "high|ultra",
+				),
+				check(
+					"sonic.cpu-p95",
+					budget !== null && sonicCpuP95Ms !== null && sonicCpuP95Ms <= budget.cpuP95Ms,
+					sonicCpuP95Ms,
+					budget ? `<= ${budget.cpuP95Ms}ms` : "quality-specific budget",
+				),
+				check(
+					"sonic.gpu-p95-delta",
+					budget !== null && gpuP95DeltaMs !== null && gpuP95DeltaMs <= budget.gpuP95DeltaMs,
+					{
+						baselineP95Ms: gpuBaselineP95Ms,
+						currentP95Ms: gpuTiming.p95Ms,
+						deltaP95Ms: gpuP95DeltaMs,
+					},
+					budget
+						? { baselineP95Ms: "required", currentP95Ms: "required", deltaP95Ms: `<= ${budget.gpuP95DeltaMs}ms` }
+						: { quality: "high|ultra" },
+				),
+				check(
+					"runtime.frame-p95-regression",
+					frameP95Ms !== null && frameP95LimitMs !== null && frameP95Ms <= frameP95LimitMs,
+					{
+						baselineP95Ms: frameBaselineP95Ms,
+						currentP95Ms: frameP95Ms,
+					},
+					{
+						baselineP95Ms: "required",
+						currentP95Ms: `<= baseline * ${M4_RELEASE_PERFORMANCE_BUDGETS.frameP95RegressionRatio}`,
+					},
+				),
+			);
+		}
 	}
 
 	if (scene === "shelf") {

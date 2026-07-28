@@ -1,7 +1,15 @@
+/**
+ * Sonic Topography 视觉层的 Tauri 适配。
+ * 直接上游：XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224
+ * 原文件：public/sonic-topography-preset.js
+ * 原始项目：yin-yizhen/sonic-topography@3ff303e，作者 Ajin。
+ * 许可：Non-Commercial Learning License；完整告知见 THIRD_PARTY_NOTICES.md。
+ */
 import { Group, type Scene, type WebGLRenderer } from "three";
 import type { SonicAudioSnapshot, SonicBand } from "./sonic-audio-profile";
 import {
 	createSonicFloatingBlocksLayer,
+	SONIC_FLOATING_CAP,
 	type SonicFloatingBlocksLayer,
 	type SonicRandomSource,
 } from "./sonic-floating-blocks";
@@ -20,9 +28,15 @@ import {
 import {
 	SONIC_TOPOGRAPHY_DEFAULTS,
 	normalizeSonicTopographySettings,
+	resolveSonicTerrainGrid,
 	type SonicPerformanceQuality,
 	type SonicTopographySettings,
 } from "./sonic-settings";
+import {
+	resolveSonicGroundLayout,
+	smoothSonicGroundBands,
+	writeSonicGroundEqTarget,
+} from "./sonic-runtime-mapping";
 import {
 	createSonicTerrainLayer,
 	type SonicTerrainLayer,
@@ -65,6 +79,7 @@ export interface SonicTopographyPluginContext {
 	readonly audio: SonicAudioSnapshotSupplier;
 	readonly palette?: SonicPaletteSupplier;
 	readonly random?: SonicRandomSource;
+	readonly visualRotation?: () => Readonly<{ x?: number; y?: number }> | null;
 }
 
 export type SonicBuildPhaseKind = "terrain" | "floating" | "impulses";
@@ -143,9 +158,22 @@ interface SonicLayerBundle {
 	settings: SonicTopographySettings;
 	quality: SonicPerformanceQuality;
 	applySettings(settings: SonicTopographySettings, palette: SonicPalette): void;
-	update(frame: FrameContext, audio: SonicAudioSnapshot): void;
+	update(
+		frame: FrameContext,
+		audio: SonicAudioSnapshot,
+		runtimeFrame: SonicRuntimeFrame,
+	): void;
 	pointerRipple(x: number, z: number, strength: number): void;
 	dispose(): void;
+}
+
+interface SonicRuntimeFrame {
+	timeSeconds: number;
+	autoYaw: number;
+	bands: Float32Array;
+	energy: number;
+	warmth: number;
+	brightness: number;
 }
 
 interface PendingBuild {
@@ -170,20 +198,27 @@ function structuralSignature(
 	quality: SonicPerformanceQuality,
 ): string {
 	return [
-		quality,
-		settings.terrain.density,
-		settings.terrain.range,
-		settings.terrain.lower,
-		settings.terrain.depth,
-		settings.floating.count,
-		settings.floating.minSize,
-		settings.floating.maxSize,
+		resolveSonicTerrainGrid(settings.terrain.density, quality),
+		Math.max(0, Math.min(SONIC_FLOATING_CAP, Math.round(settings.floating.count))),
 	].join(":");
 }
 
 function describeError(error: unknown): string {
 	if (error instanceof Error) return error.message;
 	return typeof error === "string" ? error : "unknown Sonic rebuild failure";
+}
+
+function createGenerationRandomStream(
+	source: SonicRandomSource,
+	salt: number,
+): SonicRandomSource {
+	const sampled = source();
+	const normalized = Number.isFinite(sampled) ? sampled - Math.floor(sampled) : 0.5;
+	let state = (Math.floor(normalized * 0x1_0000_0000) ^ salt) >>> 0;
+	return () => {
+		state = (Math.imul(state, 1_664_525) + 1_013_904_223) >>> 0;
+		return state / 0x1_0000_0000;
+	};
 }
 
 function createLayerBundle(options: {
@@ -193,6 +228,7 @@ function createLayerBundle(options: {
 	readonly quality: SonicPerformanceQuality;
 	readonly palette: SonicPalette;
 	readonly random: SonicRandomSource;
+	readonly visualRotation?: SonicTopographyPluginContext["visualRotation"];
 }): SonicLayerBundle {
 	const root = new Group();
 	root.name = SONIC_TOPOGRAPHY_ROOT_NAME;
@@ -206,6 +242,8 @@ function createLayerBundle(options: {
 			dispose: () => root.removeFromParent(),
 		});
 		attachmentRegistered = true;
+		const floatingRandom = createGenerationRandomStream(options.random, 0x6d2b_79f5);
+		const impulseRandom = createGenerationRandomStream(options.random, 0xa341_316c);
 		const terrain = createSonicTerrainLayer({
 			owner: `sonic:g${options.generation}:terrain`,
 			resources: options.scope,
@@ -218,13 +256,13 @@ function createLayerBundle(options: {
 			resources: options.scope,
 			settings: options.settings,
 			palette: options.palette,
-			random: options.random,
+			random: floatingRandom,
 		});
 		const impulses = createSonicImpulseLayer({
 			owner: `sonic:g${options.generation}:impulses`,
 			resources: options.scope,
 			palette: options.palette,
-			random: options.random,
+			random: impulseRandom,
 		});
 		root.add(terrain.mesh, floating.mesh, impulses.meteorsMesh, impulses.trailsMesh);
 		const bundle: SonicLayerBundle = {
@@ -244,24 +282,37 @@ function createLayerBundle(options: {
 			quality: options.quality,
 			applySettings(settings, palette) {
 				bundle.settings = settings;
+				const layout = resolveSonicGroundLayout(settings.terrain);
+				root.position.set(0, layout.y, layout.z);
+				root.scale.setScalar(layout.scale);
 				terrain.applySettings(settings, palette);
 				floating.applySettings(settings, palette);
 				impulses.applyPalette(palette);
 			},
-			update(frame, audio) {
-				const timeSeconds = Math.max(0, frame.now / 1000);
-				const eq = bundle.settings.eq;
-				for (let index = 0; index < SONIC_EQ_BANDS.length; index += 1) {
-					const band = SONIC_EQ_BANDS[index];
-					terrain.material.uniforms.uBands.value[index] = audio.bands[band] * eq[band] / 100;
-				}
-				terrain.material.uniforms.uTime.value = timeSeconds;
-				floating.update(timeSeconds, audio);
-				impulses.update(frame.dt, timeSeconds, audio, bundle.settings);
-				terrain.material.uniforms.uRippleCount.value = impulses.writeTerrainRipples(
-					terrain.material.uniforms.uRipples.value,
+			update(frame, audio, runtimeFrame) {
+				const uniforms = terrain.material.uniforms;
+				uniforms.uBands.value.set(runtimeFrame.bands);
+				uniforms.uTime.value = runtimeFrame.timeSeconds;
+				uniforms.uKickEnvelope.value = audio.kickEnvelope;
+				uniforms.uEnergy.value = runtimeFrame.energy;
+				uniforms.uWarmth.value = runtimeFrame.warmth;
+				uniforms.uBrightness.value = runtimeFrame.brightness;
+				uniforms.uSharpness.value = audio.sharpness;
+				uniforms.uSmoothness.value = audio.smoothness;
+				uniforms.uDensity.value = audio.density;
+				floating.update(runtimeFrame.timeSeconds, audio, runtimeFrame.bands);
+				impulses.update(frame.dt, runtimeFrame.timeSeconds, audio, bundle.settings);
+				uniforms.uRippleCount.value = impulses.writeTerrainRipples(
+					uniforms.uRipples.value,
 				);
-				root.rotation.y += frame.dt * bundle.settings.terrain.autoRotate / 100 * 0.09;
+				const sharedRotation = options.visualRotation?.();
+				root.rotation.x = Number.isFinite(Number(sharedRotation?.x))
+					? Number(sharedRotation?.x)
+					: 0;
+				root.rotation.y = (
+					Number.isFinite(Number(sharedRotation?.y)) ? Number(sharedRotation?.y) : 0
+				) + runtimeFrame.autoYaw;
+				root.rotation.z = 0;
 			},
 			pointerRipple(x, z, strength) {
 				impulses.pointerRipple(x, z, strength);
@@ -309,6 +360,17 @@ export function createSonicTopographyRuntime(
 	let peakGeometryBytes = 0;
 	let peakInstances = 0;
 	let unregisterDiagnostics: (() => void) | null = null;
+	const rawBands = new Float32Array(SONIC_EQ_BANDS.length);
+	const targetBands = new Float32Array(SONIC_EQ_BANDS.length);
+	const smoothedBands = new Float32Array(SONIC_EQ_BANDS.length);
+	const runtimeFrame: SonicRuntimeFrame = {
+		timeSeconds: 0,
+		autoYaw: 0,
+		bands: smoothedBands,
+		energy: 0,
+		warmth: 0,
+		brightness: 0,
+	};
 
 	function currentPalette(settings = desiredSettings): SonicPalette {
 		return resolveSonicPalette(settings.colors, context.palette?.());
@@ -483,6 +545,7 @@ export function createSonicTopographyRuntime(
 				quality: desiredQuality,
 				palette: currentPalette(),
 				random,
+				visualRotation: context.visualRotation,
 			});
 		} catch (error) {
 			buildScope.dispose();
@@ -594,8 +657,44 @@ export function createSonicTopographyRuntime(
 		},
 		update(frame) {
 			if (!active || disposed || !activeBundle) return;
+			const bundle = activeBundle;
 			const audio = frame.snapshot.sonic ?? context.audio();
-			activeBundle.update(frame, audio);
+			for (let index = 0; index < SONIC_EQ_BANDS.length; index += 1) {
+				rawBands[index] = audio.bands[SONIC_EQ_BANDS[index]];
+			}
+			writeSonicGroundEqTarget(
+				targetBands,
+				rawBands,
+				audio.kickEnvelope,
+				bundle.settings.eq,
+			);
+			const dt = Math.max(0, frame.dt);
+			smoothSonicGroundBands(
+				smoothedBands,
+				targetBands,
+				bundle.settings.terrain.motionSpeed,
+				dt,
+			);
+			runtimeFrame.timeSeconds += dt * (
+				0.45 + bundle.settings.terrain.motionSpeed * 0.017
+			);
+			runtimeFrame.autoYaw += dt
+				* bundle.settings.terrain.autoRotate / 100
+				* 0.3;
+			const low = smoothedBands[0] + smoothedBands[1] + smoothedBands[2] + smoothedBands[3];
+			const high = smoothedBands[5] + smoothedBands[6] + smoothedBands[7];
+			const total = Math.max(0.001, low + high);
+			runtimeFrame.warmth = Math.max(0, Math.min(1, low / total));
+			runtimeFrame.brightness = Math.max(0, Math.min(1, high / total));
+			const eqAverage = SONIC_EQ_BANDS.reduce(
+				(sum, band) => sum + bundle.settings.eq[band],
+				0,
+			) / SONIC_EQ_BANDS.length;
+			runtimeFrame.energy = Math.max(
+				0,
+				Math.min(1, audio.energy * (0.25 + (eqAverage / 50) * 0.75)),
+			);
+			bundle.update(frame, audio, runtimeFrame);
 		},
 		pointerRipple(x, z, strength) {
 			if (!active || disposed) return;

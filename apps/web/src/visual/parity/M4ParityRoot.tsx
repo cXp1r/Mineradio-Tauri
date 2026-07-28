@@ -1,5 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { createM4ParityRuntime, type M4ParityMode, type M4ParityRuntime, type M4ParityRuntimeSnapshot, type M4ParityScene } from "./m4-parity-runtime";
+import {
+	createM4ParityRuntime,
+	normalizeM4ParitySonicQuality,
+	type M4ParityMode,
+	type M4ParityRuntime,
+	type M4ParityRuntimeSnapshot,
+	type M4ParityScene,
+} from "./m4-parity-runtime";
 
 declare global {
 	interface Window {
@@ -15,7 +22,12 @@ declare global {
 	}
 }
 
-function readParams(): { scene: M4ParityScene; mode: M4ParityMode; seed: number } {
+function readParams(): {
+	scene: M4ParityScene;
+	mode: M4ParityMode;
+	seed: number;
+	sonicQuality: ReturnType<typeof normalizeM4ParitySonicQuality>;
+} {
 	const params = new URLSearchParams(window.location.search);
 	const sceneValue = params.get("scene");
 	const modeValue = params.get("mode");
@@ -24,6 +36,7 @@ function readParams(): { scene: M4ParityScene; mode: M4ParityMode; seed: number 
 		scene: sceneValue === "sonic" || sceneValue === "shelf" ? sceneValue : "stage",
 		mode: modeValue === "realtime" ? "realtime" : "deterministic",
 		seed: Number.isFinite(seedValue) ? Math.round(seedValue) : 2_024_0728,
+		sonicQuality: normalizeM4ParitySonicQuality(params.get("quality")),
 	};
 }
 
@@ -71,7 +84,11 @@ export function M4ParityRoot() {
 	return (
 		<main className="m4-parity-root" data-m4-parity-status={status}>
 			<div ref={hostRef} className="m4-parity-stage" aria-label="M4 visual parity stage" />
-			<div className="m4-parity-badge">M4 · {paramsRef.current.scene} · {status}</div>
+			<div className="m4-parity-badge">
+				M4 · {paramsRef.current.scene}
+				{paramsRef.current.scene === "sonic" ? ` · ${paramsRef.current.sonicQuality}` : ""}
+				{` · ${status}`}
+			</div>
 		</main>
 	);
 }

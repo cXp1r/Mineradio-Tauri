@@ -247,7 +247,7 @@ test("visual settings owns nested Stage and Sonic normalization before persisten
   expect(normalized.sonic.colors.mode).toBe("custom");
   expect(normalized.sonic.colors.base).toBe("#aabbcc");
   expect(normalized.sonic.trigger.bandStart).toBe(510);
-  expect(normalized.sonic.trigger.bandEnd).toBe(512);
+	expect(normalized.sonic.trigger.bandEnd).toBe(511);
 });
 
 test("visual settings round-trip preserves normalized nested Stage and Sonic snapshots", () => {

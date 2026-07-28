@@ -24,18 +24,18 @@
   - 创建 M4 设计文档，冻结兼容边界、模块结构、预算、测试与完成标准。
   - 创建 12 任务实施计划，按 Stage Lyrics、Sonic、Shelf 和最终 parity/performance 收口拆分纵向切片。
   - 检查设计/计划 Markdown 结构与 `git diff --check`，当前无空白错误，工作区仅包含预期文档与规划文件。
-  - 完成 Sonic 参考实现许可证核验：Non-Commercial Learning License 与 GPL-3.0 发行目标不兼容，将 clean-room 行为重建设为实施硬门。
+  - 完成 Sonic 参考实现许可证核验，并在当时缺少合作证据的条件下将 clean-room 行为重建设为实施硬门；该历史决策后来由公开合作证据与维护者直接迁移决策取代。
   - 完成独立设计复审与实施计划复审；修正 preset 7 提前开放、GPU upload 语义、plugin context、FFT typed seam、maintenance pump、Shelf guard/closing、diagnostics 与可执行性能证据等全部 Critical/Important。
 
 ### 阶段 3：分片实现
-- **状态：** candidate_complete；Sonic provenance blocker 保留
+- **状态：** candidate_complete；旧 clean-room 候选保留为技术基线，最终来源策略已切换为直接迁移
 - 执行的操作：
   - 启动 Stage Lyrics 隔离模块实现，仅允许修改 `packages/visual-engine/src/stage-lyrics/**`，runtime/web/shared 集成由主任务在复审后处理。
   - 完成 translation contract 的 RED→GREEN：`LyricPayload.translation` 经 Web mapping 与 immutable snapshot 保真下发，不修改 shared/Sidecar DTO。
   - 新增 subsystem diagnostics registry，并把 immutable diagnostics snapshot 接入 performance collector 与 composition context。
   - 将共享 `BudgetTaskQueue` 的 pump 从 Home governor 移到独立 `RenderStepSlot.Maintenance`，保证 Stage/Sonic 后台任务不依赖 Home active 状态。
   - 新增 M4 确定性歌词、Sonic audio 与 600 Shelf fixtures，以及 no-RAF/no-idle/no-AudioContext、单 task pump、controls no-Three architecture guards。
-  - 启动 Sonic clean-room settings/typed audio seam 子任务，明确禁止查看或复制不兼容许可证的第三方实现。
+  - 当时按 clean-room 路线启动 Sonic settings/typed audio seam 子任务；该实现现仅作为架构和性能候选，不替代后续直接迁移版本。
   - 完成 preset 7 首帧 Home 粒子可见性审计；新增初始挂载行为测试并修复初始化 gate，同时更新旧 `[0,6]` clamp 断言为 `[0,7]`。
   - 完成 Sonic Cinema policy 生产接线：composition 动态读取当前 Fx，并经 Stage lifecycle 的有限 world-target accessor 构造策略输入；Shelf focus 保持最高优先级，free-camera 继续在 Cinema 更新前早退。
   - 通过关键策略 TDD 修正 Sonic Stage lookAt 参数漂移，使解锁偏移与冻结设计一致为 `Y-0.34/Z+0.16`；离开 preset 7 后平滑回原点。
@@ -51,9 +51,9 @@
   - `docs/superpowers/plans/2026-07-28-m4-lyrics-visual-parity.md`
 
 ### 阶段 4：Parity 与性能验证
-- **状态：** complete（Stage/Shelf）；Sonic provenance 仍 blocked
+- **状态：** complete（Stage/Shelf 与旧 Sonic 候选）；直接迁移版本 evidence 待重跑
 - 执行的操作：
-  - 全仓串行测试、根级 typecheck、Web production build、API freeze、Sidecar/client、parity evidence model 与 Sonic source-isolation guard 全部通过。
+  - 全仓串行测试、根级 typecheck、Web production build、API freeze、Sidecar/client、parity evidence model 与当时的 Sonic source-isolation guard 全部通过。
   - 此前的 dirty manifest 与临时 console-clean artifact 均早于最新生命周期/GPU 修复，且不是 clean immutable commit；它们已被最终 clean evidence 取代，不作为晋升依据。
   - 最终证据由候选提交的 clean commit 执行 `capture-evidence.mjs --profile release --strict` 生成。
   - release preflight 发现并修复 3 个假通过 P1：console error 未入硬门、preview build SHA 未绑定 HEAD、无 timer-query 扩展时 strict 可通过；同时把 clean worktree 加入全局硬门并启用 preview `--strictPort`。
@@ -61,6 +61,15 @@
   - 三场景 GPU 均为 measured、各 240 samples：Stage p95 0.138016ms，Sonic p95 0.069504ms，Shelf p95 0.167904ms。
   - Stage resident rows=3、pending build/upload=0；Shelf cards/rows/panels=11/11/1；Sonic meshCount=4。
   - 目视检查 Stage/Sonic/Shelf 截图，无空白、错层或未收口资源征象。
+
+### 阶段 5：Sonic 来源策略变更与交付收口
+- **状态：** in_progress
+- 执行的操作：
+  - 记录 `XxHuberrr/Mineradio@4abaa190` → `yin-yizhen/sonic-topography@3ff303e` 的完整来源链。
+  - 根据用户提供的公开社交媒体截图，记录 Mineradio 作者“与音域回响作者 Ajin 联动”的公开合作证据及附件 SHA-256。
+  - 按项目维护者决策切换为直接迁移路线；历史 clean-room / exposure 审计不再作为 M4 blocker。
+  - 用 `sonic-origin-attribution` 守卫替代 `sonic-source-isolation`，并把 Ajin、许可证、个人非商业限制、公开合作证据、维护者项目决策和“不等于书面授权”的限定加入第三方告知。
+  - M4 暂不标记 complete，等待直接迁移代码复核与新的 release strict evidence。
 
 ## 测试结果
 | 测试 | 输入 | 预期结果 | 实际结果 | 状态 |
@@ -79,8 +88,9 @@
 | Stage Lyrics 全目录 | `bun test packages/visual-engine/src/stage-lyrics --parallel=1` | 生命周期、资源、取消、takeover 全绿 | 198 pass / 0 fail | 通过 |
 | resource scope + bundle | focused resource tests | retention promotion、fail-closed、observer cleanup | 16 pass / 0 fail | 通过 |
 | M4 evidence model | `bun test scripts/parity/m4/evidence-model.test.ts --parallel=1` | GPU、console、build SHA、clean strict gate 语义成立 | 10 pass / 0 fail | 通过 |
-| Sonic source isolation | guard + focused test | non-inclusion 自动守卫通过，但不消除 exposure | 7 pass / 0 fail；guard PASS | 通过（仅 non-inclusion） |
-| 全仓验证 | `bun test --parallel=1 packages/shared packages/visual-engine sidecars/api apps/web scripts/ci scripts/architecture` | 全部测试通过 | 1996 pass / 0 fail | 通过 |
+| Sonic origin attribution | guard + focused test | 来源链、Ajin、许可证、公开合作证据、维护者项目决策与许可限定齐全 | 5 pass / 0 fail；guard PASS | 通过 |
+| architecture 回归 | `bun test scripts/architecture --parallel=1` | 新来源守卫与既有 App/Visual 边界全部通过 | 38 pass / 0 fail | 通过 |
+| 切换前全仓验证 | `bun test --parallel=1 packages/shared packages/visual-engine sidecars/api apps/web scripts/ci scripts/architecture` | 旧候选全部测试通过 | 1996 pass / 0 fail | 通过；直接迁移后需重跑 |
 | 根级 typecheck | `bun run typecheck` | shared/visual-engine/sidecar/web 全部通过 | exit 0 | 通过 |
 | Sidecar/API freeze | zero-diff + Sidecar/client tests | 冻结路径零差异 | 306 pass / 0 fail | 通过 |
 | Web production build | `bun run web:build` | production build 成功 | exit 0；仅既有 Three import/chunk warning | 通过 |
@@ -102,11 +112,11 @@
 ## 五问重启检查
 | 问题 | 答案 |
 |------|------|
-| 我在哪里？ | 阶段 5：Stage/Shelf 已晋升，M4 等待 Sonic provenance |
-| 我要去哪里？ | 保留 Sonic blocker，等待合规独立重写或权利方授权 |
-| 目标是什么？ | 交付可验证的 M4 候选，同时不掩盖 Sonic provenance 与远端 prewarm 缺口 |
+| 我在哪里？ | 阶段 5：Stage/Shelf 已晋升，Sonic 来源路线已切换为直接迁移 |
+| 我要去哪里？ | 完成直接迁移代码复核并重跑 release strict evidence |
+| 目标是什么？ | 交付保留完整来源/许可告知、行为和资源证据均可验证的 M4 |
 | 我学到了什么？ | 见 findings.md |
-| 我做了什么？ | 完成实现、生命周期复审、全仓验证、clean release evidence 与 Stage/Shelf 状态晋升 |
+| 我做了什么？ | 完成旧候选、生命周期复审、来源策略切换、可执行 attribution 守卫与 Stage/Shelf 状态晋升 |
 
 ---
 *每个阶段完成后或遇到错误时更新此文件*

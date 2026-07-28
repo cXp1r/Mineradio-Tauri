@@ -48,7 +48,7 @@
       "icons/icon.ico"
     ],
     "shortDescription": "MineRadio-Tauri desktop music player",
-    "longDescription": "A GPL-3.0 Tauri desktop music player.",
+    "longDescription": "A Tauri desktop music player with GPL-3.0-only original core code and a separately licensed non-commercial Sonic Topography visual layer; see bundled license notices.",
     "windows": {
       "allowDowngrades": false,
       "webviewInstallMode": {

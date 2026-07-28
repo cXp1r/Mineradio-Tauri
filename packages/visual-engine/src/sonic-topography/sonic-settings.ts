@@ -1,3 +1,9 @@
+/**
+ * Sonic Topography 视觉层的 Tauri 修改版本。
+ * 直接上游：XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224，public/sonic-topography-preset.js。
+ * 原始项目：yin-yizhen/sonic-topography@3ff303e，作者 Ajin；适用 Non-Commercial Learning License。
+ * 完整来源、许可范围与修改告知见 THIRD_PARTY_NOTICES.md。
+ */
 export type SonicColorMode = "cover" | "custom";
 
 export type SonicPerformanceQuality = "eco" | "balanced" | "high" | "ultra";
@@ -147,7 +153,7 @@ export function normalizeSonicTopographySettings(value: unknown): SonicTopograph
 	const trigger = asRecord(source.trigger);
 	const bandStart = integerControl(trigger.bandStart, SONIC_TOPOGRAPHY_DEFAULTS.trigger.bandStart, 0, 510);
 	const requestedBandEnd = integerControl(trigger.bandEnd, SONIC_TOPOGRAPHY_DEFAULTS.trigger.bandEnd, 2, 512);
-	const bandEnd = Math.min(512, Math.max(bandStart + 2, requestedBandEnd));
+	const bandEnd = Math.min(512, Math.max(bandStart + 1, requestedBandEnd));
 
 	return Object.freeze({
 		terrain: Object.freeze({

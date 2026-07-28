@@ -11,6 +11,7 @@ import {
 	DEFAULT_STAGE_LYRICS_SETTINGS,
 	type AudioFrameBytes,
 	type ShelfContentRow,
+	type SonicPerformanceQuality,
 	type VisualEngineFacade,
 	type VisualPerformanceSnapshot,
 	type VisualSchedulerDriver,
@@ -22,11 +23,16 @@ import { createLegacyVisualEventBridge } from "../runtime/legacy-visual-events";
 export type M4ParityScene = "stage" | "sonic" | "shelf";
 export type M4ParityMode = "deterministic" | "realtime";
 
+export function normalizeM4ParitySonicQuality(value: unknown): SonicPerformanceQuality {
+	return value === "balanced" || value === "high" || value === "ultra" ? value : "eco";
+}
+
 export interface M4ParityRuntimeSnapshot {
 	readonly ready: boolean;
 	readonly scene: M4ParityScene;
 	readonly mode: M4ParityMode;
 	readonly seed: number;
+	readonly sonicQuality: SonicPerformanceQuality;
 	readonly clockMs: number;
 	readonly performance: VisualPerformanceSnapshot;
 	readonly renderer: ReturnType<LegacyVisualDebugController["getRendererDiagnostics"]> | null;
@@ -65,6 +71,7 @@ interface CreateM4ParityRuntimeOptions {
 	readonly scene: M4ParityScene;
 	readonly mode: M4ParityMode;
 	readonly seed: number;
+	readonly sonicQuality: SonicPerformanceQuality;
 }
 
 interface ManualSchedulerDriver extends VisualSchedulerDriver {
@@ -176,7 +183,10 @@ function lyricsForScene(scene: M4ParityScene) {
 	return M4_LYRICS_DENSE;
 }
 
-export function createM4ParitySceneSettings(scene: M4ParityScene) {
+export function createM4ParitySceneSettings(
+	scene: M4ParityScene,
+	sonicQuality: SonicPerformanceQuality = "eco",
+) {
 	return buildVisualSettingsSnapshot({
 		coverResolution: 1,
 		wallpaperSafe: false,
@@ -186,7 +196,7 @@ export function createM4ParitySceneSettings(scene: M4ParityScene) {
 			shelf: scene === "shelf" ? "side" : "off",
 			shelfPresence: "always",
 			shelfCameraMode: "dynamic",
-			performanceQuality: scene === "sonic" ? "eco" : "high",
+			performanceQuality: scene === "sonic" ? sonicQuality : "high",
 			bloom: true,
 			backCover: false,
 			aiDepth: false,
@@ -262,7 +272,7 @@ export async function createM4ParityRuntime(options: CreateM4ParityRuntimeOption
 			favCount: 0,
 			secondaryLeftDisplaySeamGuard: false,
 		}));
-		facade.setVisualSettings(createM4ParitySceneSettings(scene));
+		facade.setVisualSettings(createM4ParitySceneSettings(scene, options.sonicQuality));
 		facade.applyPreset(scene === "sonic" ? 7 : 0);
 	};
 
@@ -323,6 +333,7 @@ export async function createM4ParityRuntime(options: CreateM4ParityRuntimeOption
 				scene,
 				mode: options.mode,
 				seed: options.seed,
+				sonicQuality: options.sonicQuality,
 				clockMs,
 				performance: facade.getPerformanceSnapshot(),
 				renderer: controller?.getRendererDiagnostics() ?? null,

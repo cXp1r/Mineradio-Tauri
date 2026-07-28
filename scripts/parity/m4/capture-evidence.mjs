@@ -6,9 +6,12 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
 import {
+	M4_RELEASE_GPU_MINIMUM_SAMPLES,
+	M4_RELEASE_PERFORMANCE_BUDGETS,
 	evaluateRunChecks,
 	evaluateSceneChecks,
 	projectRuntimeEvidence,
+	resolveSonicEvidenceQuality,
 	summarizeChecks,
 } from "./evidence-model.mjs";
 
@@ -43,6 +46,15 @@ Options:
   --browser <channel>       Playwright CLI browser channel (default: msedge)
   --seed <integer>          Deterministic RNG seed (default: 20240728)
   --profile <quick|release> Capture profile (default: quick)
+  --sonic-quality <tier>   eco|balanced|high|ultra (default: quick=eco, release=high)
+  --baseline-frame-p95-ms <ms>
+                            Current Tauri baseline overall frame p95
+  --baseline-gpu-p95-ms <ms>
+                            Matching baseline GPU timer-query p95
+  --baseline-source-commit <sha>
+                            Baseline evidence repository commit
+  --baseline-source-manifest <path>
+                            Baseline evidence manifest path
   --scenes <csv>            Any of stage,sonic,shelf (default: all)
   --skip-video              Do not capture the Stage seek/transition video
   --strict                  Exit 2 when parity checks fail
@@ -52,7 +64,7 @@ Options:
 
 Examples:
   node scripts/parity/m4/capture-evidence.mjs
-  node scripts/parity/m4/capture-evidence.mjs --profile release --strict
+  node scripts/parity/m4/capture-evidence.mjs --profile release --strict --baseline-frame-p95-ms 1.25 --baseline-gpu-p95-ms 0.42 --baseline-source-commit <sha> --baseline-source-manifest <path>
 `);
 }
 
@@ -62,13 +74,20 @@ function readOptionValue(argv, index, name) {
 	return value;
 }
 
-function parseArguments(argv) {
+export function parseArguments(argv) {
 	const options = {
 		baseUrl: "http://127.0.0.1:4173/",
 		outputDirectory: path.join(repositoryRoot, "output", "playwright", "m4"),
 		browser: "msedge",
 		seed: 20_240_728,
 		profile: "quick",
+		sonicQuality: null,
+		performanceBaseline: {
+			frameP95Ms: null,
+			gpuP95Ms: null,
+			sourceCommit: "",
+			sourceManifest: "",
+		},
 		scenes: [...DEFAULT_SCENES],
 		captureVideo: true,
 		strict: false,
@@ -127,6 +146,36 @@ function parseArguments(argv) {
 			index += 1;
 			continue;
 		}
+		if (argument === "--sonic-quality") {
+			const value = readOptionValue(argv, index, argument);
+			if (!["eco", "balanced", "high", "ultra"].includes(value)) {
+				throw new Error("--sonic-quality must be eco, balanced, high, or ultra.");
+			}
+			options.sonicQuality = value;
+			index += 1;
+			continue;
+		}
+		if (argument === "--baseline-frame-p95-ms" || argument === "--baseline-gpu-p95-ms") {
+			const value = Number(readOptionValue(argv, index, argument));
+			if (!Number.isFinite(value) || value < 0) throw new Error(`${argument} must be a non-negative finite number.`);
+			if (argument === "--baseline-frame-p95-ms") options.performanceBaseline.frameP95Ms = value;
+			else options.performanceBaseline.gpuP95Ms = value;
+			index += 1;
+			continue;
+		}
+		if (argument === "--baseline-source-commit") {
+			options.performanceBaseline.sourceCommit = readOptionValue(argv, index, argument).trim();
+			index += 1;
+			continue;
+		}
+		if (argument === "--baseline-source-manifest") {
+			options.performanceBaseline.sourceManifest = path.resolve(
+				repositoryRoot,
+				readOptionValue(argv, index, argument),
+			);
+			index += 1;
+			continue;
+		}
 		if (argument === "--scenes") {
 			const scenes = readOptionValue(argv, index, argument)
 				.split(",")
@@ -142,6 +191,7 @@ function parseArguments(argv) {
 		throw new Error(`Unknown argument: ${argument}`);
 	}
 
+	options.sonicQuality = resolveSonicEvidenceQuality(options.profile, options.sonicQuality);
 	return options;
 }
 
@@ -274,12 +324,13 @@ async function probePreview(baseUrl) {
 	}
 }
 
-function scenarioUrl(baseUrl, scene, seed) {
+function scenarioUrl(baseUrl, scene, seed, sonicQuality) {
 	const url = new URL(baseUrl);
 	url.searchParams.set("m4-parity", "1");
 	url.searchParams.set("scene", scene);
 	url.searchParams.set("mode", "deterministic");
 	url.searchParams.set("seed", String(seed));
+	url.searchParams.set("quality", sonicQuality);
 	return url.toString();
 }
 
@@ -582,7 +633,7 @@ function captureScene(options, runnerConfig, scene) {
 	const sceneDirectory = path.join(options.outputDirectory, scene);
 	ensureDirectory(sceneDirectory);
 	const session = `m4-evidence-${scene}-${process.pid}-${Date.now().toString(36)}`;
-	const url = scenarioUrl(options.baseUrl, scene, options.seed);
+	const url = scenarioUrl(options.baseUrl, scene, options.seed, options.sonicQuality);
 	const checkpoints = [];
 	const artifacts = [];
 	let videoStarted = false;
@@ -635,8 +686,11 @@ function captureScene(options, runnerConfig, scene) {
 				sampleFrames: profile.sampleFrames,
 				repetitions: profile.repetitions,
 			});
-			checkpoints.push({ name: "eco-sample", ...sample });
-			artifacts.push(captureScreenshot(session, path.join(sceneDirectory, "sonic-eco-1920x1080.png")));
+			checkpoints.push({ name: `${options.sonicQuality}-sample`, ...sample });
+			artifacts.push(captureScreenshot(
+				session,
+				path.join(sceneDirectory, `sonic-${options.sonicQuality}-1920x1080.png`),
+			));
 		} else {
 			const profile = sceneProfile(options.profile, scene);
 			const soak = runBrowserAction(session, runnerConfig.harnessDirectory, "shelf-soak", {
@@ -661,6 +715,8 @@ function captureScene(options, runnerConfig, scene) {
 			strict: options.strict,
 			expectedCommit: options.expectedCommit,
 			consoleErrors,
+			sonicQuality: options.sonicQuality,
+			performanceBaseline: options.performanceBaseline,
 		});
 		const sceneEvidence = {
 			scene,
@@ -669,9 +725,11 @@ function captureScene(options, runnerConfig, scene) {
 			fixture: scene === "stage"
 				? "M4_LYRICS_TRANSLATED"
 				: scene === "sonic"
-					? "M4_SONIC_AUDIO_FRAMES / eco preset 7"
+					? `M4_SONIC_AUDIO_FRAMES / ${options.sonicQuality} preset 7`
 					: "M4_SHELF_600 + generated 600 detail rows",
 			profile: options.profile,
+			sonicQuality: finalSnapshot?.sonicQuality ?? options.sonicQuality,
+			performanceBaseline: { ...options.performanceBaseline },
 			checkpoints,
 			finalSnapshot,
 			environment,
@@ -773,12 +831,15 @@ async function main() {
 			locale: "zh-CN",
 			timezoneId: "Asia/Hong_Kong",
 			scenes: options.scenes,
+			sonicQuality: options.sonicQuality,
+			performanceBaseline: { ...options.performanceBaseline },
 			captureVideo: options.captureVideo,
 		},
 		measurementPolicy: {
 			cpuFrameCost: "measured by the production VisualPerformanceSnapshot collector",
 			rendererCounters: "proxy evidence from Three.js renderer.info",
-			gpuTimer: "measured by resolved EXT_disjoint_timer_query_webgl2 queries around the production presentation render; release strict requires extension support and real samples",
+			gpuTimer: `measured by resolved EXT_disjoint_timer_query_webgl2 queries around the production presentation render; release strict requires at least ${M4_RELEASE_GPU_MINIMUM_SAMPLES} real samples`,
+			sonicReleaseBudgets: M4_RELEASE_PERFORMANCE_BUDGETS,
 		},
 		scenes: sceneResults,
 		runChecks,
@@ -792,7 +853,9 @@ async function main() {
 	if (options.strict && summary.status !== "pass") process.exitCode = 2;
 }
 
-main().catch((error) => {
-	console.error(error instanceof Error ? error.stack ?? error.message : String(error));
-	process.exitCode = 1;
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+	main().catch((error) => {
+		console.error(error instanceof Error ? error.stack ?? error.message : String(error));
+		process.exitCode = 1;
+	});
+}

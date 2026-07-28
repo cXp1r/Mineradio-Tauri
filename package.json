@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "description": "MineRadio-Tauri desktop music player.",
   "author": "MineRadio-Tauri contributors",
-  "license": "GPL-3.0-only",
+  "license": "SEE LICENSE IN LICENSE",
   "private": true,
   "packageManager": "bun@1.3.14",
   "workspaces": [

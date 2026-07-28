@@ -433,6 +433,17 @@ test("Stage, Sonic, and Shelf reuse the shared frame and audio runtime", () => {
 	expect(violations).toEqual([]);
 });
 
+test("Sonic trigger settings stay synchronized at composition startup and during live FX updates", () => {
+	const compositionSource = readFileSync(
+		resolve(repositoryRoot, "apps/web/src/visual/runtime/create-legacy-visual-composition.ts"),
+		"utf8",
+	);
+	const synchronizationCall = "audioEngine.setSonicTriggerSettings(homeVisual.getFx().sonic.trigger);";
+	const synchronizationCount = compositionSource.split(synchronizationCall).length - 1;
+
+	expect(synchronizationCount).toBeGreaterThanOrEqual(2);
+});
+
 test("the shared task queue has one production pump", () => {
 	const allowed = new Set([
 		resolve(visualEngineSourceRoot, "runtime/visual-maintenance-lane.ts"),

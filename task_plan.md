@@ -4,7 +4,7 @@
 在不改变现有 Sidecar/API 行为的前提下，完成 Stage Lyrics 2.0、歌词纹理/GPU 上传预算、Sonic Topography 与 3D Shelf behavior parity，并通过逐项复审和全量验证。
 
 ## 当前阶段
-阶段 5/5：交付收口；M4 因 Sonic provenance 保持 blocked
+阶段 5/5：交付收口；M4 等待 Sonic 直接迁移复核与新 release evidence
 
 ## 各阶段
 
@@ -29,7 +29,7 @@
 - [x] Sonic Topography preset 技术候选实现
 - [x] 3D Shelf parity、对象池与详情虚拟化候选实现
 - [x] 每个切片规格复审与质量复审
-- **状态：** candidate_complete；Sonic clean-room provenance / exposure remediation 未通过，不能据此完成 M4
+- **状态：** candidate_complete；来源策略已切换为直接迁移，旧候选不能替代最终迁移版本与新 evidence
 
 Task 10 的 Cinema policy 已完成：Sonic baseline、Stage world-target 跟随、Shelf precedence、free-camera 早退、退出 preset 7 清零与 `Y-0.34/Z+0.16` 冻结偏移均有关键行为测试覆盖。
 
@@ -46,7 +46,7 @@ Stage 当前真实运行路径覆盖 current=`persistent` 与 resident adjacent=
 - [x] 更新 capability matrix 和 M4/M5 文档证据状态
 - [x] 最终跨切片代码审查（无 P0；保留已记录 P2）
 - [ ] 合并或交付 M4 分支
-- **状态：** blocked；Stage/Shelf 已交付，M4 等待 Sonic provenance / exposure remediation
+- **状态：** in_progress；Stage/Shelf 已交付，M4 等待 Sonic 直接迁移代码复核、来源告知与新 evidence
 
 ## 关键问题
 1. Electron 2.0.2 中 Stage Lyrics 2.0、Sonic Topography 和 3D Shelf 的精确行为/参数基线是什么？
@@ -61,7 +61,7 @@ Stage 当前真实运行路径覆盖 current=`persistent` 与 resident adjacent=
 | Sidecar/API/DTO/ProviderId/media URL 继续冻结 | M4 是视觉 parity，不应扩大跨层迁移范围 |
 | TDD 仅用于核心时序、资源和性能路径 | 遵循用户约束，其余使用 characterization、architecture 与 parity tests |
 | M4 采用 12 个纵向切片 | 避免 Stage/Sonic/Shelf 三个大域形成一次性大爆炸变更，每片都可独立验证和复审 |
-| Sonic 只能 clean-room 行为重建 | 参考项目使用 Non-Commercial Learning License，与 GPL-3.0 发行目标不兼容；禁止复制源码、shader 或派生实现 |
+| Sonic 采用直接迁移 | 来源链为 `XxHuberrr/Mineradio@4abaa190` → `yin-yizhen/sonic-topography@3ff303e`；维护者审阅用户提供的公开合作证据后作出直接迁移的项目决策，必须保留许可证、署名、修改说明及“不等于书面授权”的限定 |
 | preset 7 只在 Sonic route ready 时原子开放 | 防止中间切片把 7 当作旧 Home preset 渲染；8→7 migration、selector 与 plugin route 同片落地 |
 | GPU 上传 ticket 以单 texture 为单位 | scene commit/needsUpdate 不能证明真实上传；使用 renderer-backed executor 且每 frame 只允许一次预上传 |
 | 全局 task queue 由 Maintenance lane 唯一 pump | Stage/Sonic 不能依赖 Home active 状态，也不能各自创建重复 pump |
