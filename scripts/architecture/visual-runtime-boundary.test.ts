@@ -20,12 +20,19 @@ interface ModuleReference {
 
 function createSourceFile(relativePath: string): import("typescript").SourceFile {
 	const absolutePath = resolve(repositoryRoot, relativePath);
+	return createFixtureSourceFile(readFileSync(absolutePath, "utf8"), absolutePath);
+}
+
+function createFixtureSourceFile(
+	source: string,
+	fileName = "boundary-fixture.ts",
+): import("typescript").SourceFile {
 	return ts.createSourceFile(
-		absolutePath,
-		readFileSync(absolutePath, "utf8"),
+		fileName,
+		source,
 		ts.ScriptTarget.Latest,
 		true,
-		relativePath.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+		fileName.endsWith(".tsx") ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
 	);
 }
 
@@ -154,6 +161,148 @@ function isPropertyAccess(
 		&& node.name.text === propertyName;
 }
 
+function collectHostForbiddenImportReferences(
+	sourceFile: import("typescript").SourceFile,
+): ModuleReference[] {
+	const violations = collectModuleReferences(sourceFile).filter(({ specifier }) => {
+		return specifier === "three"
+			|| specifier.startsWith("three/")
+			|| specifier === "gsap"
+			|| specifier.startsWith("gsap/")
+			|| specifier.startsWith("@mineradio/visual-engine/")
+			|| /(?:^|\/)(?:renderer-setup|render-loop|render-step-slot)(?:$|[./])/.test(specifier);
+	});
+	for (const statement of sourceFile.statements) {
+		if (!ts.isImportDeclaration(statement)) continue;
+		if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+		if (statement.moduleSpecifier.text !== "@mineradio/visual-engine") continue;
+		const importClause = statement.importClause;
+		if (importClause?.isTypeOnly) continue;
+		const hasDefaultValueImport = importClause?.name !== undefined;
+		const bindings = importClause?.namedBindings;
+		const hasNamespaceValueImport = bindings !== undefined && ts.isNamespaceImport(bindings);
+		const hasNamedValueImport = bindings !== undefined
+			&& ts.isNamedImports(bindings)
+			&& bindings.elements.some((element) => !element.isTypeOnly);
+		if (!importClause || hasDefaultValueImport || hasNamespaceValueImport || hasNamedValueImport) {
+			violations.push({ specifier: statement.moduleSpecifier.text, node: statement });
+		}
+	}
+	return violations;
+}
+
+function collectHookForbiddenImports(
+	sourceFile: import("typescript").SourceFile,
+): string[] {
+	const violations: string[] = [];
+	for (const statement of sourceFile.statements) {
+		if (!ts.isImportDeclaration(statement)) continue;
+		if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
+		if (statement.moduleSpecifier.text !== "@mineradio/visual-engine") continue;
+		const importClause = statement.importClause;
+		if (importClause?.isTypeOnly) continue;
+		if (!importClause) {
+			violations.push("root-package side-effect import");
+			continue;
+		}
+		if (importClause.name) violations.push(`root-package default import:${importClause.name.text}`);
+		const bindings = importClause.namedBindings;
+		if (!bindings) continue;
+		if (ts.isNamespaceImport(bindings)) {
+			violations.push(`root-package namespace import:${bindings.name.text}`);
+			continue;
+		}
+		for (const element of bindings.elements) {
+			if (element.isTypeOnly) continue;
+			const importedName = element.propertyName?.text ?? element.name.text;
+			if (importedName !== "createVisualEngine") {
+				violations.push(`root-package value import:${importedName}`);
+			}
+		}
+	}
+	for (const reference of collectModuleReferences(sourceFile)) {
+		if (
+			/(?:^|\/)(?:renderer-setup|render-loop)(?:$|[./])/.test(reference.specifier)
+			|| /(?:^|\/)(?:home-visual|particles|shelf|stage-lyrics)(?:\/|$)/.test(reference.specifier)
+		) {
+			violations.push(formatReference(sourceFile, reference));
+		}
+	}
+	return violations;
+}
+
+function isDeclarationOrMemberName(node: import("typescript").Identifier): boolean {
+	const parent = node.parent;
+	if (!("name" in parent) || parent.name !== node) return false;
+	return ts.isBindingElement(parent)
+		|| ts.isClassDeclaration(parent)
+		|| ts.isClassExpression(parent)
+		|| ts.isEnumDeclaration(parent)
+		|| ts.isEnumMember(parent)
+		|| ts.isFunctionDeclaration(parent)
+		|| ts.isFunctionExpression(parent)
+		|| ts.isInterfaceDeclaration(parent)
+		|| ts.isMethodDeclaration(parent)
+		|| ts.isMethodSignature(parent)
+		|| ts.isParameter(parent)
+		|| ts.isPropertyAssignment(parent)
+		|| ts.isPropertyDeclaration(parent)
+		|| ts.isPropertySignature(parent)
+		|| ts.isShorthandPropertyAssignment(parent)
+		|| ts.isTypeAliasDeclaration(parent)
+		|| ts.isTypeParameterDeclaration(parent)
+		|| ts.isVariableDeclaration(parent)
+		|| ts.isGetAccessorDeclaration(parent)
+		|| ts.isSetAccessorDeclaration(parent);
+}
+
+function isContractCouplingName(name: string): boolean {
+	const normalized = name.toLowerCase();
+	return normalized.includes("route")
+		|| normalized.includes("endpoint")
+		|| normalized.includes("baseurl")
+		|| normalized.includes("apiurl")
+		|| normalized.includes("httpurl")
+		|| (normalized.includes("sidecar") && normalized.includes("url"));
+}
+
+function isHttpUrlOrApiRoute(value: string): boolean {
+	return /https?:\/\//i.test(value) || /\/api(?:\/|$)/i.test(value);
+}
+
+function collectContractCouplingViolations(
+	sourceFile: import("typescript").SourceFile,
+): string[] {
+	const violations: string[] = [];
+	const visit = (node: import("typescript").Node): void => {
+		if (
+			ts.isIdentifier(node)
+			&& (
+				node.text === "ProviderId"
+				|| node.text === "sidecarBaseUrl"
+				|| (isDeclarationOrMemberName(node) && isContractCouplingName(node.text))
+			)
+		) {
+			violations.push(`identifier:${node.text}`);
+		}
+		if (
+			ts.isStringLiteralLike(node)
+			&& isHttpUrlOrApiRoute(node.text)
+		) {
+			violations.push(`literal:${node.text}`);
+		}
+		if (
+			(ts.isTemplateHead(node) || ts.isTemplateMiddle(node) || ts.isTemplateTail(node))
+			&& isHttpUrlOrApiRoute(node.text)
+		) {
+			violations.push(`template:${node.text}`);
+		}
+		ts.forEachChild(node, visit);
+	};
+	visit(sourceFile);
+	return violations;
+}
+
 test("visual-engine package source stays framework and application independent", () => {
 	const violations: string[] = [];
 	for (const absolutePath of listSourceFiles(visualEngineSourceRoot)) {
@@ -179,20 +328,12 @@ test("visual-engine package source stays framework and application independent",
 
 test("VisualEngineHost delegates facade lifecycle to useVisualEngine", () => {
 	const sourceFile = createSourceFile("apps/web/src/visual/VisualEngineHost.tsx");
-	const references = collectModuleReferences(sourceFile);
 	const useVisualEngineLocalName = importedLocalName(
 		sourceFile,
 		"./useVisualEngine",
 		"useVisualEngine",
 	);
-	const forbiddenReferences = references.filter(({ specifier }) => {
-		return specifier === "three"
-			|| specifier.startsWith("three/")
-			|| specifier === "gsap"
-			|| specifier.startsWith("gsap/")
-			|| specifier.startsWith("@mineradio/visual-engine/")
-			|| /(?:^|\/)(?:renderer-setup|render-loop|render-step-slot)(?:$|[./])/.test(specifier);
-	});
+	const forbiddenReferences = collectHostForbiddenImportReferences(sourceFile);
 
 	expect(useVisualEngineLocalName).not.toBeNull();
 	expect(
@@ -205,6 +346,19 @@ test("VisualEngineHost delegates facade lifecycle to useVisualEngine", () => {
 	expect(forbiddenReferences.map((reference) => formatReference(sourceFile, reference))).toEqual([]);
 });
 
+test("VisualEngineHost root package imports stay type-only", () => {
+	const typeOnlyFixture = createFixtureSourceFile([
+		'import type { FxState } from "@mineradio/visual-engine";',
+		'import { type ShelfItem as VisualShelfItem } from "@mineradio/visual-engine";',
+	].join("\n"));
+	const valueLeafFixture = createFixtureSourceFile(
+		'import { createHomeVisual } from "@mineradio/visual-engine";',
+	);
+
+	expect(collectHostForbiddenImportReferences(typeOnlyFixture)).toEqual([]);
+	expect(collectHostForbiddenImportReferences(valueLeafFixture)).not.toEqual([]);
+});
+
 test("useVisualEngine binds the root facade and remains a thin lifecycle adapter", () => {
 	const sourceFile = createSourceFile("apps/web/src/visual/useVisualEngine.ts");
 	const references = collectModuleReferences(sourceFile);
@@ -214,34 +368,7 @@ test("useVisualEngine binds the root facade and remains a thin lifecycle adapter
 		"@mineradio/visual-engine",
 		"createVisualEngine",
 	);
-	const forbiddenFactoryImports = new Set([
-		"createBackCoverLayer",
-		"createConnectorParticles",
-		"createHomeParticleField",
-		"createHomeRipples",
-		"createHomeVisual",
-		"createLyricParticles",
-		"createRenderer",
-		"createRenderLoop",
-		"createShelfManager",
-		"createShelfManagerWithThree",
-		"createShelfStep",
-		"createStageLyricsLifecycle",
-	]);
-	const importedForbiddenFactories: string[] = [];
-	for (const statement of sourceFile.statements) {
-		if (!ts.isImportDeclaration(statement)) continue;
-		const bindings = statement.importClause?.namedBindings;
-		if (!bindings || !ts.isNamedImports(bindings)) continue;
-		for (const element of bindings.elements) {
-			const importedName = element.propertyName?.text ?? element.name.text;
-			if (forbiddenFactoryImports.has(importedName)) importedForbiddenFactories.push(importedName);
-		}
-	}
-	const forbiddenReferences = references.filter(({ specifier }) => (
-		/(?:^|\/)(?:renderer-setup|render-loop)(?:$|[./])/.test(specifier)
-		|| /(?:^|\/)(?:home-visual|particles|shelf|stage-lyrics)(?:\/|$)/.test(specifier)
-	));
+	const forbiddenImports = collectHookForbiddenImports(sourceFile);
 	let hasProductionDefaultChain = false;
 	const visit = (node: import("typescript").Node): void => {
 		if (
@@ -262,38 +389,78 @@ test("useVisualEngine binds the root facade and remains a thin lifecycle adapter
 	expect(hasProductionDefaultChain).toBe(true);
 	expect(calls.some((call) => isPropertyAccess(call.expression, "resolved", "createFacade"))).toBe(true);
 	expect(calls.filter((call) => isNamedCall(call, "registerStep"))).toEqual([]);
-	expect(importedForbiddenFactories).toEqual([]);
-	expect(forbiddenReferences.map((reference) => formatReference(sourceFile, reference))).toEqual([]);
+	expect(forbiddenImports).toEqual([]);
 	expect(
 		references.some(({ specifier }) => specifier === "./runtime/create-legacy-visual-composition"),
 	).toBe(true);
+});
+
+test("useVisualEngine root package rejects namespace and default value imports", () => {
+	const allowedFixture = createFixtureSourceFile([
+		'import { createVisualEngine as createFacade, type VisualEngineFacade } from "@mineradio/visual-engine";',
+		'import type VisualEngineTypes from "@mineradio/visual-engine";',
+	].join("\n"));
+	const namespaceFixture = createFixtureSourceFile(
+		'import * as visual from "@mineradio/visual-engine";',
+	);
+	const defaultFixture = createFixtureSourceFile(
+		'import visualEngine from "@mineradio/visual-engine";',
+	);
+	const namedLeafFixture = createFixtureSourceFile(
+		'import { createHomeVisual } from "@mineradio/visual-engine";',
+	);
+	const leafSubpathFixture = createFixtureSourceFile(
+		'import type { HomeVisual } from "@mineradio/visual-engine/home-visual/home-visual";',
+	);
+
+	expect(collectHookForbiddenImports(allowedFixture)).toEqual([]);
+	expect(collectHookForbiddenImports(namespaceFixture)).not.toEqual([]);
+	expect(collectHookForbiddenImports(defaultFixture)).not.toEqual([]);
+	expect(collectHookForbiddenImports(namedLeafFixture)).not.toEqual([]);
+	expect(collectHookForbiddenImports(leafSubpathFixture)).not.toEqual([]);
 });
 
 test("visual engine contract contains no provider, Sidecar, URL, or route coupling", () => {
 	const sourceFile = createSourceFile(
 		"packages/visual-engine/src/runtime/visual-engine-contract.ts",
 	);
-	const forbiddenIdentifiers: string[] = [];
-	const forbiddenStrings: string[] = [];
-	const visit = (node: import("typescript").Node): void => {
-		if (
-			ts.isIdentifier(node)
-			&& (node.text === "ProviderId" || node.text === "sidecarBaseUrl")
-		) {
-			forbiddenIdentifiers.push(node.text);
-		}
-		if (
-			ts.isStringLiteralLike(node)
-			&& (/^https?:\/\//i.test(node.text) || /^\/[A-Za-z0-9]/.test(node.text))
-		) {
-			forbiddenStrings.push(node.text);
-		}
-		ts.forEachChild(node, visit);
-	};
-	visit(sourceFile);
 
-	expect(forbiddenIdentifiers).toEqual([]);
-	expect(forbiddenStrings).toEqual([]);
+	expect(collectContractCouplingViolations(sourceFile)).toEqual([]);
+});
+
+test("visual engine contract rejects route, endpoint, URL names and template routes", () => {
+	const fixture = createFixtureSourceFile([
+		"interface LeakyContract {",
+		"\treadonly apiRoute: string;",
+		"\treadonly httpEndpoint: string;",
+		"\treadonly mediaBaseUrl: string;",
+		"\treadonly apiUrl: string;",
+		"\treadonly httpUrl: string;",
+		"\treadonly visualSidecarUrl: string;",
+		"}",
+		"const endpoint = `https://${host}/api/visual`;",
+		'const remoteOrigin = "http://localhost:3000";',
+		'const apiPath = "/api/visual";',
+	].join("\n"));
+	const violations = collectContractCouplingViolations(fixture);
+	const safeFixture = createFixtureSourceFile([
+		'export type VisualRuntimeMode = "foreground" | "background";',
+		"export interface VisualRuntimeState {",
+		"\treadonly runtimeMode: VisualRuntimeMode;",
+		"}",
+	].join("\n"));
+
+	expect(violations).toContain("identifier:apiRoute");
+	expect(violations).toContain("identifier:httpEndpoint");
+	expect(violations).toContain("identifier:mediaBaseUrl");
+	expect(violations).toContain("identifier:apiUrl");
+	expect(violations).toContain("identifier:httpUrl");
+	expect(violations).toContain("identifier:visualSidecarUrl");
+	expect(violations).toContain("template:https://");
+	expect(violations).toContain("template:/api/visual");
+	expect(violations).toContain("literal:http://localhost:3000");
+	expect(violations).toContain("literal:/api/visual");
+	expect(collectContractCouplingViolations(safeFixture)).toEqual([]);
 });
 
 test("real parity documents retain the frozen convergence API markers", async () => {
