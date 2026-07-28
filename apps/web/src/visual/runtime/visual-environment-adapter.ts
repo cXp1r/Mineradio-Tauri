@@ -52,6 +52,31 @@ export interface CreateVisualEnvironmentAdapterOptions {
 	readonly isNativeRuntime?: () => boolean;
 }
 
+type LifecyclePhase = "stopped" | "starting" | "running" | "stopping";
+
+interface SubscriptionRecord {
+	readonly listener: (state: VisualVisibilityState) => void;
+	previousState: VisualVisibilityState | null;
+	active: boolean;
+	pendingInitial: boolean;
+	hasInitialError: boolean;
+	initialError?: unknown;
+}
+
+interface NativeAttempt {
+	active: boolean;
+	eventRevision: number;
+	cleanup: (() => void) | null;
+}
+
+interface LifecycleResources {
+	readonly generation: number;
+	active: boolean;
+	nativeStarted: boolean;
+	nativeAttempt: NativeAttempt | null;
+	cleanup: () => void;
+}
+
 function copyVisibility(state: VisualVisibilityState): VisualVisibilityState {
 	return Object.freeze({ ...state });
 }
@@ -110,21 +135,12 @@ export function createVisualEnvironmentAdapter(
 	let nativeState: VisualNativeWindowState | null = null;
 	let prefersReducedMotion = reducedMotionQuery?.matches ?? false;
 	let disposed = false;
-	let lifecycleActive = false;
-	let lifecycleGeneration = 0;
-	let nativeEventRevision = 0;
-	let visibilityListenerInstalled = false;
-	let focusListenerInstalled = false;
-	let blurListenerInstalled = false;
-	let unlistenReducedMotion: (() => void) | null = null;
-	let unlistenNative: (() => void) | null = null;
-
-	interface SubscriptionRecord {
-		readonly listener: (state: VisualVisibilityState) => void;
-		previousState: VisualVisibilityState | null;
-		active: boolean;
-	}
-
+	let phase: LifecyclePhase = "stopped";
+	let reconciling = false;
+	let cleanupBarrierDepth = 0;
+	let generationCounter = 0;
+	let currentLifecycle: LifecycleResources | null = null;
+	let reconcile = (): void => {};
 	const subscriptions = new Set<SubscriptionRecord>();
 
 	const readSnapshot = (): VisualVisibilityState => copyVisibility({
@@ -133,12 +149,21 @@ export function createVisualEnvironmentAdapter(
 		windowFocused: browserFocused && (nativeState?.isFocused ?? true),
 		windowMinimized: nativeState?.isMinimized ?? false,
 	});
-	const isLifecycleLive = (generation: number): boolean => (
+	const shouldRunLifecycle = (): boolean => !disposed && subscriptions.size > 0;
+	const isLifecycleLive = (lifecycle: LifecycleResources): boolean => (
 		!disposed
-		&& lifecycleActive
-		&& lifecycleGeneration === generation
+		&& phase === "running"
+		&& lifecycle.active
+		&& currentLifecycle === lifecycle
+		&& currentLifecycle.generation === lifecycle.generation
 		&& subscriptions.size > 0
 	);
+	const deactivateSubscription = (subscription: SubscriptionRecord): void => {
+		if (!subscription.active) return;
+		subscription.active = false;
+		subscription.pendingInitial = false;
+		subscriptions.delete(subscription);
+	};
 	const emitToSubscription = (subscription: SubscriptionRecord): void => {
 		if (disposed || !subscription.active) return;
 		const nextState = readSnapshot();
@@ -149,6 +174,7 @@ export function createVisualEnvironmentAdapter(
 	};
 	const broadcast = (): void => {
 		for (const subscription of [...subscriptions]) {
+			if (subscription.pendingInitial) continue;
 			try {
 				emitToSubscription(subscription);
 			} catch {
@@ -156,175 +182,333 @@ export function createVisualEnvironmentAdapter(
 			}
 		}
 	};
-	const onVisibilityChange = () => broadcast();
-	const onFocus = () => {
-		browserFocused = true;
-		broadcast();
+	const releaseNativeAttempt = (attempt: NativeAttempt): void => {
+		attempt.active = false;
+		const cleanup = attempt.cleanup;
+		attempt.cleanup = null;
+		safelyRunCleanup(cleanup);
 	};
-	const onBlur = () => {
-		browserFocused = false;
-		broadcast();
-	};
-	const onReducedMotionChange = () => {
-		prefersReducedMotion = reducedMotionQuery?.matches ?? false;
-	};
-
-	const stopLifecycle = (): void => {
-		lifecycleActive = false;
-		lifecycleGeneration += 1;
-		if (visibilityListenerInstalled) {
-			visibilityListenerInstalled = false;
-			safelyRunCleanup(() => documentTarget?.removeEventListener("visibilitychange", onVisibilityChange));
-		}
-		if (focusListenerInstalled) {
-			focusListenerInstalled = false;
-			safelyRunCleanup(() => windowTarget?.removeEventListener("focus", onFocus));
-		}
-		if (blurListenerInstalled) {
-			blurListenerInstalled = false;
-			safelyRunCleanup(() => windowTarget?.removeEventListener("blur", onBlur));
-		}
-		safelyRunCleanup(unlistenReducedMotion);
-		unlistenReducedMotion = null;
-		safelyRunCleanup(unlistenNative);
-		unlistenNative = null;
+	const isNativeAttemptLive = (
+		lifecycle: LifecycleResources,
+		attempt: NativeAttempt,
+	): boolean => (
+		attempt.active
+		&& lifecycle.nativeAttempt === attempt
+		&& isLifecycleLive(lifecycle)
+	);
+	const failNativeAttempt = (
+		lifecycle: LifecycleResources,
+		attempt: NativeAttempt,
+	): void => {
+		if (!attempt.active) return;
+		releaseNativeAttempt(attempt);
+		if (!isLifecycleLive(lifecycle)) return;
 		nativeState = null;
-		nativeEventRevision = 0;
+		broadcast();
 	};
-
-	const installDomListener = (
-		add: () => void,
-		remove: () => void,
-		generation: number,
-	): boolean => {
+	const runSerializedCleanup = (cleanup: () => void): void => {
+		cleanupBarrierDepth += 1;
 		try {
-			add();
-		} catch (error) {
-			safelyRunCleanup(remove);
-			throw error;
+			safelyRunCleanup(cleanup);
+		} finally {
+			cleanupBarrierDepth -= 1;
+			if (cleanupBarrierDepth === 0) reconcile();
 		}
-		if (!isLifecycleLive(generation)) {
-			safelyRunCleanup(remove);
-			return false;
-		}
-		return true;
 	};
+	const startNativeLifecycle = (lifecycle: LifecycleResources): void => {
+		if (lifecycle.nativeStarted) return;
+		lifecycle.nativeStarted = true;
+		if (!nativeSource || !isLifecycleLive(lifecycle)) return;
 
-	const installReducedMotionListener = (generation: number): (() => void) | null => {
-		if (!reducedMotionQuery) return null;
-		if (reducedMotionQuery.addEventListener && reducedMotionQuery.removeEventListener) {
-			const remove = onceCleanup(() => reducedMotionQuery.removeEventListener?.("change", onReducedMotionChange));
-			if (!installDomListener(
-				() => reducedMotionQuery.addEventListener?.("change", onReducedMotionChange),
-				remove,
-				generation,
-			)) return null;
-			return remove;
-		}
-		if (reducedMotionQuery.addListener && reducedMotionQuery.removeListener) {
-			const remove = onceCleanup(() => reducedMotionQuery.removeListener?.(onReducedMotionChange));
-			if (!installDomListener(
-				() => reducedMotionQuery.addListener?.(onReducedMotionChange),
-				remove,
-				generation,
-			)) return null;
-			return remove;
-		}
-		return null;
-	};
+		const attempt: NativeAttempt = {
+			active: true,
+			eventRevision: 0,
+			cleanup: null,
+		};
+		lifecycle.nativeAttempt = attempt;
+		const onNativeWindowState = (state: VisualNativeWindowState) => {
+			if (!isNativeAttemptLive(lifecycle, attempt)) return;
+			attempt.eventRevision += 1;
+			nativeState = copyNativeWindowState(state);
+			broadcast();
+		};
 
-	const installBrowserLifecycle = (): number | null => {
-		lifecycleActive = true;
-		const generation = lifecycleGeneration + 1;
-		lifecycleGeneration = generation;
-		nativeState = null;
-		nativeEventRevision = 0;
-		browserFocused = documentTarget?.hasFocus?.() ?? true;
-		prefersReducedMotion = reducedMotionQuery?.matches ?? false;
-		if (!isLifecycleLive(generation)) return null;
-
-		if (documentTarget) {
-			const remove = () => documentTarget.removeEventListener("visibilitychange", onVisibilityChange);
-			if (!installDomListener(
-				() => documentTarget.addEventListener("visibilitychange", onVisibilityChange),
-				remove,
-				generation,
-			)) return null;
-			visibilityListenerInstalled = true;
-		}
-		if (windowTarget) {
-			const removeFocus = () => windowTarget.removeEventListener("focus", onFocus);
-			if (!installDomListener(
-				() => windowTarget.addEventListener("focus", onFocus),
-				removeFocus,
-				generation,
-			)) return null;
-			focusListenerInstalled = true;
-
-			const removeBlur = () => windowTarget.removeEventListener("blur", onBlur);
-			if (!installDomListener(
-				() => windowTarget.addEventListener("blur", onBlur),
-				removeBlur,
-				generation,
-			)) return null;
-			blurListenerInstalled = true;
-		}
-		unlistenReducedMotion = installReducedMotionListener(generation);
-		if (!isLifecycleLive(generation)) return null;
-		return generation;
-	};
-
-	const startNativeLifecycle = (generation: number): void => {
-		if (!nativeSource || !isLifecycleLive(generation)) return;
 		let listenPromise: Promise<() => void>;
 		try {
-			listenPromise = nativeSource.listenWindowState((state) => {
-				if (!isLifecycleLive(generation)) return;
-				nativeEventRevision += 1;
-				nativeState = copyNativeWindowState(state);
-				broadcast();
-			});
+			listenPromise = Promise.resolve(nativeSource.listenWindowState(onNativeWindowState));
 		} catch {
-			if (!isLifecycleLive(generation)) return;
-			nativeState = null;
-			broadcast();
+			failNativeAttempt(lifecycle, attempt);
 			return;
 		}
-		if (!isLifecycleLive(generation)) {
-			void listenPromise.then((unlisten) => safelyRunCleanup(onceCleanup(unlisten))).catch(() => {});
-			return;
-		}
+		if (!isLifecycleLive(lifecycle)) attempt.active = false;
 
 		void listenPromise.then((unlisten) => {
 			const cleanup = onceCleanup(unlisten);
-			if (!isLifecycleLive(generation)) {
-				safelyRunCleanup(cleanup);
+			attempt.cleanup = cleanup;
+			if (!isNativeAttemptLive(lifecycle, attempt)) {
+				attempt.cleanup = null;
+				runSerializedCleanup(cleanup);
 				return;
 			}
-			unlistenNative = cleanup;
-			const getRevision = nativeEventRevision;
+
+			const getRevision = attempt.eventRevision;
 			let getPromise: Promise<VisualNativeWindowState>;
 			try {
-				getPromise = nativeSource.getWindowState();
+				getPromise = Promise.resolve(nativeSource.getWindowState());
 			} catch {
-				if (nativeState === null) broadcast();
+				if (isNativeAttemptLive(lifecycle, attempt) && nativeState === null) broadcast();
 				return;
 			}
 			void getPromise.then((state) => {
 				if (
-					!isLifecycleLive(generation)
-					|| nativeEventRevision !== getRevision
+					!isNativeAttemptLive(lifecycle, attempt)
+					|| attempt.eventRevision !== getRevision
 				) return;
 				nativeState = copyNativeWindowState(state);
 				broadcast();
-			}).catch(() => {
-				if (isLifecycleLive(generation) && nativeState === null) broadcast();
+			}, () => {
+				if (isNativeAttemptLive(lifecycle, attempt) && nativeState === null) broadcast();
 			});
-		}).catch(() => {
-			if (!isLifecycleLive(generation)) return;
-			nativeState = null;
-			broadcast();
+		}, () => failNativeAttempt(lifecycle, attempt));
+	};
+
+	const installLifecycleResource = (
+		cleanups: Array<() => void>,
+		add: () => void,
+		remove: () => void,
+	): boolean => {
+		const cleanup = onceCleanup(remove);
+		cleanups.push(cleanup);
+		try {
+			add();
+		} catch (error) {
+			safelyRunCleanup(cleanup);
+			throw error;
+		}
+		if (phase !== "starting" || !shouldRunLifecycle()) {
+			safelyRunCleanup(cleanup);
+			return false;
+		}
+		return true;
+	};
+	const startLifecycle = (): void => {
+		phase = "starting";
+		const cleanups: Array<() => void> = [];
+		const lifecycle: LifecycleResources = {
+			generation: generationCounter + 1,
+			active: false,
+			nativeStarted: false,
+			nativeAttempt: null,
+			cleanup: () => {},
+		};
+		generationCounter = lifecycle.generation;
+		lifecycle.cleanup = onceCleanup(() => {
+			for (const cleanup of cleanups) safelyRunCleanup(cleanup);
+			if (lifecycle.nativeAttempt) releaseNativeAttempt(lifecycle.nativeAttempt);
 		});
+		const abortStart = () => {
+			lifecycle.active = false;
+			lifecycle.cleanup();
+			phase = "stopped";
+		};
+		const onVisibilityChange = () => {
+			if (!isLifecycleLive(lifecycle)) return;
+			broadcast();
+		};
+		const onFocus = () => {
+			if (!isLifecycleLive(lifecycle)) return;
+			browserFocused = true;
+			broadcast();
+		};
+		const onBlur = () => {
+			if (!isLifecycleLive(lifecycle)) return;
+			browserFocused = false;
+			broadcast();
+		};
+		const onReducedMotionChange = () => {
+			if (!isLifecycleLive(lifecycle)) return;
+			prefersReducedMotion = reducedMotionQuery?.matches ?? false;
+		};
+
+		try {
+			nativeState = null;
+			browserFocused = documentTarget?.hasFocus?.() ?? true;
+			prefersReducedMotion = reducedMotionQuery?.matches ?? false;
+			if (!shouldRunLifecycle()) {
+				abortStart();
+				return;
+			}
+
+			if (documentTarget && !installLifecycleResource(
+				cleanups,
+				() => documentTarget.addEventListener("visibilitychange", onVisibilityChange),
+				() => documentTarget.removeEventListener("visibilitychange", onVisibilityChange),
+			)) {
+				abortStart();
+				return;
+			}
+			if (windowTarget) {
+				if (!installLifecycleResource(
+					cleanups,
+					() => windowTarget.addEventListener("focus", onFocus),
+					() => windowTarget.removeEventListener("focus", onFocus),
+				)) {
+					abortStart();
+					return;
+				}
+				if (!installLifecycleResource(
+					cleanups,
+					() => windowTarget.addEventListener("blur", onBlur),
+					() => windowTarget.removeEventListener("blur", onBlur),
+				)) {
+					abortStart();
+					return;
+				}
+			}
+			if (
+				reducedMotionQuery?.addEventListener
+				&& reducedMotionQuery.removeEventListener
+				&& !installLifecycleResource(
+					cleanups,
+					() => reducedMotionQuery.addEventListener?.("change", onReducedMotionChange),
+					() => reducedMotionQuery.removeEventListener?.("change", onReducedMotionChange),
+				)
+			) {
+				abortStart();
+				return;
+			}
+			if (
+				reducedMotionQuery
+				&& !(
+					reducedMotionQuery.addEventListener
+					&& reducedMotionQuery.removeEventListener
+				)
+				&& reducedMotionQuery.addListener
+				&& reducedMotionQuery.removeListener
+				&& !installLifecycleResource(
+					cleanups,
+					() => reducedMotionQuery.addListener?.(onReducedMotionChange),
+					() => reducedMotionQuery.removeListener?.(onReducedMotionChange),
+				)
+			) {
+				abortStart();
+				return;
+			}
+			browserFocused = documentTarget?.hasFocus?.() ?? true;
+			prefersReducedMotion = reducedMotionQuery?.matches ?? false;
+			if (!shouldRunLifecycle()) {
+				abortStart();
+				return;
+			}
+
+			lifecycle.active = true;
+			currentLifecycle = lifecycle;
+			phase = "running";
+		} catch (error) {
+			abortStart();
+			throw error;
+		}
+	};
+	const stopLifecycle = (): void => {
+		const lifecycle = currentLifecycle;
+		currentLifecycle = null;
+		phase = "stopping";
+		nativeState = null;
+		if (lifecycle) {
+			lifecycle.active = false;
+			if (lifecycle.nativeAttempt) lifecycle.nativeAttempt.active = false;
+			lifecycle.cleanup();
+		}
+		phase = "stopped";
+	};
+	const emitNextPendingInitial = (): "none" | "emitted" | "failed" => {
+		for (const subscription of [...subscriptions]) {
+			if (!subscription.active || !subscription.pendingInitial) continue;
+			subscription.pendingInitial = false;
+			try {
+				emitToSubscription(subscription);
+			} catch (error) {
+				subscription.hasInitialError = true;
+				subscription.initialError = error;
+				deactivateSubscription(subscription);
+				return "failed";
+			}
+			return "emitted";
+		}
+		return "none";
+	};
+	const hasPendingInitial = (): boolean => {
+		for (const subscription of subscriptions) {
+			if (subscription.active && subscription.pendingInitial) return true;
+		}
+		return false;
+	};
+	const failPendingSubscriptions = (error: unknown): boolean => {
+		let failed = false;
+		for (const subscription of [...subscriptions]) {
+			if (!subscription.active || !subscription.pendingInitial) continue;
+			subscription.hasInitialError = true;
+			subscription.initialError = error;
+			deactivateSubscription(subscription);
+			failed = true;
+		}
+		return failed;
+	};
+	reconcile = (): void => {
+		if (reconciling || cleanupBarrierDepth > 0) return;
+		reconciling = true;
+		try {
+			for (;;) {
+				if (!shouldRunLifecycle()) {
+					if (phase === "running") {
+						stopLifecycle();
+						continue;
+					}
+					return;
+				}
+				if (phase === "stopped") {
+					try {
+						startLifecycle();
+					} catch (error) {
+						const failedPending = failPendingSubscriptions(error);
+						if (!failedPending && shouldRunLifecycle()) throw error;
+					}
+					continue;
+				}
+				if (phase !== "running") return;
+
+				const initialResult = emitNextPendingInitial();
+				if (initialResult === "failed") {
+					const lifecycle = currentLifecycle;
+					if (
+						shouldRunLifecycle()
+						&& lifecycle
+						&& !lifecycle.nativeStarted
+					) startNativeLifecycle(lifecycle);
+					continue;
+				}
+				if (initialResult === "emitted") {
+					const lifecycle = currentLifecycle;
+					if (
+						hasPendingInitial()
+						&& shouldRunLifecycle()
+						&& lifecycle
+						&& !lifecycle.nativeStarted
+					) startNativeLifecycle(lifecycle);
+					continue;
+				}
+				if (!shouldRunLifecycle()) continue;
+
+				const lifecycle = currentLifecycle;
+				if (lifecycle && !lifecycle.nativeStarted) {
+					startNativeLifecycle(lifecycle);
+					continue;
+				}
+				return;
+			}
+		} finally {
+			reconciling = false;
+		}
 	};
 
 	const adapter: VisualEnvironmentAdapter = {
@@ -334,54 +518,48 @@ export function createVisualEnvironmentAdapter(
 		},
 		subscribe(listener) {
 			if (disposed) return () => {};
-			const firstSubscription = subscriptions.size === 0;
+			const deferredInitial = (
+				reconciling
+				|| cleanupBarrierDepth > 0
+				|| phase === "starting"
+				|| phase === "stopping"
+			);
 			const subscription: SubscriptionRecord = {
 				listener,
 				previousState: null,
 				active: true,
+				pendingInitial: true,
+				hasInitialError: false,
 			};
 			const unsubscribe = () => {
 				if (!subscription.active) return;
-				subscription.active = false;
-				subscriptions.delete(subscription);
-				if (subscriptions.size === 0) stopLifecycle();
+				deactivateSubscription(subscription);
+				reconcile();
 			};
 			subscriptions.add(subscription);
-
-			if (firstSubscription) {
-				let generation: number | null;
-				try {
-					generation = installBrowserLifecycle();
-				} catch (error) {
-					unsubscribe();
-					throw error;
-				}
-				if (generation === null || disposed || !subscription.active) return unsubscribe;
-				try {
-					emitToSubscription(subscription);
-				} catch (error) {
-					unsubscribe();
-					throw error;
-				}
-				if (!isLifecycleLive(generation) || !subscription.active) return unsubscribe;
-				startNativeLifecycle(generation);
-				return unsubscribe;
-			}
-
 			try {
-				emitToSubscription(subscription);
+				reconcile();
 			} catch (error) {
-				unsubscribe();
+				deactivateSubscription(subscription);
+				try {
+					reconcile();
+				} catch {
+					// 保留触发当前订阅失败的原始错误。
+				}
 				throw error;
 			}
+			if (!deferredInitial && subscription.hasInitialError) throw subscription.initialError;
 			return unsubscribe;
 		},
 		dispose() {
 			if (disposed) return;
 			disposed = true;
-			for (const subscription of subscriptions) subscription.active = false;
+			for (const subscription of subscriptions) {
+				subscription.active = false;
+				subscription.pendingInitial = false;
+			}
 			subscriptions.clear();
-			stopLifecycle();
+			reconcile();
 		},
 	};
 	return adapter;
