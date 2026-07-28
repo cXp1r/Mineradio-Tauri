@@ -1,26 +1,49 @@
 import { expect, test } from "bun:test";
-import { RENDER_STEP_ORDER, RenderStepSlot } from "@mineradio/visual-engine";
-import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode } from "./useVisualEngine";
+import React, { StrictMode, act, useRef } from "react";
+import { createRoot } from "react-dom/client";
+import {
+	RENDER_STEP_ORDER,
+	RenderStepSlot,
+	type LyricsVisualSnapshot,
+	type PlaybackVisualSnapshot,
+	type ShelfVisualSnapshot,
+	type VisualEngineFacade,
+	type VisualEngineOptions,
+	type VisualSettingsSnapshot,
+	type VisualVisibilityState,
+} from "@mineradio/visual-engine";
+import { createLegacyVisualEventBridge } from "./runtime/legacy-visual-events";
+import type { VisualEnvironmentAdapter } from "./runtime/visual-environment-adapter";
+import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine } from "./useVisualEngine";
 
-test("useVisualEngine wires the dedicated lyric particle render slot between shelf and home visual", async () => {
-	const source = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
-	const createIndex = source.indexOf("createLyricParticles");
-	expect(createIndex).toBeGreaterThan(0);
-	expect(source).toContain("renderLoop.registerStep(RenderStepSlot.LyricParticles");
-	expect(source).toContain("lyricParticles.update(ctx)");
-	expect(source).toContain("homeVisual.applySkullWheel");
-	expect(source).toContain("homeVisual.getSkullWheelZoom()");
+test("legacy composition owns visual leaves while useVisualEngine stays a facade lifecycle bridge", async () => {
+	const compositionSource = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
+	const hookSource = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
+	expect(compositionSource).toContain("createLyricParticles");
+	expect(compositionSource).toContain("renderLoop.registerStep(RenderStepSlot.LyricParticles");
+	expect(compositionSource).toContain("lyricParticles.update(frame)");
+	expect(compositionSource).toContain("homeVisual.applySkullWheel");
+	expect(compositionSource).toContain("homeVisual.getSkullWheelZoom()");
+	expect(hookSource).toContain("createVisualEngine");
+	expect(hookSource).toContain("createLegacyVisualComposition");
+	expect(hookSource).not.toContain("createRenderer");
+	expect(hookSource).not.toContain("createRenderLoop");
+	expect(hookSource).not.toContain("registerStep(");
+	expect(hookSource).not.toContain("createHomeVisual");
+	expect(hookSource).not.toContain("createShelfManager");
+	expect(hookSource).not.toContain("createStageLyricsLifecycle");
 	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.LyricParticles)).toBeGreaterThan(RENDER_STEP_ORDER.indexOf(RenderStepSlot.Shelf));
 	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.LyricParticles)).toBeLessThan(RENDER_STEP_ORDER.indexOf(RenderStepSlot.HomeVisual));
 });
 
-test("useVisualEngine routes adaptive FPS through the runtime visual performance policy", async () => {
-	const source = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
-	expect(source).toContain("getAdaptiveFps: () => readVisualPerformancePolicy().adaptiveFps");
+test("legacy composition routes adaptive FPS through the runtime visual performance policy", async () => {
+	const source = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
+	expect(source).toContain("readVisualPerformancePolicy()");
 	expect(source).toContain("readRuntimeVisualPerformanceFx()");
 	expect(source).toContain("width: policy.renderWidth ?? opts?.width");
 	expect(source).toContain("height: policy.renderHeight ?? opts?.height");
-	expect(source).not.toContain("getAdaptiveFps: () => 0");
+	expect(source).toContain("scheduler: context.scheduler");
+	expect(source).toContain("performance: context.performance");
 });
 
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
@@ -564,4 +587,468 @@ test("resolveStageLyricPalette applies cover auto colors and custom lyric overri
 test("resolveRuntimeWallpaperSafe follows live fx preset ahead of defaults", () => {
 	expect(resolveRuntimeWallpaperSafe({ fxDefaults: { preset: 0 }, fxRef: { current: { preset: 5 } } })).toBe(true);
 	expect(resolveRuntimeWallpaperSafe({ fxDefaults: { preset: 5 }, fxRef: { current: { preset: 6 } } })).toBe(false);
+});
+
+function playback(trackKey: string): PlaybackVisualSnapshot {
+	return Object.freeze({
+		trackKey,
+		playing: trackKey !== "idle",
+		durationMs: 120_000,
+		coverUrl: `${trackKey}.jpg`,
+		beatMapKey: trackKey,
+		beatMap: null,
+		splashActive: false,
+		homeActive: false,
+	});
+}
+
+function lyrics(label: string): LyricsVisualSnapshot {
+	return Object.freeze({
+		lines: Object.freeze([Object.freeze({ t: 0, text: label })]),
+		fallbackText: label,
+		hasNativeKaraoke: label === "b",
+	});
+}
+
+function shelf(label: string): ShelfVisualSnapshot {
+	return Object.freeze({
+		items: Object.freeze([Object.freeze({ title: label })]),
+		pane: label === "b" ? "fav" : "mine",
+		mode: "side",
+		cameraMode: "static",
+		presence: "always",
+		mergeCollections: false,
+		mineCount: label === "b" ? 2 : 1,
+		favCount: label === "b" ? 1 : 0,
+		secondaryLeftDisplaySeamGuard: label === "b",
+	});
+}
+
+function settings(label: string): VisualSettingsSnapshot {
+	return Object.freeze({
+		fx: Object.freeze({ preset: label === "b" ? 2 : 1 }),
+		coverResolution: label === "b" ? 2 : 1.55,
+		wallpaperSafe: label === "b",
+		backgroundPolicy: "auto",
+		foregroundFramePolicy: Object.freeze({ mode: "vsync" }),
+		prefersReducedMotion: label === "b",
+	});
+}
+
+const VISIBLE: VisualVisibilityState = Object.freeze({
+	documentVisible: true,
+	windowVisible: true,
+	windowFocused: true,
+	windowMinimized: false,
+});
+
+const HIDDEN: VisualVisibilityState = Object.freeze({
+	documentVisible: false,
+	windowVisible: true,
+	windowFocused: false,
+	windowMinimized: false,
+});
+
+interface FacadeRecord {
+	readonly facade: VisualEngineFacade;
+	readonly order: string[];
+	readonly playbackCalls: PlaybackVisualSnapshot[];
+	readonly lyricsCalls: LyricsVisualSnapshot[];
+	readonly shelfCalls: ShelfVisualSnapshot[];
+	readonly settingsCalls: VisualSettingsSnapshot[];
+	readonly visibilityCalls: VisualVisibilityState[];
+	mountCalls: number;
+	disposeCalls: number;
+}
+
+function createFacadeRecord(mount: (container: HTMLElement) => Promise<void> = async () => {}): FacadeRecord {
+	const record = {
+		order: [] as string[],
+		playbackCalls: [] as PlaybackVisualSnapshot[],
+		lyricsCalls: [] as LyricsVisualSnapshot[],
+		shelfCalls: [] as ShelfVisualSnapshot[],
+		settingsCalls: [] as VisualSettingsSnapshot[],
+		visibilityCalls: [] as VisualVisibilityState[],
+		mountCalls: 0,
+		disposeCalls: 0,
+	} as Omit<FacadeRecord, "facade">;
+	const facade: VisualEngineFacade = {
+		async mount(container) {
+			record.mountCalls += 1;
+			record.order.push("mount");
+			await mount(container);
+		},
+		setPlaybackSnapshot(snapshot) {
+			record.order.push("playback");
+			record.playbackCalls.push(snapshot);
+		},
+		setLyricsSnapshot(snapshot) {
+			record.order.push("lyrics");
+			record.lyricsCalls.push(snapshot);
+		},
+		setShelfSnapshot(snapshot) {
+			record.order.push("shelf");
+			record.shelfCalls.push(snapshot);
+		},
+		setVisualSettings(snapshot) {
+			record.order.push("settings");
+			record.settingsCalls.push(snapshot);
+		},
+		applyPreset() {},
+		setVisibility(snapshot) {
+			record.order.push("visibility");
+			record.visibilityCalls.push(snapshot);
+		},
+		getPerformanceSnapshot() {
+			throw new Error("performance snapshot is not used by this hook test");
+		},
+		dispose() {
+			record.disposeCalls += 1;
+		},
+	};
+	return Object.assign(record, { facade });
+}
+
+interface EnvironmentRecord {
+	readonly adapter: VisualEnvironmentAdapter;
+	emit(snapshot: VisualVisibilityState): void;
+	unsubscribeCalls: number;
+	disposeCalls: number;
+}
+
+function createEnvironmentRecord(initialSnapshot: VisualVisibilityState = VISIBLE): EnvironmentRecord {
+	let currentSnapshot = initialSnapshot;
+	let listener: ((snapshot: VisualVisibilityState) => void) | null = null;
+	const record = {
+		unsubscribeCalls: 0,
+		disposeCalls: 0,
+	} as Omit<EnvironmentRecord, "adapter" | "emit">;
+	const adapter: VisualEnvironmentAdapter = {
+		getSnapshot: () => currentSnapshot,
+		getPrefersReducedMotion: () => false,
+		subscribe(nextListener) {
+			listener = nextListener;
+			let subscribed = true;
+			return () => {
+				if (!subscribed) return;
+				subscribed = false;
+				record.unsubscribeCalls += 1;
+				if (listener === nextListener) listener = null;
+			};
+		},
+		dispose() {
+			record.disposeCalls += 1;
+			listener = null;
+		},
+	};
+	return Object.assign(record, {
+		adapter,
+		emit(snapshot: VisualVisibilityState) {
+			currentSnapshot = snapshot;
+			listener?.(snapshot);
+		},
+	});
+}
+
+function deferredVoid() {
+	let resolve!: () => void;
+	let reject!: (error: unknown) => void;
+	const promise = new Promise<void>((nextResolve, nextReject) => {
+		resolve = nextResolve;
+		reject = nextReject;
+	});
+	return { promise, resolve, reject };
+}
+
+async function renderAndFlush(root: ReturnType<typeof createRoot>, element: React.ReactNode): Promise<void> {
+	await act(async () => {
+		root.render(element);
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+}
+
+async function unmountAndFlush(root: ReturnType<typeof createRoot>): Promise<void> {
+	await act(async () => {
+		root.unmount();
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+}
+
+async function prepareReactDom(): Promise<void> {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+}
+
+test("useVisualEngine submits all initial snapshots and visibility before mount", async () => {
+	await prepareReactDom();
+	const facade = createFacadeRecord();
+	const environment = createEnvironmentRecord(HIDDEN);
+	let facadeOptions: VisualEngineOptions | null = null;
+	const events = createLegacyVisualEventBridge();
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 1_000,
+			playbackSnapshot: playback("initial"),
+			lyricsSnapshot: lyrics("initial"),
+			shelfSnapshot: shelf("initial"),
+			settingsSnapshot: settings("initial"),
+			events,
+		}, {
+			createFacade: (options) => {
+				facadeOptions = options;
+				return facade.facade;
+			},
+			createEnvironmentAdapter: () => environment.adapter,
+		});
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness));
+
+	const capturedFacadeOptions = facadeOptions as VisualEngineOptions | null;
+	expect(capturedFacadeOptions?.initialVisibility).toEqual(HIDDEN);
+	const mountIndex = facade.order.indexOf("mount");
+	expect(mountIndex).toBeGreaterThan(-1);
+	for (const operation of ["playback", "lyrics", "shelf", "settings", "visibility"]) {
+		expect(facade.order.indexOf(operation)).toBeGreaterThan(-1);
+		expect(facade.order.indexOf(operation)).toBeLessThan(mountIndex);
+	}
+	expect(facade.playbackCalls[0]?.trackKey).toBe("initial");
+	expect(facade.lyricsCalls[0]?.fallbackText).toBe("initial");
+	expect(facade.shelfCalls[0]?.items[0]?.title).toBe("initial");
+	expect(facade.settingsCalls[0]?.coverResolution).toBe(1.55);
+	expect(facade.visibilityCalls[0]).toEqual(HIDDEN);
+
+	await unmountAndFlush(root);
+	container.remove();
+});
+
+test("useVisualEngine disposes every StrictMode facade and environment instance exactly once", async () => {
+	await prepareReactDom();
+	const facades: FacadeRecord[] = [];
+	const environments: EnvironmentRecord[] = [];
+	const events = createLegacyVisualEventBridge();
+	const dependencies = {
+		createFacade: (_options: VisualEngineOptions) => {
+			const facade = createFacadeRecord();
+			facades.push(facade);
+			return facade.facade;
+		},
+		createEnvironmentAdapter: () => {
+			const environment = createEnvironmentRecord();
+			environments.push(environment);
+			return environment.adapter;
+		},
+	};
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 0,
+			playbackSnapshot: playback("strict"),
+			lyricsSnapshot: lyrics("strict"),
+			shelfSnapshot: shelf("strict"),
+			settingsSnapshot: settings("strict"),
+			events,
+		}, dependencies);
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(StrictMode, null, React.createElement(Harness)));
+	await unmountAndFlush(root);
+
+	expect(facades.length).toBe(2);
+	expect(facades.map((instance) => instance.disposeCalls)).toEqual([1, 1]);
+	expect(environments.length).toBe(2);
+	expect(environments.map((instance) => instance.unsubscribeCalls)).toEqual([1, 1]);
+	expect(environments.map((instance) => instance.disposeCalls)).toEqual([1, 1]);
+	container.remove();
+});
+
+test("useVisualEngine submits playback lyrics shelf settings and visibility changes without rebuilding the facade", async () => {
+	await prepareReactDom();
+	let facadeCreations = 0;
+	let facadeOptions: VisualEngineOptions | null = null;
+	const facade = createFacadeRecord();
+	const environment = createEnvironmentRecord();
+	const events = createLegacyVisualEventBridge();
+	const dependencies = {
+		createFacade: (options: VisualEngineOptions) => {
+			facadeCreations += 1;
+			facadeOptions = options;
+			return facade.facade;
+		},
+		createEnvironmentAdapter: () => environment.adapter,
+	};
+	function Harness({ label }: { label: string }) {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: label === "b" ? 2_000 : 1_000,
+			playbackSnapshot: playback(label),
+			lyricsSnapshot: lyrics(label),
+			shelfSnapshot: shelf(label),
+			settingsSnapshot: settings(label),
+			events,
+		}, dependencies);
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness, { label: "a" }));
+	await renderAndFlush(root, React.createElement(Harness, { label: "b" }));
+	await act(async () => {
+		environment.emit(HIDDEN);
+		await Promise.resolve();
+	});
+
+	expect(facadeCreations).toBe(1);
+	expect(facade.mountCalls).toBe(1);
+	expect(facade.playbackCalls.at(-1)?.trackKey).toBe("b");
+	expect(facade.lyricsCalls.at(-1)?.fallbackText).toBe("b");
+	expect(facade.shelfCalls.at(-1)?.pane).toBe("fav");
+	expect(facade.settingsCalls.at(-1)?.coverResolution).toBe(2);
+	expect(facade.visibilityCalls.at(-1)).toEqual(HIDDEN);
+	expect((facadeOptions as VisualEngineOptions | null)?.mediaClock.currentTimeSeconds()).toBe(2);
+
+	await unmountAndFlush(root);
+	expect(facade.disposeCalls).toBe(1);
+	expect(environment.unsubscribeCalls).toBe(1);
+	expect(environment.disposeCalls).toBe(1);
+	container.remove();
+});
+
+test("useVisualEngine ignores a late mount resolution after cleanup", async () => {
+	await prepareReactDom();
+	const gate = deferredVoid();
+	const facade = createFacadeRecord(() => gate.promise);
+	const environment = createEnvironmentRecord();
+	const reported: unknown[] = [];
+	const events = createLegacyVisualEventBridge();
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 0,
+			playbackSnapshot: playback("pending"),
+			lyricsSnapshot: lyrics("pending"),
+			shelfSnapshot: shelf("pending"),
+			settingsSnapshot: settings("pending"),
+			events,
+		}, {
+			createFacade: () => facade.facade,
+			createEnvironmentAdapter: () => environment.adapter,
+			reportError: (error) => reported.push(error),
+		});
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness));
+	expect(facade.mountCalls).toBe(1);
+	await unmountAndFlush(root);
+	gate.resolve();
+	await act(async () => { await gate.promise; await Promise.resolve(); });
+
+	expect(reported).toEqual([]);
+	expect(facade.disposeCalls).toBe(1);
+	expect(environment.unsubscribeCalls).toBe(1);
+	expect(environment.disposeCalls).toBe(1);
+	container.remove();
+});
+
+test("useVisualEngine handles a late mount rejection after cleanup without reporting it", async () => {
+	await prepareReactDom();
+	const gate = deferredVoid();
+	const facade = createFacadeRecord(() => gate.promise);
+	const environment = createEnvironmentRecord();
+	const reported: unknown[] = [];
+	const events = createLegacyVisualEventBridge();
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 0,
+			playbackSnapshot: playback("pending"),
+			lyricsSnapshot: lyrics("pending"),
+			shelfSnapshot: shelf("pending"),
+			settingsSnapshot: settings("pending"),
+			events,
+		}, {
+			createFacade: () => facade.facade,
+			createEnvironmentAdapter: () => environment.adapter,
+			reportError: (error) => reported.push(error),
+		});
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness));
+	await unmountAndFlush(root);
+	gate.reject(new Error("late mount rejection"));
+	await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+	expect(reported).toEqual([]);
+	expect(facade.disposeCalls).toBe(1);
+	expect(environment.unsubscribeCalls).toBe(1);
+	expect(environment.disposeCalls).toBe(1);
+	container.remove();
+});
+
+test("useVisualEngine reports an active mount rejection", async () => {
+	await prepareReactDom();
+	const failure = new Error("active mount rejection");
+	const facade = createFacadeRecord(async () => { throw failure; });
+	const environment = createEnvironmentRecord();
+	const reported: unknown[] = [];
+	const events = createLegacyVisualEventBridge();
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 0,
+			playbackSnapshot: playback("failed"),
+			lyricsSnapshot: lyrics("failed"),
+			shelfSnapshot: shelf("failed"),
+			settingsSnapshot: settings("failed"),
+			events,
+		}, {
+			createFacade: () => facade.facade,
+			createEnvironmentAdapter: () => environment.adapter,
+			reportError: (error) => reported.push(error),
+		});
+		return React.createElement("div", { ref: hostRef });
+	}
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness));
+	await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+
+	expect(reported).toEqual([failure]);
+	await unmountAndFlush(root);
+	container.remove();
 });

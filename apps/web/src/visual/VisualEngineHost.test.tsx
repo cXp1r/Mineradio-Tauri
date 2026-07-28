@@ -5,6 +5,7 @@ import {
 	normalizeVisualCoverUrl,
 	resolveVisualCoverUrl,
 	resolveVisualCoverUrlForSidecar,
+	resolveVisualTrackKey,
 	resolveRuntimeShelfMode,
 	resolveVisualShelfSettings,
 	resolveVisualWallpaperSafe,
@@ -18,6 +19,20 @@ import {
 	VisualEngineHost,
 	type DesktopLyricsMotionSnapshot,
 } from "./VisualEngineHost";
+
+test("VisualEngineHost builds immutable runtime snapshots while preserving its public controllerRef prop", async () => {
+	const source = await fetch(new URL("./VisualEngineHost.tsx", import.meta.url)).then((response) => response.text());
+	expect(source).toContain("controllerRef: RefObject<PlayerController | null>");
+	expect(source).toContain("buildPlaybackVisualSnapshot");
+	expect(source).toContain("buildLyricsVisualSnapshot");
+	expect(source).toContain("buildShelfVisualSnapshot");
+	expect(source).toContain("buildVisualSettingsSnapshot");
+	expect(source).toContain("useMemo");
+	expect(source).toContain("playbackSnapshot");
+	expect(source).toContain("lyricsSnapshot");
+	expect(source).toContain("shelfSnapshot");
+	expect(source).toContain("settingsSnapshot");
+});
 
 test("VisualEngineHost server-renders a visual-host placeholder div without invoking WebGL/AudioContext", () => {
 	const html = renderToStaticMarkup(
@@ -124,6 +139,11 @@ test("resolveVisualCoverUrl prefers explicit currentCoverUrl and falls back to c
 	expect(resolveVisualCoverUrl("override.jpg", { coverUrl: "track.jpg" } as never)).toBe("override.jpg");
 	expect(resolveVisualCoverUrl(undefined, { coverUrl: "track.jpg" } as never)).toBe("track.jpg");
 	expect(resolveVisualCoverUrl(null, null)).toBe("");
+});
+
+test("resolveVisualTrackKey uses the frozen provider and id identity", () => {
+	expect(resolveVisualTrackKey({ provider: "netease", id: "42" } as never)).toBe("netease:42");
+	expect(resolveVisualTrackKey(null)).toBe("");
 });
 
 test("coverUrlToCssBackgroundImage preserves quoted baseline url syntax safely", () => {
