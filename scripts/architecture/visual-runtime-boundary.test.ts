@@ -16,6 +16,8 @@ const ts: typeof import("typescript") = visualEngineRequire("typescript");
 interface ModuleReference {
 	readonly specifier: string;
 	readonly node: import("typescript").Node;
+	readonly kind: "static-import" | "static-export" | "dynamic-import";
+	readonly valueKind: "type" | "value";
 }
 
 function createSourceFile(relativePath: string): import("typescript").SourceFile {
@@ -56,19 +58,54 @@ function collectModuleReferences(
 ): ModuleReference[] {
 	const references: ModuleReference[] = [];
 	const visit = (node: import("typescript").Node): void => {
-		if (
-			(ts.isImportDeclaration(node) || ts.isExportDeclaration(node))
+		if (ts.isImportDeclaration(node) && ts.isStringLiteralLike(node.moduleSpecifier)) {
+			const importClause = node.importClause;
+			const bindings = importClause?.namedBindings;
+			const isTypeOnly = importClause?.isTypeOnly === true
+				|| (
+					importClause?.name === undefined
+					&& bindings !== undefined
+					&& ts.isNamedImports(bindings)
+					&& bindings.elements.length > 0
+					&& bindings.elements.every((element) => element.isTypeOnly)
+				);
+			references.push({
+				specifier: node.moduleSpecifier.text,
+				node,
+				kind: "static-import",
+				valueKind: isTypeOnly ? "type" : "value",
+			});
+		} else if (
+			ts.isExportDeclaration(node)
 			&& node.moduleSpecifier
 			&& ts.isStringLiteralLike(node.moduleSpecifier)
 		) {
-			references.push({ specifier: node.moduleSpecifier.text, node });
+			const exportClause = node.exportClause;
+			const isTypeOnly = node.isTypeOnly
+				|| (
+					exportClause !== undefined
+					&& ts.isNamedExports(exportClause)
+					&& exportClause.elements.length > 0
+					&& exportClause.elements.every((element) => element.isTypeOnly)
+				);
+			references.push({
+				specifier: node.moduleSpecifier.text,
+				node,
+				kind: "static-export",
+				valueKind: isTypeOnly ? "type" : "value",
+			});
 		} else if (
 			ts.isCallExpression(node)
 			&& node.expression.kind === ts.SyntaxKind.ImportKeyword
-			&& node.arguments.length === 1
+			&& node.arguments.length >= 1
 			&& ts.isStringLiteralLike(node.arguments[0])
 		) {
-			references.push({ specifier: node.arguments[0].text, node });
+			references.push({
+				specifier: node.arguments[0].text,
+				node,
+				kind: "dynamic-import",
+				valueKind: "value",
+			});
 		}
 		ts.forEachChild(node, visit);
 	};
@@ -172,55 +209,52 @@ function collectHostForbiddenImportReferences(
 			|| specifier.startsWith("@mineradio/visual-engine/")
 			|| /(?:^|\/)(?:renderer-setup|render-loop|render-step-slot)(?:$|[./])/.test(specifier);
 	});
-	for (const statement of sourceFile.statements) {
-		if (!ts.isImportDeclaration(statement)) continue;
-		if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
-		if (statement.moduleSpecifier.text !== "@mineradio/visual-engine") continue;
-		const importClause = statement.importClause;
-		if (importClause?.isTypeOnly) continue;
-		const hasDefaultValueImport = importClause?.name !== undefined;
-		const bindings = importClause?.namedBindings;
-		const hasNamespaceValueImport = bindings !== undefined && ts.isNamespaceImport(bindings);
-		const hasNamedValueImport = bindings !== undefined
-			&& ts.isNamedImports(bindings)
-			&& bindings.elements.some((element) => !element.isTypeOnly);
-		if (!importClause || hasDefaultValueImport || hasNamespaceValueImport || hasNamedValueImport) {
-			violations.push({ specifier: statement.moduleSpecifier.text, node: statement });
+	for (const reference of collectModuleReferences(sourceFile)) {
+		if (
+			reference.specifier === "@mineradio/visual-engine"
+			&& (reference.kind === "dynamic-import" || reference.valueKind === "value")
+		) {
+			violations.push(reference);
 		}
 	}
 	return violations;
+}
+
+function isAllowedHookRootImport(reference: ModuleReference): boolean {
+	if (reference.kind !== "static-import" || !ts.isImportDeclaration(reference.node)) {
+		return false;
+	}
+	const importClause = reference.node.importClause;
+	if (!importClause || importClause.isTypeOnly || importClause.name) return false;
+	const bindings = importClause.namedBindings;
+	if (!bindings || !ts.isNamedImports(bindings)) return false;
+	let hasCreateVisualEngine = false;
+	for (const element of bindings.elements) {
+		if (element.isTypeOnly) continue;
+		const importedName = element.propertyName?.text ?? element.name.text;
+		if (importedName !== "createVisualEngine") return false;
+		hasCreateVisualEngine = true;
+	}
+	return hasCreateVisualEngine;
 }
 
 function collectHookForbiddenImports(
 	sourceFile: import("typescript").SourceFile,
 ): string[] {
 	const violations: string[] = [];
-	for (const statement of sourceFile.statements) {
-		if (!ts.isImportDeclaration(statement)) continue;
-		if (!ts.isStringLiteralLike(statement.moduleSpecifier)) continue;
-		if (statement.moduleSpecifier.text !== "@mineradio/visual-engine") continue;
-		const importClause = statement.importClause;
-		if (importClause?.isTypeOnly) continue;
-		if (!importClause) {
-			violations.push("root-package side-effect import");
-			continue;
-		}
-		if (importClause.name) violations.push(`root-package default import:${importClause.name.text}`);
-		const bindings = importClause.namedBindings;
-		if (!bindings) continue;
-		if (ts.isNamespaceImport(bindings)) {
-			violations.push(`root-package namespace import:${bindings.name.text}`);
-			continue;
-		}
-		for (const element of bindings.elements) {
-			if (element.isTypeOnly) continue;
-			const importedName = element.propertyName?.text ?? element.name.text;
-			if (importedName !== "createVisualEngine") {
-				violations.push(`root-package value import:${importedName}`);
-			}
-		}
-	}
 	for (const reference of collectModuleReferences(sourceFile)) {
+		if (
+			reference.specifier === "@mineradio/visual-engine"
+			&& !(
+				reference.kind !== "dynamic-import"
+				&& (
+					reference.valueKind === "type"
+					|| isAllowedHookRootImport(reference)
+				)
+			)
+		) {
+			violations.push(formatReference(sourceFile, reference));
+		}
 		if (
 			/(?:^|\/)(?:renderer-setup|render-loop)(?:$|[./])/.test(reference.specifier)
 			|| /(?:^|\/)(?:home-visual|particles|shelf|stage-lyrics)(?:\/|$)/.test(reference.specifier)
@@ -270,11 +304,44 @@ function isHttpUrlOrApiRoute(value: string): boolean {
 	return /https?:\/\//i.test(value) || /\/api(?:\/|$)/i.test(value);
 }
 
+function staticPropertyNameText(
+	name: import("typescript").PropertyName | import("typescript").PrivateIdentifier,
+): string | null {
+	if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+	if (
+		ts.isComputedPropertyName(name)
+		&& ts.isStringLiteralLike(name.expression)
+	) {
+		return name.expression.text;
+	}
+	return null;
+}
+
+function declaredPropertyNameText(node: import("typescript").Node): string | null {
+	if (
+		ts.isEnumMember(node)
+		|| ts.isGetAccessorDeclaration(node)
+		|| ts.isMethodDeclaration(node)
+		|| ts.isMethodSignature(node)
+		|| ts.isPropertyAssignment(node)
+		|| ts.isPropertyDeclaration(node)
+		|| ts.isPropertySignature(node)
+		|| ts.isSetAccessorDeclaration(node)
+	) {
+		return staticPropertyNameText(node.name);
+	}
+	return null;
+}
+
 function collectContractCouplingViolations(
 	sourceFile: import("typescript").SourceFile,
 ): string[] {
 	const violations: string[] = [];
 	const visit = (node: import("typescript").Node): void => {
+		const propertyName = declaredPropertyNameText(node);
+		if (propertyName !== null && isContractCouplingName(propertyName)) {
+			violations.push(`property:${propertyName}`);
+		}
 		if (
 			ts.isIdentifier(node)
 			&& (
@@ -326,6 +393,16 @@ test("visual-engine package source stays framework and application independent",
 	expect(violations).toEqual([]);
 });
 
+test("visual-engine package catches dynamic imports that include import options", () => {
+	const fixture = createFixtureSourceFile(
+		'import("@mineradio/shared", { with: { type: "json" } });',
+	);
+	const violations = collectModuleReferences(fixture)
+		.filter((reference) => isForbiddenVisualEngineDependency(reference.specifier));
+
+	expect(violations).not.toEqual([]);
+});
+
 test("VisualEngineHost delegates facade lifecycle to useVisualEngine", () => {
 	const sourceFile = createSourceFile("apps/web/src/visual/VisualEngineHost.tsx");
 	const useVisualEngineLocalName = importedLocalName(
@@ -357,6 +434,36 @@ test("VisualEngineHost root package imports stay type-only", () => {
 
 	expect(collectHostForbiddenImportReferences(typeOnlyFixture)).toEqual([]);
 	expect(collectHostForbiddenImportReferences(valueLeafFixture)).not.toEqual([]);
+});
+
+test("VisualEngineHost rejects root package dynamic imports and value re-exports", () => {
+	const fixtures = [
+		{
+			name: "dynamic import",
+			source: 'async function load() { return import("@mineradio/visual-engine"); }',
+			violates: true,
+		},
+		{
+			name: "value re-export",
+			source: 'export { createHomeVisual } from "@mineradio/visual-engine";',
+			violates: true,
+		},
+		{
+			name: "type-only re-export",
+			source: 'export type { HomeVisual } from "@mineradio/visual-engine";',
+			violates: false,
+		},
+	] as const;
+
+	for (const fixture of fixtures) {
+		const violations = collectHostForbiddenImportReferences(
+			createFixtureSourceFile(fixture.source),
+		);
+		expect({ name: fixture.name, violates: violations.length > 0 }).toEqual({
+			name: fixture.name,
+			violates: fixture.violates,
+		});
+	}
 });
 
 test("useVisualEngine binds the root facade and remains a thin lifecycle adapter", () => {
@@ -420,6 +527,36 @@ test("useVisualEngine root package rejects namespace and default value imports",
 	expect(collectHookForbiddenImports(leafSubpathFixture)).not.toEqual([]);
 });
 
+test("useVisualEngine rejects root package dynamic imports and value re-exports", () => {
+	const fixtures = [
+		{
+			name: "dynamic import",
+			source: 'async function load() { return import("@mineradio/visual-engine"); }',
+			violates: true,
+		},
+		{
+			name: "value re-export",
+			source: 'export { createHomeVisual } from "@mineradio/visual-engine";',
+			violates: true,
+		},
+		{
+			name: "type-only re-export",
+			source: 'export type { VisualEngineFacade } from "@mineradio/visual-engine";',
+			violates: false,
+		},
+	] as const;
+
+	for (const fixture of fixtures) {
+		const violations = collectHookForbiddenImports(
+			createFixtureSourceFile(fixture.source),
+		);
+		expect({ name: fixture.name, violates: violations.length > 0 }).toEqual({
+			name: fixture.name,
+			violates: fixture.violates,
+		});
+	}
+});
+
 test("visual engine contract contains no provider, Sidecar, URL, or route coupling", () => {
 	const sourceFile = createSourceFile(
 		"packages/visual-engine/src/runtime/visual-engine-contract.ts",
@@ -461,6 +598,46 @@ test("visual engine contract rejects route, endpoint, URL names and template rou
 	expect(violations).toContain("literal:http://localhost:3000");
 	expect(violations).toContain("literal:/api/visual");
 	expect(collectContractCouplingViolations(safeFixture)).toEqual([]);
+});
+
+test("visual engine contract checks quoted and static computed property names", () => {
+	const fixtures = [
+		{
+			name: "quoted route",
+			source: 'interface Contract { readonly "apiRoute": string; }',
+			violates: true,
+		},
+		{
+			name: "quoted Sidecar URL",
+			source: 'interface Contract { readonly "sidecarBaseUrl": string; }',
+			violates: true,
+		},
+		{
+			name: "computed template API URL",
+			source: "interface Contract { readonly [`apiUrl`]: string; }",
+			violates: true,
+		},
+		{
+			name: "computed endpoint",
+			source: 'interface Contract { readonly ["httpEndpoint"]?: string; }',
+			violates: true,
+		},
+		{
+			name: "ordinary quoted property",
+			source: 'interface Contract { readonly "runtimeMode": string; }',
+			violates: false,
+		},
+	] as const;
+
+	for (const fixture of fixtures) {
+		const violations = collectContractCouplingViolations(
+			createFixtureSourceFile(fixture.source),
+		);
+		expect({ name: fixture.name, violates: violations.length > 0 }).toEqual({
+			name: fixture.name,
+			violates: fixture.violates,
+		});
+	}
 });
 
 test("real parity documents retain the frozen convergence API markers", async () => {

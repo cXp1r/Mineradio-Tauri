@@ -2,7 +2,7 @@
 
 上游行为基线：`XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224`。
 
-状态含义：`baseline` 表示当前已有并需要冻结，`partial` 表示已有部分实现，`missing` 表示尚未迁移，`blocked` 表示等待开发中的 `MineRadio-api`。
+状态含义：`baseline` 表示当前已有并需要冻结，`implemented` 表示当前阶段界定的目标能力已实现并通过验证（不代表后续 parity 里程碑已完成），`partial` 表示已有部分实现，`missing` 表示尚未迁移，`blocked` 表示等待开发中的 `MineRadio-api`。
 
 | capability_id | domain | upstream_source | target_module | current_tauri | parity_level | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
