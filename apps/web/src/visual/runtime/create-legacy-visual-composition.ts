@@ -7,6 +7,7 @@ import {
 	createConnectorParticles,
 	createLyricParticles,
 	createHomeVisual,
+	trimHomeCoverTextureCache,
 	createDefaultFreeCameraState,
 	cloneFxState,
 	createRenderLoop,
@@ -48,6 +49,7 @@ import {
 	type VisualResourceRetention,
 	type VisualResourceScope,
 	type VisualVisibilityState,
+	type VisualRuntimeMode,
 	DEFAULT_LYRIC_PALETTE,
 } from "@mineradio/visual-engine";
 import {
@@ -1026,6 +1028,47 @@ interface MountedLegacySubsystems {
 	lifecycle: StageLyricsLifecycle;
 }
 
+export interface LegacyHomeVisualRuntimeGovernor {
+	sync(mode: VisualRuntimeMode): void;
+	pump(mode: VisualRuntimeMode): void;
+}
+
+export function createLegacyHomeVisualRuntimeGovernor(input: {
+	readonly homeVisual: Pick<HomeVisual, "setRuntimeActive">;
+	readonly tasks: Pick<VisualEngineCompositionContext["tasks"], "cancelPriority" | "runSlice">;
+	readonly resources: Pick<VisualResourceScope, "releaseRetention">;
+	readonly trimCache?: (maxEntries: number) => void;
+	readonly refreshPerformanceSnapshots: () => void;
+}): LegacyHomeVisualRuntimeGovernor {
+	let previousMode: VisualRuntimeMode | null = null;
+	let homeRuntimeActive = true;
+	return {
+		sync(mode) {
+			if (mode === previousMode) return;
+			if (mode === "released") {
+				input.homeVisual.setRuntimeActive(false);
+				homeRuntimeActive = false;
+				input.tasks.cancelPriority("background");
+				(input.trimCache ?? trimHomeCoverTextureCache)(0);
+				input.resources.releaseRetention(["rebuildable", "ephemeral"]);
+				input.refreshPerformanceSnapshots();
+			} else if (
+				!homeRuntimeActive &&
+				(mode === "foreground" || mode === "background")
+			) {
+				input.homeVisual.setRuntimeActive(true);
+				homeRuntimeActive = true;
+			}
+			previousMode = mode;
+		},
+		pump(mode) {
+			if (mode !== "foreground" && mode !== "background") return;
+			input.tasks.runSlice(1);
+			input.refreshPerformanceSnapshots();
+		},
+	};
+}
+
 function mutableFxCopy(fx: Readonly<Partial<FxState>>): Partial<FxState> {
 	return {
 		...fx,
@@ -1140,6 +1183,7 @@ export function createLegacyVisualComposition(
 	};
 	let subsystems: MountedLegacySubsystems | null = null;
 	let ownedScope: VisualResourceScope | null = null;
+	let runtimeGovernor: LegacyHomeVisualRuntimeGovernor | null = null;
 
 	return {
 		async mount(nextContext) {
@@ -1260,6 +1304,11 @@ export function createLegacyVisualComposition(
 				coverResolution: refs.coverResolution,
 				fx: runtimeFx,
 				estimateAiDepth: aiDepthEstimator,
+				runtime: {
+					cancellationScope: nextContext.cancellation,
+					taskQueue: nextContext.tasks,
+					resourceScope: scope,
+				},
 				orbitCenterLockedSupplier: () => cinema.getState().orbit.centerLocked,
 				onCoverLyricPalette: (palette) => {
 					latestCoverLyricPalette = palette;
@@ -1267,6 +1316,12 @@ export function createLegacyVisualComposition(
 					applyStageLyricPalette();
 				},
 			}));
+			runtimeGovernor = createLegacyHomeVisualRuntimeGovernor({
+				homeVisual,
+				tasks: nextContext.tasks,
+				resources: scope,
+				refreshPerformanceSnapshots: nextContext.refreshPerformanceSnapshots,
+			});
 			let homeVisualPreviousPreset: number | null = null;
 			let homeVisualPreviewActive = false;
 			let homePresetPreviewEnabled = false;
@@ -1537,6 +1592,7 @@ export function createLegacyVisualComposition(
 					hasOpenContent: shelfManager.hasOpenContent(),
 				}));
 				homeVisual.updateCore(frame);
+				runtimeGovernor?.pump(nextContext.scheduler.getMode());
 				visualAudioDebugger.tick(frame);
 			}, { cadence: LEGACY_VISUAL_LANE_CADENCE.HomeVisual }));
 			registerOwnedCleanup(scope, isCurrent, "camera-lane", "subscription", renderLoop.registerStep(RenderStepSlot.CameraCinematic, (frame) => {
@@ -1710,6 +1766,7 @@ export function createLegacyVisualComposition(
 					subsystems.homeVisual.getFx().coverResolution = snapshot.settings.coverResolution;
 				}
 			}
+			runtimeGovernor?.sync(context?.scheduler.getMode() ?? "foreground");
 		},
 		applyPreset(preset) {
 			if (disposed || !refs) return;
@@ -1718,6 +1775,7 @@ export function createLegacyVisualComposition(
 		},
 		setVisibility(state) {
 			currentVisibility = { ...state };
+			runtimeGovernor?.sync(context?.scheduler.getMode() ?? "foreground");
 		},
 		dispose() {
 			if (disposed) return;
@@ -1735,6 +1793,7 @@ export function createLegacyVisualComposition(
 			}
 			ownedScope = null;
 			subsystems = null;
+			runtimeGovernor = null;
 			context = null;
 			if (disposalErrors.length > 0) {
 				throw new AggregateError(disposalErrors, "Legacy visual composition resource disposal failed.");

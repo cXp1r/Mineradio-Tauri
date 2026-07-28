@@ -11,6 +11,7 @@ import type {
 import type { VisualResourceScope } from "./resource-scope";
 
 export type BudgetTaskPriority = "critical" | "visible" | "normal" | "background";
+export type BudgetTaskSettlement = "completed" | "cancelled" | "stale" | "failed";
 
 export interface BudgetTaskContext {
 	readonly signal: AbortSignal;
@@ -25,6 +26,7 @@ export interface BudgetTask<Result = unknown> {
 	readonly cost: number;
 	run(context: BudgetTaskContext): Result | Promise<Result>;
 	commit(result: Result, context: BudgetTaskContext): void;
+	onSettled?(settlement: BudgetTaskSettlement): void;
 }
 
 export interface VisualTaskQueueSnapshot {
@@ -57,6 +59,7 @@ interface QueueEntry<Result = unknown> {
 	readonly ticket: CancellationTicket;
 	readonly allocation: VisualResourceAllocation;
 	state: "queued" | "running" | "cancelled" | "settled";
+	settlement?: BudgetTaskSettlement;
 }
 
 const PRIORITIES: readonly BudgetTaskPriority[] = [
@@ -122,6 +125,19 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		const index = queued.indexOf(entry);
 		if (index >= 0) queued.splice(index, 1);
 	};
+	const settleEntry = (
+		entry: QueueEntry,
+		settlement: BudgetTaskSettlement,
+	): boolean => {
+		if (entry.settlement) return false;
+		entry.settlement = settlement;
+		try {
+			entry.task.onSettled?.(settlement);
+		} catch {
+			// 结算通知不能破坏队列自己的状态收口。
+		}
+		return true;
+	};
 	const detachEntry = (entry: QueueEntry): boolean => {
 		if (entry.state === "cancelled" || entry.state === "settled") return false;
 		if (entry.state === "queued") {
@@ -131,6 +147,7 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 		entry.state = "cancelled";
 		forgetCurrent(entry);
 		cancelled += 1;
+		settleEntry(entry, "cancelled");
 		return true;
 	};
 	const invalidateTicket = (ticket: CancellationTicket) => {
@@ -268,8 +285,13 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 				} catch (error) {
 					candidate.state = "settled";
 					forgetCurrent(candidate);
-					if (isCommitAllowed(candidate)) failed += 1;
-					else staleResultsDropped += 1;
+					if (isCommitAllowed(candidate)) {
+						failed += 1;
+						settleEntry(candidate, "failed");
+					} else {
+						staleResultsDropped += 1;
+						settleEntry(candidate, "stale");
+					}
 					continue;
 				}
 				void Promise.resolve(result).then(
@@ -277,22 +299,30 @@ export function createBudgetTaskQueue(options: BudgetTaskQueueOptions): BudgetTa
 						forgetCurrent(candidate);
 						if (!isCommitAllowed(candidate)) {
 							staleResultsDropped += 1;
+							settleEntry(candidate, "stale");
 							return;
 						}
 						try {
 							candidate.task.commit(value, context);
 							candidate.state = "settled";
 							completed += 1;
+							settleEntry(candidate, "completed");
 						} catch {
 							candidate.state = "settled";
 							failed += 1;
+							settleEntry(candidate, "failed");
 						}
 					},
 					() => {
 						forgetCurrent(candidate);
 						candidate.state = "settled";
-						if (isCommitAllowed(candidate)) failed += 1;
-						else staleResultsDropped += 1;
+						if (isCommitAllowed(candidate)) {
+							failed += 1;
+							settleEntry(candidate, "failed");
+						} else {
+							staleResultsDropped += 1;
+							settleEntry(candidate, "stale");
+						}
 					},
 				);
 			}

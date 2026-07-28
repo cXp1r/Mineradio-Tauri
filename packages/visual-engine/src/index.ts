@@ -225,6 +225,7 @@ export type {
 	BudgetTask,
 	BudgetTaskContext,
 	BudgetTaskPriority,
+	BudgetTaskSettlement,
 	BudgetTaskQueue,
 	BudgetTaskQueueOptions,
 	VisualTaskQueueSnapshot,
@@ -252,7 +253,11 @@ export {
 	normalizeCoverResolution,
 } from "./home-visual/home-particle-field";
 export type { HomeParticleField, HomeParticleFieldOptions } from "./home-visual/home-particle-field";
-export { createHomeCoverTextureController } from "./home-visual/cover-texture";
+export {
+	createHomeCoverTextureController,
+	estimateHomeCoverTextureCacheBytes,
+	trimHomeCoverTextureCache,
+} from "./home-visual/cover-texture";
 export type {
 	HomeAiDepthEstimator,
 	HomeAiDepthMerger,
@@ -262,6 +267,7 @@ export type {
 	HomeCoverTextureController,
 	HomeCoverTextureControllerOptions,
 	HomeCoverTextureUniforms,
+	HomeCoverRuntimeOptions,
 } from "./home-visual/cover-texture";
 export {
 	buildEdgeAndDepthCanvas,

@@ -8,6 +8,7 @@ import {
 } from "@mineradio/visual-engine";
 import {
 	createLegacyVisualComposition,
+	createLegacyHomeVisualRuntimeGovernor,
 	LEGACY_VISUAL_LANE_CADENCE,
 	mountOwnedStageLyricsLifecycle,
 } from "./create-legacy-visual-composition";
@@ -204,7 +205,62 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 	expect(source).not.toContain("scheduler.stop(");
 	expect(source).not.toContain("scheduler.dispose(");
 	expect(source).not.toContain("audioEngine.update(ctx.dt)");
-	expect(source).not.toContain("context.tasks");
+	expect(source).toContain("runtimeGovernor?.sync(context?.scheduler.getMode()");
+	expect(source.match(/runtimeGovernor\?\.sync\(context\?\.scheduler\.getMode\(\)/g)?.length).toBe(2);
+	expect(source).toContain("runtimeGovernor?.pump(nextContext.scheduler.getMode())");
+});
+
+test("home visual runtime governor pumps one active slice and refreshes performance", () => {
+	const calls: string[] = [];
+	const governor = createLegacyHomeVisualRuntimeGovernor({
+		homeVisual: { setRuntimeActive: (active) => calls.push(`active:${active}`) },
+		tasks: {
+			cancelPriority: (priority) => calls.push(`cancel:${priority}`),
+			runSlice: (cost) => { calls.push(`slice:${cost}`); return 1; },
+		},
+		resources: { releaseRetention: () => ({ disposed: 0, errors: [] }) },
+		refreshPerformanceSnapshots: () => calls.push("refresh"),
+	});
+
+	governor.pump("foreground");
+	governor.pump("background");
+	governor.pump("deep-sleep");
+	governor.pump("released");
+
+	expect(calls).toEqual(["slice:1", "refresh", "slice:1", "refresh"]);
+});
+
+test("home visual runtime governor releases in exact order and wakes only in an active mode", () => {
+	const calls: string[] = [];
+	const governor = createLegacyHomeVisualRuntimeGovernor({
+		homeVisual: { setRuntimeActive: (active) => calls.push(`active:${active}`) },
+		tasks: {
+			cancelPriority: (priority) => calls.push(`cancel:${priority}`),
+			runSlice: () => 0,
+		},
+		resources: {
+			releaseRetention: (retention) => {
+				calls.push(`release:${Array.isArray(retention) ? retention.join("+") : retention}`);
+				return { disposed: 0, errors: [] };
+			},
+		},
+		trimCache: (maxEntries) => calls.push(`trim:${maxEntries}`),
+		refreshPerformanceSnapshots: () => calls.push("refresh"),
+	});
+
+	governor.sync("foreground");
+	governor.sync("released");
+	governor.sync("released");
+	governor.sync("deep-sleep");
+	expect(calls).toEqual([
+		"active:false",
+		"cancel:background",
+		"trim:0",
+		"release:rebuildable+ephemeral",
+		"refresh",
+	]);
+	governor.sync("foreground");
+	expect(calls.at(-1)).toBe("active:true");
 });
 
 test("legacy composition registers resources with semantic ownership kinds", async () => {

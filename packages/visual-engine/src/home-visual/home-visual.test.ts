@@ -563,3 +563,83 @@ test("HomeVisual.dispose disposes the underlying particle field (Points removed)
 	hv.dispose();
 	expect((scene.removed as unknown[]).length).toBe(2);
 });
+
+test("HomeVisual suspend retains cover uniforms, releases back-cover, and wake rebuilds lazily once", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		loadCoverImage: async () => ({ width: 16, height: 16 }),
+		buildCoverEdgeDepth: () => ({ width: 16, height: 16 }),
+	});
+	hv.setCoverUrl("https://img.example/cover.jpg");
+	await hv.getCoverController().whenIdle();
+	const coverImage = (hv.getField().materialUniforms.uCoverTex.value as { image: unknown }).image;
+	const edgeImage = (hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	const mountedCount = scene.added.length;
+	const backCover = scene.added.at(-1);
+
+	hv.setRuntimeActive(false);
+
+	expect(scene.removed).toContain(backCover);
+	expect((hv.getField().materialUniforms.uCoverTex.value as { image: unknown }).image).toBe(coverImage);
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(edgeImage);
+	hv.setRuntimeActive(true);
+	expect(scene.added.length).toBe(mountedCount);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	expect(scene.added.length).toBe(mountedCount + 1);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	expect(scene.added.length).toBe(mountedCount + 1);
+});
+
+test("HomeVisual dispose makes a late back-cover resolve release itself instead of reviving", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let delayBackCover = false;
+	let resolveFactory: ((module: Awaited<ReturnType<ThreeFactory>>) => void) | undefined;
+	const factory = (async () => {
+		const module = await baseFactory();
+		if (!delayBackCover) return module;
+		return await new Promise<Awaited<ReturnType<ThreeFactory>>>((done) => { resolveFactory = done; });
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	delayBackCover = true;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	hv.dispose();
+	const module = await baseFactory();
+	resolveFactory?.(module);
+	await hv.whenIdle();
+	const lateBackCover = scene.added.at(-1);
+
+	expect(scene.removed).toContain(lateBackCover);
+});
+
+test("HomeVisual clears rejected back-cover pending state so a later update can retry", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let backCoverCalls = 0;
+	let creatingBackCover = false;
+	const factory = (async () => {
+		if (creatingBackCover) {
+			backCoverCalls += 1;
+			if (backCoverCalls === 1) throw new Error("transient back-cover failure");
+		}
+		return await baseFactory();
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	creatingBackCover = true;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+
+	expect(backCoverCalls).toBe(2);
+	expect(scene.added.length).toBe(3);
+});

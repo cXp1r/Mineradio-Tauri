@@ -190,6 +190,7 @@ export interface VisualEngineCompositionContext {
 	readonly scheduler: VisualScheduler;
 	readonly performance: PerformanceCollector;
 	getFrameSnapshot(): VisualFrameSnapshot;
+	refreshPerformanceSnapshots(): void;
 }
 
 export interface VisualEngineComposition {

@@ -451,3 +451,54 @@ test("hard-pressure cancellation keeps nested critical enqueue non-recursive", (
 	expect(ledger.getSnapshot().allocations).toBe(7);
 	expect(ledger.getSnapshot().releases).toBe(7);
 });
+
+test("hard pressure settles queued background work as cancelled exactly once", () => {
+	const { queue } = createQueue();
+	const settlements: string[] = [];
+	queue.enqueue({
+		owner: "cover",
+		key: "depth",
+		priority: "background",
+		cost: 8,
+		run() {},
+		commit() {},
+		onSettled: (settlement) => settlements.push(settlement),
+	});
+
+	queue.enqueue({
+		owner: "scene",
+		key: "pressure",
+		priority: "critical",
+		cost: 11,
+		run() {},
+		commit() {},
+	});
+
+	expect(settlements).toEqual(["cancelled"]);
+	queue.cancelPriority("background");
+	expect(settlements).toEqual(["cancelled"]);
+});
+
+test("a cancelled running task does not settle again when its result arrives late", async () => {
+	const { queue } = createQueue();
+	let resolve: ((value: string) => void) | undefined;
+	const result = new Promise<string>((done) => { resolve = done; });
+	const settlements: string[] = [];
+	queue.enqueue({
+		owner: "cover",
+		key: "load",
+		priority: "visible",
+		cost: 1,
+		run: () => result,
+		commit() {},
+		onSettled: (settlement) => settlements.push(settlement),
+	});
+	queue.runSlice(1);
+
+	queue.cancelOwner("cover");
+	resolve?.("late");
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(settlements).toEqual(["cancelled"]);
+});

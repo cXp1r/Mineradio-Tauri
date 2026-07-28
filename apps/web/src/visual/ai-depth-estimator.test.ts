@@ -171,3 +171,116 @@ test("createJsDelivrAiDepthEstimator reuses its 160px input canvas across runs",
 		["image/jpeg", 0.82],
 	]);
 });
+
+test("aborting while the transformers module imports returns null without toast, cooldown, or min-gap", async () => {
+	const statuses: AiDepthStatusDetail[] = [];
+	let resolveImport: ((module: { env: {}; pipeline: () => Promise<never> }) => void) | undefined;
+	let imports = 0;
+	const estimator = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statuses.push(detail),
+		importModule: () => {
+			imports += 1;
+			if (imports === 1) return new Promise((done) => { resolveImport = done as never; });
+			return Promise.resolve({ env: {}, pipeline: async () => async () => ({ depth: { toCanvas: async () => ({ label: "depth" }) } }) });
+		},
+	});
+	const controller = new AbortController();
+	const pending = estimator({ width: 64, height: 64 } as never, controller.signal);
+	controller.abort();
+	resolveImport?.({ env: {}, pipeline: async () => { throw new Error("pipeline must not start after abort"); } } as never);
+
+	expect(await pending).toBeNull();
+	resetJsDelivrAiDepthPipelineForTests();
+	expect(await estimator({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
+	expect(statuses.filter((status) => status.toast).length).toBe(1);
+	expect(statuses.filter((status) => !status.visible).length).toBe(2);
+});
+
+test("aborting while the depth pipeline is created does not start inference or poison retry guards", async () => {
+	const statuses: AiDepthStatusDetail[] = [];
+	let resolvePipeline: ((pipeline: (input: unknown) => Promise<unknown>) => void) | undefined;
+	let inferenceCalls = 0;
+	const estimator = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statuses.push(detail),
+		importModule: async () => ({ env: {}, pipeline: () => new Promise((done) => { resolvePipeline = done; }) }),
+	});
+	const controller = new AbortController();
+	const pending = estimator({ width: 64, height: 64 } as never, controller.signal);
+	await Promise.resolve();
+	controller.abort();
+	resolvePipeline?.(async () => { inferenceCalls += 1; return {}; });
+
+	expect(await pending).toBeNull();
+	expect(inferenceCalls).toBe(0);
+	expect(statuses.filter((status) => !status.visible).length).toBe(1);
+	expect(statuses.some((status) => !!status.toast)).toBe(false);
+});
+
+test("aborting during inference returns null and permits an immediate successful retry", async () => {
+	const statuses: AiDepthStatusDetail[] = [];
+	let resolveInference: ((result: unknown) => void) | undefined;
+	let calls = 0;
+	const estimator = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statuses.push(detail),
+		importModule: async () => ({
+			env: {},
+			pipeline: async () => async () => {
+				calls += 1;
+				if (calls === 1) return new Promise((done) => { resolveInference = done; });
+				return { depth: { toCanvas: async () => ({ label: "depth" }) } };
+			},
+		}),
+	});
+	const controller = new AbortController();
+	const pending = estimator({ width: 64, height: 64 } as never, controller.signal);
+	for (let index = 0; index < 10 && !resolveInference; index += 1) await Promise.resolve();
+	if (!resolveInference) throw new Error("inference did not start");
+	controller.abort();
+	resolveInference?.({ depth: { toCanvas: async () => ({ label: "late" }) } });
+
+	expect(await pending).toBeNull();
+	expect(statuses.filter((status) => !status.visible).length).toBe(1);
+	expect(statuses.some((status) => !!status.toast)).toBe(false);
+	expect(await estimator({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
+});
+
+test("aborting during toCanvas conversion suppresses the late success toast and permits retry", async () => {
+	const statuses: AiDepthStatusDetail[] = [];
+	let resolveCanvas: ((canvas: unknown) => void) | undefined;
+	let calls = 0;
+	const estimator = createJsDelivrAiDepthEstimator({
+		createCanvas: makeCanvasHarness().createCanvas,
+		now: () => 1000,
+		onStatus: (detail) => statuses.push(detail),
+		importModule: async () => ({
+			env: {},
+			pipeline: async () => async () => {
+				calls += 1;
+				return {
+					depth: {
+						toCanvas: calls === 1
+							? () => new Promise((done) => { resolveCanvas = done; })
+							: async () => ({ label: "depth" }),
+					},
+				};
+			},
+		}),
+	});
+	const controller = new AbortController();
+	const pending = estimator({ width: 64, height: 64 } as never, controller.signal);
+	for (let index = 0; index < 10 && !resolveCanvas; index += 1) await Promise.resolve();
+	if (!resolveCanvas) throw new Error("toCanvas did not start");
+	controller.abort();
+	resolveCanvas?.({ label: "late" });
+
+	expect(await pending).toBeNull();
+	expect(statuses.filter((status) => !status.visible).length).toBe(1);
+	expect(statuses.some((status) => !!status.toast)).toBe(false);
+	expect(await estimator({ width: 64, height: 64 } as never)).toEqual({ label: "depth" });
+});

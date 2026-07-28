@@ -1,5 +1,6 @@
 import { beforeEach, expect, test } from "bun:test";
-import { createHomeCoverTextureController, coverTextureSizeForResolution, prepareSquareCoverCanvas, resetHomeCoverTextureCacheForTests } from "./cover-texture";
+import { createBudgetTaskQueue, createCancellationScope, createVisualResourceLedger, createVisualResourceScope } from "../index";
+import { createHomeCoverTextureController, coverTextureSizeForResolution, estimateHomeCoverTextureCacheBytes, prepareSquareCoverCanvas, resetHomeCoverTextureCacheForTests, trimHomeCoverTextureCache } from "./cover-texture";
 
 function makeTexture(label: string) {
 	return {
@@ -267,6 +268,32 @@ test("stale cover loads are ignored when a newer URL is requested", async () => 
 	await ctl.whenIdle();
 	expect(uniforms.uCoverTex.value.image).toEqual({ width: 32, height: 32, src: "https://img.example/b.jpg" });
 	expect(uniforms.uHasCover.value).toBe(1);
+});
+
+test("changing covers aborts the previous runtime loader", () => {
+	const uniforms = makeUniforms();
+	const signals: AbortSignal[] = [];
+	const cancellationScope = createCancellationScope("covers");
+	const resourceScope = createVisualResourceScope("cover-resources");
+	const ledger = createVisualResourceLedger({
+		budget: { textureBytes: 1_000_000, geometryBytes: 1_000_000, meshCount: 100, queuedTaskCost: 10, cacheBytes: 10_000_000 },
+	});
+	const taskQueue = createBudgetTaskQueue({ ledger, resourceScope, cancellationScope });
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: (_url, signal) => {
+			if (!signal) throw new Error("expected a runtime abort signal");
+			signals.push(signal);
+			return new Promise(() => {});
+		},
+		runtime: { cancellationScope, taskQueue, resourceScope },
+	});
+
+	ctl.setCoverUrl("https://img.example/old.jpg");
+	taskQueue.runSlice(1);
+	ctl.setCoverUrl("https://img.example/new.jpg");
+
+	expect(signals[0]?.aborted).toBe(true);
 });
 
 test("advanceColorMix moves uColorMixT toward 1 over the baseline color mix duration", async () => {
@@ -608,4 +635,187 @@ test("prepareSquareCoverCanvas crops the image center into a baseline square tex
 	expect(canvas.width).toBe(512);
 	expect(canvas.height).toBe(512);
 	expect(drawCalls).toEqual([[image, 100, 0, 600, 600, 0, 0, 512, 512]]);
+});
+
+test("dispose prevents a late unabortable cover load from publishing or entering cache", async () => {
+	const uniforms = makeUniforms();
+	const originalImage = uniforms.uCoverTex.value.image;
+	let resolve: ((image: { width: number; height: number }) => void) | undefined;
+	let preparedCalls = 0;
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: () => new Promise((done) => { resolve = done; }),
+		onCoverPrepared: () => { preparedCalls += 1; },
+	});
+	ctl.setCoverUrl("https://img.example/late.jpg");
+	ctl.dispose();
+	resolve?.({ width: 64, height: 64 });
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(uniforms.uCoverTex.value.image).toBe(originalImage);
+	expect(preparedCalls).toBe(0);
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(0);
+	await ctl.whenIdle();
+});
+
+test("a stale queued AI result is rejected before the merger can mutate heuristic depth", async () => {
+	const uniforms = makeUniforms();
+	const cancellationScope = createCancellationScope("covers");
+	const resourceScope = createVisualResourceScope("cover-resources");
+	const ledger = createVisualResourceLedger({ budget: { textureBytes: 1_000_000, geometryBytes: 1_000_000, meshCount: 100, queuedTaskCost: 10, cacheBytes: 10_000_000 } });
+	const taskQueue = createBudgetTaskQueue({ ledger, resourceScope, cancellationScope });
+	let resolveAi: ((image: { width: number; height: number }) => void) | undefined;
+	let merges = 0;
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async (url) => ({ width: 64, height: 64, src: url }),
+		buildEdgeDepth: () => ({ width: 64, height: 64 }) as never,
+		aiDepthEnabled: true,
+		estimateAiDepth: () => new Promise((done) => { resolveAi = done; }),
+		mergeAiDepth: (heuristic) => { merges += 1; return heuristic; },
+		runtime: { cancellationScope, taskQueue, resourceScope },
+	});
+	ctl.setCoverUrl("https://img.example/a.jpg");
+	taskQueue.runSlice(1);
+	await Promise.resolve();
+	await Promise.resolve();
+	taskQueue.runSlice(1);
+	ctl.setCoverUrl("https://img.example/b.jpg");
+	resolveAi?.({ width: 64, height: 64 });
+	await Promise.resolve();
+	await Promise.resolve();
+
+	expect(merges).toBe(0);
+});
+
+test("whenIdle settles for queue denial, queued cancellation, and task failure", async () => {
+	const makeRuntime = () => {
+		const cancellationScope = createCancellationScope("covers");
+		const resourceScope = createVisualResourceScope("cover-resources");
+		const ledger = createVisualResourceLedger({ budget: { textureBytes: 1, geometryBytes: 1, meshCount: 1, queuedTaskCost: 1, cacheBytes: 1 } });
+		return { cancellationScope, resourceScope, taskQueue: createBudgetTaskQueue({ ledger, resourceScope, cancellationScope }) };
+	};
+	const deniedRuntime = makeRuntime();
+	deniedRuntime.resourceScope.dispose();
+	const denied = createHomeCoverTextureController({ uniforms: makeUniforms() as never, runtime: deniedRuntime });
+	denied.setCoverUrl("https://img.example/denied.jpg");
+	await denied.whenIdle();
+
+	const cancelledRuntime = makeRuntime();
+	const cancelled = createHomeCoverTextureController({ uniforms: makeUniforms() as never, loadImage: () => new Promise(() => {}), runtime: cancelledRuntime });
+	cancelled.setCoverUrl("https://img.example/cancelled.jpg");
+	cancelled.setRuntimeActive(false);
+	await cancelled.whenIdle();
+
+	const failedRuntime = makeRuntime();
+	const failed = createHomeCoverTextureController({ uniforms: makeUniforms() as never, loadImage: async () => { throw new Error("broken"); }, runtime: failedRuntime });
+	failed.setCoverUrl("https://img.example/failed.jpg");
+	failedRuntime.taskQueue.runSlice(1);
+	await failed.whenIdle();
+});
+
+test("the global cache keeps 18 LRU entries and promotes hits", async () => {
+	let loads = 0;
+	const makeController = () => createHomeCoverTextureController({
+		uniforms: makeUniforms() as never,
+		loadImage: async (url) => { loads += 1; return { width: 8, height: 8, src: url }; },
+	});
+	for (let index = 0; index < 18; index += 1) {
+		const ctl = makeController();
+		ctl.setCoverUrl(`https://img.example/${index}.jpg`);
+		await ctl.whenIdle();
+	}
+	const hit = makeController();
+	hit.setCoverUrl("https://img.example/0.jpg");
+	await hit.whenIdle();
+	const newest = makeController();
+	newest.setCoverUrl("https://img.example/18.jpg");
+	await newest.whenIdle();
+	const retained = makeController();
+	retained.setCoverUrl("https://img.example/0.jpg");
+	await retained.whenIdle();
+	const evicted = makeController();
+	evicted.setCoverUrl("https://img.example/1.jpg");
+	await evicted.whenIdle();
+
+	expect(loads).toBe(20);
+});
+
+test("cache byte estimates deduplicate identical heuristic and AI objects", async () => {
+	const sharedDepth = { width: 32, height: 16 };
+	const ctl = createHomeCoverTextureController({
+		uniforms: makeUniforms() as never,
+		loadImage: async () => ({ width: 8, height: 4 }),
+		buildEdgeDepth: () => sharedDepth as never,
+		aiDepthEnabled: true,
+		estimateAiDepth: async () => sharedDepth as never,
+		mergeAiDepth: (heuristic) => heuristic,
+	});
+	ctl.setCoverUrl("https://img.example/dedup.jpg");
+	await ctl.whenIdle();
+
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(8 * 4 * 4 + 32 * 16 * 4);
+});
+
+test("trim(0) releases cache references without changing visible uniforms", async () => {
+	const uniforms = makeUniforms();
+	const ctl = createHomeCoverTextureController({ uniforms: uniforms as never, loadImage: async () => ({ width: 8, height: 8 }) });
+	ctl.setCoverUrl("https://img.example/visible.jpg");
+	await ctl.whenIdle();
+	const texture = uniforms.uCoverTex.value;
+	const image = texture.image;
+
+	trimHomeCoverTextureCache(0);
+
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(0);
+	expect(uniforms.uCoverTex.value).toBe(texture);
+	expect(uniforms.uCoverTex.value.image).toBe(image);
+	expect(uniforms.uHasCover.value).toBe(1);
+});
+
+test("cache registration denial still displays the current cover", async () => {
+	const uniforms = makeUniforms();
+	const denyingScope = {
+		isOpen: () => true,
+		register() { throw new Error("budget denied"); },
+	} as never;
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async () => ({ width: 8, height: 8 }),
+		runtime: { resourceScope: denyingScope },
+	});
+	ctl.setCoverUrl("https://img.example/denied-cache.jpg");
+	await ctl.whenIdle();
+
+	expect(uniforms.uHasCover.value).toBe(1);
+	expect(estimateHomeCoverTextureCacheBytes()).toBe(0);
+});
+
+test("eviction and repeated trim dispose every cache lease exactly once", async () => {
+	const disposeCounts: number[] = [];
+	const resourceScope = {
+		isOpen: () => true,
+		register() {
+			const index = disposeCounts.push(0) - 1;
+			let disposed = false;
+			return {
+				get disposed() { return disposed; },
+				dispose() {
+					if (!disposed) disposeCounts[index] += 1;
+					disposed = true;
+					return { disposed: 1, errors: [] };
+				},
+			};
+		},
+	} as never;
+	for (let index = 0; index < 19; index += 1) {
+		const ctl = createHomeCoverTextureController({ uniforms: makeUniforms() as never, loadImage: async () => ({ width: 8, height: 8 }), runtime: { resourceScope } });
+		ctl.setCoverUrl(`https://img.example/lease-${index}.jpg`);
+		await ctl.whenIdle();
+	}
+	expect(disposeCounts.filter((count) => count === 1)).toHaveLength(1);
+	trimHomeCoverTextureCache(0);
+	trimHomeCoverTextureCache(0);
+	expect(disposeCounts.every((count) => count === 1)).toBe(true);
 });

@@ -824,6 +824,7 @@ export function createVisualEngine(options: VisualEngineOptions): VisualEngineFa
 				scheduler,
 				performance,
 				getFrameSnapshot: () => frame,
+				refreshPerformanceSnapshots: updatePerformance,
 			};
 			try {
 				const compositionMount = Promise.resolve().then(() => {

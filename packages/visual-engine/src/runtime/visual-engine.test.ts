@@ -104,6 +104,41 @@ function installAnimationFrameHarness(): {
 	};
 }
 
+test("composition refreshPerformanceSnapshots projects root queue and ledger snapshots without exposing ownership", async () => {
+	const raf = installAnimationFrameHarness();
+	const contextRef: { current: VisualEngineCompositionContext | null } = { current: null };
+	const engine = createVisualEngine({
+		mediaClock: clock,
+		createComposition: () => ({
+			async mount(nextContext) {
+				contextRef.current = nextContext;
+				nextContext.scheduler.registerRuntimeCallbacks({ onAnimation() {} });
+			},
+			applyFrameSnapshot() {},
+			applyPreset() {},
+			setVisibility() {},
+			dispose() {},
+		}),
+	});
+	try {
+		await engine.mount(document.createElement("div"));
+		const context = contextRef.current;
+		if (!context) throw new Error("missing composition context");
+		context.resources.register({ owner: "cache", kind: "cache", retention: "rebuildable", estimatedBytes: 7, dispose() {} });
+		context.tasks.enqueue({ owner: "cover", key: "load", priority: "visible", cost: 1, run() {}, commit() {} });
+		expect(context.performance.getSnapshot().resources.current.cacheBytes).toBe(0);
+
+		context.refreshPerformanceSnapshots();
+
+		expect(context.performance.getSnapshot().resources.current.cacheBytes).toBe(7);
+		expect(context.performance.getSnapshot().tasks.queued).toBe(1);
+		expect("ledger" in context).toBe(false);
+	} finally {
+		engine.dispose();
+		raf.restore();
+	}
+});
+
 function installTimerHarness(): {
 	readonly callbacks: Map<number, () => void>;
 	readonly cleared: number[];

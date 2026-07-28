@@ -18,6 +18,7 @@ import {
 	type HomeCoverImage,
 	type HomeCoverLoader,
 	type HomeCoverTextureController,
+	type HomeCoverRuntimeOptions,
 } from "./cover-texture";
 import { createHomeRipples, type HomeRipples } from "./ripples";
 import { deriveLyricPaletteFromCover, type CoverCanvasLike } from "./cover-colors";
@@ -41,6 +42,7 @@ export interface HomeVisualOptions {
 	skullAssetData?: Float32Array | null;
 	loadSkullAsset?: () => Promise<Float32Array | null>;
 	orbitCenterLockedSupplier?: () => boolean;
+	runtime?: HomeCoverRuntimeOptions;
 }
 
 export interface HomeVisual {
@@ -60,6 +62,7 @@ export interface HomeVisual {
 	getSkullBeatFlash(): number;
 	setSkullShelfCompositionActive(active: boolean): void;
 	setWallpaperShelfDimActive(active: boolean): void;
+	setRuntimeActive(active: boolean): void;
 	applySkullWheel(deltaY: number): boolean;
 	getSkullWheelZoom(): number;
 	applyPointerSpinDrag(dx: number, dy: number, dtSeconds: number): void;
@@ -141,6 +144,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		aiDepthEnabled: fx.aiDepth,
 		estimateAiDepth: opts.estimateAiDepth,
 		mergeAiDepth: opts.mergeAiDepth,
+		runtime: opts.runtime,
 		onCoverPrepared(image) {
 			latestPreparedCover = image;
 			backCoverLayer?.refreshColorsFromCover(image as CoverCanvasLike);
@@ -160,27 +164,37 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	let backCoverLayer: BackCoverLayer | null = null;
 	let backCoverPending: Promise<void> | null = null;
 	let latestPreparedCover: HomeCoverImage | null = null;
+	let runtimeActive = true;
+	let disposed = false;
+	let backCoverGeneration = 0;
+	let runtimeWakePending = false;
 	field.applyFxState(fx);
 	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && fx.preset !== SKULL_PRESET_INDEX;
 	field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
 
 	function syncBackCoverLayer(): void {
+		if (!runtimeActive || disposed) return;
 		if (fx.backCover) {
 			if (!backCoverLayer && !backCoverPending) {
-				backCoverPending = createBackCoverLayer({
+				const generation = ++backCoverGeneration;
+				const pending = createBackCoverLayer({
 					scene: opts.scene,
 					threeFactory: opts.threeFactory,
 					uniforms: field.materialUniforms as never,
 					random: opts.backCoverRandom,
 				}).then((layer) => {
-					backCoverLayer = layer;
-					backCoverPending = null;
-					if (latestPreparedCover) layer.refreshColorsFromCover(latestPreparedCover as CoverCanvasLike);
-					if (!fx.backCover) {
+					if (disposed || !runtimeActive || generation !== backCoverGeneration || !fx.backCover) {
 						layer.dispose();
-						if (backCoverLayer === layer) backCoverLayer = null;
+						return;
 					}
+					backCoverLayer = layer;
+					if (latestPreparedCover) layer.refreshColorsFromCover(latestPreparedCover as CoverCanvasLike);
+				}).catch(() => {
+					// 后景层是可重建增强；失败后清空 pending，下一帧允许重试。
+				}).finally(() => {
+					if (backCoverPending === pending) backCoverPending = null;
 				});
+				backCoverPending = pending;
 			}
 			return;
 		}
@@ -243,6 +257,11 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	}
 
 	function stepBody(ctx: FrameContext): void {
+		if (runtimeWakePending) {
+			runtimeWakePending = false;
+			const coverUrl = coverController.getCurrentUrl();
+			if (coverUrl) coverController.setCoverUrl(coverUrl);
+		}
 		field.applyFxState(fx);
 		coverController.setAiDepthEnabled(fx.aiDepth);
 		field.points.visible = fx.preset !== SKULL_PRESET_INDEX;
@@ -285,7 +304,13 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 			ripples.update(dtSeconds);
 		},
 		dispose() {
+			if (disposed) return;
+			disposed = true;
+			runtimeActive = false;
+			backCoverGeneration += 1;
+			coverController.dispose();
 			backCoverLayer?.dispose();
+			backCoverLayer = null;
 			skullParticles.dispose();
 			field.dispose();
 		},
@@ -328,6 +353,19 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		},
 		setWallpaperShelfDimActive(active) {
 			wallpaperShelfDimActive = !!active;
+		},
+		setRuntimeActive(active) {
+			if (disposed || runtimeActive === !!active) return;
+			runtimeActive = !!active;
+			coverController.setRuntimeActive(runtimeActive);
+			if (!runtimeActive) {
+				runtimeWakePending = false;
+				backCoverGeneration += 1;
+				backCoverLayer?.dispose();
+				backCoverLayer = null;
+			} else {
+				runtimeWakePending = true;
+			}
 		},
 		applySkullWheel(deltaY) {
 			if (fx.preset !== SKULL_PRESET_INDEX) return false;

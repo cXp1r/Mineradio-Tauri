@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
 import {
 	createVisualEngine,
+	estimateHomeCoverTextureCacheBytes,
+	trimHomeCoverTextureCache,
 	type VisualEngineFacade,
 	type VisualEngineOptions,
 } from "./index";
@@ -28,4 +30,6 @@ test("createVisualEngine exposes the option-based facade", () => {
 	expect(typeof engine.setPlaybackSnapshot).toBe("function");
 	expect(typeof engine.getPerformanceSnapshot).toBe("function");
 	expect(typeof engine.dispose).toBe("function");
+	expect(typeof estimateHomeCoverTextureCacheBytes).toBe("function");
+	expect(typeof trimHomeCoverTextureCache).toBe("function");
 });
