@@ -1,7 +1,7 @@
 # M4 Lyrics 与 Visual Parity 设计
 
 **日期：** 2026-07-28  
-**状态：** Open / In Progress；Stage Lyrics 与 3D Shelf 已通过 clean release evidence，Sonic 已切换为直接迁移路线，等待代码复核与新的 release evidence
+**状态：** Complete；Stage Lyrics、直接迁移版 Sonic Topography 与 3D Shelf 已通过 clean release strict evidence
 **基线：** `ab04493`（M3 Visual Runtime Foundation complete）  
 **上游行为基线：** Mineradio Electron 2.0.2，`4abaa19`
 
@@ -1054,10 +1054,10 @@ Sonic impulse 接收注入 RNG；golden fixture 固定 seed。
 | --- | --- | --- |
 | Stage Lyrics 2.0 | `implemented` | clean commit `51ec050` 的 release strict evidence 通过；远端 `background + ephemeral` prewarm 仍未进入 scheduler，作为后续增强而非本次完成声明 |
 | 3D Shelf | `implemented` | clean commit `51ec050` 的 600×600 release strict evidence 通过 |
-| Sonic Topography | `partial` / in progress | 直接迁移代码复核、来源注释复核与新的 release strict evidence |
-| M4 | Open / In Progress | 等待 Sonic 直接迁移与最终 evidence |
+| Sonic Topography | `implemented` | 直接迁移代码、来源注释、origin-attribution 与 clean high/release strict evidence 均通过 |
+| M4 | Complete | final manifest 验证 `0230feb`，65/65 checks 通过 |
 
-旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。`51ec050` 的 manifest 已记录 dirty=false、preview build commit 精确匹配、三场景 console errors=0、真实 GPU samples 与 60/60 hard checks，因此 Stage 与 Shelf 已晋升；Sonic 已切换实现来源，必须在直接迁移版本上重跑同等级证据后才能从 `partial` 晋升。
+旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。最终 manifest 在 clean implementation commit `0230feb` 上记录 dirty=false、preview build commit 精确匹配、三场景 console errors=0、真实 GPU timer-query 各 240 samples 与 65/65 hard checks。Sonic high 的 CPU p95 为 `0.100000ms`，GPU p95 为 `0.179488ms`，相对 clean high baseline 增量为 `0.046080ms`，整体 frame p95 为 `0.400000ms`，未超过 baseline ×1.10 的 `0.440000ms`。
 
 M4 只有同时满足以下条件才算完成：
 

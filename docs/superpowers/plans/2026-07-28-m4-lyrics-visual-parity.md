@@ -6,7 +6,7 @@
 
 **Design:** `docs/superpowers/specs/2026-07-28-m4-lyrics-visual-parity-design.md`
 
-**Execution status:** Stage Lyrics 与 3D Shelf 已在 clean commit `51ec050` 通过 release strict evidence 并晋升 `implemented`；Sonic 已由 clean-room 候选切换为直接迁移路线，当前等待直接迁移代码复核与新的 release strict evidence，因此 M4 保持 Open / In Progress。
+**Execution status:** Complete。Stage Lyrics、直接迁移版 Sonic Topography 与 3D Shelf 已在 clean implementation commit `0230feb` 通过 final release strict evidence；65/65 checks、三场景 console errors=0、真实 GPU timer-query 各 240 samples，三项能力均为 `implemented`。
 
 **Baseline verification:**
 
@@ -748,7 +748,7 @@ GPU p95 使用 production presentation seam 上的真实 `EXT_disjoint_timer_que
 - `visual.sonic-topography`；
 - `shelf.3d`
 
-Stage/Shelf 已由 `51ec050` 的 clean immutable release evidence 晋升 `implemented`；Sonic 只有在直接迁移代码完成复核、origin-attribution 守卫通过并重新取得 release evidence 后才能从 `partial` 晋升。
+Stage/Shelf 与直接迁移版 Sonic 已由 `0230feb` 的 clean immutable release evidence 晋升 `implemented`；final manifest 记录 65/65 hard checks、三场景 console errors=0 和真实 GPU timer-query 各 240 samples。
 
 ### Step 5: Focused verification
 
@@ -803,7 +803,7 @@ Critical/Important 必须清零。
 - [x] Sidecar/API freeze passes
 - [x] Focused tests/typechecks pass
 - [x] Full tests/typecheck/build pass
-- [x] Visual/performance evidence recorded for Stage/Shelf and Sonic technical candidate
+- [x] Visual/performance evidence recorded for Stage/Shelf and the direct-port Sonic implementation
 - [x] Capability matrix updated from evidence
 - [x] Origin chain, public collaboration statement, license, and attribution recorded
 - [x] Sonic origin-attribution guard passes
@@ -811,4 +811,4 @@ Critical/Important 必须清零。
 - [x] Per-slice diff proves Sidecar/shared/Rust sidecar packaging freeze
 - [x] Final independent review has no Critical/Important
 
-Sonic 技术候选条目只证明旧候选的结构和性能基础存在。维护者现已选择直接迁移；在直接迁移代码复核和新 release evidence 完成前，`visual.sonic-topography` 仍为 `partial`，M4 仍为 Open / In Progress。
+直接迁移版 Sonic 已完成代码复核、来源/许可告知、origin-attribution 守卫和 high/release strict evidence。final manifest 验证 commit `0230feb`、65/65 checks、4 meshes、24,636 instances、Sonic CPU p95 `0.100000ms`、GPU p95 增量 `0.046080ms`、整体 frame p95 `0.400000ms`，因此 `visual.sonic-topography` 已晋升 `implemented`，M4 完成。

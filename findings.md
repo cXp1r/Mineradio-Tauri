@@ -124,12 +124,13 @@
 - `scheduleResidentRowPrewarm()` 先跳过 `!row.resident`，因此 planner 的 `background + ephemeral` 远端预热分支目前不可达。不得把 clarity pool 的 background admission 单元测试误写成生产远端预热已完成。
 - 真实 GPU timer query 已接入 production presentation seam。只有 resolved、non-disjoint 且 `sampleCount > 0` 才能标记 measured；扩展可用但 release 无样本时 strict gate 必须失败。
 - 历史 Sonic source-isolation guard 曾证明旧候选目录无外部资产和来源标记；切换为直接迁移后，该结论不再是完成条件，守卫已替换为强制来源和署名存在的 origin-attribution 检查。
-- M4 当前统一状态为 Open / In Progress：Stage/Shelf 已由 clean immutable evidence 晋升 `implemented`；Sonic 技术候选仍为 `partial`，等待直接迁移代码复核与新 evidence。
+- M4 当前统一状态为 Complete：Stage/Shelf 与直接迁移版 Sonic 已由 clean immutable evidence 晋升 `implemented`。
 - 首版 evidence strict 存在三类假通过：console error 只记录不判定、manifest HEAD 未绑定实际 preview build、扩展不可用时 GPU 硬门被跳过；此外 dirty 只记录不阻断。现已统一进入 fail-closed run/scene checks。
 - Vite build 将当前 Git commit 注入 M4 parity contract；runner 对每个场景验证 build commit 与 repository commit 相等，因此旧 4173 preview 无法再冒充当前 clean HEAD。README 同时使用 `--strictPort` 阻止端口自动漂移。
 - clean evidence commit `51ec050` 通过 60/60：dirty=false、preview build SHA=HEAD、三场景 console errors=0、GPU 均 measured 且各 240 samples。
 - Stage release evidence：resident rows=3、pending builds/uploads=0、GPU p95=0.138016ms；Shelf：11 cards、11 detail rows、1 panel、GPU p95=0.167904ms。因此 `lyrics.stage-v2` 与 `shelf.3d` 可晋升 `implemented`。
-- 旧 Sonic 技术 evidence 为 4 meshes、console=0、GPU p95=0.069504ms，可作为直接迁移后的回归基线，但不能替代新版本 evidence；`visual.sonic-topography` 继续保持 `partial`。
+- 直接迁移实现提交 `0230feb` 的 final release strict evidence 通过 65/65：dirty=false、preview build SHA=HEAD、三场景 console errors=0、GPU 均 measured 且各 240 samples；manifest SHA-256 为 `B96A032DCAC332DBE8D01CFD1964BF39080716B6875ABCDF0E14630C9B35C80B`。
+- Sonic high 最终为 4 meshes、24,636 instances、grid=156、CPU p95 `0.100000ms`、GPU p95 `0.179488ms`；相对 clean high baseline `094316a` 的 GPU 增量 `0.046080ms`，frame p95 `0.400000ms` 与 baseline 持平并低于 `0.440000ms` 上限。因此 `visual.sonic-topography` 晋升 `implemented`，M4 完成。
 
 ## 遇到的问题
 | 问题 | 解决方案 |
@@ -143,7 +144,7 @@
 - Electron 2.0.2 worktree：`D:/项目/Mineradio-upstream-latest`
 
 ## 视觉/浏览器发现
-- 尚未进行运行时截图或录屏检查。
+- 已目视检查 final release 的 Stage、Sonic high 与 Shelf 截图/录屏；Sonic 地形、涟漪高光、浮空元素与空间布局可见，无空白画布、Shader 编译错误或明显错层，三场景 console errors=0。
 
 ---
 *每执行2次查看/浏览器/搜索操作后更新此文件*
