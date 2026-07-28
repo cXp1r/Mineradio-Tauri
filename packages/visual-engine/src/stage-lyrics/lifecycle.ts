@@ -1443,6 +1443,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		},
 		async mount(parent?: THREE.Scene): Promise<THREE.Group> {
 			const THREE = await threeFactory();
+			if (state.disposed) {
+				throw new Error("Stage lyrics lifecycle was disposed before mount completed.");
+			}
 			state.three = THREE;
 			const scene = parent ?? opts.scene ?? null;
 			if (state.group) {

@@ -8,8 +8,14 @@ import { createStageLyricsLifecycle, type StageLyricsLifecycle } from "./lifecyc
 import { RenderStepSlot } from "../runtime/render-step-slot";
 
 type RecordedCall = { method: string; args: unknown[] };
+type ThreeConstructorCalls = {
+	group: number;
+	geometry: number;
+	material: number;
+	points: number;
+};
 
-function makeFakeThree(): ThreeFactory {
+function makeFakeThree(constructorCalls?: ThreeConstructorCalls): ThreeFactory {
 	function makeVector3(x = 0, y = 0, z = 0) {
 		return {
 			x, y, z,
@@ -81,6 +87,7 @@ function makeFakeThree(): ThreeFactory {
 		};
 	}
 	function Group() {
+		if (constructorCalls) constructorCalls.group += 1;
 		return {
 			isGroup: true,
 			renderOrder: 0,
@@ -115,6 +122,7 @@ function makeFakeThree(): ThreeFactory {
 		return { isBufferGeometry: true, isPlaneGeometry: true, disposed: false, dispose() { (this as { disposed: boolean }).disposed = true; } };
 	}
 	function BufferGeometry() {
+		if (constructorCalls) constructorCalls.geometry += 1;
 		return {
 			isBufferGeometry: true,
 			attributes: {} as Record<string, { array: Float32Array; itemSize: number; count: number; needsUpdate: boolean }>,
@@ -144,6 +152,7 @@ function makeFakeThree(): ThreeFactory {
 		};
 	}
 	function ShaderMaterial(params: Record<string, unknown>) {
+		if (constructorCalls) constructorCalls.material += 1;
 		return {
 			isMaterial: true,
 			isShaderMaterial: true,
@@ -173,6 +182,7 @@ function makeFakeThree(): ThreeFactory {
 		};
 	}
 	function Points(geometry: unknown, material: unknown) {
+		if (constructorCalls) constructorCalls.points += 1;
 		return {
 			isPoints: true,
 			geometry,
@@ -367,6 +377,51 @@ test("mount() creates a group with renderOrder=38 and adds to scene", async () =
 	expect(group).not.toBeNull();
 	expect((group as unknown as { renderOrder: number }).renderOrder).toBe(38);
 	expect((scene.children as unknown[]).length).toBe(1);
+});
+
+test("dispose while mount awaits Three.js prevents late stage lyric revival", async () => {
+	const scene = makeFakeScene();
+	const constructorCalls = {
+		group: 0,
+		geometry: 0,
+		material: 0,
+		points: 0,
+	};
+	const trackedThree = await makeFakeThree(constructorCalls)();
+	let resolveThree!: (three: ThreeModule) => void;
+	const pendingThree = new Promise<ThreeModule>((resolve) => {
+		resolveThree = resolve;
+	});
+	let factoryCalls = 0;
+	const lifecycle = createStageLyricsLifecycle({
+		scene: scene as never,
+		threeFactory: () => {
+			factoryCalls += 1;
+			return pendingThree;
+		},
+	});
+
+	const mountPromise = lifecycle.mount(scene as never);
+	const mountResultPromise = mountPromise.then(
+		() => ({ status: "fulfilled" as const, error: null }),
+		(error: unknown) => ({ status: "rejected" as const, error }),
+	);
+	expect(factoryCalls).toBe(1);
+	lifecycle.dispose();
+	lifecycle.dispose();
+	resolveThree(trackedThree);
+
+	const mountResult = await mountResultPromise;
+	expect(mountResult.status).toBe("rejected");
+	expect(mountResult.error).toBeInstanceOf(Error);
+	expect(lifecycle.group).toBeNull();
+	expect(scene.children).toHaveLength(0);
+	expect(constructorCalls).toEqual({
+		group: 0,
+		geometry: 0,
+		material: 0,
+		points: 0,
+	});
 });
 
 test("mount() creates baseline lyric star river under the stage group", async () => {
