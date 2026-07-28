@@ -90,7 +90,7 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 	expect(settings.fx.backgroundMedia).toBe(backgroundMedia);
 	expect(settings.fx.preset).toBe(6);
 	expect(settings.backgroundPolicy).toBe("keep");
-	expect(settings.foregroundFramePolicy).toEqual({ mode: "fixed", fps: 24 });
+	expect(settings.foregroundFramePolicy).toEqual({ mode: "vsync" });
 	expect(settings.coverResolution).toBe(1.8);
 
 	expect(Object.isFrozen(playback)).toBe(true);
@@ -104,6 +104,37 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 	expect(Object.isFrozen(settings)).toBe(true);
 	expect(Object.isFrozen(settings.fx)).toBe(true);
 	expect(Object.isFrozen(settings.fx.mouseXy)).toBe(true);
+});
+
+function buildSettingsForPolicy(performanceQuality: string, prefersReducedMotion = false) {
+	return buildVisualSettingsSnapshot({
+		fxState: { performanceQuality },
+		coverResolution: 1.55,
+		wallpaperSafe: false,
+		prefersReducedMotion,
+	});
+}
+
+test("eco quality does not change the global foreground frame policy", () => {
+	expect(buildSettingsForPolicy("eco").foregroundFramePolicy).toEqual({ mode: "vsync" });
+});
+
+test("balanced quality does not change the global foreground frame policy", () => {
+	expect(buildSettingsForPolicy("balanced").foregroundFramePolicy).toEqual({ mode: "vsync" });
+});
+
+test("high quality keeps the global foreground frame policy on vsync", () => {
+	expect(buildSettingsForPolicy("high").foregroundFramePolicy).toEqual({ mode: "vsync" });
+});
+
+test("ultra quality keeps the global foreground frame policy on vsync", () => {
+	expect(buildSettingsForPolicy("ultra").foregroundFramePolicy).toEqual({ mode: "vsync" });
+});
+
+test("reduced motion remains independent from the global foreground frame policy", () => {
+	const settings = buildSettingsForPolicy("eco", true);
+	expect(settings.prefersReducedMotion).toBe(true);
+	expect(settings.foregroundFramePolicy).toEqual({ mode: "vsync" });
 });
 
 test("visual media clock prefers live audio state and falls back to React playback state", () => {

@@ -189,13 +189,47 @@ test("visual environment adapter combines native visible, focused, and minimized
 	unsubscribe();
 });
 
-test("late native get cannot overwrite a newer native event and late listen unlisten is invoked after unsubscribe", async () => {
+test("initial native get starts after listener registration and observes state changes from the registration gap", async () => {
+	const documentTarget = createListenerTarget();
+	const windowTarget = createListenerTarget();
+	const listen = deferred<() => void>();
+	let getCalls = 0;
+	let backingState = { isVisible: true, isFocused: true, isMinimized: false };
+	const adapter = createVisualEnvironmentAdapter({
+		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+		window: windowTarget,
+		nativeSource: {
+			getWindowState: () => {
+				getCalls += 1;
+				return Promise.resolve({ ...backingState });
+			},
+			listenWindowState: () => listen.promise,
+		},
+	});
+	const snapshots: unknown[] = [];
+	const unsubscribe = adapter.subscribe((snapshot) => snapshots.push(snapshot));
+
+	expect(getCalls).toBe(0);
+	backingState = { isVisible: false, isFocused: false, isMinimized: true };
+	listen.resolve(() => {});
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(getCalls).toBe(1);
+	expect(snapshots.at(-1)).toEqual({
+		documentVisible: true,
+		windowVisible: false,
+		windowFocused: false,
+		windowMinimized: true,
+	});
+	unsubscribe();
+});
+
+test("late native get cannot overwrite an event received after listener registration", async () => {
 	const documentTarget = createListenerTarget();
 	const windowTarget = createListenerTarget();
 	const getState = deferred<{ isVisible: boolean; isFocused: boolean; isMinimized: boolean }>();
-	const listen = deferred<() => void>();
 	const nativeListener: { current?: (state: { isVisible: boolean; isFocused: boolean; isMinimized: boolean }) => void } = {};
-	let unlistenCalls = 0;
 	const adapter = createVisualEnvironmentAdapter({
 		document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
 		window: windowTarget,
@@ -203,28 +237,54 @@ test("late native get cannot overwrite a newer native event and late listen unli
 			getWindowState: () => getState.promise,
 			listenWindowState: (listener) => {
 				nativeListener.current = listener;
-				return listen.promise;
+				return Promise.resolve(() => {});
 			},
 		},
 	});
 	const snapshots: unknown[] = [];
 	const unsubscribe = adapter.subscribe((snapshot) => snapshots.push(snapshot));
-	nativeListener.current?.({ isVisible: true, isFocused: true, isMinimized: false });
-	getState.resolve({ isVisible: false, isFocused: false, isMinimized: true });
+	await Promise.resolve();
+	await Promise.resolve();
+	nativeListener.current?.({ isVisible: false, isFocused: false, isMinimized: true });
+	getState.resolve({ isVisible: true, isFocused: true, isMinimized: false });
 	await Promise.resolve();
 	await Promise.resolve();
 	expect(snapshots.at(-1)).toEqual({
 		documentVisible: true,
-		windowVisible: true,
-		windowFocused: true,
-		windowMinimized: false,
+		windowVisible: false,
+		windowFocused: false,
+		windowMinimized: true,
 	});
-
 	unsubscribe();
-	listen.resolve(() => { unlistenCalls += 1; });
-	await Promise.resolve();
-	await Promise.resolve();
-	expect(unlistenCalls).toBe(1);
+});
+
+test("unsubscribe or dispose before native listener registration invokes the late unlisten and skips get", async () => {
+	for (const cleanupMode of ["unsubscribe", "dispose"] as const) {
+		const documentTarget = createListenerTarget();
+		const windowTarget = createListenerTarget();
+		const listen = deferred<() => void>();
+		let getCalls = 0;
+		let unlistenCalls = 0;
+		const adapter = createVisualEnvironmentAdapter({
+			document: { ...documentTarget, visibilityState: "visible", hasFocus: () => true },
+			window: windowTarget,
+			nativeSource: {
+				getWindowState: async () => {
+					getCalls += 1;
+					return { isVisible: true, isFocused: true, isMinimized: false };
+				},
+				listenWindowState: () => listen.promise,
+			},
+		});
+		const unsubscribe = adapter.subscribe(() => {});
+		if (cleanupMode === "unsubscribe") unsubscribe();
+		else adapter.dispose();
+		listen.resolve(() => { unlistenCalls += 1; });
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(unlistenCalls).toBe(1);
+		expect(getCalls).toBe(0);
+	}
 });
 
 test("Web fallback never calls an implicit native source", async () => {

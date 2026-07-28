@@ -150,7 +150,6 @@ export function createVisualEnvironmentAdapter(
 
 			if (nativeSource) {
 				const activeGeneration = generation;
-				const getRevision = nativeEventRevision;
 				void nativeSource.listenWindowState((state) => {
 					if (disposed || subscriptionDisposed || generation !== activeGeneration) return;
 					nativeEventRevision += 1;
@@ -162,16 +161,17 @@ export function createVisualEnvironmentAdapter(
 						return;
 					}
 					unlistenNative = unlisten;
-				}).catch(() => {});
-				void nativeSource.getWindowState().then((state) => {
-					if (
-						disposed ||
-						subscriptionDisposed ||
-						generation !== activeGeneration ||
-						nativeEventRevision !== getRevision
-					) return;
-					nativeState = state;
-					emit();
+					const getRevision = nativeEventRevision;
+					return nativeSource.getWindowState().then((state) => {
+						if (
+							disposed ||
+							subscriptionDisposed ||
+							generation !== activeGeneration ||
+							nativeEventRevision !== getRevision
+						) return;
+						nativeState = state;
+						emit();
+					});
 				}).catch(() => {});
 			}
 

@@ -42,13 +42,7 @@ function resolveBackgroundPolicy(value: unknown): VisualBackgroundPolicy {
 	return value === "keep" || value === "release" ? value : "auto";
 }
 
-function resolveForegroundFramePolicy(
-	fx: Readonly<FxState>,
-	prefersReducedMotion: boolean,
-): ForegroundFramePolicy {
-	if (prefersReducedMotion) return Object.freeze({ mode: "fixed", fps: 24 });
-	if (fx.performanceQuality === "eco") return Object.freeze({ mode: "fixed", fps: 30 });
-	if (fx.performanceQuality === "balanced") return Object.freeze({ mode: "fixed", fps: 45 });
+function resolveForegroundFramePolicy(): ForegroundFramePolicy {
 	return Object.freeze({ mode: "vsync" });
 }
 
@@ -112,7 +106,7 @@ export function buildVisualSettingsSnapshot(
 		coverResolution: input.coverResolution,
 		wallpaperSafe: input.wallpaperSafe,
 		backgroundPolicy: resolveBackgroundPolicy(fx.performanceBackground),
-		foregroundFramePolicy: resolveForegroundFramePolicy(fx, input.prefersReducedMotion),
+		foregroundFramePolicy: resolveForegroundFramePolicy(),
 		prefersReducedMotion: input.prefersReducedMotion,
 	});
 }
