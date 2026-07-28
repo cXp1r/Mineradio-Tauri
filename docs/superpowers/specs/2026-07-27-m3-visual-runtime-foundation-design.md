@@ -2,9 +2,13 @@
 
 日期：2026-07-27
 
-状态：已确认，待实施计划
+状态：已完成
 
 上位设计：docs/superpowers/specs/2026-07-26-mineradio-2.0.2-tauri-convergence-design.md
+
+完成证据：runtime scheduler/frame-gate、resource/cancellation/task、facade lifecycle、Home Visual、Web visual adapter 与 architecture boundary suites 均纳入完整验证；API freeze 以 `217dbb3` 为基线保持零差异。
+
+完成边界：M3 runtime foundation complete；Stage Lyrics 2.0、歌词纹理/GPU 上传预算、Sonic Topography 与 3D Shelf behavior parity remains M4。
 
 ## 1. 背景
 

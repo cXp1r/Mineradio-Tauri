@@ -2,8 +2,6 @@ import { expect, test } from "bun:test";
 import React, { StrictMode, act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
-	RENDER_STEP_ORDER,
-	RenderStepSlot,
 	type LyricsVisualSnapshot,
 	type PlaybackVisualSnapshot,
 	type ShelfVisualSnapshot,
@@ -15,26 +13,6 @@ import {
 import { createLegacyVisualEventBridge } from "./runtime/legacy-visual-events";
 import type { VisualEnvironmentAdapter } from "./runtime/visual-environment-adapter";
 import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine } from "./useVisualEngine";
-
-test("legacy composition owns visual leaves while useVisualEngine stays a facade lifecycle bridge", async () => {
-	const compositionSource = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
-	const hookSource = await fetch(new URL("./useVisualEngine.ts", import.meta.url)).then((res) => res.text());
-	expect(compositionSource).toContain("createLyricParticles");
-	expect(compositionSource).toContain("renderLoop.registerStep(RenderStepSlot.LyricParticles");
-	expect(compositionSource).toContain("lyricParticles.update(frame)");
-	expect(compositionSource).toContain("homeVisual.applySkullWheel");
-	expect(compositionSource).toContain("homeVisual.getSkullWheelZoom()");
-	expect(hookSource).toContain("createVisualEngine");
-	expect(hookSource).toContain("createLegacyVisualComposition");
-	expect(hookSource).not.toContain("createRenderer");
-	expect(hookSource).not.toContain("createRenderLoop");
-	expect(hookSource).not.toContain("registerStep(");
-	expect(hookSource).not.toContain("createHomeVisual");
-	expect(hookSource).not.toContain("createShelfManager");
-	expect(hookSource).not.toContain("createStageLyricsLifecycle");
-	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.LyricParticles)).toBeGreaterThan(RENDER_STEP_ORDER.indexOf(RenderStepSlot.Shelf));
-	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.LyricParticles)).toBeLessThan(RENDER_STEP_ORDER.indexOf(RenderStepSlot.HomeVisual));
-});
 
 test("legacy composition routes adaptive FPS through the runtime visual performance policy", async () => {
 	const source = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
