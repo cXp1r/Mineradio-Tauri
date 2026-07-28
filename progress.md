@@ -51,12 +51,16 @@
   - `docs/superpowers/plans/2026-07-28-m4-lyrics-visual-parity.md`
 
 ### 阶段 4：Parity 与性能验证
-- **状态：** in_progress
+- **状态：** complete（Stage/Shelf）；Sonic provenance 仍 blocked
 - 执行的操作：
   - 全仓串行测试、根级 typecheck、Web production build、API freeze、Sidecar/client、parity evidence model 与 Sonic source-isolation guard 全部通过。
-  - 旧 `output/playwright/m4/manifest.json` 与临时 console-clean artifact 均早于最新生命周期/GPU 修复，且不是 clean immutable commit，只保留为诊断记录。
-  - 下一步在候选提交的 clean commit 上运行 `capture-evidence.mjs --profile release --strict`。
+  - 此前的 dirty manifest 与临时 console-clean artifact 均早于最新生命周期/GPU 修复，且不是 clean immutable commit；它们已被最终 clean evidence 取代，不作为晋升依据。
+  - 最终证据由候选提交的 clean commit 执行 `capture-evidence.mjs --profile release --strict` 生成。
   - release preflight 发现并修复 3 个假通过 P1：console error 未入硬门、preview build SHA 未绑定 HEAD、无 timer-query 扩展时 strict 可通过；同时把 clean worktree 加入全局硬门并启用 preview `--strictPort`。
+  - 在 clean immutable commit `51ec050` 上完成 release strict：60/60 checks，repository dirty=false，preview build commit 精确匹配 HEAD，三场景 console errors=0；manifest SHA-256 为 `7C838C0DCC849D85C3A622E2D972F930B986E3047925A4719F0CB89B8727B684`。
+  - 三场景 GPU 均为 measured、各 240 samples：Stage p95 0.138016ms，Sonic p95 0.069504ms，Shelf p95 0.167904ms。
+  - Stage resident rows=3、pending build/upload=0；Shelf cards/rows/panels=11/11/1；Sonic meshCount=4。
+  - 目视检查 Stage/Sonic/Shelf 截图，无空白、错层或未收口资源征象。
 
 ## 测试结果
 | 测试 | 输入 | 预期结果 | 实际结果 | 状态 |
@@ -81,6 +85,7 @@
 | Sidecar/API freeze | zero-diff + Sidecar/client tests | 冻结路径零差异 | 306 pass / 0 fail | 通过 |
 | Web production build | `bun run web:build` | production build 成功 | exit 0；仅既有 Three import/chunk warning | 通过 |
 | workspace diff check | `node --check` + `git diff --check` | 无语法或空白错误 | exit 0 | 通过 |
+| clean release evidence | `node scripts/parity/m4/capture-evidence.mjs --profile release --strict` | clean/build SHA/console/GPU/结构硬门全部通过 | 60/60；commit `51ec050` | 通过 |
 
 ## 错误日志
 | 时间戳 | 错误 | 尝试次数 | 解决方案 |
@@ -97,11 +102,11 @@
 ## 五问重启检查
 | 问题 | 答案 |
 |------|------|
-| 我在哪里？ | 阶段 4/5：候选验证与交付收口 |
-| 我要去哪里？ | clean immutable release evidence、Stage/Shelf 状态晋升、保留 Sonic blocker |
+| 我在哪里？ | 阶段 5：Stage/Shelf 已晋升，M4 等待 Sonic provenance |
+| 我要去哪里？ | 保留 Sonic blocker，等待合规独立重写或权利方授权 |
 | 目标是什么？ | 交付可验证的 M4 候选，同时不掩盖 Sonic provenance 与远端 prewarm 缺口 |
 | 我学到了什么？ | 见 findings.md |
-| 我做了什么？ | 完成候选实现、生命周期复审、全仓验证与候选状态文档同步 |
+| 我做了什么？ | 完成实现、生命周期复审、全仓验证、clean release evidence 与 Stage/Shelf 状态晋升 |
 
 ---
 *每个阶段完成后或遇到错误时更新此文件*

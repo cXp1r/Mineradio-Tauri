@@ -14,9 +14,9 @@
 
 | 字段 | 值 |
 | --- | --- |
-| 审查 commit | `<完整 SHA>` |
-| 审查分支 | `<branch>` |
-| 审查日期 | `<YYYY-MM-DD>` |
+| 审查 commit | `51ec0502fa9b8d7c969bfedf0dc4ae6ca869bdaf` |
+| 审查分支 | `codex/m4-visual-parity` |
+| 审查日期 | `2026-07-29` |
 | Sonic 源码目录 | `packages/visual-engine/src/sonic-topography/` |
 | 行为规格版本 | `<文档路径、commit 与 SHA-256>` |
 | fixture 版本 | `<文档路径、commit 与 SHA-256>` |
@@ -78,18 +78,18 @@ git diff --check -- scripts/architecture docs/parity
 
 | 命令 | 结果 | 执行日期 | commit | 日志 artifact / SHA-256 |
 | --- | --- | --- | --- | --- |
-| `node scripts/architecture/sonic-source-isolation.mjs` | `<pass/fail>` | `<date>` | `<sha>` | `<path/hash>` |
-| focused test | `<pass/fail>` | `<date>` | `<sha>` | `<path/hash>` |
+| `node scripts/architecture/sonic-source-isolation.mjs` | pass（仅 non-inclusion） | `2026-07-29` | `51ec050` | 未归档（本地 console 输出） |
+| focused test | 7 pass / 0 fail | `2026-07-29` | `51ec050` | 未归档（本地 Bun test 输出） |
 
 ## 8. 独立审查结论
 
 - [ ] 可观察证据到规格的映射完整。
 - [ ] 实现者隔离声明可信且可追溯。
-- [ ] Non-inclusion 检查通过。
-- [ ] 自动守卫和聚焦测试在审查 commit 上通过。
+- [x] Non-inclusion 检查通过。
+- [x] 自动守卫和聚焦测试在审查 commit 上通过。
 - [ ] 没有未处置的 exposure 风险。
 
-最终状态：`未通过 / 通过 / 需要法律审查`  
-审查者：`<name>`  
-结论日期：`<YYYY-MM-DD>`  
-审查 commit：`<完整 SHA>`
+最终状态：`未通过`
+审查者：Codex 自动 non-inclusion 审查；人员隔离审查未满足
+结论日期：`2026-07-29`
+审查 commit：`51ec0502fa9b8d7c969bfedf0dc4ae6ca869bdaf`

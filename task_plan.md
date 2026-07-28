@@ -4,7 +4,7 @@
 在不改变现有 Sidecar/API 行为的前提下，完成 Stage Lyrics 2.0、歌词纹理/GPU 上传预算、Sonic Topography 与 3D Shelf behavior parity，并通过逐项复审和全量验证。
 
 ## 当前阶段
-阶段 4/5：候选验证与交付收口；M4 因 Sonic provenance 保持 blocked
+阶段 5/5：交付收口；M4 因 Sonic provenance 保持 blocked
 
 ## 各阶段
 
@@ -38,15 +38,15 @@ Stage 当前真实运行路径覆盖 current=`persistent` 与 resident adjacent=
 ### 阶段 4：Parity 与性能验证
 - [x] 固定歌词、音频、Shelf 与 preset fixtures
 - [x] 行为测试、资源预算测试与架构守卫
-- [ ] 截图/录屏 parity 验收或可重复的替代证据
+- [x] 截图/录屏 parity 验收或可重复的替代证据
 - [x] 全量 typecheck、tests、build 与 API freeze
-- **状态：** in_progress；等待 clean immutable release strict evidence
+- **状态：** complete；`51ec050` release strict 60/60
 
 ### 阶段 5：交付与分支收尾
-- [x] 更新 capability matrix 和 M4/M5 文档候选状态
+- [x] 更新 capability matrix 和 M4/M5 文档证据状态
 - [x] 最终跨切片代码审查（无 P0；保留已记录 P2）
 - [ ] 合并或交付 M4 分支
-- **状态：** in_progress
+- **状态：** blocked；Stage/Shelf 已交付，M4 等待 Sonic provenance / exposure remediation
 
 ## 关键问题
 1. Electron 2.0.2 中 Stage Lyrics 2.0、Sonic Topography 和 3D Shelf 的精确行为/参数基线是什么？

@@ -9,14 +9,14 @@
 ## 研究发现
 - M3 已完成 runtime facade、Scheduler、ResourceScope/Ledger、CancellationScope、BudgetTaskQueue、performance collector、thin React adapter 与 legacy composition。
 - 当前仓库没有独立 M4 设计或实施计划，M4 只在 convergence design 与 capability matrix 中定义边界。
-- Capability matrix 当前状态：`lyrics.stage-v2=partial`、`visual.sonic-topography=missing`、`shelf.3d=partial`。
+- 研究开始时的 capability matrix 状态：`lyrics.stage-v2=partial`、`visual.sonic-topography=missing`、`shelf.3d=partial`。
 - Stage Lyrics 当前已有较多 shader、mask、palette、lifecycle 模块；Shelf 也已有多个交互/布局模块，因此 M4 需要先做行为差距审计，不能按“从零实现”处理。
 - 2026-07-28 会话恢复确认：M4 worktree 仍位于 `codex/m4-visual-parity`，HEAD 为 `ab04493`；除三份规划文件外无未提交代码变更。
 - `planning-with-files-zh` 会话追赶脚本未报告额外未同步上下文，当前可直接延续阶段 1。
 - Umbrella spec 将 Stage Lyrics 2.0 的目标明确为：单/多行/电影模式、原文/翻译、发光/羽化/背景适配、float/glitch、自定义字体与清晰度、轻量首屏/相邻预热、旧 mesh 保留、Canvas 与 GPU 上传双预算、取消旧构建和分批释放。
-- Sonic Topography 必须作为独立 preset plugin 接入；当前 capability matrix 仍标记 `missing`，不能把已有 Home Visual shader 误判为该 preset 已实现。
+- Sonic Topography 必须作为独立 preset plugin 接入；研究开始时 capability matrix 标记为 `missing`，不能把已有 Home Visual shader 误判为该 preset 已实现。
 - 3D Shelf 的验收边界明确包含右键召唤、常驻/动态模式、hover/滚轮/视差/中心行、切歌保护窗、GPU 对象池、详情虚拟化，以及数据增长时 GPU/DOM 对象数保持有界。
-- 当前 Tauri 已有较丰富的 Stage Lyrics 与 Shelf 单元测试和模块化实现，但目录中没有 `presets/sonic-topography`，与能力矩阵一致；M4 应以补齐缺失行为和资源治理为主，而非整体重写已有模块。
+- 研究开始时的 Tauri 已有较丰富的 Stage Lyrics 与 Shelf 单元测试和模块化实现，但尚无 Sonic Topography module，与当时的能力矩阵一致；M4 应以补齐缺失行为和资源治理为主，而非整体重写已有模块。
 - M3 已提供 M4 所需的统一基础设施：`VisualEngineCompositionContext` 暴露 `resources`、`cancellation`、`tasks`、`scheduler`、`performance` 与 immutable frame snapshot；Stage Lyrics/Sonic/Shelf 不应另建 RAF、queue 或资源账本。
 - 当前 public facade 只提供 number 型 `VisualPresetId` 与 `applyPreset()`，尚无 plugin registry/runtime 契约。Sonic 应在 visual-engine 内新增 preset plugin 抽象，同时保持前端既有 preset number 与持久化格式兼容。
 - `VisualSettingsSnapshot.fx` 已携带歌词、Shelf 和 preset 设置，`ShelfVisualSnapshot` 已携带 pane/mode/camera/presence/merge/count 等字段；M4 应优先在 composition 内消费 snapshot，不新增 React 高频控制通道。
@@ -124,9 +124,12 @@
 - `scheduleResidentRowPrewarm()` 先跳过 `!row.resident`，因此 planner 的 `background + ephemeral` 远端预热分支目前不可达。不得把 clarity pool 的 background admission 单元测试误写成生产远端预热已完成。
 - 真实 GPU timer query 已接入 production presentation seam。只有 resolved、non-disjoint 且 `sampleCount > 0` 才能标记 measured；扩展可用但 release 无样本时 strict gate 必须失败。
 - Sonic source-isolation guard 已证明当前目录无外部资产、非白名单依赖或明显 copied/vendor/reference 标记；它不能证明实现者从未接触受限材料，也不能修复既有 exposure。
-- M4 当前统一状态为 Open / Blocked：Stage/Shelf 候选完成、等待 clean immutable evidence；Sonic 技术候选为 partial，等待未接触实现者独立重写或权利方授权。
+- M4 当前统一状态为 Open / Blocked：Stage/Shelf 已由 clean immutable evidence 晋升 `implemented`；Sonic 技术候选为 `partial`，等待未接触实现者独立重写或权利方授权。
 - 首版 evidence strict 存在三类假通过：console error 只记录不判定、manifest HEAD 未绑定实际 preview build、扩展不可用时 GPU 硬门被跳过；此外 dirty 只记录不阻断。现已统一进入 fail-closed run/scene checks。
 - Vite build 将当前 Git commit 注入 M4 parity contract；runner 对每个场景验证 build commit 与 repository commit 相等，因此旧 4173 preview 无法再冒充当前 clean HEAD。README 同时使用 `--strictPort` 阻止端口自动漂移。
+- clean evidence commit `51ec050` 通过 60/60：dirty=false、preview build SHA=HEAD、三场景 console errors=0、GPU 均 measured 且各 240 samples。
+- Stage release evidence：resident rows=3、pending builds/uploads=0、GPU p95=0.138016ms；Shelf：11 cards、11 detail rows、1 panel、GPU p95=0.167904ms。因此 `lyrics.stage-v2` 与 `shelf.3d` 可晋升 `implemented`。
+- Sonic 技术 evidence 为 4 meshes、console=0、GPU p95=0.069504ms，但这些不能替代 clean-room provenance；`visual.sonic-topography` 继续保持 `partial`。
 
 ## 遇到的问题
 | 问题 | 解决方案 |

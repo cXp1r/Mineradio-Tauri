@@ -6,7 +6,7 @@
 
 **Design:** `docs/superpowers/specs/2026-07-28-m4-lyrics-visual-parity-design.md`
 
-**Execution status:** Stage Lyrics 与 3D Shelf 已进入候选完成；Sonic 技术实现为 `partial`，但 clean-room provenance / exposure remediation 未通过，因此 M4 保持 Open / Blocked。能力矩阵只能依据 clean immutable release evidence 晋升。
+**Execution status:** Stage Lyrics 与 3D Shelf 已在 clean commit `51ec050` 通过 release strict evidence 并晋升 `implemented`；Sonic 技术实现为 `partial`，但 clean-room provenance / exposure remediation 未通过，因此 M4 保持 Open / Blocked。
 
 **Baseline verification:**
 
@@ -742,13 +742,13 @@ GPU p95 使用 production presentation seam 上的真实 `EXT_disjoint_timer_que
 
 ### Step 4: Update matrix only from evidence
 
-只有达到对应全部 gate 才把：
+只有达到对应全部 gate 才晋升能力状态：
 
 - `lyrics.stage-v2`；
 - `visual.sonic-topography`；
 - `shelf.3d`
 
-更新为 implemented。当前 Stage/Shelf 在 clean immutable release evidence 前仍保持 `partial`；Sonic 即使性能与视觉证据通过，也必须在 provenance/exposure gate 通过后才能晋升。
+Stage/Shelf 已由 `51ec050` 的 clean immutable release evidence 晋升 `implemented`；Sonic 即使性能与视觉证据通过，也必须在 provenance/exposure gate 通过后才能从 `partial` 晋升。
 
 ### Step 5: Focused verification
 
@@ -790,23 +790,25 @@ Critical/Important 必须清零。
 
 ## Completion checklist
 
-- [ ] Stage translation/display/translation/motion/clarity implemented
-- [ ] Stage cooperative build and active cancellation implemented
-- [ ] Stage upload ≤1/frame and clarity pool budgets verified
-- [ ] Stage pause/seek/prewarm/atomic takeover verified
-- [ ] Sonic preset 7 + 8→7 migration implemented
-- [ ] Sonic 8-band/Kick analyzer implemented without second audio graph
-- [ ] Sonic 4-mesh resource/lifecycle limits verified
-- [ ] Sonic camera/lyrics/Home/Shelf/pointer parity verified
-- [ ] Shelf 11/11 pools and 600 item soak verified
-- [ ] Shelf 1120ms guard/static focus/close animation/build budget verified
-- [ ] Sidecar/API freeze passes
-- [ ] Focused tests/typechecks pass
-- [ ] Full tests/typecheck/build pass
-- [ ] Visual/performance evidence recorded
-- [ ] Capability matrix updated from evidence
+- [x] Stage translation/display/translation/motion/clarity implemented
+- [x] Stage cooperative build and active cancellation implemented
+- [x] Stage upload ≤1/frame and clarity pool budgets verified
+- [x] Stage pause/seek/resident-prewarm/atomic takeover verified
+- [x] Sonic preset 7 + 8→7 migration technical candidate implemented
+- [x] Sonic 8-band/Kick analyzer technical candidate implemented without second audio graph
+- [x] Sonic 4-mesh resource/lifecycle limits verified for the technical candidate
+- [x] Sonic camera/lyrics/Home/Shelf/pointer parity verified for the technical candidate
+- [x] Shelf 11/11 pools and 600 item soak verified
+- [x] Shelf 1120ms guard/static focus/close animation/build budget verified
+- [x] Sidecar/API freeze passes
+- [x] Focused tests/typechecks pass
+- [x] Full tests/typecheck/build pass
+- [x] Visual/performance evidence recorded for Stage/Shelf and Sonic technical candidate
+- [x] Capability matrix updated from evidence
 - [ ] License/attribution reviewed
 - [ ] Sonic clean-room source-isolation review passes
-- [ ] Preset 7 opening, 8→7 migration, selector and plugin route land atomically
-- [ ] Per-slice diff proves Sidecar/shared/Rust sidecar packaging freeze
-- [ ] Final independent review has no Critical/Important
+- [x] Preset 7 opening, 8→7 migration, selector and plugin route landed atomically in the technical candidate
+- [x] Per-slice diff proves Sidecar/shared/Rust sidecar packaging freeze
+- [x] Final independent review has no Critical/Important
+
+Sonic 技术候选条目勾选只表示实现与技术证据存在，不替代 clean-room provenance；在人员隔离或权利授权解决前，`visual.sonic-topography` 仍为 `partial`，M4 仍为 Open / Blocked。

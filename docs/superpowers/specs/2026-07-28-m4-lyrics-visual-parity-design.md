@@ -1,7 +1,7 @@
 # M4 Lyrics 与 Visual Parity 设计
 
 **日期：** 2026-07-28  
-**状态：** Open / Blocked；Stage Lyrics 与 3D Shelf 为候选完成，Sonic provenance 未通过  
+**状态：** Open / Blocked；Stage Lyrics 与 3D Shelf 已通过 clean release evidence，Sonic provenance 未通过
 **基线：** `ab04493`（M3 Visual Runtime Foundation complete）  
 **上游行为基线：** Mineradio Electron 2.0.2，`4abaa19`
 
@@ -23,7 +23,7 @@ M4 不再重做这些基础设施，而是在它们之上完成三项仍未收�
 2. Sonic Topography preset 7；
 3. 3D Shelf behavior parity、对象池与 600 行详情虚拟化。
 
-当前 capability matrix 的判断准确：
+设计起点的 capability matrix 判断为：
 
 - `lyrics.stage-v2=partial`；
 - `visual.sonic-topography=missing`；
@@ -1049,12 +1049,12 @@ Sonic impulse 接收注入 RNG；golden fixture 固定 seed。
 
 | 领域 | 当前判定 | 尚未满足的完成门 |
 | --- | --- | --- |
-| Stage Lyrics 2.0 | 候选完成 | clean immutable release evidence；远端 `background + ephemeral` prewarm 仍未进入 scheduler，不能据此宣称远端预热完整落地 |
-| 3D Shelf | 候选完成 | clean immutable release evidence |
+| Stage Lyrics 2.0 | `implemented` | clean commit `51ec050` 的 release strict evidence 通过；远端 `background + ephemeral` prewarm 仍未进入 scheduler，作为后续增强而非本次完成声明 |
+| 3D Shelf | `implemented` | clean commit `51ec050` 的 600×600 release strict evidence 通过 |
 | Sonic Topography | `partial` / blocked | clean-room provenance 与既有 exposure remediation；自动 source-isolation guard 只能证明 non-inclusion，不能证明实施者隔离 |
-| M4 | Open / Blocked | Stage/Shelf release evidence + Sonic provenance gate |
+| M4 | Open / Blocked | Sonic provenance gate |
 
-旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。能力矩阵在不可变 clean commit 的 strict evidence 通过前，Stage 与 Shelf 继续保持 `partial`；Sonic 在 provenance 未通过前也必须保持 `partial`。
+旧的 dirty manifest、早于最新生命周期/GPU 接线的 artifact 或仅含 proxy GPU 数据的 run 都不能作为 release evidence。`51ec050` 的 manifest 已记录 dirty=false、preview build commit 精确匹配、三场景 console errors=0、真实 GPU samples 与 60/60 hard checks，因此 Stage 与 Shelf 已晋升；Sonic 在 provenance 未通过前仍必须保持 `partial`。
 
 M4 只有同时满足以下条件才算完成：
 
