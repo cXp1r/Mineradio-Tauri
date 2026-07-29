@@ -33,10 +33,12 @@ const TRACK: Track = {
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
-	const promise = new Promise<T>((resolvePromise) => {
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((resolvePromise, rejectPromise) => {
 		resolve = resolvePromise;
+		reject = rejectPromise;
 	});
-	return { promise, resolve };
+	return { promise, resolve, reject };
 }
 
 function mediaEventPayload(
@@ -353,6 +355,196 @@ test("a quality change claims a new load in the current playback intent", async 
 	expect(qualityHandle.playbackToken).toBeGreaterThan(firstHandle.playbackToken);
 	expect(qualityHandle.reloadReason).toBe("quality");
 	expect(playCount).toBe(2);
+
+	root.unmount();
+	host.remove();
+});
+
+test("a quality change waits for canonical preference commit before changing runtime state", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const committed = deferred<void>();
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+
+	function Harness() {
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: null,
+			controllerRef: { current: null },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: null,
+			playbackIntentId: 0,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: null,
+				positionMs: 0,
+				durationMs: null,
+				isPlaying: false,
+			}),
+			setPlaying: () => undefined,
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: () => undefined,
+			showToast: () => undefined,
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "none",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => committed.promise,
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	let pending!: Promise<void>;
+	flushSync(() => {
+		pending = Promise.resolve(runtimeRef.current!.setPlaybackQuality("flac"));
+	});
+	expect(runtimeRef.current!.playbackQuality).toBe("standard");
+
+	committed.resolve();
+	await pending;
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(runtimeRef.current!.playbackQuality).toBe("flac");
+
+	root.unmount();
+	host.remove();
+});
+
+test("a rejected quality preference commit leaves runtime quality unchanged", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+
+	function Harness() {
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: null,
+			controllerRef: { current: null },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: null,
+			playbackIntentId: 0,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: null,
+				positionMs: 0,
+				durationMs: null,
+				isPlaying: false,
+			}),
+			setPlaying: () => undefined,
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: () => undefined,
+			showToast: () => undefined,
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "none",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: async () => {
+				throw new Error("quality preference failed");
+			},
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	let message = "";
+	try {
+		await Promise.resolve(runtimeRef.current!.setPlaybackQuality("flac"));
+	} catch (error) {
+		message = error instanceof Error ? error.message : String(error);
+	}
+
+	expect(message).toBe("quality preference failed");
+	expect(runtimeRef.current!.playbackQuality).toBe("standard");
+
+	root.unmount();
+	host.remove();
+});
+
+test("a failed newer quality choice keeps the last successfully committed quality", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const firstCommit = deferred<void>();
+	const secondCommit = deferred<void>();
+	let commitCount = 0;
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+
+	function Harness() {
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: null,
+			controllerRef: { current: null },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: null,
+			playbackIntentId: 0,
+			positionMs: 0,
+			getPlaybackSnapshot: () => ({
+				currentTrack: null,
+				positionMs: 0,
+				durationMs: null,
+				isPlaying: false,
+			}),
+			setPlaying: () => undefined,
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: () => undefined,
+			showToast: () => undefined,
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "none",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => {
+				commitCount += 1;
+				return commitCount === 1 ? firstCommit.promise : secondCommit.promise;
+			},
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	const first = Promise.resolve(runtimeRef.current!.setPlaybackQuality("lossless"));
+	const second = Promise.resolve(runtimeRef.current!.setPlaybackQuality("hires"));
+
+	firstCommit.resolve();
+	await first;
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(runtimeRef.current!.playbackQuality).toBe("lossless");
+
+	secondCommit.reject(new Error("newer quality failed"));
+	let rejected = "";
+	try {
+		await second;
+	} catch (error) {
+		rejected = error instanceof Error ? error.message : String(error);
+	}
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(rejected).toBe("newer quality failed");
+	expect(runtimeRef.current!.playbackQuality).toBe("lossless");
 
 	root.unmount();
 	host.remove();
@@ -781,6 +973,7 @@ test("a controller load failure marks the accepted source as terminally failed",
 	const coordinator = new PlaybackSessionCoordinator();
 	const searchErrors: string[] = [];
 	const toasts: string[] = [];
+	const terminalFailures: string[] = [];
 	const playing: boolean[] = [];
 	const controller = {
 		load() {
@@ -844,6 +1037,9 @@ test("a controller load failure marks the accepted source as terminally failed",
 			initialLyricsPayload: null,
 			initialPlaybackQuality: "standard",
 			persistPlaybackQuality: () => undefined,
+			onPlaybackFailed: (track, intentId, message) => {
+				terminalFailures.push(`${track.provider}:${track.id}:${intentId}:${message}`);
+			},
 		});
 		return null;
 	}
@@ -861,6 +1057,9 @@ test("a controller load failure marks the accepted source as terminally failed",
 	expect(playing.at(-1)).toBe(false);
 	expect(searchErrors).toEqual(["controller load failed"]);
 	expect(toasts).toEqual(["controller load failed"]);
+	expect(terminalFailures).toEqual([
+		"netease:session-1:1:controller load failed",
+	]);
 
 	root.unmount();
 	host.remove();
@@ -1373,6 +1572,7 @@ test("repeated media errors start at most one automatic source recovery", async 
 	let loadCount = 0;
 	let loadedContext: object | null = null;
 	let loadedSourceUrl = "";
+	const terminalFailures: string[] = [];
 	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = { current: null };
 	const controller = {
 		load(url: string, loadContext?: object) {
@@ -1445,6 +1645,9 @@ test("repeated media errors start at most one automatic source recovery", async 
 			initialLyricsPayload: null,
 			initialPlaybackQuality: "standard",
 			persistPlaybackQuality: () => undefined,
+			onPlaybackFailed: (track, intentId, message) => {
+				terminalFailures.push(`${track.id}:${intentId}:${message}`);
+			},
 		});
 		return null;
 	}
@@ -1478,6 +1681,9 @@ test("repeated media errors start at most one automatic source recovery", async 
 	}
 
 	expect(resolveCount).toBe(2);
+	expect(terminalFailures).toEqual([
+		"session-1:1:media failed after recovery",
+	]);
 
 	root.unmount();
 	host.remove();

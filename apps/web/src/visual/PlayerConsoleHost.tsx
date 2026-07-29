@@ -7,9 +7,10 @@ import {
 } from "@mineradio/visual-engine";
 import type { PlaybackMode } from "../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../stores/shelf-store";
-import type { PlaybackQualityRequest, Track, TrackQualityOption } from "@mineradio/shared";
+import type { PlaybackQualityRequest, ProviderId, Track, TrackQualityOption } from "@mineradio/shared";
 import { createProgressDragParticleEmitter, type ProgressDragParticleEmitter } from "./progress-drag-particles";
 import { resolveVirtualListWindow } from "../components/shell/virtual-list";
+import { SourceSwitcher } from "../features/playback/SourceSwitcher";
 
 const PLAYBACK_QUALITY_OPTIONS: Array<{
 	value: PlaybackQualityRequest;
@@ -77,7 +78,10 @@ export interface PlayerConsoleHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
-	onQualityChange?: (quality: PlaybackQualityRequest) => void;
+	onQualityChange?: (
+		quality: PlaybackQualityRequest,
+	) => Promise<void> | void;
+	onSourceSwitch?: (provider: ProviderId) => void;
 	onShelfModeChange?: (mode: ShelfMode) => void;
 	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
 	onShelfPresenceChange?: (presence: ShelfPresence) => void;
@@ -106,6 +110,9 @@ export interface PlayerConsoleHostProps {
 	muted?: boolean;
 	playbackQuality?: PlaybackQualityRequest;
 	qualityOptions?: TrackQualityOption[];
+	sourceProviders?: readonly ProviderId[];
+	sourceSwitchBusy?: ProviderId | null;
+	sourceSwitchDisabled?: boolean;
 	shelfMode?: ShelfMode;
 	shelfCameraMode?: ShelfCameraMode;
 	shelfPresence?: ShelfPresence;
@@ -448,10 +455,26 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 									data-quality={option.value}
 									data-svip={option.svip ? "1" : undefined}
 									title={option.label}
-									onClick={() => {
-										setQualityOpen(false);
-										onQualityChangeRef.current?.(option.value);
-									}}
+								onClick={() => {
+									setQualityOpen(false);
+									try {
+										const pending = onQualityChangeRef.current?.(option.value);
+										if (!pending) return;
+										void Promise.resolve(pending).catch((error) => {
+											props.onNotice?.(
+												error instanceof Error
+													? error.message
+													: "音质偏好保存失败",
+											);
+										});
+									} catch (error) {
+										props.onNotice?.(
+											error instanceof Error
+												? error.message
+												: "音质偏好保存失败",
+										);
+									}
+								}}
 								>
 									<span>{option.label}</span>
 									<small>{option.detail}</small>
@@ -459,6 +482,15 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 							))}
 						</div>
 					</div>
+					{props.currentTrack && props.sourceProviders?.length && props.onSourceSwitch ? (
+						<SourceSwitcher
+							currentProvider={props.currentTrack.provider}
+							availableProviders={props.sourceProviders}
+							busyProvider={props.sourceSwitchBusy ?? null}
+							disabled={props.sourceSwitchDisabled}
+							onSwitch={props.onSourceSwitch}
+						/>
+					) : null}
 					<button
 						id="heart-btn"
 						ref={registerNormal("heart-btn")}

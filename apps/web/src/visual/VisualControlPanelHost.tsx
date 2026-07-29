@@ -1,7 +1,32 @@
-import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
+import {
+  useCallback,
+  useDeferredValue,
+  useEffect,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { clampPreset, FX_DEFAULTS, type FxState, type FxStatePatch } from "@mineradio/visual-engine";
-import { SonicTopographyControls } from "./controls/SonicTopographyControls";
-import { StageLyricsControls } from "./controls/StageLyricsControls";
+import { SettingsWorkbench } from "../features/settings/SettingsWorkbench";
+import {
+  buildLowSpecChanges,
+  settingGroupMatches,
+  type SettingsTabId,
+} from "../features/settings/settings-catalog";
+import {
+  SettingsTransactionController,
+  type SettingsValueChange,
+} from "../features/settings/settings-transaction-controller";
+import {
+  SONIC_TOPOGRAPHY_SETTINGS_SEARCH_TERMS,
+  SonicTopographyControls,
+} from "./controls/SonicTopographyControls";
+import {
+  STAGE_LYRICS_SETTINGS_SEARCH_TERMS,
+  StageLyricsControls,
+} from "./controls/StageLyricsControls";
 import {
   customLyricFontKey,
   readCustomLyricFonts,
@@ -12,6 +37,15 @@ import {
 } from "../desktop-lyrics/custom-lyric-font";
 
 const FX_FAB_AUTO_HIDE_STORE_KEY = "mineradio-fx-fab-auto-hide-v1";
+const RESET_EXCLUDED_SETTING_PATHS = new Set<keyof FxState>([
+  "mouseActive",
+  "mouseXy",
+  "burstAmt",
+  "vinylSpin",
+  "particleDim",
+  "backgroundImage",
+  "backgroundMedia",
+]);
 
 const PRESETS = [
   { id: 0, name: "Emily", desc: "封面粒子 · 歌词舞台" },
@@ -325,6 +359,87 @@ const LYRIC_FONTS = [
   ["display", "标题"],
 ] as const;
 
+/** 搜索词直接从控件 definition 派生，调整控件文案时索引同步更新。 */
+export const VISUAL_SETTINGS_SEARCH_INDEX = Object.freeze({
+  commonPresets: [
+    "常用",
+    "视觉预设",
+    ...PRESETS.flatMap((preset) => [preset.name, preset.desc]),
+  ],
+  interface: [
+    "界面",
+    "颜色",
+    "界面高亮",
+    "视觉主色",
+    "Home 填充",
+    ...MAIN_SLIDERS.slice(0, 2).map((control) => control.label),
+  ],
+  commonMain: [
+    "常用",
+    "主控",
+    ...MAIN_SLIDERS.slice(2).map((control) => control.label),
+  ],
+  lyrics: [
+    "歌词",
+    "歌词主色",
+    "歌词高亮",
+    "溢光色",
+    "歌词字体",
+    ...LYRIC_FONTS.map(([, label]) => label),
+    ...LYRIC_LAYOUT_SLIDERS.map((control) => control.label),
+  ],
+  motion: [
+    "动效",
+    "叠加效果",
+    "桌面帧数",
+    ...OVERLAY_TOGGLES.map((control) => control.label),
+    ...DESKTOP_SLIDERS.map((control) => control.label),
+  ],
+  nativeDesktop: [
+    "系统",
+    "桌面",
+    "缓存",
+    "诊断",
+    "Wallpaper",
+    "完整桌面",
+  ],
+  shelf: [
+    "歌单架",
+    "3D",
+    "动态镜头",
+    "静态镜头",
+    "自动隐藏",
+    "常驻",
+    ...SHELF_CONTENT_TOGGLES.map((control) => control.label),
+  ],
+  visualEngines: [
+    "动效",
+    "声景",
+    "频谱",
+    ...STAGE_LYRICS_SETTINGS_SEARCH_TERMS,
+    ...SONIC_TOPOGRAPHY_SETTINGS_SEARCH_TERMS,
+  ],
+  systemAdvanced: [
+    "系统",
+    "性能",
+    "低配",
+    "后台",
+    "画质",
+    "高级参数",
+    "自动优化",
+    "保持运行",
+    "停止释放",
+    ...ADVANCED_SLIDERS.map((control) => control.label),
+  ],
+});
+
+export function buildNativeDesktopSettingsSearchTerms(
+  terms: readonly string[] = [],
+): readonly string[] {
+  if (!terms.length) return VISUAL_SETTINGS_SEARCH_INDEX.nativeDesktop;
+  return [...VISUAL_SETTINGS_SEARCH_INDEX.nativeDesktop, ...terms];
+}
+
 export interface VisualControlPanelHostProps {
   preset?: number;
   intensity?: number;
@@ -334,8 +449,12 @@ export interface VisualControlPanelHostProps {
   onBooleanSettingChange?: (key: keyof FxState, value: boolean) => void;
   onStringSettingChange?: (key: keyof FxState, value: string) => void;
   onFxPatchChange?: (patch: FxStatePatch) => void;
+  onSettingsTransaction?: (patch: FxStatePatch) => Promise<void> | void;
+  initialFabAutoHide?: boolean;
+  onFabAutoHideChange?: (value: boolean) => Promise<void> | void;
   onNotice?: (message: string) => void;
   desktopRuntimeSlot?: ReactElement | null;
+  desktopRuntimeSearchTerms?: readonly string[];
 }
 
 function readFxFabAutoHidePreference(): boolean {
@@ -390,6 +509,104 @@ function hexSettingValue(
   const normalized = value.startsWith("#") ? value : `#${value}`;
   const fallback = String(FX_DEFAULTS[key] ?? "#000000");
   return /^#[0-9a-f]{6}$/i.test(normalized) ? normalized.toLowerCase() : fallback;
+}
+
+function readSettingPath(
+  props: VisualControlPanelHostProps,
+  path: string,
+): unknown {
+  const [root, ...segments] = path.split(".");
+  if (!root) return undefined;
+  let value: unknown =
+    props.settings?.[root as keyof FxState] ?? FX_DEFAULTS[root as keyof FxState];
+  for (const segment of segments) {
+    if (!value || typeof value !== "object") return undefined;
+    value = (value as Record<string, unknown>)[segment];
+  }
+  return value;
+}
+
+function settingChangesFromPatch(
+  props: VisualControlPanelHostProps,
+  patch: FxStatePatch,
+): Record<string, SettingsValueChange> {
+  const changes: Record<string, SettingsValueChange> = {};
+  const visit = (path: string, value: unknown): void => {
+    const root = path.split(".")[0];
+    if (
+      (root === "stageLyrics" || root === "sonic") &&
+      value &&
+      typeof value === "object" &&
+      !Array.isArray(value)
+    ) {
+      for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+        visit(`${path}.${key}`, nested);
+      }
+      return;
+    }
+    changes[path] = { before: readSettingPath(props, path), after: value };
+  };
+  for (const [path, value] of Object.entries(patch)) visit(path, value);
+  return changes;
+}
+
+function patchFromSettingValues(values: Record<string, unknown>): FxStatePatch {
+  const patch: Record<string, unknown> = {};
+  for (const [path, value] of Object.entries(values)) {
+    const [root, ...segments] = path.split(".");
+    if (!root) continue;
+    if (!segments.length) {
+      patch[root] = value;
+      continue;
+    }
+    let target = (patch[root] ??= {}) as Record<string, unknown>;
+    for (const [index, segment] of segments.entries()) {
+      if (index === segments.length - 1) {
+        target[segment] = value;
+      } else {
+        target = (target[segment] ??= {}) as Record<string, unknown>;
+      }
+    }
+  }
+  return patch as FxStatePatch;
+}
+
+const SETTING_LABELS: Partial<Record<keyof FxState, string>> = {
+  preset: "视觉预设",
+  intensity: "律动强度",
+  depth: "立体感",
+  coverResolution: "封面清晰度",
+  cinemaShake: "镜头晃动",
+  backgroundOpacity: "背景透明度",
+  performanceQuality: "画质档位",
+  performanceBackground: "后台策略",
+  shelf: "歌单架模式",
+  shelfCameraMode: "歌单架镜头",
+  shelfPresence: "歌单架显示",
+  desktopLyrics: "桌面歌词",
+};
+
+function settingLabel(path: string): string {
+  const root = path.split(".")[0] as keyof FxState | undefined;
+  if (root === "stageLyrics") return "歌词舞台";
+  if (root === "sonic") return "Sonic Topography";
+  return (root && SETTING_LABELS[root]) || path;
+}
+
+function SettingsSection({
+  tab,
+  visible,
+  children,
+}: {
+  tab: SettingsTabId;
+  visible: boolean;
+  children: ReactNode;
+}): ReactElement {
+  return (
+    <section data-settings-section={tab} hidden={!visible}>
+      {children}
+    </section>
+  );
 }
 
 function Slider(props: {
@@ -470,13 +687,291 @@ export function VisualControlPanelHost(
   props: VisualControlPanelHostProps,
 ): ReactElement {
   const [open, setOpen] = useState(false);
-  const [autoHide, setAutoHide] = useState(readFxFabAutoHidePreference);
+  const [autoHide, setAutoHide] = useState(() =>
+    props.initialFabAutoHide ?? readFxFabAutoHidePreference(),
+  );
+  const [autoHideSaving, setAutoHideSaving] = useState(false);
   const [peek, setPeek] = useState(false);
+  const [activeSettingsTab, setActiveSettingsTab] =
+    useState<SettingsTabId>("common");
+  const [settingsQuery, setSettingsQuery] = useState("");
+  const deferredSettingsQuery = useDeferredValue(settingsQuery);
   const [customFonts, setCustomFonts] = useState<CustomLyricFontRecord[]>(readCustomLyricFonts);
   const customFontInputRef = useRef<HTMLInputElement | null>(null);
   const revealArmedRef = useRef(true);
   const previousAutoHideRef = useRef(autoHide);
+  const propsRef = useRef(props);
+  const pendingValuesRef = useRef<Record<string, unknown>>({});
+  const transactionControllerRef = useRef<SettingsTransactionController | null>(null);
+  if (!transactionControllerRef.current) {
+    transactionControllerRef.current = new SettingsTransactionController();
+  }
+  const transactionController = transactionControllerRef.current;
+  propsRef.current = props;
+  const subscribeHistory = useCallback(
+    (listener: () => void) => transactionController.subscribe(listener),
+    [transactionController],
+  );
+  const readHistory = useCallback(
+    () => transactionController.getSnapshot(),
+    [transactionController],
+  );
+  const settingsHistory = useSyncExternalStore(
+    subscribeHistory,
+    readHistory,
+    readHistory,
+  );
   const preset = clampPreset(props.preset ?? 0);
+  useEffect(() => {
+    pendingValuesRef.current = {};
+  }, [props.intensity, props.preset, props.settings]);
+
+  const currentTrackedValue = useCallback((path: string): unknown => {
+    if (Object.hasOwn(pendingValuesRef.current, path)) {
+      return pendingValuesRef.current[path];
+    }
+    if (path === "preset") return clampPreset(propsRef.current.preset ?? 0);
+    return readSettingPath(propsRef.current, path);
+  }, []);
+
+  const reportTransactionError = useCallback((error: unknown) => {
+    propsRef.current.onNotice?.(
+      error instanceof Error ? error.message : "设置保存失败",
+    );
+  }, []);
+
+  const applySettingsPatch = useCallback(async (patch: FxStatePatch) => {
+    const current = propsRef.current;
+    if (current.onSettingsTransaction) {
+      await current.onSettingsTransaction(patch);
+      return;
+    }
+    if (current.onFxPatchChange) {
+      current.onFxPatchChange(patch);
+      return;
+    }
+    for (const [key, value] of Object.entries(patch)) {
+      if (typeof value === "number") {
+        current.onNumberSettingChange?.(key as keyof FxState, value);
+      } else if (typeof value === "boolean") {
+        current.onBooleanSettingChange?.(key as keyof FxState, value);
+      } else if (typeof value === "string") {
+        current.onStringSettingChange?.(key as keyof FxState, value);
+      }
+    }
+  }, []);
+
+  const trackMutation = useCallback((input: {
+    label: string;
+    changes: Record<string, SettingsValueChange>;
+    mergeKey?: string;
+    commit(): Promise<void> | void;
+  }): Promise<boolean> => {
+    const clearPendingValues = () => {
+      for (const [path, change] of Object.entries(input.changes)) {
+        if (Object.is(pendingValuesRef.current[path], change.after)) {
+          delete pendingValuesRef.current[path];
+        }
+      }
+    };
+    return transactionController
+      .apply({
+        ...input,
+        // 在事务真正获得串行 ownership 时重算 before；失败的前序 mutation
+        // 不得成为后继 history 的虚构起点。
+        resolveChanges: () => {
+          const changes = Object.fromEntries(
+            Object.entries(input.changes).map(([path, change]) => [
+              path,
+              { before: currentTrackedValue(path), after: change.after },
+            ]),
+          );
+          for (const [path, change] of Object.entries(input.changes)) {
+            pendingValuesRef.current[path] = change.after;
+          }
+          return changes;
+        },
+        commit: async () => {
+          try {
+            await input.commit();
+          } catch (error) {
+            // 必须在 controller 释放 ownership 前回收失败 shadow，后继 mutation 才能重算 canonical before。
+            clearPendingValues();
+            throw error;
+          }
+        },
+      })
+      .then((applied) => {
+        if (!applied) clearPendingValues();
+        return applied;
+      })
+      .catch((error) => {
+        clearPendingValues();
+        reportTransactionError(error);
+        return false;
+      });
+  }, [currentTrackedValue, reportTransactionError, transactionController]);
+
+  const trackedPresetChange = useCallback((next: number) => {
+    trackMutation({
+      label: "切换视觉预设",
+      changes: {
+        preset: { before: currentTrackedValue("preset"), after: next },
+      },
+      commit: () => propsRef.current.onPresetChange?.(next),
+    });
+  }, [currentTrackedValue, trackMutation]);
+
+  const trackedNumberChange = useCallback((key: keyof FxState, value: number) => {
+    const path = String(key);
+    trackMutation({
+      label: `调整${settingLabel(path)}`,
+      mergeKey: path,
+      changes: { [path]: { before: currentTrackedValue(path), after: value } },
+      commit: () => propsRef.current.onNumberSettingChange?.(key, value),
+    });
+  }, [currentTrackedValue, trackMutation]);
+
+  const trackedBooleanChange = useCallback((key: keyof FxState, value: boolean) => {
+    const path = String(key);
+    trackMutation({
+      label: `${value ? "开启" : "关闭"}${settingLabel(path)}`,
+      changes: { [path]: { before: currentTrackedValue(path), after: value } },
+      commit: () => propsRef.current.onBooleanSettingChange?.(key, value),
+    });
+  }, [currentTrackedValue, trackMutation]);
+
+  const trackedStringChange = useCallback((key: keyof FxState, value: string) => {
+    const path = String(key);
+    trackMutation({
+      label: `修改${settingLabel(path)}`,
+      mergeKey: path.includes("Color") ? path : undefined,
+      changes: { [path]: { before: currentTrackedValue(path), after: value } },
+      commit: () => propsRef.current.onStringSettingChange?.(key, value),
+    });
+  }, [currentTrackedValue, trackMutation]);
+
+  const trackedFxPatchChange = useCallback((patch: FxStatePatch) => {
+    const changes = settingChangesFromPatch(propsRef.current, patch);
+    const paths = Object.keys(changes);
+    for (const path of paths) {
+      const pending = pendingValuesRef.current[path];
+      if (pending !== undefined) changes[path] = { ...changes[path]!, before: pending };
+    }
+    const gestureMergeKey =
+      paths.length > 0 &&
+      (paths.some((path) => /color/i.test(path)) ||
+        paths.every((path) => typeof changes[path]?.after === "number"))
+        ? `patch:${[...paths].sort().join("|")}`
+        : undefined;
+    trackMutation({
+      label: paths.some((path) => path.startsWith("sonic."))
+        ? "调整 Sonic Topography"
+        : paths.some((path) => path.startsWith("stageLyrics."))
+          ? "调整歌词舞台"
+          : "调整视觉设置",
+      changes,
+      mergeKey: gestureMergeKey,
+      commit: () => applySettingsPatch(patch),
+    });
+  }, [applySettingsPatch, trackMutation]);
+
+  const restoreSettings = useCallback(async (values: Record<string, unknown>) => {
+    const previous = new Map<
+      string,
+      { present: boolean; value: unknown }
+    >();
+    for (const [path, value] of Object.entries(values)) {
+      previous.set(path, {
+        present: Object.hasOwn(pendingValuesRef.current, path),
+        value: pendingValuesRef.current[path],
+      });
+      pendingValuesRef.current[path] = value;
+    }
+    try {
+      await applySettingsPatch(patchFromSettingValues(values));
+    } catch (error) {
+      for (const [path, snapshot] of previous) {
+        if (snapshot.present) pendingValuesRef.current[path] = snapshot.value;
+        else delete pendingValuesRef.current[path];
+      }
+      throw error;
+    }
+  }, [applySettingsPatch]);
+
+  const undoSettings = useCallback(() => {
+    void transactionController.undo(restoreSettings).catch(reportTransactionError);
+  }, [reportTransactionError, restoreSettings, transactionController]);
+
+  const rollbackSettingsTo = useCallback((entryId: string) => {
+    void transactionController
+      .rollbackTo(entryId, restoreSettings)
+      .catch(reportTransactionError);
+  }, [reportTransactionError, restoreSettings, transactionController]);
+
+  const enableLowSpecMode = useCallback(() => {
+    const current = Object.fromEntries(
+      [
+        "performanceQuality",
+        "performanceBackground",
+        "coverResolution",
+        "aiDepth",
+        "bloom",
+        "backCover",
+        "lyricGlowParticles",
+        "particleLyrics",
+      ].map((path) => [path, currentTrackedValue(path)]),
+    ) as Parameters<typeof buildLowSpecChanges>[0];
+    const changes = buildLowSpecChanges(current);
+    void trackMutation({
+      label: "启用低配模式",
+      changes,
+      commit: () =>
+        applySettingsPatch(
+          patchFromSettingValues(
+            Object.fromEntries(
+              Object.entries(changes).map(([path, change]) => [path, change.after]),
+            ),
+          ),
+        ),
+    }).then((applied) => {
+      if (applied) {
+        propsRef.current.onNotice?.("已启用低配模式，可从最近更改撤销");
+      }
+    });
+  }, [applySettingsPatch, currentTrackedValue, trackMutation]);
+
+  const resetPreferences = useCallback(() => {
+    const resetPatch = Object.fromEntries(
+      Object.entries(FX_DEFAULTS).filter(
+        ([path]) => !RESET_EXCLUDED_SETTING_PATHS.has(path as keyof FxState),
+      ),
+    ) as FxStatePatch;
+    const changes = Object.fromEntries(
+      Object.entries(resetPatch).map(([path, after]) => [
+        path,
+        { before: currentTrackedValue(path), after },
+      ]),
+    );
+    trackMutation({
+      label: "重置全部可逆偏好",
+      changes,
+      commit: () => applySettingsPatch(resetPatch),
+    });
+  }, [applySettingsPatch, currentTrackedValue, trackMutation]);
+
+  const sectionVisible = useCallback((
+    tab: SettingsTabId,
+    terms: readonly string[],
+  ): boolean => {
+    if (deferredSettingsQuery.trim()) {
+      return settingGroupMatches(deferredSettingsQuery, terms);
+    }
+    return activeSettingsTab === tab;
+  }, [activeSettingsTab, deferredSettingsQuery]);
+  const nativeDesktopSearchTerms = buildNativeDesktopSettingsSearchTerms(
+    props.desktopRuntimeSearchTerms,
+  );
   useEffect(() => {
     if (typeof document === "undefined") return;
     document.body.classList.toggle("fx-fab-auto-hide", autoHide);
@@ -513,16 +1008,16 @@ export function VisualControlPanelHost(
   }, [autoHide, open]);
   const changePreset = useCallback(
     (next: number) => {
-      props.onPresetChange?.(next);
+      trackedPresetChange(next);
     },
-    [props],
+    [trackedPresetChange],
   );
   const toggleBoolean = useCallback(
     (def: ToggleDef) => {
       if (def.disabled) return;
-      props.onBooleanSettingChange?.(def.key, !booleanValue(props, def.key));
+      trackedBooleanChange(def.key, !booleanValue(props, def.key));
     },
-    [props],
+    [props, trackedBooleanChange],
   );
   const toggle = (def: ToggleDef) => (
     <button
@@ -546,102 +1041,94 @@ export function VisualControlPanelHost(
       key={def.id}
       def={def}
       hostProps={props}
-      onNumberSettingChange={props.onNumberSettingChange}
+      onNumberSettingChange={trackedNumberChange}
     />
   );
   const setUiAccentColor = useCallback(
     (color: string) => {
-      props.onStringSettingChange?.("uiAccentColor", color.toLowerCase());
+      trackedStringChange("uiAccentColor", color.toLowerCase());
     },
-    [props],
+    [trackedStringChange],
   );
   const setHomeAccentColor = useCallback(
     (color: string) => {
-      props.onStringSettingChange?.("homeAccentColor", color.toLowerCase());
+      trackedStringChange("homeAccentColor", color.toLowerCase());
     },
-    [props],
+    [trackedStringChange],
   );
-  const toggleAutoHide = useCallback(() => {
+  const toggleAutoHide = useCallback(async () => {
+    if (autoHideSaving) return;
     const next = !autoHide;
-    saveFxFabAutoHidePreference(next);
-    revealArmedRef.current = !next;
-    setAutoHide(next);
-    setPeek(false);
-    props.onNotice?.(next ? "视觉控制台按钮已自动隐藏" : "视觉控制台按钮已固定显示");
-  }, [autoHide, props]);
+    setAutoHideSaving(true);
+    try {
+      if (props.onFabAutoHideChange) {
+        await props.onFabAutoHideChange(next);
+      } else {
+        saveFxFabAutoHidePreference(next);
+      }
+      revealArmedRef.current = !next;
+      setAutoHide(next);
+      setPeek(false);
+      props.onNotice?.(next ? "视觉控制台按钮已自动隐藏" : "视觉控制台按钮已固定显示");
+    } catch {
+      props.onNotice?.("视觉控制台自动隐藏偏好保存失败");
+    } finally {
+      setAutoHideSaving(false);
+    }
+  }, [autoHide, autoHideSaving, props]);
   const resetUiAccentColor = useCallback(() => {
-    props.onStringSettingChange?.("uiAccentColor", FX_DEFAULTS.uiAccentColor);
-  }, [props]);
+    trackedStringChange("uiAccentColor", FX_DEFAULTS.uiAccentColor);
+  }, [trackedStringChange]);
   const resetHomeAccentColor = useCallback(() => {
-    props.onStringSettingChange?.("homeAccentColor", FX_DEFAULTS.homeAccentColor);
-  }, [props]);
+    trackedStringChange("homeAccentColor", FX_DEFAULTS.homeAccentColor);
+  }, [trackedStringChange]);
   const setVisualTintCustom = useCallback(
     (color: string) => {
       const visualTintColor = color.toLowerCase();
-      if (props.onFxPatchChange) {
-        props.onFxPatchChange({ visualTintMode: "custom", visualTintColor });
-        return;
-      }
-      props.onStringSettingChange?.("visualTintMode", "custom");
-      props.onStringSettingChange?.("visualTintColor", visualTintColor);
+      trackedFxPatchChange({ visualTintMode: "custom", visualTintColor });
     },
-    [props],
+    [trackedFxPatchChange],
   );
   const setVisualTintAuto = useCallback(() => {
-    props.onStringSettingChange?.("visualTintMode", "auto");
-  }, [props]);
+    trackedStringChange("visualTintMode", "auto");
+  }, [trackedStringChange]);
   const resetVisualTintColor = useCallback(() => {
-    if (props.onFxPatchChange) {
-      props.onFxPatchChange({
-        visualTintMode: "auto",
-        visualTintColor: FX_DEFAULTS.visualTintColor,
-      });
-      return;
-    }
-    props.onStringSettingChange?.("visualTintMode", "auto");
-    props.onStringSettingChange?.("visualTintColor", FX_DEFAULTS.visualTintColor);
-  }, [props]);
+    trackedFxPatchChange({
+      visualTintMode: "auto",
+      visualTintColor: FX_DEFAULTS.visualTintColor,
+    });
+  }, [trackedFxPatchChange]);
   const setLyricColorCustom = useCallback(
     (color: string) => {
       const lyricColor = color.toLowerCase();
-      if (props.onFxPatchChange) {
-        props.onFxPatchChange({ lyricColorMode: "custom", lyricColor });
-        return;
-      }
-      props.onStringSettingChange?.("lyricColorMode", "custom");
-      props.onStringSettingChange?.("lyricColor", lyricColor);
+      trackedFxPatchChange({ lyricColorMode: "custom", lyricColor });
     },
-    [props],
+    [trackedFxPatchChange],
   );
   const setLyricColorAuto = useCallback(() => {
-    props.onStringSettingChange?.("lyricColorMode", "auto");
-  }, [props]);
+    trackedStringChange("lyricColorMode", "auto");
+  }, [trackedStringChange]);
   const setLyricHighlightCustom = useCallback(
     (color: string) => {
       const lyricHighlightColor = color.toLowerCase();
-      if (props.onFxPatchChange) {
-        props.onFxPatchChange({
-          lyricHighlightMode: "custom",
-          lyricHighlightColor,
-        });
-        return;
-      }
-      props.onStringSettingChange?.("lyricHighlightMode", "custom");
-      props.onStringSettingChange?.("lyricHighlightColor", lyricHighlightColor);
+      trackedFxPatchChange({
+        lyricHighlightMode: "custom",
+        lyricHighlightColor,
+      });
     },
-    [props],
+    [trackedFxPatchChange],
   );
   const setLyricHighlightAuto = useCallback(() => {
-    props.onStringSettingChange?.("lyricHighlightMode", "auto");
-  }, [props]);
+    trackedStringChange("lyricHighlightMode", "auto");
+  }, [trackedStringChange]);
   const toggleLyricGlowLinked = useCallback(() => {
-    props.onBooleanSettingChange?.("lyricGlowLinked", !booleanValue(props, "lyricGlowLinked"));
-  }, [props]);
+    trackedBooleanChange("lyricGlowLinked", !booleanValue(props, "lyricGlowLinked"));
+  }, [props, trackedBooleanChange]);
   const setLyricGlowColor = useCallback(
     (color: string) => {
-      props.onStringSettingChange?.("lyricGlowColor", color.toLowerCase());
+      trackedStringChange("lyricGlowColor", color.toLowerCase());
     },
-    [props],
+    [trackedStringChange],
   );
   const importCustomLyricFont = useCallback(async (file: File | null | undefined) => {
     if (!file) return;
@@ -649,21 +1136,29 @@ export function VisualControlPanelHost(
       const record = await saveCustomLyricFont(file);
       await registerCustomLyricFont(customLyricFontKey(record));
       setCustomFonts(readCustomLyricFonts());
-      props.onStringSettingChange?.("lyricFont", customLyricFontKey(record));
+      trackedStringChange("lyricFont", customLyricFontKey(record));
       props.onNotice?.(`已载入字体：${record.name}`);
     } catch (error) {
       props.onNotice?.(error instanceof Error ? error.message : "字体载入失败");
     } finally {
       if (customFontInputRef.current) customFontInputRef.current.value = "";
     }
-  }, [props]);
-  const deleteCustomLyricFont = useCallback((record: CustomLyricFontRecord) => {
-    setCustomFonts(removeCustomLyricFont(record.id));
-    if (stringValue(props, "lyricFont") === customLyricFontKey(record)) {
-      props.onStringSettingChange?.("lyricFont", "sans");
+  }, [props, trackedStringChange]);
+  const deleteCustomLyricFont = useCallback(async (record: CustomLyricFontRecord) => {
+    try {
+      if (
+        stringValue(propsRef.current, "lyricFont") ===
+        customLyricFontKey(record)
+      ) {
+        // 字体文件删除不可撤销；先提交安全 fallback，成功后才释放资源。
+        await applySettingsPatch({ lyricFont: "sans" });
+      }
+      setCustomFonts(removeCustomLyricFont(record.id));
+      propsRef.current.onNotice?.(`已删除字体：${record.name}`);
+    } catch (error) {
+      reportTransactionError(error);
     }
-    props.onNotice?.(`已删除字体：${record.name}`);
-  }, [props]);
+  }, [applySettingsPatch, reportTransactionError]);
   const uiAccentColor = hexSettingValue(props, "uiAccentColor");
   const homeAccentColor = hexSettingValue(props, "homeAccentColor");
   const visualTintColor = hexSettingValue(props, "visualTintColor");
@@ -709,48 +1204,68 @@ export function VisualControlPanelHost(
         title={autoHide ? "取消自动隐藏视觉控制台" : "自动隐藏视觉控制台"}
         aria-label={autoHide ? "取消自动隐藏视觉控制台" : "自动隐藏视觉控制台"}
         aria-pressed={autoHide}
-        onClick={toggleAutoHide}
+        disabled={autoHideSaving}
+        onClick={() => void toggleAutoHide()}
       >
         {autoHide ? "›" : "‹"}
       </button>
       <div id="fx-panel" className={open ? "show" : ""}>
         <div className="fx-head">
           <div>
-            <div className="fx-title">视觉控制台</div>
-            <div className="fx-sub">MINERADIO VISUALS · 鼠标移开自动隐藏</div>
+            <div className="fx-title">视觉控制台 · 设置工作台</div>
+            <div className="fx-sub">MINERADIO VISUALS · 可逆偏好与运行时工具</div>
           </div>
         </div>
 
-        <div className="fx-section-label">视觉预设</div>
-        <div className="preset-grid" id="preset-grid">
-          {PRESETS.map((item) => (
-            <button
-              key={item.id}
-              type="button"
-              className={
-                preset === item.id ? "preset-card active" : "preset-card"
-              }
-              data-preset={item.id}
-              onClick={() => changePreset(item.id)}
-            >
-              <span className="pc-icon">{item.id === 6 ? "✦" : "◌"}</span>
-              <span className="pc-name">{item.name}</span>
-              <span className="pc-desc">
-                {item.id === 6 ? (
-                  <>
-                    骷髅 · <span className="pc-yui7w">YUI7W</span>
-                  </>
-                ) : (
-                  item.desc
-                )}
-              </span>
-            </button>
-          ))}
-        </div>
-        <div className="fx-section-label">用户存档</div>
-        <div className="user-archive-grid" id="user-archive-grid" />
-        <div className="fx-section-label">自定义颜色</div>
-        <div className="lyric-color-row">
+        <SettingsWorkbench
+          activeTab={activeSettingsTab}
+          query={settingsQuery}
+          history={settingsHistory}
+          onTabChange={setActiveSettingsTab}
+          onQueryChange={setSettingsQuery}
+          onUndo={undoSettings}
+          onRollbackTo={rollbackSettingsTo}
+          onEnableLowSpec={enableLowSpecMode}
+          onResetPreferences={resetPreferences}
+        />
+
+        <SettingsSection
+          tab="common"
+          visible={sectionVisible("common", VISUAL_SETTINGS_SEARCH_INDEX.commonPresets)}
+        >
+          <div className="fx-section-label">视觉预设</div>
+          <div className="preset-grid" id="preset-grid">
+            {PRESETS.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={
+                  preset === item.id ? "preset-card active" : "preset-card"
+                }
+                data-preset={item.id}
+                onClick={() => changePreset(item.id)}
+              >
+                <span className="pc-icon">{item.id === 6 ? "✦" : "◌"}</span>
+                <span className="pc-name">{item.name}</span>
+                <span className="pc-desc">
+                  {item.id === 6 ? (
+                    <>
+                      骷髅 · <span className="pc-yui7w">YUI7W</span>
+                    </>
+                  ) : (
+                    item.desc
+                  )}
+                </span>
+              </button>
+            ))}
+          </div>
+        </SettingsSection>
+        <SettingsSection
+          tab="interface"
+          visible={sectionVisible("interface", VISUAL_SETTINGS_SEARCH_INDEX.interface)}
+        >
+          <div className="fx-section-label">自定义颜色</div>
+          <div className="lyric-color-row">
           <input
             id="ui-accent-picker"
             className="lyric-color-picker"
@@ -811,11 +1326,21 @@ export function VisualControlPanelHost(
           <button id="home-accent-default-btn" className="fx-mini-btn ghost" type="button" onClick={resetHomeAccentColor}>
             默认
           </button>
-        </div>
-        {MAIN_SLIDERS.slice(0, 2).map(slider)}
-        <div className="fx-section-label">主控</div>
-        {MAIN_SLIDERS.slice(2).map(slider)}
+          </div>
+          {MAIN_SLIDERS.slice(0, 2).map(slider)}
+        </SettingsSection>
+        <SettingsSection
+          tab="common"
+          visible={sectionVisible("common", VISUAL_SETTINGS_SEARCH_INDEX.commonMain)}
+        >
+          <div className="fx-section-label">主控</div>
+          {MAIN_SLIDERS.slice(2).map(slider)}
+        </SettingsSection>
 
+        <SettingsSection
+          tab="lyrics"
+          visible={sectionVisible("lyrics", VISUAL_SETTINGS_SEARCH_INDEX.lyrics)}
+        >
         <div className="fx-fold open" id="fx-lyric-fold">
           <div className="fx-fold-head">
             <span className="fx-fold-title">
@@ -887,7 +1412,7 @@ export function VisualControlPanelHost(
                       : ""
                   }
                   onClick={() =>
-                    props.onStringSettingChange?.("lyricFont", key)
+                    trackedStringChange("lyricFont", key)
                   }
                 >
                   {label}
@@ -917,7 +1442,7 @@ export function VisualControlPanelHost(
                     <button
                       type="button"
                       className={active ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"}
-                      onClick={() => props.onStringSettingChange?.("lyricFont", key)}
+                      onClick={() => trackedStringChange("lyricFont", key)}
                     >
                       {record.name}
                     </button>
@@ -925,7 +1450,9 @@ export function VisualControlPanelHost(
                       type="button"
                       className="fx-custom-font-remove"
                       aria-label={`删除字体 ${record.name}`}
-                      onClick={() => deleteCustomLyricFont(record)}
+                      data-undoable="false"
+                      title="删除字体文件（不可撤销）"
+                      onClick={() => void deleteCustomLyricFont(record)}
                     >
                       ×
                     </button>
@@ -936,7 +1463,12 @@ export function VisualControlPanelHost(
             {LYRIC_LAYOUT_SLIDERS.map(slider)}
           </div>
         </div>
+        </SettingsSection>
 
+        <SettingsSection
+          tab="motion"
+          visible={sectionVisible("motion", VISUAL_SETTINGS_SEARCH_INDEX.motion)}
+        >
         <div className="fx-fold open" id="fx-overlay-fold">
           <div className="fx-fold-head">
             <span className="fx-fold-title">
@@ -962,13 +1494,38 @@ export function VisualControlPanelHost(
                 { value: 120, label: "120" },
                 { value: 0, label: "无上限" },
               ]}
-              onNumberSettingChange={props.onNumberSettingChange}
+              onNumberSettingChange={trackedNumberChange}
             />
           </div>
         </div>
+        </SettingsSection>
 
-        {props.desktopRuntimeSlot}
+        <SettingsSection
+          tab="system"
+          visible={sectionVisible("system", nativeDesktopSearchTerms)}
+        >
+          {props.desktopRuntimeSlot ? (
+            <div
+              className="settings-native-boundary"
+              data-settings-native-boundary
+              data-undoable="false"
+            >
+              <div className="settings-native-boundary-head">
+                <span>桌面与系统能力</span>
+                <strong>系统操作不可撤销</strong>
+              </div>
+              <p>缓存清理、完整桌面、Wallpaper Engine 与其他系统动作不会进入设置历史。</p>
+              <div className="settings-native-boundary-slot">
+                {props.desktopRuntimeSlot}
+              </div>
+            </div>
+          ) : null}
+        </SettingsSection>
 
+        <SettingsSection
+          tab="shelf"
+          visible={sectionVisible("shelf", VISUAL_SETTINGS_SEARCH_INDEX.shelf)}
+        >
         <div className="fx-fold open" id="fx-stage-fold">
           <div className="fx-fold-head">
             <span className="fx-fold-title">
@@ -989,7 +1546,7 @@ export function VisualControlPanelHost(
                 { value: "side", label: "侧栏" },
                 { value: "stage", label: "舞台" },
               ]}
-              onStringSettingChange={props.onStringSettingChange}
+              onStringSettingChange={trackedStringChange}
             />
             <div className="fx-section-label">歌单架镜头</div>
             <Segment
@@ -1001,7 +1558,7 @@ export function VisualControlPanelHost(
                 { value: "dynamic", label: "动态镜头" },
                 { value: "static", label: "静态镜头" },
               ]}
-              onStringSettingChange={props.onStringSettingChange}
+              onStringSettingChange={trackedStringChange}
             />
             <div className="fx-section-label">歌单架显示</div>
             <Segment
@@ -1013,7 +1570,7 @@ export function VisualControlPanelHost(
                 { value: "auto", label: "自动隐藏" },
                 { value: "always", label: "常驻" },
               ]}
-              onStringSettingChange={props.onStringSettingChange}
+              onStringSettingChange={trackedStringChange}
             />
             <div className="fx-section-label">歌单架内容</div>
             <div className="fx-toggle-grid">
@@ -1021,16 +1578,26 @@ export function VisualControlPanelHost(
             </div>
           </div>
         </div>
+        </SettingsSection>
 
-        <StageLyricsControls
-          settings={props.settings}
-          onFxPatchChange={props.onFxPatchChange}
-        />
-        <SonicTopographyControls
-          settings={props.settings}
-          onFxPatchChange={props.onFxPatchChange}
-        />
+        <SettingsSection
+          tab="motion"
+          visible={sectionVisible("motion", VISUAL_SETTINGS_SEARCH_INDEX.visualEngines)}
+        >
+          <StageLyricsControls
+            settings={props.settings}
+            onFxPatchChange={trackedFxPatchChange}
+          />
+          <SonicTopographyControls
+            settings={props.settings}
+            onFxPatchChange={trackedFxPatchChange}
+          />
+        </SettingsSection>
 
+        <SettingsSection
+          tab="system"
+          visible={sectionVisible("system", VISUAL_SETTINGS_SEARCH_INDEX.systemAdvanced)}
+        >
         <div className="fx-advanced open" id="fx-advanced">
           <div className="fx-advanced-head">
             <span>高级参数</span>
@@ -1048,7 +1615,7 @@ export function VisualControlPanelHost(
                 { value: "keep", label: "保持运行" },
                 { value: "release", label: "停止释放" },
               ]}
-              onStringSettingChange={props.onStringSettingChange}
+              onStringSettingChange={trackedStringChange}
             />
             <div className="fx-section-label">画质档位</div>
             <Segment
@@ -1062,11 +1629,12 @@ export function VisualControlPanelHost(
                 { value: "high", label: "高" },
                 { value: "ultra", label: "超高" },
               ]}
-              onStringSettingChange={props.onStringSettingChange}
+              onStringSettingChange={trackedStringChange}
             />
             {ADVANCED_SLIDERS.map(slider)}
           </div>
         </div>
+        </SettingsSection>
       </div>
     </>
   );

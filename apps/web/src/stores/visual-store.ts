@@ -278,6 +278,17 @@ function mergeVisualFxPatch(base: FxState, patch: FxStatePatch): FxStatePatch {
   };
 }
 
+export function mergeVisualFxState(
+  base: FxState,
+  patch: FxStatePatch,
+): FxState {
+  return normalizeVisualFxState(mergeVisualFxPatch(base, patch));
+}
+
+export function serializeVisualFxState(state: FxState): FxState {
+  return normalizeVisualFxState(state);
+}
+
 export interface VisualState {
   fx: FxState;
   preset: number;
@@ -368,7 +379,7 @@ export const useVisualStore = create<VisualState>()((set, get) => ({
     }),
   setFxPatch: (patch) =>
     set((state) => {
-      const fx = normalizeVisualFxState(mergeVisualFxPatch(state.fx, patch));
+      const fx = mergeVisualFxState(state.fx, patch);
       return { fx, preset: fx.preset, intensity: fx.intensity };
     }),
   setCustom: (key, value) =>

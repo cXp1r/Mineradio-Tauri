@@ -1,0 +1,263 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mineradio.local/schemas/m8-windows-release-evidence.schema.json",
+  "title": "MineRadio M8 Windows Release Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "milestone",
+    "capturedAt",
+    "git",
+    "host",
+    "target",
+    "protocol",
+    "coldStarts",
+    "steadyStateRuns",
+    "optionalMetrics",
+    "fieldValidation",
+    "summary",
+    "evaluation"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "milestone": { "const": "M8" },
+    "capturedAt": { "type": "string", "format": "date-time" },
+    "git": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "dirty"],
+      "properties": {
+        "commit": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "dirty": { "type": "boolean" }
+      }
+    },
+    "host": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["platform", "release", "arch"],
+      "properties": {
+        "platform": { "const": "win32" },
+        "release": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 },
+        "logicalProcessors": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executablePath"],
+      "properties": {
+        "executablePath": { "type": "string", "minLength": 1 },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "protocol": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coldStartRuns",
+        "warmupSeconds",
+        "sampleSeconds",
+        "sampleRuns",
+        "sampleIntervalMs"
+      ],
+      "properties": {
+        "coldStartRuns": { "const": 5 },
+        "warmupSeconds": { "const": 10 },
+        "sampleSeconds": { "const": 60 },
+        "sampleRuns": { "const": 3 },
+        "sampleIntervalMs": { "const": 1000 }
+      }
+    },
+    "coldStarts": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/coldStart" }
+    },
+    "steadyStateRuns": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": { "$ref": "#/$defs/steadyStateRun" }
+    },
+    "optionalMetrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["gpuMemory", "frameTime", "packageSize"],
+      "properties": {
+        "gpuMemory": { "$ref": "#/$defs/optionalMetric" },
+        "frameTime": { "$ref": "#/$defs/optionalMetric" },
+        "packageSize": { "$ref": "#/$defs/optionalMetric" }
+      }
+    },
+    "fieldValidation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["lowEndDevice", "webView2Upgrade", "windowsSoak"],
+      "properties": {
+        "lowEndDevice": { "$ref": "#/$defs/fieldCheck" },
+        "webView2Upgrade": { "$ref": "#/$defs/fieldCheck" },
+        "windowsSoak": { "$ref": "#/$defs/fieldCheck" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coldStartMedianMs",
+        "cpuMedianPercent",
+        "workingSetMedianBytes",
+        "workingSetPeakBytes",
+        "privateBytesMedian",
+        "privateBytesPeak"
+      ],
+      "properties": {
+        "coldStartMedianMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "cpuMedianPercent": { "$ref": "#/$defs/nonNegativeNumber" },
+        "workingSetMedianBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "workingSetPeakBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "privateBytesMedian": { "$ref": "#/$defs/nonNegativeNumber" },
+        "privateBytesPeak": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "evaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "codeCompletePassed",
+        "fieldValidated",
+        "status",
+        "nonBlocking",
+        "pendingFields",
+        "gates"
+      ],
+      "properties": {
+        "codeCompletePassed": { "type": "boolean" },
+        "fieldValidated": { "type": "boolean" },
+        "status": {
+          "enum": ["field-validated", "field-validation-pending"]
+        },
+        "nonBlocking": { "type": "boolean" },
+        "pendingFields": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "gpuMemory",
+              "frameTime",
+              "packageSize",
+              "lowEndDevice",
+              "webView2Upgrade",
+              "windowsSoak"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "gates": {
+          "type": "array",
+          "items": { "type": "object" }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "metricStatus": {
+      "enum": ["captured", "required-manual", "pending"]
+    },
+    "nonNegativeNumber": {
+      "type": "number",
+      "minimum": 0
+    },
+    "optionalMetric": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/metricStatus" },
+        "note": { "type": "string" },
+        "medianBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "peakBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p50Ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "p95Ms": { "$ref": "#/$defs/nonNegativeNumber" },
+        "bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "fieldCheck": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["status"],
+      "properties": {
+        "status": { "$ref": "#/$defs/metricStatus" },
+        "note": { "type": "string" },
+        "verified": { "type": "boolean" },
+        "durationSeconds": { "$ref": "#/$defs/nonNegativeNumber" },
+        "artifactPaths": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "uniqueItems": true
+        }
+      }
+    },
+    "coldStart": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run", "readyMs", "readiness"],
+      "properties": {
+        "run": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "readyMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "readiness": { "const": "main-window" }
+      }
+    },
+    "processSample": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "offsetMs",
+        "cpuPercent",
+        "workingSetBytes",
+        "privateBytes"
+      ],
+      "properties": {
+        "offsetMs": { "$ref": "#/$defs/nonNegativeNumber" },
+        "processCount": { "type": "integer", "minimum": 1 },
+        "cpuPercent": { "$ref": "#/$defs/nonNegativeNumber" },
+        "workingSetBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "privateBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "gpuMemoryBytes": { "$ref": "#/$defs/nonNegativeNumber" },
+        "frameTimeMs": { "$ref": "#/$defs/nonNegativeNumber" }
+      }
+    },
+    "steadyStateRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run",
+        "warmupSeconds",
+        "sampleSeconds",
+        "sampleIntervalMs",
+        "samples",
+        "summary"
+      ],
+      "properties": {
+        "run": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "warmupSeconds": { "const": 10 },
+        "sampleSeconds": { "const": 60 },
+        "sampleIntervalMs": { "const": 1000 },
+        "samples": {
+          "type": "array",
+          "minItems": 60,
+          "maxItems": 60,
+          "items": { "$ref": "#/$defs/processSample" }
+        },
+        "summary": {
+          "type": "object",
+          "additionalProperties": true
+        }
+      }
+    }
+  }
+}

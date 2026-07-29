@@ -1,13 +1,32 @@
-import { type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
+import { useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
 import type { DiscoverHomeResponse, PlaylistSummary, PodcastRadio, ProviderId, Track, WeatherRadioResponse } from "@mineradio/shared";
+import { resolveVirtualListWindow } from "../components/shell/virtual-list";
+import { HomeDashboardHero } from "../features/home/HomeDashboardHero";
+import {
+	buildHomeDashboardModel,
+	type HomeDashboardModel,
+} from "../features/home/home-dashboard-policy";
+import type { HomeHeroVideoRepository } from "../features/home/home-hero-video";
+import type {
+	HomeListenRecord,
+	HomeListenSummary,
+} from "../features/home/home-listen-ledger";
+
+export type {
+	HomeListenRecord,
+	HomeListenSummary,
+} from "../features/home/home-listen-ledger";
 
 export interface EmptyHomeHostProps {
 	discover?: DiscoverHomeResponse | null;
 	weatherRadio?: WeatherRadioResponse | null;
 	listenSummary?: HomeListenSummary | null;
+	dashboard?: HomeDashboardModel | null;
 	playlistDetail?: HomePlaylistDetailView | null;
 	active?: boolean;
 	loading?: boolean;
+	discoverError?: string | null;
+	weatherRadioError?: string | null;
 	isPlaying?: boolean;
 	positionMs?: number;
 	durationMs?: number | null;
@@ -26,22 +45,17 @@ export interface EmptyHomeHostProps {
 	onOpenPodcastSearch?: () => void;
 	onOpenInsight?: () => void;
 	onPlayRecent?: () => void;
+	onContinue?: () => void;
+	onPlayNextUp?: () => void;
+	onPlayForYou?: (index: number) => void;
 	onPlayWeatherSong?: (index: number) => void;
+	onRetryDiscover?: () => void;
+	onRetryWeatherRadio?: () => void;
 	onClosePlaylistDetail?: () => void;
 	onPlayPlaylistDetail?: (index: number) => void;
 	onPlaylistDetailArtist?: (artist: string, track: Track) => void;
-}
-
-export interface HomeListenRecord {
-	track: Track;
-	plays: number;
-}
-
-export interface HomeListenSummary {
-	recent?: HomeListenRecord | null;
-	topSong?: HomeListenRecord | null;
-	topArtist?: { name: string; plays: number; coverUrl?: string } | null;
-	totalPlays?: number;
+	onNotice?: (message: string) => void;
+	heroVideoRepository?: HomeHeroVideoRepository;
 }
 
 export interface HomePlaylistDetailView {
@@ -87,6 +101,7 @@ type HomeTile =
 	| StarterTile
 	| { kind: "recent"; tone: string; title: string; sub: string; action: string; record: HomeListenRecord; coverUrl?: string }
 	| { kind: "profile"; tone: string; title: string; sub: string; action: string; query: string; coverUrl?: string }
+	| { kind: "forYou"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
 	| { kind: "song"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
 	| { kind: "playlist"; tone: string; title: string; sub: string; action: string; index: number; provider: ProviderId; coverUrl?: string }
 	| { kind: "podcast"; tone: string; title: string; sub: string; action: string; index: number; coverUrl?: string }
@@ -168,11 +183,24 @@ function buildHomeTiles(
 	discover: DiscoverHomeResponse | null | undefined,
 	weatherRadio: WeatherRadioResponse | null | undefined,
 	listenSummary: HomeListenSummary | null | undefined,
+	dashboard: HomeDashboardModel,
 ): HomeTile[] {
 	const weatherSongs = weatherRadio?.radio.songs ?? [];
 	const playlists = discover?.playlists ?? [];
 	const podcasts = discover?.podcasts ?? [];
 	const tiles: HomeTile[] = [];
+
+	dashboard.forYou.forEach((track, index) => {
+		pushTile(tiles, {
+			kind: "forYou",
+			tone: index % 2 ? "search" : "daily",
+			title: track.title || "为你推荐",
+			sub: artistLine(track, "为你推荐"),
+			action: "Play",
+			index,
+			coverUrl: track.coverUrl,
+		});
+	});
 
 	if (listenSummary?.recent?.track) {
 		const recent = listenSummary.recent;
@@ -298,6 +326,7 @@ function providerPlaylistSectionNote(provider: ProviderId, count: number, logged
 function buildHomeRailSections(tiles: HomeTile[], loggedOut: boolean): HomeRailSection[] {
 	const sections: HomeRailSection[] = [];
 	const personalTiles = tiles.filter((tile) => tile.kind === "recent" || tile.kind === "profile");
+	const forYouTiles = tiles.filter((tile) => tile.kind === "forYou");
 	const songTiles = tiles.filter((tile) => tile.kind === "song");
 	const playlistTiles = tiles.filter((tile): tile is Extract<HomeTile, { kind: "playlist" }> => tile.kind === "playlist");
 	const podcastTiles = tiles.filter((tile) => tile.kind === "podcast");
@@ -310,6 +339,15 @@ function buildHomeRailSections(tiles: HomeTile[], loggedOut: boolean): HomeRailS
 			title: "继续收听",
 			note: `${personalTiles.length} 个 · 最近偏好`,
 			tiles: personalTiles,
+		});
+	}
+
+	if (forYouTiles.length) {
+		sections.push({
+			id: "for-you",
+			title: "For You",
+			note: `${forYouTiles.length} 首 · 今日稳定推荐`,
+			tiles: forYouTiles,
 		});
 	}
 
@@ -374,7 +412,7 @@ function homeTileCover(tile: HomeTile): string | undefined {
 }
 
 function homeTileKey(tile: HomeTile, index: number): string {
-	if (tile.kind === "song" || tile.kind === "playlist" || tile.kind === "podcast" || tile.kind === "weatherSong") {
+	if (tile.kind === "song" || tile.kind === "forYou" || tile.kind === "playlist" || tile.kind === "podcast" || tile.kind === "weatherSong") {
 		return `${tile.kind}:${tile.index}:${tile.title}`;
 	}
 	if (tile.kind === "recent") return `${tile.kind}:${tile.record.track.provider}:${tile.record.track.id}`;
@@ -390,6 +428,7 @@ function handleTileAction(props: EmptyHomeHostProps, tile: HomeTile): void {
 	else if (tile.kind === "guide") props.onGuide?.();
 	else if (tile.kind === "recent") props.onPlayRecent?.();
 	else if (tile.kind === "profile") props.onOpenInsight?.();
+	else if (tile.kind === "forYou") props.onPlayForYou?.(tile.index);
 	else if (tile.kind === "song") props.onPlaySong?.(tile.index);
 	else if (tile.kind === "playlist") props.onOpenPlaylist?.(tile.index);
 	else if (tile.kind === "podcast") props.onOpenPodcast?.(tile.index);
@@ -414,9 +453,38 @@ function formatDurationMs(durationMs: number | undefined): string {
 	return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-function renderPlaylistDetailPage(props: EmptyHomeHostProps, detail: HomePlaylistDetailView): ReactElement {
+const HOME_DETAIL_ROW_HEIGHT = 66;
+const HOME_DETAIL_VIEWPORT_HEIGHT = 528;
+
+function HomePlaylistDetailPage({
+	props,
+	detail,
+}: {
+	props: EmptyHomeHostProps;
+	detail: HomePlaylistDetailView;
+}): ReactElement {
 	const playlist = detail.playlist;
 	const tracks = detail.tracks;
+	const [scrollTop, setScrollTop] = useState(0);
+	const virtualWindow = resolveVirtualListWindow({
+		itemCount: tracks.length,
+		rowHeight: HOME_DETAIL_ROW_HEIGHT,
+		viewportHeight: HOME_DETAIL_VIEWPORT_HEIGHT,
+		scrollTop,
+		threshold: 80,
+	});
+	const visibleTracks = tracks.slice(
+		virtualWindow.startIndex,
+		virtualWindow.endIndex,
+	);
+	const virtualStyle: CSSProperties | undefined = virtualWindow.virtualized
+		? {
+				maxHeight: HOME_DETAIL_VIEWPORT_HEIGHT,
+				overflowY: "auto",
+				paddingTop: virtualWindow.paddingTop,
+				paddingBottom: virtualWindow.paddingBottom,
+			}
+		: undefined;
 	const provider = playlist.provider;
 	const providerName = HOME_PROVIDER_LABELS[provider];
 	const totalCount = playlist.trackCount ?? tracks.length;
@@ -458,12 +526,19 @@ function renderPlaylistDetailPage(props: EmptyHomeHostProps, detail: HomePlaylis
 					<div>专辑</div>
 					<div>时长</div>
 				</div>
-				<div className="home-detail-list" aria-label="Playlist tracks">
+				<div
+					className="home-detail-list"
+					aria-label="Playlist tracks"
+					data-virtualized={virtualWindow.virtualized ? "true" : undefined}
+					onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+					style={virtualStyle}
+				>
 					{detail.loading ? (
 						<div className="home-detail-empty">正在载入歌单</div>
 					) : tracks.length === 0 ? (
 						<div className="home-detail-empty">{detail.error || "歌单暂无可播放歌曲"}</div>
-					) : tracks.map((track, index) => {
+					) : visibleTracks.map((track, localIndex) => {
+						const index = virtualWindow.startIndex + localIndex;
 						const artist = artistLine(track, "未知歌手");
 						return (
 							<div
@@ -502,7 +577,9 @@ function renderPlaylistDetailPage(props: EmptyHomeHostProps, detail: HomePlaylis
 }
 
 export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
-	if (props.playlistDetail) return renderPlaylistDetailPage(props, props.playlistDetail);
+	if (props.playlistDetail) {
+		return <HomePlaylistDetailPage props={props} detail={props.playlistDetail} />;
+	}
 
 	const discover = props.discover ?? null;
 	const loggedOut = !discover?.loggedIn;
@@ -513,7 +590,19 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 	const firstPlaylist = discover?.playlists[0] ?? null;
 	const firstPodcast = discover?.podcasts[0] ?? null;
 	const listenSummary = props.listenSummary ?? null;
-	const tiles = buildHomeTiles(discover, props.weatherRadio, listenSummary);
+	const dashboard = props.dashboard ?? buildHomeDashboardModel({
+		discover,
+		listenSummary,
+		queue: [],
+		currentTrack: null,
+		isPlaying: props.isPlaying,
+	});
+	const tiles = buildHomeTiles(
+		discover,
+		props.weatherRadio,
+		listenSummary,
+		dashboard,
+	);
 	const railSections = buildHomeRailSections(tiles, loggedOut);
 	const loading = props.loading === true;
 	const hasPublicRecommendations = loggedOut && (discover?.playlists.length ?? 0) > 0;
@@ -526,31 +615,61 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 	const continueCover = recentTrack?.coverUrl || firstPlaylist?.coverUrl;
 	const profileCover = topSong?.coverUrl || topArtist?.coverUrl || firstPodcast?.coverUrl;
 	const moreCover = thirdSong?.coverUrl || topSong?.coverUrl || recentTrack?.coverUrl || firstPodcast?.coverUrl;
+	const nextUp = dashboard.nextUp;
+	const firstForYou = dashboard.forYou[0] ?? null;
+	const continueTrack = dashboard.continue.track;
+	const playContinue = () => {
+		if (props.onContinue) props.onContinue();
+		else if (dashboard.continue.kind === "daily") props.onPlayDaily?.();
+		else props.onPlayRecent?.();
+	};
 
 	return (
 		<section id="empty-home" aria-label="Mineradio home">
 			<div className="empty-home-shell">
 				<div className="home-hero">
-					<div className="home-hero-inner home-construction-inner">
-						<div className="home-title home-construction-title">🚧此处施工，敬请期待🚧</div>
-						<button className="home-chip home-console-chip" data-home-chip="console" type="button" onClick={props.onOpenConsole}>
-							展开播放器控制台
-						</button>
-					</div>
+					<HomeDashboardHero
+						active={props.active === true}
+						onNotice={props.onNotice}
+						onOpenConsole={props.onOpenConsole}
+						repository={props.heroVideoRepository}
+					/>
 				</div>
 
 				<div className="home-right-pane">
+					{props.discoverError || props.weatherRadioError ? (
+						<div className="home-local-errors" aria-label="首页载入状态">
+							{props.discoverError ? (
+								<div className="home-local-error" role="status" data-home-error="discover">
+									<span>推荐内容载入失败：{props.discoverError}</span>
+									<button type="button" onClick={props.onRetryDiscover}>重试推荐</button>
+								</div>
+							) : null}
+							{props.weatherRadioError ? (
+								<div className="home-local-error" role="status" data-home-error="weather">
+									<span>天气电台载入失败：{props.weatherRadioError}</span>
+									<button type="button" onClick={props.onRetryWeatherRadio}>重试天气</button>
+								</div>
+							) : null}
+						</div>
+					) : null}
+					<div className="home-insight-dock" aria-label="今日收听概览">
+						<div className="home-insight-item"><span>今日</span><strong>{Math.round(dashboard.insight.todayListenMs / 60_000)} 分钟</strong></div>
+						<div className="home-insight-item"><span>歌曲</span><strong>{dashboard.insight.todayUniqueSongs} 首</strong></div>
+						<button className="home-insight-item" type="button" onClick={props.onOpenInsight}><span>常听</span><strong>{dashboard.insight.topArtist?.name || "等待记录"}</strong></button>
+						<div className="home-insight-item"><span>连续</span><strong>{dashboard.insight.streakDays} 天</strong></div>
+					</div>
 					<div className="home-grid">
 						<button className="home-card" data-home-card="library" data-home-tone="library" type="button" onClick={props.onOpenLibrary}>
 							<div className="home-card-label">Library</div>
-							<div className="home-card-title" id="home-weather-card-title">我的歌单</div>
-							<div className="home-card-sub" id="home-weather-card-sub">{playlistSub(firstPlaylist)}</div>
+							<div className="home-card-title" id="home-weather-card-title">{loggedOut ? "本地音乐" : "我的歌单"}</div>
+							<div className="home-card-sub" id="home-weather-card-sub">{loggedOut ? "导入本地音乐" : playlistSub(firstPlaylist)}</div>
 							<div className={cardCoverClass(libraryCover)} id="home-weather-art" style={coverStyle(libraryCover)} />
 						</button>
 						<button className="home-card" data-home-card="daily" data-home-tone="mix" type="button" onClick={props.onPlayDaily}>
 							<div className="home-card-label">Daily</div>
 							<div className="home-card-title" id="home-daily-title">{loggedOut ? "每日推荐" : (daily?.title || "每日推荐")}</div>
-							<div className="home-card-sub" id="home-daily-sub">{loggedOut ? "登录后同步你的今日歌曲" : (daily ? `${artistLine(daily, "今日歌曲")} · 点击播放今日队列` : "同步你的今日歌曲")}</div>
+							<div className="home-card-sub" id="home-daily-sub">{loggedOut ? "登录后同步你的今日歌曲" : (daily ? `当前已载入 ${dashboard.dailyLoadedCount} 首 · ${artistLine(daily, "今日歌曲")}` : "同步你的今日歌曲")}</div>
 							<div className={cardCoverClass(dailyCover)} id="home-daily-art" style={coverStyle(dailyCover)} />
 						</button>
 						<button
@@ -558,30 +677,36 @@ export function EmptyHomeHost(props: EmptyHomeHostProps): ReactElement {
 							data-home-card="private"
 							data-home-tone="playlist"
 							type="button"
-							onClick={props.onPlayPrivate}
+							onClick={() => {
+								if (recentTrack && props.onPlayRecent) props.onPlayRecent();
+								else props.onPlayPrivate?.();
+							}}
 						>
-							<div className="home-card-label">Song</div>
-							<div className="home-card-title" id="home-private-title">{loggedOut ? "推荐歌曲" : (privateSong?.title || "私人雷达")}</div>
-							<div className="home-card-sub" id="home-private-sub">{loggedOut ? "登录后同步更多歌曲" : (privateSong ? artistLine(privateSong) : `${discover?.dailySongs.length ?? 0} 首 · 根据今日推荐与常听偏好`)}</div>
+							<div className="home-card-label">Recent</div>
+							<div className="home-card-title" id="home-private-title">{recentTrack?.title || "最近播放"}</div>
+							<div className="home-card-sub" id="home-private-sub">{recentTrack ? artistLine(recentTrack) : "有效播放后会出现在这里"}</div>
 							<div className={cardCoverClass(privateCover)} id="home-private-art" style={coverStyle(privateCover)} />
 						</button>
-						<button className="home-card" data-home-card="continue" data-home-tone="mix" type="button" onClick={props.onPlayRecent}>
+						<button className="home-card" data-home-card="continue" data-home-tone="mix" type="button" onClick={playContinue}>
 							<div className="home-card-label">Continue</div>
-							<div className="home-card-title" id="home-continue-title">{recentTrack?.title || "继续听"}</div>
-							<div className="home-card-sub" id="home-continue-sub">{recentTrack ? artistLine(recentTrack, "最近播放") : "最近播放会出现在这里"}</div>
-							<div className={cardCoverClass(continueCover)} id="home-continue-art" style={coverStyle(continueCover)} />
+							<div className="home-card-title" id="home-continue-title">{dashboard.continue.title}</div>
+							<div className="home-card-sub" id="home-continue-sub">{dashboard.continue.subtitle}</div>
+							<div className={cardCoverClass(continueTrack?.coverUrl || continueCover)} id="home-continue-art" style={coverStyle(continueTrack?.coverUrl || continueCover)} />
 						</button>
-						<button className="home-card" data-home-card="profile" data-home-tone="local" type="button" onClick={props.onOpenInsight}>
-							<div className="home-card-label">Profile</div>
-							<div className="home-card-title" id="home-profile-title">{topArtist?.name || topSong?.title || "听歌画像"}</div>
-							<div className="home-card-sub" id="home-profile-sub">{topArtist ? `常听歌手 · ${topArtist.plays} 次` : (listenSummary?.totalPlays ? `${listenSummary.totalPlays} 次有效播放` : "播放几首后生成偏好")}</div>
-							<div className={cardCoverClass(profileCover)} id="home-profile-art" style={coverStyle(profileCover)} />
+						<button className="home-card" data-home-card="profile" data-home-tone="local" type="button" onClick={props.onPlayNextUp ?? props.onOpenInsight}>
+							<div className="home-card-label">Next Up</div>
+							<div className="home-card-title" id="home-profile-title">{nextUp?.title || topArtist?.name || topSong?.title || "队列末尾"}</div>
+							<div className="home-card-sub" id="home-profile-sub">{nextUp ? artistLine(nextUp) : (topArtist ? `常听歌手 · ${topArtist.plays} 次` : "当前队列没有下一首")}</div>
+							<div className={cardCoverClass(nextUp?.coverUrl || profileCover)} id="home-profile-art" style={coverStyle(nextUp?.coverUrl || profileCover)} />
 						</button>
-						<button className="home-card" data-home-card="more" data-home-tone="local" type="button" onClick={() => props.onPlaySong?.(2)}>
-							<div className="home-card-label">Song</div>
-							<div className="home-card-title" id="home-library-title">{loggedOut ? "更多歌曲" : (thirdSong?.title || topArtist?.name || "更多歌曲")}</div>
-							<div className="home-card-sub" id="home-library-sub">{loggedOut ? "播放后会继续补全推荐" : (thirdSong ? artistLine(thirdSong) : (topArtist ? `歌手偏好 · ${topArtist.plays} 次` : "播放几首后生成你的偏好"))}</div>
-							<div className={cardCoverClass(moreCover)} id="home-library-art" style={coverStyle(moreCover)} />
+						<button className="home-card" data-home-card="more" data-home-tone="local" type="button" onClick={() => {
+							if (props.onPlayForYou) props.onPlayForYou(0);
+							else props.onPlaySong?.(2);
+						}}>
+							<div className="home-card-label">For You</div>
+							<div className="home-card-title" id="home-library-title">{firstForYou?.title || "为你推荐"}</div>
+							<div className="home-card-sub" id="home-library-sub">{firstForYou ? `${artistLine(firstForYou)} · 今日稳定` : "播放几首后生成推荐"}</div>
+							<div className={cardCoverClass(firstForYou?.coverUrl || moreCover)} id="home-library-art" style={coverStyle(firstForYou?.coverUrl || moreCover)} />
 						</button>
 					</div>
 

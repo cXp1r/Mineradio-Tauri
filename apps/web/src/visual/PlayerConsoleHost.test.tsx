@@ -115,6 +115,24 @@ test("PlayerConsoleHost keeps generic quality controls when provider options are
 	expect(html).toContain('data-quality="standard"');
 });
 
+test("PlayerConsoleHost renders capability-driven source switching beside quality", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			currentTrack: makeTrack("source"),
+			sourceProviders: ["netease", "qq", "soda"],
+			sourceSwitchBusy: null,
+			onSourceSwitch: () => {},
+		}),
+	);
+
+	expect(html).toContain('data-source-provider="qq"');
+	expect(html).toContain('data-source-provider="soda"');
+	expect(html).not.toContain('data-source-provider="netease"');
+	expect(html.indexOf('id="quality-control"')).toBeLessThan(
+		html.indexOf('class="source-switcher"'),
+	);
+});
+
 test("PlayerConsoleHost shows the selected quality when it is not in provider options", () => {
 	const html = renderToStaticMarkup(
 		React.createElement(PlayerConsoleHost, {

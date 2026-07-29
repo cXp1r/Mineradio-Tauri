@@ -180,7 +180,10 @@ test("App keeps the empty-home music page mounted behind the splash gate", () =>
 	expect(html).toContain('id="bottom-handle"');
 	expect(html).toContain('id="bottom-bar"');
 	expect(html).toContain('id="user-btn"');
-	expect(html).toContain("🚧此处施工，敬请期待🚧");
+	expect(html).toContain('class="home-hero-inner daily-review-card"');
+	expect(html).toContain("换一条");
+	expect(html).toContain("选择 MP4");
+	expect(html).not.toContain("🚧此处施工，敬请期待🚧");
 	expect(html).not.toContain('id="home-weather-kicker"');
 	expect(html).toContain("展开播放器控制台");
 	expect(html).toContain("每日推荐");
@@ -2765,7 +2768,7 @@ test("App starts baseline Home private radar from discover songs", async () => {
 	localStorage.clear();
 });
 
-test("App derives baseline Home recent and profile actions from playback history", async () => {
+test("App derives Home Continue and Next Up from the live queue before recent history", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
 	const restoreAudio = installAppStubAudio();
@@ -2849,15 +2852,23 @@ test("App derives baseline Home recent and profile actions from playback history
 		(host.querySelector("#home-btn") as HTMLButtonElement).click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
-		expect(host.querySelector("#home-continue-title")?.textContent).toBe("Recent Song");
-		expect(host.querySelector("#home-profile-title")?.textContent).toBe("Alice");
+		expect(host.querySelector("#home-continue-title")?.textContent).toBe("Earlier Song");
+		expect(host.querySelector("#home-profile-title")?.textContent).toBe("Recent Song");
 		expect(localStorage.getItem("mineradio-listen-stats-v1")).toContain("Recent Song");
 
 		(host.querySelector('[data-home-card="profile"]') as HTMLButtonElement).click();
-		expect(useSearchStore.getState().keyword).toBe("Alice");
+		expect(useSearchStore.getState().keyword).toBe("");
+		expect(usePlaybackStore.getState().currentTrack?.id).toBe("recent-2");
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual([
+			"recent-1",
+			"recent-2",
+		]);
 
 		(host.querySelector('[data-home-card="continue"]') as HTMLButtonElement).click();
-		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual(["recent-2"]);
+		expect(usePlaybackStore.getState().queue.map((track) => track.id)).toEqual([
+			"recent-1",
+			"recent-2",
+		]);
 		expect(usePlaybackStore.getState().currentTrack?.id).toBe("recent-2");
 	} finally {
 		root.unmount();
@@ -3332,7 +3343,7 @@ test("App plays centered shelf playlist hotspots by loading the playlist into th
 	}
 });
 
-test("App routes the logged-out Home library card to the baseline visual guide instead of login", async () => {
+test("App routes the logged-out Home library card to local audio import", async () => {
 	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
 	localStorage.clear();
@@ -3365,35 +3376,16 @@ test("App routes the logged-out Home library card to the baseline visual guide i
 	try {
 		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} createSidecarClient={() => fakeClient} initialRuntimeConfig={rootConfig} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
+		let fileDialogClicks = 0;
+		host.querySelector("#file-input")?.addEventListener("click", () => {
+			fileDialogClicks += 1;
+		});
 		(host.querySelector('[data-home-card="library"]') as HTMLButtonElement).click();
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
 		expect(host.querySelector("#login-modal")).toBeNull();
-		expect(host.querySelector("#visual-guide")?.classList.contains("show")).toBe(true);
-		expect(document.body.classList.contains("visual-guide-active")).toBe(true);
-		expect(host.querySelector("#visual-guide-title")?.textContent).toBe("MineRadio-Tauri 是用来听歌的视觉播放器");
-		expect(host.querySelector("#visual-guide-progress")?.textContent).toBe("1 / 7");
-
-		(host.querySelector("#visual-guide-next") as HTMLButtonElement).click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(host.querySelector("#visual-guide-progress")?.textContent).toBe("2 / 7");
-
-		(host.querySelector("#visual-guide-next") as HTMLButtonElement).click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(host.querySelector("#visual-guide-progress")?.textContent).toBe("3 / 7");
-		expect(host.querySelector("#playlist-panel")?.classList.contains("show")).toBe(true);
-
-		(host.querySelector("#visual-guide-next") as HTMLButtonElement).click();
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		expect(host.querySelector("#bottom-bar")?.classList.contains("visible")).toBe(true);
-
-		for (let i = 0; i < 4; i += 1) {
-			(host.querySelector("#visual-guide-next") as HTMLButtonElement).click();
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		}
-		expect(localStorage.getItem("mineradio-visual-guide-seen-v2")).toBe("1");
+		expect(fileDialogClicks).toBe(1);
 		expect(host.querySelector("#visual-guide")?.classList.contains("show")).toBe(false);
-		expect(host.querySelector("#playlist-panel")?.classList.contains("show")).toBe(false);
 	} finally {
 		root.unmount();
 		host.remove();

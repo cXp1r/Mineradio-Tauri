@@ -1,0 +1,24 @@
+{
+  "gpuMemory": {
+    "status": "required-manual",
+    "note": "使用 GPUView、PresentMon 或等价工具补充 medianBytes 与 peakBytes"
+  },
+  "frameTime": {
+    "status": "required-manual",
+    "note": "使用 release WebView2 telemetry 补充 p50Ms 与 p95Ms"
+  },
+  "fieldValidation": {
+    "lowEndDevice": {
+      "status": "required-manual",
+      "note": "真实低配实体机尚未验证"
+    },
+    "webView2Upgrade": {
+      "status": "required-manual",
+      "note": "真实旧版用户目录与 WebView2 升级尚未验证"
+    },
+    "windowsSoak": {
+      "status": "required-manual",
+      "note": "Home、Shelf、Sonic 与后台 30–60 分钟 soak 尚未验证"
+    }
+  }
+}

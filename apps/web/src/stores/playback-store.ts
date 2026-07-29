@@ -3,6 +3,12 @@ import type { Track } from "@mineradio/shared";
 
 export type PlaybackMode = "single" | "loop" | "queue" | "shuffle";
 
+export interface ReplaceCurrentSourceRequest {
+	candidate: Track;
+	expectedPlaybackIntentId: number;
+	preservePositionMs: number;
+}
+
 export interface PlaybackState {
 	currentTrack: Track | null;
 	playbackIntentId: number;
@@ -25,6 +31,7 @@ export interface PlaybackState {
 	enqueue: (track: Track) => void;
 	insertAt: (index: number, track: Track) => void;
 	insertNext: (track: Track) => void;
+	replaceCurrentSource: (request: ReplaceCurrentSourceRequest) => boolean;
 	playAt: (index: number) => void;
 	removeAt: (index: number) => void;
 	removeTrack: (track: Track) => void;
@@ -127,6 +134,25 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 			next.splice(insertAt, 0, moved);
 			return { queue: next };
 		}),
+	replaceCurrentSource: (request) => {
+		let committed = false;
+		set((state) => {
+			if (state.playbackIntentId !== request.expectedPlaybackIntentId) return {};
+			const currentIndex = findTrackIndex(state.queue, state.currentTrack);
+			if (currentIndex < 0 || !state.currentTrack) return {};
+			const queue = [...state.queue];
+			queue[currentIndex] = request.candidate;
+			committed = true;
+			return {
+				queue,
+				currentTrack: request.candidate,
+				positionMs: Math.max(0, request.preservePositionMs),
+				durationMs: request.candidate.durationMs ?? state.durationMs,
+				playbackIntentId: nextPlaybackIntent(state),
+			};
+		});
+		return committed;
+	},
 	playAt: (index) =>
 		set((s) => {
 			if (index < 0 || index >= s.queue.length) return {};

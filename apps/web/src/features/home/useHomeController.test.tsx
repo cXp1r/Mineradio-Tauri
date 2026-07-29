@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import React from "react";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
-import type { DiscoverHomeResponse, Track } from "@mineradio/shared";
+import type {
+	DiscoverHomeResponse,
+	Track,
+	WeatherRadioResponse,
+} from "@mineradio/shared";
 import type { DiscoverPort } from "../../ports/music/discover-port";
 import {
 	useHomeController,
@@ -63,7 +67,12 @@ function createOptions(discover: DiscoverPort | null, saves: unknown[] = []) {
 		setConsole: () => undefined,
 		setMiniQueue: () => undefined,
 		showToast: () => undefined,
-		storage: { read: () => [], save: (value: unknown) => saves.push(value) },
+		storage: {
+			read: () => [],
+			save: (value: unknown) => {
+				saves.push(value);
+			},
+		},
 		autoRefresh: false,
 	};
 }
@@ -96,6 +105,65 @@ test("stale Home discover response cannot overwrite a newer request", async () =
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	expect(controllerRef.current?.discover?.updatedAt).toBe(2);
+
+	root.unmount();
+	host.remove();
+});
+
+test("Home exposes local discover and weather failures and clears each error after retry", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	let discoverCalls = 0;
+	let weatherCalls = 0;
+	const weather = { ok: true } as unknown as WeatherRadioResponse;
+	const discover = {
+		discoverHome: async () => {
+			discoverCalls += 1;
+			if (discoverCalls === 1) throw new Error("推荐服务离线");
+			if (discoverCalls === 3) throw new Error("推荐重试失败");
+			return home(2);
+		},
+		weatherRadio: async () => {
+			weatherCalls += 1;
+			if (weatherCalls === 1) throw new Error("天气服务离线");
+			if (weatherCalls === 3) throw new Error("天气重试失败");
+			return weather;
+		},
+	} as unknown as DiscoverPort;
+	const controllerRef: { current: HomeControllerResult | null } = { current: null };
+	const options = createOptions(discover);
+
+	function Harness() {
+		controllerRef.current = useHomeController(options);
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	await controllerRef.current!.refreshDiscover();
+	await controllerRef.current!.refreshWeatherRadio();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(controllerRef.current?.discoverError).toBe("推荐服务离线");
+	expect(controllerRef.current?.weatherRadioError).toBe("天气服务离线");
+
+	await controllerRef.current!.refreshDiscover();
+	await controllerRef.current!.refreshWeatherRadio();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(controllerRef.current?.discover?.updatedAt).toBe(2);
+	expect(controllerRef.current?.weatherRadio).toBe(weather);
+	expect(controllerRef.current?.discoverError).toBeNull();
+	expect(controllerRef.current?.weatherRadioError).toBeNull();
+
+	await controllerRef.current!.refreshDiscover();
+	await controllerRef.current!.refreshWeatherRadio();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(controllerRef.current?.discover?.updatedAt).toBe(2);
+	expect(controllerRef.current?.discoverError).toBe("推荐重试失败");
+	expect(controllerRef.current?.weatherRadio).toBe(weather);
+	expect(controllerRef.current?.weatherRadioError).toBe("天气重试失败");
 
 	root.unmount();
 	host.remove();

@@ -5,6 +5,8 @@ import { createRoot, type Root } from "react-dom/client";
 import type { Track } from "@mineradio/shared";
 import { useSearchStore } from "../../stores/search-store";
 import { SearchDetailPage } from "./SearchDetailPage";
+import { SearchShell } from "./SearchShell";
+import { searchSessionController } from "../../features/search/search-session-runtime";
 
 let originalUseSyncExternalStore: typeof React.useSyncExternalStore;
 let domRoot: HTMLElement | null = null;
@@ -21,10 +23,17 @@ beforeEach(() => {
 			getSnapshot,
 			getServerSnapshot ?? getSnapshot,
 		)) as typeof React.useSyncExternalStore;
+	searchSessionController.clear();
 	useSearchStore.setState({
 		results: [],
+		podcasts: [],
+		programs: [],
+		selectedPodcast: null,
 		loading: false,
+		loadingNext: false,
 		error: null,
+		exhausted: true,
+		visibleCount: 0,
 		provider: "netease",
 		keyword: "晴天",
 		mode: "song",
@@ -139,5 +148,47 @@ test("SearchDetailPage song row buttons call play append and next callbacks", as
 	container.querySelector<HTMLButtonElement>("[data-search-detail-next]")?.click();
 
 	expect(calls).toEqual(["play:0", "append:song-1", "next:song-1"]);
+	root.unmount();
+});
+
+test("compact Enter and detail mount share one search request", async () => {
+	let requests = 0;
+	const client = {
+		async searchAll() {
+			requests += 1;
+			return [makeTrack("shared")];
+		},
+	} as never;
+	useSearchStore.setState({ detailOpen: false });
+
+	const { root, container } = await renderSearchDetail(
+		<>
+			<SearchShell client={client} />
+			<SearchDetailPage
+				client={client}
+				onClose={() => undefined}
+				onPlayResults={() => undefined}
+				onAppendQueue={() => undefined}
+				onResultNext={() => undefined}
+				onResultLike={() => undefined}
+				onResultCollect={() => undefined}
+				onArtistSearch={() => undefined}
+			/>
+		</>,
+	);
+	const compactInput = container.querySelector<HTMLInputElement>("#search-input");
+	compactInput?.focus();
+	compactInput?.dispatchEvent(
+		new window.KeyboardEvent("keydown", {
+			key: "Enter",
+			bubbles: true,
+			cancelable: true,
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 220));
+
+	expect(requests).toBe(1);
+	expect(container.querySelector("[data-search-detail]")).not.toBeNull();
+	expect(container.querySelector("[data-search-detail-play]")).not.toBeNull();
 	root.unmount();
 });

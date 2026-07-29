@@ -376,3 +376,48 @@ test("non-playback state and queue edits do not advance intent", () => {
 	store.insertNext(makeTrack("d"));
 	expect(usePlaybackStore.getState().playbackIntentId).toBe(0);
 });
+
+test("replaceCurrentSource 原子替换当前队列项并保留位置", () => {
+	const original = makeTrack("original");
+	const next = makeTrack("next");
+	const candidate = { ...original, provider: "qq" as const, id: "qq-source" };
+	const store = usePlaybackStore.getState();
+	store.setQueue([original, next]);
+	store.playAt(0);
+	store.setPosition(54_321);
+	const expectedIntent = usePlaybackStore.getState().playbackIntentId;
+
+	const committed = usePlaybackStore.getState().replaceCurrentSource({
+		candidate,
+		expectedPlaybackIntentId: expectedIntent,
+		preservePositionMs: 54_321,
+	});
+
+	expect(committed).toBe(true);
+	const state = usePlaybackStore.getState();
+	expect(state.queue[0]).toBe(candidate);
+	expect(state.queue[1]).toBe(next);
+	expect(state.currentTrack).toBe(candidate);
+	expect(state.positionMs).toBe(54_321);
+	expect(state.playbackIntentId).toBe(expectedIntent + 1);
+});
+
+test("replaceCurrentSource 拒绝过期 intent 且不改变队列", () => {
+	const original = makeTrack("original");
+	const candidate = { ...original, provider: "qq" as const, id: "qq-source" };
+	const store = usePlaybackStore.getState();
+	store.setQueue([original]);
+	store.playAt(0);
+	const before = usePlaybackStore.getState();
+
+	const committed = store.replaceCurrentSource({
+		candidate,
+		expectedPlaybackIntentId: before.playbackIntentId - 1,
+		preservePositionMs: 5_000,
+	});
+
+	expect(committed).toBe(false);
+	expect(usePlaybackStore.getState().queue).toEqual(before.queue);
+	expect(usePlaybackStore.getState().currentTrack).toBe(before.currentTrack);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(before.playbackIntentId);
+});

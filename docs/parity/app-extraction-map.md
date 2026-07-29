@@ -17,6 +17,7 @@
 | `PLAYLIST_PANEL_PIN_STORE_KEY` | constant | pure | none | `features/library/library-preferences.ts` | App UI tests | 7 |
 | `DIY_MODE_STORE_KEY` | constant | pure | none | `features/settings/player-preferences.ts` | App UI tests | 9 |
 | `DEFAULT_GLOBAL_HOTKEYS` | constant | pure | none | `features/desktop/global-hotkeys.ts` | global hotkey tests | 5 |
+| `DESKTOP_RUNTIME_SEARCH_TERMS` | constant | pure | none | `app/App.tsx` | Settings real-control search tests | 10 |
 | `AccountVipBadge` | type | pure | none | `features/accounts/AccountSurface.tsx` | App account smoke paths | 6 |
 | `accountVipBadge` | function | pure | none | `features/accounts/AccountSurface.tsx` | App account smoke paths | 2 |
 | `placeholderRuntimeConfig` | function | pure | none | `app/runtime/runtime-placeholders.ts` | runtime tests | 1 |
@@ -29,6 +30,7 @@
 | `savePlaybackQualityPreference` | function | browser-storage | writes localStorage | `app/runtime/useShellPreferences.ts` | App quality tests | 4 |
 | `readBooleanPreference` | function | browser-storage | reads localStorage | `app/runtime/useShellPreferences.ts` | global shell boundary | 2 |
 | `saveBooleanPreference` | function | browser-storage | writes localStorage | `app/runtime/useShellPreferences.ts` | global shell boundary | 2 |
+| `afterPreferenceCommit` | function | pure | dispatches canonical preference completion/error callbacks | `app/runtime/preference-commit.ts` | App canonical preference commit tests | 2 |
 | `clampNumber` | function | pure | none | shared local utility near consumer | App behavior tests | 2 |
 | `playbackKeyForTrack` | function | pure | none | `features/playback/usePlaybackSessionRuntime.ts` | playback session tests | 2 |
 | `DesktopLyricsPayloadContext` | interface | pure | none | `features/desktop/desktop-lyrics-payload.ts` | desktop snapshot tests | 5 |

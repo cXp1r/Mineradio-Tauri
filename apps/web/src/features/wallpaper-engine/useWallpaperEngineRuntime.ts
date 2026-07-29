@@ -47,6 +47,8 @@ export interface WallpaperEngineRuntimeController {
 
 export interface WallpaperEngineRuntimeOptions {
 	windowState?: Pick<DesktopWindowState, "isVisible" | "isMinimized"> | null;
+	initialSelection?: string | null;
+	persistSelection?(projectId: string | null): Promise<void> | void;
 }
 
 function message(cause: unknown): string {
@@ -65,7 +67,11 @@ export function useWallpaperEngineRuntime(
 	const guardRef = useRef(createDesktopRequestGuard());
 	const busyRef = useRef(false);
 	const selectedRef = useRef<WallpaperProjectSummary | null>(null);
-	const preferredProjectIdRef = useRef(readPersistedSelection());
+	const preferredProjectIdRef = useRef(
+		options.initialSelection !== undefined
+			? options.initialSelection
+			: readPersistedSelection(),
+	);
 	const activeSessionRef = useRef<string | null>(null);
 	const resumeSceneOnRestoreRef = useRef(false);
 	const windowAvailableRef = useRef<boolean | null>(null);
@@ -81,11 +87,15 @@ export function useWallpaperEngineRuntime(
 		selectedRef.current = project;
 		setSelected(project);
 	}, []);
-	const commitSelection = useCallback((project: WallpaperProjectSummary | null) => {
+	const commitSelection = useCallback(async (project: WallpaperProjectSummary | null) => {
+		if (options.persistSelection) {
+			await options.persistSelection(project?.id ?? null);
+		} else {
+			writePersistedSelection(project?.id ?? null);
+		}
 		applyVisibleSelection(project);
 		preferredProjectIdRef.current = project?.id ?? null;
-		writePersistedSelection(project?.id ?? null);
-	}, [applyVisibleSelection]);
+	}, [applyVisibleSelection, options.persistSelection]);
 
 	const windowVisible = options.windowState?.isVisible;
 	const windowMinimized = options.windowState?.isMinimized;
@@ -192,8 +202,8 @@ export function useWallpaperEngineRuntime(
 				applyVisibleSelection(visibleSelection);
 			}
 			if (result.runtime) setRuntime(result.runtime);
-			if (result.selected) commitSelection(result.selected);
-			if (result.clearSelection) commitSelection(null);
+			if (result.selected) await commitSelection(result.selected);
+			if (result.clearSelection) await commitSelection(null);
 			setError(null);
 		} catch (cause) {
 			if (guardRef.current.isCurrent(generation)) setError(message(cause));

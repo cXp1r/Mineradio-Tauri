@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "bundleTolerance": 0.1,
+  "bundle": {
+    "totalBytes": 2095393,
+    "jsBytes": 1915459,
+    "cssBytes": 179238,
+    "largestJsBytes": 1834191,
+    "fileCount": 7
+  },
+  "directLocalStorageFiles": [
+    "apps/web/src/adapters/storage/legacy-browser-storage.ts",
+    "apps/web/src/app/runtime/useShellPreferences.ts",
+    "apps/web/src/cover/custom-cover.ts",
+    "apps/web/src/desktop-lyrics/custom-lyric-font.ts",
+    "apps/web/src/features/desktop/useDesktopManagementRuntime.ts",
+    "apps/web/src/features/home/legacy-home-listen-adapter.ts",
+    "apps/web/src/features/wallpaper-engine/useWallpaperEngineRuntime.ts",
+    "apps/web/src/lyrics/custom-lyrics.ts",
+    "apps/web/src/shared-playlist/imported-playlists.ts",
+    "apps/web/src/stores/shelf-store.ts",
+    "apps/web/src/stores/visual-store.ts",
+    "apps/web/src/visual/VisualControlPanelHost.tsx",
+    "apps/web/src/visual/visual-audio-debug.ts"
+  ]
+}

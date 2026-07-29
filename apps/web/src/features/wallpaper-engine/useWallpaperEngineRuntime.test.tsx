@@ -136,6 +136,61 @@ test("wallpaper controller restores the persisted project selection from the cur
 	localStorage.removeItem("mineradio.wallpaper-engine.selection.v1");
 });
 
+test("wallpaper selection becomes visible only after canonical preference commit", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+	(globalThis as unknown as { localStorage: Storage }).localStorage = window.localStorage;
+	localStorage.clear();
+	const selectedProject = project("canonical");
+	const commit = deferred<void>();
+	const persisted: Array<string | null> = [];
+	const port: WallpaperEngineRuntimePort = {
+		listProjects: async () => ({ projects: [selectedProject], roots: [], updatedAt: 1 }),
+		getProjectDetails: async () => selectedProject,
+		chooseDirectory: async () => ({ ok: true, canceled: true }),
+		chooseProjectFile: async () => ({ ok: true, canceled: true }),
+		removeDirectory: async () => ({ projects: [], roots: [], updatedAt: 1 }),
+		getRuntimeStatus: async () => runtime(),
+		startScene: async () => runtime(),
+		stopScene: async () => runtime(),
+		recover: async () => runtime(),
+	};
+	const controllerRef: { current: WallpaperEngineRuntimeController | null } = { current: null };
+	function Harness() {
+		controllerRef.current = useWallpaperEngineRuntime(port, {
+			initialSelection: null,
+			persistSelection: async (projectId) => {
+				persisted.push(projectId);
+				await commit.promise;
+			},
+		});
+		return null;
+	}
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	await act(async () => {
+		root.render(React.createElement(Harness));
+		await Promise.resolve();
+		await Promise.resolve();
+	});
+
+	let selection: Promise<void> = Promise.resolve();
+	await act(async () => {
+		selection = controllerRef.current!.select("canonical");
+		await Promise.resolve();
+	});
+	expect(persisted).toEqual(["canonical"]);
+	expect(controllerRef.current?.selected).toBeNull();
+	expect(localStorage.getItem("mineradio.wallpaper-engine.selection.v1")).toBeNull();
+	commit.resolve(undefined);
+	await act(async () => selection);
+	expect(controllerRef.current?.selected?.id).toBe("canonical");
+
+	await act(async () => root.unmount());
+	host.remove();
+});
+
 test("a transient library miss hides the selection without erasing its persisted intent", async () => {
 	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	(globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

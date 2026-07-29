@@ -50,6 +50,12 @@ jobs:
       - name: Build web app
         run: bun run web:build
 
+      - name: Enforce deterministic M8 performance budget
+        env:
+          MINERADIO_PERF_SKIP_BUILD: "1"
+          MINERADIO_PERF_SKIP_NATIVE: "1"
+        run: bun run perf:budget
+
   rust-windows:
     name: Rust checks on Windows
     runs-on: windows-2022

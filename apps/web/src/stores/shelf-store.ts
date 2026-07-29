@@ -29,7 +29,31 @@ export function normalizeShelfPresence(value: unknown): ShelfPresence {
 	return value === "auto" || value === "always" ? value : "always";
 }
 
-function serializeShelfSettings(state: Pick<ShelfState, "mode" | "cameraMode" | "presence" | "showPodcasts" | "mergeCollections">): ShelfSettings {
+export function normalizeShelfSettings(
+	value?: unknown,
+): ShelfSettings {
+	const record =
+		value !== null && typeof value === "object"
+			? (value as Partial<ShelfSettings>)
+			: undefined;
+	return {
+		version: 1,
+		mode: normalizeShelfMode(record?.mode),
+		cameraMode: normalizeShelfCameraMode(record?.cameraMode),
+		presence: normalizeShelfPresence(record?.presence),
+		showPodcasts: record?.showPodcasts !== false,
+		mergeCollections: record?.mergeCollections === true,
+	};
+}
+
+export function mergeShelfSettings(
+	base: ShelfSettings,
+	patch: Partial<ShelfSettings>,
+): ShelfSettings {
+	return normalizeShelfSettings({ ...base, ...patch, version: 1 });
+}
+
+export function serializeShelfSettings(state: Pick<ShelfState, "mode" | "cameraMode" | "presence" | "showPodcasts" | "mergeCollections">): ShelfSettings {
 	return {
 		version: 1,
 		mode: normalizeShelfMode(state.mode),
@@ -58,15 +82,7 @@ export function loadShelfSettingsFromStorage(storage?: StorageLike): ShelfSettin
 		return null;
 	}
 	if (!parsed || typeof parsed !== "object") return null;
-	const record = parsed as Record<string, unknown>;
-	return {
-		version: 1,
-		mode: normalizeShelfMode(record.mode),
-		cameraMode: normalizeShelfCameraMode(record.cameraMode),
-		presence: normalizeShelfPresence(record.presence),
-		showPodcasts: record.showPodcasts !== false,
-		mergeCollections: record.mergeCollections === true,
-	};
+	return normalizeShelfSettings(parsed as Partial<ShelfSettings>);
 }
 
 export function saveShelfSettingsToStorage(storage?: StorageLike): void {

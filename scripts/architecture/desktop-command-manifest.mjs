@@ -66,10 +66,26 @@ export const M7_ADDITIVE_DESKTOP_COMMANDS = Object.freeze([
 	"recover_wallpaper_engine_runtime",
 ]);
 
+// M8 仅追加 typed preference snapshot、事务与 legacy migration 三条命令。
+export const M8_ADDITIVE_DESKTOP_COMMANDS = Object.freeze([
+	"get_preferences_snapshot",
+	"commit_preferences_transaction",
+	"migrate_legacy_preferences",
+]);
+
+export const M8_DESKTOP_COMMAND_INTERFACES = Object.freeze({
+	get_preferences_snapshot: "fn get_preferences_snapshot(state: tauri::State<'_, AppState>) -> Result<db::PreferencesSnapshot, String>",
+	commit_preferences_transaction: "fn commit_preferences_transaction(state: tauri::State<'_, AppState>, request: db::PreferenceTransactionRequest) -> Result<db::PreferencesSnapshot, String>",
+	migrate_legacy_preferences: "fn migrate_legacy_preferences(state: tauri::State<'_, AppState>, request: db::LegacyPreferencesMigrationRequest) -> Result<db::PreferencesSnapshot, String>",
+});
+
 export const DESKTOP_COMMAND_REGISTRATION_ORDER = Object.freeze([
 	"get_runtime_config",
 	"get_sidecar_status",
 	"get_database_status",
+	"get_preferences_snapshot",
+	"commit_preferences_transaction",
+	"migrate_legacy_preferences",
 	"get_desktop_diagnostics",
 	"get_resource_governance",
 	"trim_application_working_set",

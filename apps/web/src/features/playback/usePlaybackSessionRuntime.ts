@@ -71,12 +71,16 @@ export interface PlaybackSessionRuntimeOptions {
 	beatMapKeyForMap(map: JsonValue, source: string): string;
 	initialLyricsPayload: LyricPayload | null;
 	initialPlaybackQuality: PlaybackQualityRequest;
-	persistPlaybackQuality(quality: PlaybackQualityRequest): void;
+	persistPlaybackQuality(
+		quality: PlaybackQualityRequest,
+	): Promise<void> | void;
 	now?: () => number;
 	onRuntimePause?: () => void;
 	onRuntimeTimeUpdate?(payload: TimeUpdatePayload): void;
 	onRuntimeDurationChange?(payload: TimeUpdatePayload): void;
 	onRuntimeEnded?(): void;
+	onPlaybackReady?(track: Track, playbackIntentId: number): void;
+	onPlaybackFailed?(track: Track, playbackIntentId: number, message: string): void;
 }
 
 export interface PlaybackSessionRuntimeResult {
@@ -87,7 +91,7 @@ export interface PlaybackSessionRuntimeResult {
 	originalLyricsPayloadRef: RefObject<LyricPayload | null>;
 	clearCurrentBeatMap(): void;
 	dismissTrialBanner(): void;
-	setPlaybackQuality(quality: PlaybackQualityRequest): void;
+	setPlaybackQuality(quality: PlaybackQualityRequest): Promise<void> | void;
 	togglePlayback(): void;
 	handleRuntimeTimeUpdate(payload: TimeUpdatePayload): void;
 	handleRuntimeDurationChange(payload: TimeUpdatePayload): void;
@@ -166,6 +170,8 @@ export function usePlaybackSessionRuntime({
 	onRuntimeTimeUpdate,
 	onRuntimeDurationChange,
 	onRuntimeEnded,
+	onPlaybackReady,
+	onPlaybackFailed,
 }: PlaybackSessionRuntimeOptions): PlaybackSessionRuntimeResult {
 	const [playbackQuality, setPlaybackQualityState] = useState(initialPlaybackQuality);
 	const [playbackQualityReloadHandle, setPlaybackQualityReloadHandle] =
@@ -269,6 +275,10 @@ export function usePlaybackSessionRuntime({
 			await controller.play();
 			if (!coordinator.isPlaybackCurrent(reload)) return false;
 			if (coordinator.markPlaying(reload)) setPlaying(true);
+			runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
+				track,
+				playbackIntentId,
+			);
 			setHomeForcedOpen(false);
 			setHomeSuppressed(true);
 			return true;
@@ -283,6 +293,11 @@ export function usePlaybackSessionRuntime({
 			setPlaying(false);
 			setSearchError(message);
 			showToast(message);
+			runtimeLifecycleCallbacksRef.current.onPlaybackFailed?.(
+				track,
+				playbackIntentId,
+				message,
+			);
 			return false;
 		}
 	}, [
@@ -293,6 +308,7 @@ export function usePlaybackSessionRuntime({
 		loadBeatMap,
 		localAudioUrlsRef,
 		now,
+		playbackIntentId,
 		playbackQuality,
 		setHomeForcedOpen,
 		setHomeSuppressed,
@@ -312,11 +328,15 @@ export function usePlaybackSessionRuntime({
 		onRuntimeTimeUpdate,
 		onRuntimeDurationChange,
 		onRuntimeEnded,
+		onPlaybackReady,
+		onPlaybackFailed,
 	});
 	runtimeLifecycleCallbacksRef.current = {
 		onRuntimeTimeUpdate,
 		onRuntimeDurationChange,
 		onRuntimeEnded,
+		onPlaybackReady,
+		onPlaybackFailed,
 	};
 
 	const handleRuntimeTimeUpdate = useCallback((payload: TimeUpdatePayload) => {
@@ -360,11 +380,19 @@ export function usePlaybackSessionRuntime({
 		setTrialBanner(null);
 		setSearchError(message);
 		showToast(message);
+		if (track) {
+			runtimeLifecycleCallbacksRef.current.onPlaybackFailed?.(
+				track,
+				playbackIntentId,
+				message,
+			);
+		}
 	}, [
 		appServices,
 		coordinator,
 		currentEventLoad,
 		getPlaybackSnapshot,
+		playbackIntentId,
 		setSearchError,
 		showToast,
 	]);
@@ -416,21 +444,28 @@ export function usePlaybackSessionRuntime({
 	}, [coordinator, currentEventLoad, now, onRuntimePause, setPlaying]);
 
 	const setPlaybackQuality = useCallback((quality: PlaybackQualityRequest) => {
-		setPlaybackQualityState(quality);
-		persistPlaybackQuality(quality);
-		const snapshot = getPlaybackSnapshot();
-		if (!snapshot.currentTrack) {
-			showToast("音质偏好已保存，下次播放生效");
-			return;
+		const applyCommittedQuality = () => {
+			// Repository 串行提交；每次成功提交都成为新的权威值，失败项不发布。
+			setPlaybackQualityState(quality);
+			const snapshot = getPlaybackSnapshot();
+			if (!snapshot.currentTrack) {
+				showToast("音质偏好已保存，下次播放生效");
+				return;
+			}
+			const resumeAt = controllerRef.current ? snapshot.positionMs : 0;
+			if (resumeAt > 0) controllerRef.current?.pause();
+			const qualityReload = coordinator.invalidateCurrentTrackLoad();
+			if (qualityReload) {
+				setPlaybackQualityReloadHandle(qualityReload);
+			}
+			setPositionMs(resumeAt);
+			showToast("正在切换音质");
+		};
+		const committed = persistPlaybackQuality(quality);
+		if (committed && typeof committed.then === "function") {
+			return Promise.resolve(committed).then(applyCommittedQuality);
 		}
-		const resumeAt = controllerRef.current ? snapshot.positionMs : 0;
-		if (resumeAt > 0) controllerRef.current?.pause();
-		const qualityReload = coordinator.invalidateCurrentTrackLoad();
-		if (qualityReload) {
-			setPlaybackQualityReloadHandle(qualityReload);
-		}
-		setPositionMs(resumeAt);
-		showToast("正在切换音质");
+		applyCommittedQuality();
 	}, [
 		controllerRef,
 		coordinator,
@@ -445,7 +480,9 @@ export function usePlaybackSessionRuntime({
 		const playback = appServices?.music.playback;
 		const key = playbackKeyForTrack(track);
 		if (!track || !playback || !key || localAudioUrlsRef.current.has(key)) {
-			setTrackQualityOptions([]);
+			setTrackQualityOptions((current) =>
+				current.length > 0 ? [] : current,
+			);
 			return;
 		}
 		let cancelled = false;
@@ -459,7 +496,11 @@ export function usePlaybackSessionRuntime({
 			const fallbackQuality = availability.defaultQuality ?? qualities[0]?.requestQuality;
 			if (!selectedAvailable && fallbackQuality) setPlaybackQuality(fallbackQuality);
 		}).catch(() => {
-			if (!cancelled) setTrackQualityOptions([]);
+			if (!cancelled) {
+				setTrackQualityOptions((current) =>
+					current.length > 0 ? [] : current,
+				);
+			}
 		});
 		return () => {
 			cancelled = true;
@@ -524,6 +565,10 @@ export function usePlaybackSessionRuntime({
 					await controller.play();
 					if (!coordinator.isPlaybackCurrent(session)) return;
 					if (coordinator.markPlaying(session)) setPlaying(true);
+					runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
+						currentTrack,
+						playbackIntentId,
+					);
 					setLyricsLoading(false);
 					setHomeForcedOpen(false);
 					setHomeSuppressed(true);
@@ -537,6 +582,11 @@ export function usePlaybackSessionRuntime({
 					setPlaying(false);
 					setSearchError(message);
 					showToast(message);
+					runtimeLifecycleCallbacksRef.current.onPlaybackFailed?.(
+						currentTrack,
+						playbackIntentId,
+						message,
+					);
 				}
 			})();
 			return;
@@ -574,6 +624,10 @@ export function usePlaybackSessionRuntime({
 			await controller.play();
 			if (!coordinator.isPlaybackCurrent(session)) return;
 			if (coordinator.markPlaying(session)) setPlaying(true);
+			runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
+				currentTrack,
+				playbackIntentId,
+			);
 				setHomeForcedOpen(false);
 				setHomeSuppressed(true);
 			} catch (error) {
@@ -587,6 +641,11 @@ export function usePlaybackSessionRuntime({
 				setPlaying(false);
 				setSearchError(message);
 				showToast(message);
+				runtimeLifecycleCallbacksRef.current.onPlaybackFailed?.(
+					currentTrack,
+					playbackIntentId,
+					message,
+				);
 			}
 
 			try {

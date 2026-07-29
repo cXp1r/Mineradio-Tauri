@@ -45,6 +45,7 @@ import {
   usePlaybackSessionRuntime,
   type CurrentBeatMapState,
 } from "../features/playback/usePlaybackSessionRuntime";
+import { useSourceSwitchController } from "../features/playback/useSourceSwitchController";
 import {
   LOCAL_AUDIO_ACCEPT,
   usePlaybackUiController,
@@ -60,10 +61,19 @@ import {
 import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
 import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
 import { useDesktopManagementRuntime } from "../features/desktop/useDesktopManagementRuntime";
-import { DesktopRuntimeControls } from "../features/desktop/DesktopRuntimeControls";
+import {
+  DESKTOP_RUNTIME_SETTINGS_SEARCH_TERMS,
+  DesktopRuntimeControls,
+} from "../features/desktop/DesktopRuntimeControls";
 import { useFullDesktopRuntime } from "../features/desktop/useFullDesktopRuntime";
-import { FullDesktopControls } from "../features/desktop/FullDesktopControls";
-import { WallpaperEngineControls } from "../features/wallpaper-engine/WallpaperEngineControls";
+import {
+  FULL_DESKTOP_SETTINGS_SEARCH_TERMS,
+  FullDesktopControls,
+} from "../features/desktop/FullDesktopControls";
+import {
+  WALLPAPER_ENGINE_SETTINGS_SEARCH_TERMS,
+  WallpaperEngineControls,
+} from "../features/wallpaper-engine/WallpaperEngineControls";
 import { setFullDesktopModeWithWallpaperFallback } from "../features/wallpaper-engine/full-desktop-wallpaper-coordinator";
 import { useWallpaperEngineRuntime } from "../features/wallpaper-engine/useWallpaperEngineRuntime";
 import { useUpdaterController } from "../features/updater/useUpdaterController";
@@ -81,6 +91,7 @@ import {
   useHomeController,
   type HomeControllerResult,
 } from "../features/home/useHomeController";
+import type { HomeListenRepository } from "../features/home/home-listen-repository";
 export { shouldUseCachedHomeDiscoverPlaylist } from "../features/home/home-policy";
 import {
   buildDesktopLyricsPayloadPatch,
@@ -118,11 +129,23 @@ import {
   readPlaybackQualityPreference,
   savePlaybackQualityPreference,
   useShellPreferences,
+  type HydratedShellPreferencesSnapshot,
 } from "./runtime/useShellPreferences";
+import type { PreferencesRepository } from "../ports/preferences-repository";
+import {
+  PLAYBACK_QUALITY_PREFERENCE,
+  SETTINGS_FAB_AUTO_HIDE_PREFERENCE,
+  WALLPAPER_SELECTION_PREFERENCE,
+} from "../preferences/keys";
 import { useGlobalShellRuntime } from "./runtime/GlobalShellRuntime";
 export { isHomeBlankDismissElement } from "./runtime/GlobalShellRuntime";
 
 const SHOW_SPLASH = import.meta.env.VITE_SPLASH !== "0";
+const DESKTOP_RUNTIME_SEARCH_TERMS = Object.freeze([
+  ...FULL_DESKTOP_SETTINGS_SEARCH_TERMS,
+  ...WALLPAPER_ENGINE_SETTINGS_SEARCH_TERMS,
+  ...DESKTOP_RUNTIME_SETTINGS_SEARCH_TERMS,
+]);
 
 function audioElementSupported(): boolean {
   return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
@@ -131,6 +154,18 @@ function audioElementSupported(): boolean {
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+function afterPreferenceCommit(
+  result: Promise<void> | void,
+  onCommitted: () => void,
+  onRejected: (error: unknown) => void,
+): void {
+  if (result && typeof result.then === "function") {
+    void Promise.resolve(result).then(onCommitted).catch(onRejected);
+    return;
+  }
+  onCommitted();
 }
 
 const LOGIN_PROVIDERS = LOGIN_QR_PROVIDERS;
@@ -232,6 +267,9 @@ export type AppProps = {
   desktopRuntime?: DesktopRuntimePort;
   fullDesktopRuntime?: FullDesktopRuntimePort;
   wallpaperEngineRuntime?: WallpaperEngineRuntimePort;
+  homeListenRepository?: HomeListenRepository;
+  preferences?: PreferencesRepository;
+  hydratedPreferences?: HydratedShellPreferencesSnapshot;
 };
 
 export type DesktopLyricsRuntime = {
@@ -250,6 +288,9 @@ export function App({
   desktopRuntime = defaultDesktopRuntime,
   fullDesktopRuntime = defaultFullDesktopRuntime,
   wallpaperEngineRuntime = defaultWallpaperEngineRuntime,
+  homeListenRepository,
+  preferences,
+  hydratedPreferences,
 }: AppProps = {}): ReactElement {
   const [sidecarClient, setSidecarClient] = useState<
     SidecarRuntimeConnection["client"] | null
@@ -288,7 +329,20 @@ export function App({
   const durationMs = usePlaybackStore((s) => s.durationMs);
   const volume = usePlaybackStore((s) => s.volume);
   const muted = usePlaybackStore((s) => s.muted);
+  const providerMatrix = useProviderStore((s) => s.matrix);
   const setMatrix = useProviderStore((s) => s.setMatrix);
+  const sourceSwitchProviders = useMemo<ProviderId[]>(
+    () =>
+      (providerMatrix?.providers ?? [])
+        .filter(
+          (entry) =>
+            entry.available &&
+            entry.capabilities.includes("search") &&
+            entry.capabilities.includes("songUrl"),
+        )
+        .map((entry) => entry.providerId),
+    [providerMatrix],
+  );
   const shelfOpen = useShelfStore((s) => s.open);
   const closeShelf = useShelfStore((s) => s.closeShelf);
   const selectShelfPlaylist = useShelfStore((s) => s.selectPlaylist);
@@ -333,13 +387,66 @@ export function App({
     updateShelfMergeCollections,
     updateVisualPreset,
     updateVisualFxPatch,
+    applyVisualSettingsTransaction,
     updateVisualNumberSetting,
     updateVisualBooleanSetting,
     updateVisualStringSetting,
   } = useShellPreferences({
     showToast,
     onDesktopLyricsChange: handleDesktopLyricsPreferenceChange,
+    preferences,
+    hydratedPreferences,
   });
+  const handleShelfModePreferenceChange = useCallback(
+    (mode: Parameters<typeof updateShelfMode>[0]) => {
+      afterPreferenceCommit(
+        updateShelfMode(mode),
+        () => undefined,
+        () => showToast("3D 歌单架模式保存失败"),
+      );
+    },
+    [showToast, updateShelfMode],
+  );
+  const handleShelfCameraPreferenceChange = useCallback(
+    (mode: Parameters<typeof updateShelfCameraMode>[0]) => {
+      afterPreferenceCommit(
+        updateShelfCameraMode(mode),
+        () => undefined,
+        () => showToast("3D 歌单架镜头偏好保存失败"),
+      );
+    },
+    [showToast, updateShelfCameraMode],
+  );
+  const handleShelfPresencePreferenceChange = useCallback(
+    (presence: Parameters<typeof updateShelfPresence>[0]) => {
+      afterPreferenceCommit(
+        updateShelfPresence(presence),
+        () => undefined,
+        () => showToast("3D 歌单架显示偏好保存失败"),
+      );
+    },
+    [showToast, updateShelfPresence],
+  );
+  const handleShelfPodcastsPreferenceChange = useCallback(
+    (show: boolean) => {
+      afterPreferenceCommit(
+        updateShelfShowPodcasts(show),
+        () => undefined,
+        () => showToast("3D 歌单架播客偏好保存失败"),
+      );
+    },
+    [showToast, updateShelfShowPodcasts],
+  );
+  const handleShelfCollectionsPreferenceChange = useCallback(
+    (merge: boolean) => {
+      afterPreferenceCommit(
+        updateShelfMergeCollections(merge),
+        () => undefined,
+        () => showToast("3D 歌单架收藏偏好保存失败"),
+      );
+    },
+    [showToast, updateShelfMergeCollections],
+  );
   const {
     modalOpen: updateModalOpen,
     setModalOpen: setUpdateModalOpen,
@@ -387,6 +494,16 @@ export function App({
   const libraryControllerRef = useRef<LibraryControllerResult | null>(null);
   const accountLoggedInRef = useRef(false);
   const homeControllerRef = useRef<HomeControllerResult | null>(null);
+  const homeResumeRef = useRef<() => void>(() => undefined);
+  const currentQueueIndex = useMemo(() => {
+    if (!currentTrack) return -1;
+    const identityIndex = queue.findIndex((track) => track === currentTrack);
+    if (identityIndex >= 0) return identityIndex;
+    return queue.findIndex(
+      (track) =>
+        track.provider === currentTrack.provider && track.id === currentTrack.id,
+    );
+  }, [currentTrack, queue]);
   const homeController = useHomeController({
     discover: appServices?.music.discover ?? null,
     library: appServices?.music.library ?? null,
@@ -394,11 +511,16 @@ export function App({
     currentTrack,
     positionMs,
     durationMs,
+    queue,
+    currentQueueIndex,
+    isPlaying,
+    playbackMode,
     providerLoggedIn: () => accountLoggedInRef.current,
     libraryPanelPinned: playlistPanelPinned,
     playback: {
       setQueue,
       playAt: (index) => usePlaybackStore.getState().playAt(index),
+      resume: () => homeResumeRef.current(),
     },
     searchQuery: (query, mode = "song") => {
       homeControllerRef.current?.setSuppressed(false);
@@ -429,6 +551,7 @@ export function App({
     setConsole,
     setMiniQueue,
     showToast,
+    storage: homeListenRepository,
   });
   homeControllerRef.current = homeController;
   const {
@@ -437,9 +560,12 @@ export function App({
     playlistDetail: homePlaylistDetail,
     discoverLoading: homeDiscoverLoading,
     weatherRadioLoading: homeWeatherRadioLoading,
+    discoverError: homeDiscoverError,
+    weatherRadioError: homeWeatherRadioError,
     forcedOpen: homeForcedOpen,
     suppressed: homeSuppressed,
     listenSummary: homeListenSummary,
+    dashboard: homeDashboard,
     setForcedOpen: setHomeForcedOpen,
     setSuppressed: setHomeSuppressed,
     refreshDiscover: refreshHomeDiscover,
@@ -459,6 +585,9 @@ export function App({
     playWeatherSong: playHomeWeatherSong,
     openInsight: openHomeInsight,
     playRecent: playHomeRecent,
+    continueListening: continueHomeListening,
+    playNextUp: playHomeNextUp,
+    playForYou: playHomeForYou,
     enterPlaybackSurface,
   } = homeController;
 
@@ -489,6 +618,10 @@ export function App({
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
   const clearCurrentBeatMapRef = useRef<() => void>(() => undefined);
+  const confirmSourcePlaybackRef = useRef<() => void>(() => undefined);
+  const rollbackFailedSourcePlaybackRef = useRef<() => Promise<void>>(
+    async () => undefined,
+  );
   const toggleWindowFullscreenRef = useRef<() => Promise<void>>(async () => {});
   const applyCustomCoverImageRef = useRef<
     (file: Blob, track?: Track) => Promise<void>
@@ -539,6 +672,15 @@ export function App({
       isPlaying: state.isPlaying,
     };
   }, []);
+  const persistPlaybackQuality = useCallback(
+    (quality: Parameters<typeof savePlaybackQualityPreference>[0]) => {
+      if (preferences) {
+        return preferences.set(PLAYBACK_QUALITY_PREFERENCE, quality);
+      }
+      savePlaybackQualityPreference(quality);
+    },
+    [preferences],
+  );
   const {
     playbackQuality,
     trackQualityOptions,
@@ -576,14 +718,59 @@ export function App({
     resetLyrics: lyricsReset,
     beatMapKeyForMap: desktopLyricsBeatMapKey,
     initialLyricsPayload: lyricsPayload,
-    initialPlaybackQuality: readPlaybackQualityPreference(),
-    persistPlaybackQuality: savePlaybackQualityPreference,
+    initialPlaybackQuality:
+      hydratedPreferences?.playbackQuality ?? readPlaybackQualityPreference(),
+    persistPlaybackQuality,
     onRuntimePause: recordHomeListenPause,
     onRuntimeTimeUpdate: handleUiRuntimeTimeUpdate,
     onRuntimeDurationChange: handleUiRuntimeDurationChange,
     onRuntimeEnded: handleUiRuntimeEnded,
+    onPlaybackReady: () => confirmSourcePlaybackRef.current(),
+    onPlaybackFailed: () => {
+      void rollbackFailedSourcePlaybackRef.current();
+    },
   });
+  homeResumeRef.current = togglePlayback;
   clearCurrentBeatMapRef.current = clearCurrentBeatMap;
+  const getSourceSwitchSnapshot = useCallback(() => {
+    const state = usePlaybackStore.getState();
+    return {
+      track: state.currentTrack,
+      playbackIntentId: state.playbackIntentId,
+      positionMs: state.positionMs,
+    };
+  }, []);
+  const commitSourceSwitch = useCallback(
+    (request: Parameters<ReturnType<typeof usePlaybackStore.getState>["replaceCurrentSource"]>[0]) =>
+      usePlaybackStore.getState().replaceCurrentSource(request),
+    [],
+  );
+  const {
+    busyProvider: sourceSwitchBusy,
+    switchSource,
+    confirmSourcePlayback,
+    rollbackFailedSourcePlayback,
+  } =
+    useSourceSwitchController({
+      search: appServices?.music.search ?? null,
+      playback: appServices?.music.playback ?? null,
+      getPlaybackSnapshot: getSourceSwitchSnapshot,
+      commit: commitSourceSwitch,
+      showToast,
+    });
+  confirmSourcePlaybackRef.current = confirmSourcePlayback;
+  rollbackFailedSourcePlaybackRef.current = rollbackFailedSourcePlayback;
+  const sourceSwitchDisabled = useMemo(() => {
+    if (!currentTrack) return true;
+    const key = `${currentTrack.provider}:${currentTrack.id}`;
+    if (localAudioUrlsRef.current.has(key)) return true;
+    const extended = currentTrack as Track & {
+      programId?: string;
+      radioId?: string;
+      local?: boolean;
+    };
+    return Boolean(extended.programId || extended.radioId || extended.local);
+  }, [currentTrack, localAudioUrlsRef]);
   const {
     customLyricModalOpen,
     setCustomLyricModalOpen,
@@ -709,12 +896,17 @@ export function App({
 
   const toggleDiyMode = useCallback(() => {
     const next = !diyMode;
-    setDiyMode(next);
-    if (!next) {
-      setPlaylistPanelOpen(false);
-      setMiniQueue(false);
-    }
-    showToast(next ? "DIY 玩家模式已开启" : "已切回简约模式");
+    afterPreferenceCommit(
+      setDiyMode(next),
+      () => {
+        if (!next) {
+          setPlaylistPanelOpen(false);
+          setMiniQueue(false);
+        }
+        showToast(next ? "DIY 玩家模式已开启" : "已切回简约模式");
+      },
+      () => showToast("DIY 玩家模式偏好保存失败"),
+    );
   }, [
     diyMode,
     setDiyMode,
@@ -749,15 +941,24 @@ export function App({
 
   const toggleUserCapsuleAutoHide = useCallback(() => {
     const next = !userCapsuleAutoHide;
-    setUserCapsuleAutoHide(next);
-    showToast(next ? "账号胶囊已自动隐藏" : "账号胶囊已固定显示");
+    afterPreferenceCommit(
+      setUserCapsuleAutoHide(next),
+      () => showToast(next ? "账号胶囊已自动隐藏" : "账号胶囊已固定显示"),
+      () => showToast("账号胶囊偏好保存失败"),
+    );
   }, [setUserCapsuleAutoHide, showToast, userCapsuleAutoHide]);
 
   const closeVisualGuide = useCallback((markSeen: boolean) => {
-    if (markSeen) markVisualGuideSeen();
+    if (markSeen) {
+      afterPreferenceCommit(
+        markVisualGuideSeen(),
+        () => undefined,
+        () => showToast("新手引导状态保存失败"),
+      );
+    }
     restoreVisualGuidePlaylistPanel();
     setVisualGuideOpen(false);
-  }, [markVisualGuideSeen, restoreVisualGuidePlaylistPanel]);
+  }, [markVisualGuideSeen, restoreVisualGuidePlaylistPanel, showToast]);
 
   const prepareVisualGuideStep = useCallback(
     (step: VisualGuideStep) => {
@@ -981,14 +1182,19 @@ export function App({
   }, []);
 
   const setPlaylistPanelPinned = useCallback((pinned: boolean) => {
-    persistPlaylistPanelPinned(pinned);
-    if (pinned) setPlaylistPanelOpen(true);
-  }, [persistPlaylistPanelPinned, setPlaylistPanelOpen]);
+    afterPreferenceCommit(
+      persistPlaylistPanelPinned(pinned),
+      () => {
+        if (pinned) setPlaylistPanelOpen(true);
+        showToast(pinned ? "左侧歌单已常开" : "左侧歌单已恢复自动隐藏");
+      },
+      () => showToast("左侧歌单固定偏好保存失败"),
+    );
+  }, [persistPlaylistPanelPinned, setPlaylistPanelOpen, showToast]);
 
   const togglePlaylistPanelPinned = useCallback(() => {
     setPlaylistPanelPinned(!playlistPanelPinned);
-    showToast(playlistPanelPinned ? "左侧歌单已恢复自动隐藏" : "左侧歌单已常开");
-  }, [playlistPanelPinned, setPlaylistPanelPinned, showToast]);
+  }, [playlistPanelPinned, setPlaylistPanelPinned]);
 
   const openHomeLibrary = useCallback(() => {
     closeHomePlaylistDetail();
@@ -1004,18 +1210,21 @@ export function App({
       showToast("已打开歌单库");
       return;
     }
-    openHomeProductGuide();
+    openLocalFileImport();
   }, [
+    closeHomePlaylistDetail,
     homeDiscover?.loggedIn,
     neteaseStatus?.loggedIn,
-    openHomeProductGuide,
     closeShelf,
+    openLocalFileImport,
     openPlaylistPanelTab,
     qqStatus?.loggedIn,
     sodaStatus?.loggedIn,
     refreshShelfPlaylists,
     selectShelfPlaylist,
     setConsole,
+    setHomeForcedOpen,
+    setHomeSuppressed,
     setMiniQueue,
     showToast,
   ]);
@@ -1220,8 +1429,24 @@ export function App({
     getVisualPerformanceSnapshot: readVisualPerformanceSnapshot,
   });
   const fullDesktopManagement = useFullDesktopRuntime(fullDesktopRuntime);
+  const persistWallpaperSelection = useCallback(
+    (projectId: string | null) => {
+      if (!preferences) return;
+      return preferences.set(WALLPAPER_SELECTION_PREFERENCE, projectId);
+    },
+    [preferences],
+  );
+  const persistSettingsFabAutoHide = useCallback(
+    (value: boolean) => {
+      if (!preferences) return;
+      return preferences.set(SETTINGS_FAB_AUTO_HIDE_PREFERENCE, value);
+    },
+    [preferences],
+  );
   const wallpaperEngineManagement = useWallpaperEngineRuntime(wallpaperEngineRuntime, {
     windowState: desktopWindowState,
+    initialSelection: hydratedPreferences?.wallpaperSelection,
+    persistSelection: preferences ? persistWallpaperSelection : undefined,
   });
   const setCoordinatedFullDesktopMode = useCallback(async (mode: "disabled" | "passive" | "interactive") => {
     await setFullDesktopModeWithWallpaperFallback(
@@ -1336,7 +1561,7 @@ export function App({
         homeActive: emptyHomeActive,
         secondaryLeftDisplaySeamGuardActive:
           shouldUseSecondaryLeftDisplaySeamGuard(desktopWindowState),
-        onShelfModeChange: updateShelfMode,
+        onShelfModeChange: handleShelfModePreferenceChange,
         onShelfPlayQueueIndex: (index) =>
           usePlaybackStore.getState().playAt(index),
         onShelfPlayPlaylist: (payload) => void playShelfPlaylist(payload),
@@ -1387,6 +1612,11 @@ export function App({
         onBooleanSettingChange: updateVisualBooleanSetting,
         onStringSettingChange: updateVisualStringSetting,
         onFxPatchChange: updateVisualFxPatch,
+        onSettingsTransaction: applyVisualSettingsTransaction,
+        initialFabAutoHide: hydratedPreferences?.settingsFabAutoHide,
+        onFabAutoHideChange: preferences
+          ? persistSettingsFabAutoHide
+          : undefined,
         onNotice: showNotice,
         desktopRuntimeSlot: (
           <>
@@ -1398,6 +1628,7 @@ export function App({
             <DesktopRuntimeControls {...desktopManagement} />
           </>
         ),
+        desktopRuntimeSearchTerms: DESKTOP_RUNTIME_SEARCH_TERMS,
       },
       aiDepthChip,
     },
@@ -1406,9 +1637,12 @@ export function App({
         discover: homeDiscover,
         weatherRadio: homeWeatherRadio,
         listenSummary: homeListenSummary,
+        dashboard: homeDashboard,
         playlistDetail: homePlaylistDetail,
         active: emptyHomeActive,
         loading: homeDiscoverLoading || homeWeatherRadioLoading,
+        discoverError: homeDiscoverError,
+        weatherRadioError: homeWeatherRadioError,
         isPlaying,
         positionMs,
         durationMs,
@@ -1427,7 +1661,13 @@ export function App({
         onOpenPodcastSearch: openHomePodcastSearch,
         onOpenInsight: openHomeInsight,
         onPlayRecent: playHomeRecent,
+        onContinue: continueHomeListening,
+        onPlayNextUp: playHomeNextUp,
+        onPlayForYou: playHomeForYou,
+        onNotice: showNotice,
         onPlayWeatherSong: (index) => void playHomeWeatherSong(index),
+        onRetryDiscover: () => void refreshHomeDiscover(),
+        onRetryWeatherRadio: () => void refreshHomeWeatherRadio(),
         onClosePlaylistDetail: closeHomePlaylistDetail,
         onPlayPlaylistDetail: playHomePlaylistDetail,
         onPlaylistDetailArtist: searchHomePlaylistDetailArtist,
@@ -1538,11 +1778,12 @@ export function App({
         onVolumeChange: setVolume,
         onToggleMute: toggleMute,
         onQualityChange: setPlaybackQuality,
-        onShelfModeChange: updateShelfMode,
-        onShelfCameraModeChange: updateShelfCameraMode,
-        onShelfPresenceChange: updateShelfPresence,
-        onShelfShowPodcastsChange: updateShelfShowPodcasts,
-        onShelfMergeCollectionsChange: updateShelfMergeCollections,
+        onSourceSwitch: (provider) => void switchSource(provider),
+        onShelfModeChange: handleShelfModePreferenceChange,
+        onShelfCameraModeChange: handleShelfCameraPreferenceChange,
+        onShelfPresenceChange: handleShelfPresencePreferenceChange,
+        onShelfShowPodcastsChange: handleShelfPodcastsPreferenceChange,
+        onShelfMergeCollectionsChange: handleShelfCollectionsPreferenceChange,
         deps: { isHomeControlsLocked: () => homeControlsLocked },
         onPlayQueueIndex: playMiniQueueIndex,
         onRemoveQueueIndex: removeQueueAt,
@@ -1566,6 +1807,9 @@ export function App({
         muted,
         playbackQuality,
         qualityOptions: trackQualityOptions,
+        sourceProviders: sourceSwitchProviders,
+        sourceSwitchBusy,
+        sourceSwitchDisabled,
         shelfMode,
         shelfCameraMode,
         shelfPresence,

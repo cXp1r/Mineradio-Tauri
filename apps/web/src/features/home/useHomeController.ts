@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
 	DiscoverHomeResponse,
 	Track,
@@ -7,28 +7,21 @@ import type {
 import type { DiscoverPort } from "../../ports/music/discover-port";
 import type { LibraryPort } from "../../ports/music/library-port";
 import type { SearchExperiencePort } from "../../ports/music/search-port";
-import type {
-	HomeListenSummary,
-	HomePlaylistDetailView,
-} from "../../home/EmptyHomeHost";
-import { trackLikeKey } from "../likes/likes-policy";
+import type { HomePlaylistDetailView } from "../../home/EmptyHomeHost";
 import {
-	beginHomeListenSession,
-	buildHomeListenSummary,
-	isEffectiveHomeListenSession,
 	shouldUseCachedHomeDiscoverPlaylist,
-	updateHomeListenHistory,
-	updateHomeListenSession,
-	type HomeListenHistoryRecord,
-	type HomeListenSession,
 } from "./home-policy";
+import type { HomeDashboardModel } from "./home-dashboard-policy";
+import type { HomeListenSummary } from "./home-listen-ledger";
+import type { HomeListenRepository } from "./home-listen-repository";
+import { defaultHomeListenRepository } from "./legacy-home-listen-adapter";
+import {
+	useHomeDashboardController,
+	type HomeDashboardPlaybackFacade,
+} from "./useHomeDashboardController";
+import { useHomeListenLedger } from "./useHomeListenLedger";
 
-const HOME_LISTEN_STATS_STORE_KEY = "mineradio-listen-stats-v1";
-
-export interface HomeListenStorage {
-	read(): HomeListenHistoryRecord[];
-	save(history: HomeListenHistoryRecord[]): void;
-}
+export type HomeListenStorage = HomeListenRepository;
 
 export interface HomeControllerResult {
 	discover: DiscoverHomeResponse | null;
@@ -36,9 +29,12 @@ export interface HomeControllerResult {
 	playlistDetail: HomePlaylistDetailView | null;
 	discoverLoading: boolean;
 	weatherRadioLoading: boolean;
+	discoverError: string | null;
+	weatherRadioError: string | null;
 	forcedOpen: boolean;
 	suppressed: boolean;
 	listenSummary: HomeListenSummary | null;
+	dashboard: HomeDashboardModel;
 	setForcedOpen(open: boolean): void;
 	setSuppressed(suppressed: boolean): void;
 	refreshDiscover(): Promise<DiscoverHomeResponse | null>;
@@ -58,52 +54,11 @@ export interface HomeControllerResult {
 	playWeatherSong(index: number): Promise<void>;
 	openInsight(): void;
 	playRecent(): void;
+	continueListening(): void;
+	playNextUp(): void;
+	playForYou(index: number): void;
 	enterPlaybackSurface(): void;
 }
-
-function browserStorage(): HomeListenStorage {
-	return {
-		read() {
-			if (typeof localStorage === "undefined") return [];
-			try {
-				const parsed = JSON.parse(
-					localStorage.getItem(HOME_LISTEN_STATS_STORE_KEY) || "{}",
-				) as { history?: unknown };
-				const rawHistory = Array.isArray(parsed.history) ? parsed.history : [];
-				return rawHistory.slice(0, 24).flatMap((item) => {
-					if (!item || typeof item !== "object") return [];
-					const record = item as Record<string, unknown>;
-					const track = record.track as Track | undefined;
-					if (!track?.id || !track.title) return [];
-					return [
-						{
-							track,
-							plays: Math.max(1, Number(record.plays) || 1),
-							lastPlayedAt: Math.max(0, Number(record.lastPlayedAt) || 0),
-							listenMs: Math.max(0, Number(record.listenMs) || 0),
-							completed: Math.max(0, Number(record.completed) || 0),
-						},
-					];
-				});
-			} catch {
-				return [];
-			}
-		},
-		save(history) {
-			if (typeof localStorage === "undefined") return;
-			try {
-				localStorage.setItem(
-					HOME_LISTEN_STATS_STORE_KEY,
-					JSON.stringify({ history: history.slice(0, 24), updatedAt: Date.now() }),
-				);
-			} catch {
-				// 本地统计写入失败不应影响播放。
-			}
-		},
-	};
-}
-
-const defaultStorage = browserStorage();
 
 export function useHomeController({
 	discover: discoverPort,
@@ -112,6 +67,10 @@ export function useHomeController({
 	currentTrack,
 	positionMs,
 	durationMs,
+	queue,
+	currentQueueIndex,
+	isPlaying,
+	playbackMode,
 	providerLoggedIn,
 	libraryPanelPinned,
 	playback,
@@ -125,7 +84,7 @@ export function useHomeController({
 	setConsole,
 	setMiniQueue,
 	showToast,
-	storage = defaultStorage,
+	storage = defaultHomeListenRepository,
 	autoRefresh = true,
 }: {
 	discover: DiscoverPort | null;
@@ -134,9 +93,13 @@ export function useHomeController({
 	currentTrack: Track | null;
 	positionMs: number;
 	durationMs: number | null;
+	queue?: Track[];
+	currentQueueIndex?: number;
+	isPlaying?: boolean;
+	playbackMode?: "single" | "loop" | "queue" | "shuffle";
 	providerLoggedIn: boolean | (() => boolean);
 	libraryPanelPinned: boolean;
-	playback: { setQueue(tracks: Track[]): void; playAt(index: number): void };
+	playback: HomeDashboardPlaybackFacade;
 	searchQuery(keyword: string, mode?: "song" | "podcast"): void;
 	openLogin(): void;
 	openLibrarySurface(): void;
@@ -158,14 +121,23 @@ export function useHomeController({
 		useState<HomePlaylistDetailView | null>(null);
 	const [discoverLoading, setDiscoverLoading] = useState(false);
 	const [weatherRadioLoading, setWeatherRadioLoading] = useState(false);
+	const [discoverError, setDiscoverError] = useState<string | null>(null);
+	const [weatherRadioError, setWeatherRadioError] = useState<string | null>(null);
 	const [forcedOpen, setForcedOpen] = useState(false);
 	const [suppressed, setSuppressed] = useState(false);
-	const [listenHistory, setListenHistory] = useState(storage.read);
+	const {
+		summary: listenSummary,
+		recordPause: recordListenPause,
+		recordProgress: recordListenProgress,
+		finalize: finalizeListenSession,
+	} = useHomeListenLedger({
+		currentTrack,
+		positionMs,
+		durationMs,
+		repository: storage,
+	});
 	const discoverRequestRef = useRef(0);
 	const weatherRequestRef = useRef(0);
-	const lastListenKeyRef = useRef("");
-	const listenSessionRef = useRef<HomeListenSession | null>(null);
-	const playbackRef = useRef({ currentTrack, positionMs, durationMs });
 	const dependenciesRef = useRef({
 		discoverPort,
 		library,
@@ -185,7 +157,6 @@ export function useHomeController({
 		showToast,
 		storage,
 	});
-	playbackRef.current = { currentTrack, positionMs, durationMs };
 	dependenciesRef.current = {
 		discoverPort,
 		library,
@@ -215,15 +186,17 @@ export function useHomeController({
 		if (!port) {
 			setDiscover(null);
 			setDiscoverLoading(false);
+			setDiscoverError(null);
 			return null;
 		}
 		const sequence = ++discoverRequestRef.current;
 		setDiscoverLoading(true);
+		setDiscoverError(null);
 		try {
 			const next = await port.discoverHome();
 			if (sequence === discoverRequestRef.current) setDiscover(next);
 			return next;
-		} catch {
+		} catch (error) {
 			const fallback: DiscoverHomeResponse = {
 				loggedIn: false,
 				user: null,
@@ -233,7 +206,12 @@ export function useHomeController({
 				mode: "starter",
 				updatedAt: Date.now(),
 			};
-			if (sequence === discoverRequestRef.current) setDiscover(fallback);
+			if (sequence === discoverRequestRef.current) {
+				setDiscover((current) => current ?? fallback);
+				setDiscoverError(
+					error instanceof Error ? error.message : "首页推荐载入失败",
+				);
+			}
 			return fallback;
 		} finally {
 			if (sequence === discoverRequestRef.current) setDiscoverLoading(false);
@@ -245,10 +223,12 @@ export function useHomeController({
 		if (!port) {
 			setWeatherRadio(null);
 			setWeatherRadioLoading(false);
+			setWeatherRadioError(null);
 			return null;
 		}
 		const sequence = ++weatherRequestRef.current;
 		setWeatherRadioLoading(true);
+		setWeatherRadioError(null);
 		try {
 			const next = await port.weatherRadio({
 				city: "上海",
@@ -259,8 +239,12 @@ export function useHomeController({
 			});
 			if (sequence === weatherRequestRef.current) setWeatherRadio(next);
 			return next;
-		} catch {
-			if (sequence === weatherRequestRef.current) setWeatherRadio(null);
+		} catch (error) {
+			if (sequence === weatherRequestRef.current) {
+				setWeatherRadioError(
+					error instanceof Error ? error.message : "天气电台载入失败",
+				);
+			}
 			return null;
 		} finally {
 			if (sequence === weatherRequestRef.current) setWeatherRadioLoading(false);
@@ -274,6 +258,8 @@ export function useHomeController({
 			setWeatherRadio(null);
 			setDiscoverLoading(false);
 			setWeatherRadioLoading(false);
+			setDiscoverError(null);
+			setWeatherRadioError(null);
 			return;
 		}
 		void refreshDiscover();
@@ -286,75 +272,6 @@ export function useHomeController({
 		refreshWeatherRadio,
 	]);
 
-	const finalizeListenSession = useCallback((completed = false) => {
-		const snapshot = playbackRef.current;
-		const session = updateHomeListenSession(
-			listenSessionRef.current,
-			snapshot.positionMs,
-			snapshot.durationMs,
-			Date.now(),
-			true,
-		);
-		listenSessionRef.current = null;
-		if (
-			!session ||
-			!isEffectiveHomeListenSession(session, completed, snapshot.durationMs)
-		) {
-			return;
-		}
-		setListenHistory((history) => {
-			const next = updateHomeListenHistory(
-				history,
-				session.track,
-				Date.now(),
-				session.listenMs,
-				completed,
-			);
-			dependenciesRef.current.storage.save(next);
-			return next;
-		});
-	}, []);
-
-	const recordListenPause = useCallback(() => {
-		const snapshot = playbackRef.current;
-		listenSessionRef.current = updateHomeListenSession(
-			listenSessionRef.current,
-			snapshot.positionMs,
-			snapshot.durationMs,
-			Date.now(),
-			true,
-		);
-	}, []);
-
-	const recordListenProgress = useCallback(
-		(nextPositionMs: number, nextDurationMs: number | null) => {
-			listenSessionRef.current = updateHomeListenSession(
-				listenSessionRef.current,
-				nextPositionMs,
-				nextDurationMs,
-				Date.now(),
-			);
-		},
-		[],
-	);
-
-	useEffect(() => {
-		const key = trackLikeKey(currentTrack);
-		if (!currentTrack || !key) {
-			finalizeListenSession(false);
-			lastListenKeyRef.current = "";
-			return;
-		}
-		if (key === lastListenKeyRef.current) return;
-		finalizeListenSession(false);
-		lastListenKeyRef.current = key;
-		listenSessionRef.current = beginHomeListenSession(
-			currentTrack,
-			Date.now(),
-			positionMs,
-		);
-	}, [currentTrack, finalizeListenSession, positionMs]);
-
 	const hasLogin = useCallback(
 		() => discover?.loggedIn || hasProviderLogin(),
 		[discover?.loggedIn, hasProviderLogin],
@@ -366,6 +283,24 @@ export function useHomeController({
 		setSuppressed(true);
 		dependenciesRef.current.enterPlaybackSurface();
 	}, []);
+
+	const {
+		model: dashboard,
+		continueListening,
+		playNextUp,
+		playForYou,
+	} = useHomeDashboardController({
+		discover,
+		listenSummary,
+		queue,
+		currentIndex: currentQueueIndex,
+		currentTrack,
+		isPlaying,
+		playbackMode,
+		playback,
+		enterPlayback,
+		showToast,
+	});
 
 	const playDiscoverSongs = useCallback(
 		async (index: number) => {
@@ -553,11 +488,6 @@ export function useHomeController({
 		dependenciesRef.current.searchQuery("", "podcast");
 	}, []);
 
-	const listenSummary = useMemo(
-		() => buildHomeListenSummary(listenHistory),
-		[listenHistory],
-	);
-
 	const openInsight = useCallback(() => {
 		const current = dependenciesRef.current;
 		const artist = listenSummary?.topArtist?.name;
@@ -591,9 +521,12 @@ export function useHomeController({
 		playlistDetail,
 		discoverLoading,
 		weatherRadioLoading,
+		discoverError,
+		weatherRadioError,
 		forcedOpen,
 		suppressed,
 		listenSummary,
+		dashboard,
 		setForcedOpen,
 		setSuppressed,
 		refreshDiscover,
@@ -613,6 +546,9 @@ export function useHomeController({
 		playWeatherSong,
 		openInsight,
 		playRecent,
+		continueListening,
+		playNextUp,
+		playForYou,
 		enterPlaybackSurface: enterPlayback,
 	};
 }

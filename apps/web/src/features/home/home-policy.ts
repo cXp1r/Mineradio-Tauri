@@ -1,6 +1,9 @@
 import type { DiscoverHomeResponse, Track } from "@mineradio/shared";
-import type { HomeListenRecord, HomeListenSummary } from "../../home/EmptyHomeHost";
 import { trackLikeKey } from "../likes/likes-policy";
+import type {
+	HomeListenRecord,
+	HomeListenSummary,
+} from "./home-listen-ledger";
 
 export interface HomeListenHistoryRecord extends HomeListenRecord {
 	lastPlayedAt: number;

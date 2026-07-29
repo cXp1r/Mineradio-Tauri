@@ -11,6 +11,8 @@ import {
 	M5_ADDITIVE_DESKTOP_COMMANDS,
 	M6_ADDITIVE_DESKTOP_COMMANDS,
 	M7_ADDITIVE_DESKTOP_COMMANDS,
+	M8_ADDITIVE_DESKTOP_COMMANDS,
+	M8_DESKTOP_COMMAND_INTERFACES,
 	parseDesktopCommandManifest,
 	parseFrozenDesktopErrorStrings,
 	parseFrontendDesktopInvokes,
@@ -34,7 +36,7 @@ const frozenContractSources = [
 	"commands/login.rs",
 ].map((name) => readFileSync(join(sourceRoot, name), "utf8"));
 
-test("M5/M6/M7 preserves frozen desktop commands and only adds approved manifests", () => {
+test("M5/M6/M7/M8 preserves frozen desktop commands and only adds approved manifests", () => {
 	const source = readFileSync(`${sourceRoot}/lib.rs`, "utf8");
 	const commands = parseDesktopCommandManifest(source);
 
@@ -45,6 +47,7 @@ test("M5/M6/M7 preserves frozen desktop commands and only adds approved manifest
 			...M5_ADDITIVE_DESKTOP_COMMANDS,
 			...M6_ADDITIVE_DESKTOP_COMMANDS,
 			...M7_ADDITIVE_DESKTOP_COMMANDS,
+			...M8_ADDITIVE_DESKTOP_COMMANDS,
 		]),
 	);
 });
@@ -57,6 +60,9 @@ test("frozen command parameter and return interfaces match the approved fixture"
 	const interfaces = parseTauriCommandInterfaces(commandSource);
 
 	for (const [command, expected] of Object.entries(FROZEN_DESKTOP_COMMAND_INTERFACES)) {
+		expect(interfaces[command]).toBe(expected);
+	}
+	for (const [command, expected] of Object.entries(M8_DESKTOP_COMMAND_INTERFACES)) {
 		expect(interfaces[command]).toBe(expected);
 	}
 });
@@ -78,6 +84,7 @@ test("every literal frontend desktop invoke is registered in the Rust manifest",
 		"../../apps/web/src/tauri/runtime.ts",
 		"../../apps/web/src/tauri/updater.ts",
 		"../../apps/web/src/tauri/db.ts",
+		"../../apps/web/src/adapters/tauri/tauri-preferences.ts",
 		"../../apps/web/src/desktop-lyrics/desktop-lyrics-bridge.ts",
 	].map((relative) => readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8"));
 	const invokes = new Set(webSources.flatMap(parseFrontendDesktopInvokes));
@@ -88,6 +95,7 @@ test("every literal frontend desktop invoke is registered in the Rust manifest",
 		...M5_ADDITIVE_DESKTOP_COMMANDS,
 		...M6_ADDITIVE_DESKTOP_COMMANDS,
 		...M7_ADDITIVE_DESKTOP_COMMANDS,
+		...M8_ADDITIVE_DESKTOP_COMMANDS,
 	]);
 
 	for (const command of invokes) expect(registered.has(command)).toBe(true);
@@ -108,6 +116,7 @@ test("M5 command adapters are domain modules instead of a monolithic commands.rs
 		"cache.rs",
 		"diagnostics.rs",
 		"wallpaper_engine.rs",
+		"preferences.rs",
 	]) {
 		expect(existsSync(`${sourceRoot}/commands/${module}`)).toBe(true);
 	}

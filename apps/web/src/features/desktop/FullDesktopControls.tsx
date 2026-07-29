@@ -4,11 +4,11 @@ import type {
 } from "../../ports/full-desktop-runtime-port";
 import type { FullDesktopRuntimeController } from "./useFullDesktopRuntime";
 
-const MODE_OPTIONS: Array<{ mode: FullDesktopMode; label: string }> = [
+const MODE_OPTIONS = [
 	{ mode: "disabled", label: "普通窗口" },
 	{ mode: "passive", label: "桌面背景" },
 	{ mode: "interactive", label: "桌面交互" },
-];
+] as const satisfies ReadonlyArray<{ mode: FullDesktopMode; label: string }>;
 
 const PHASE_LABELS: Record<FullDesktopRuntimePhase, string> = {
 	disabled: "普通窗口",
@@ -19,6 +19,38 @@ const PHASE_LABELS: Record<FullDesktopRuntimePhase, string> = {
 	detaching: "正在退出完整桌面",
 	recoveryRequired: "需要恢复",
 };
+
+/** 完整桌面控件与设置搜索共用的唯一文案目录。 */
+export const FULL_DESKTOP_CONTROL_DEFINITIONS = Object.freeze({
+	sectionLabel: "完整桌面",
+	modeGroupLabel: "完整桌面模式",
+	modeOptions: MODE_OPTIONS,
+	facts: Object.freeze({
+		icons: "桌面图标",
+		interaction: "软件交互",
+		explorerGeneration: "Explorer 代次",
+	}),
+	iconsGroupLabel: "桌面图标可见性",
+	iconActions: Object.freeze({ show: "显示图标", hide: "隐藏图标" }),
+	interactionGroupLabel: "完整桌面软件交互",
+	interactionActions: Object.freeze({ allow: "允许交互", lock: "锁定软件" }),
+	recoveryAction: "立即恢复普通窗口",
+	refreshAction: "刷新状态",
+});
+
+export const FULL_DESKTOP_SETTINGS_SEARCH_TERMS = Object.freeze([
+	FULL_DESKTOP_CONTROL_DEFINITIONS.sectionLabel,
+	FULL_DESKTOP_CONTROL_DEFINITIONS.modeGroupLabel,
+	...FULL_DESKTOP_CONTROL_DEFINITIONS.modeOptions.map(({ label }) => label),
+	...Object.values(PHASE_LABELS),
+	...Object.values(FULL_DESKTOP_CONTROL_DEFINITIONS.facts),
+	FULL_DESKTOP_CONTROL_DEFINITIONS.iconsGroupLabel,
+	...Object.values(FULL_DESKTOP_CONTROL_DEFINITIONS.iconActions),
+	FULL_DESKTOP_CONTROL_DEFINITIONS.interactionGroupLabel,
+	...Object.values(FULL_DESKTOP_CONTROL_DEFINITIONS.interactionActions),
+	FULL_DESKTOP_CONTROL_DEFINITIONS.recoveryAction,
+	FULL_DESKTOP_CONTROL_DEFINITIONS.refreshAction,
+]);
 
 function modeLabel(mode: FullDesktopMode): string {
 	return MODE_OPTIONS.find((item) => item.mode === mode)?.label ?? mode;
@@ -35,7 +67,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 			data-busy={props.busy ? "true" : "false"}
 			data-phase={state?.phase ?? "unavailable"}
 		>
-			<div className="fx-section-label">完整桌面</div>
+			<div className="fx-section-label">{FULL_DESKTOP_CONTROL_DEFINITIONS.sectionLabel}</div>
 			<div className="fx-runtime-summary">
 				<strong>{state ? PHASE_LABELS[state.phase] : "运行时不可用"}</strong>
 				<small>
@@ -44,7 +76,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 						: "等待 Native 状态"}
 				</small>
 			</div>
-			<div className="fx-seg" role="group" aria-label="完整桌面模式">
+			<div className="fx-seg" role="group" aria-label={FULL_DESKTOP_CONTROL_DEFINITIONS.modeGroupLabel}>
 				{MODE_OPTIONS.map(({ mode, label }) => (
 					<button
 						key={mode}
@@ -61,20 +93,20 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 
 			<div className="full-desktop-facts" aria-label="完整桌面运行状态">
 				<div>
-					<span>桌面图标</span>
+					<span>{FULL_DESKTOP_CONTROL_DEFINITIONS.facts.icons}</span>
 					<strong>{state ? (state.iconsVisible ? "显示" : "隐藏") : "—"}</strong>
 				</div>
 				<div>
-					<span>软件交互</span>
+					<span>{FULL_DESKTOP_CONTROL_DEFINITIONS.facts.interaction}</span>
 					<strong>{state ? (state.interactionLocked ? "已锁定" : "可交互") : "—"}</strong>
 				</div>
 				<div>
-					<span>Explorer 代次</span>
+					<span>{FULL_DESKTOP_CONTROL_DEFINITIONS.facts.explorerGeneration}</span>
 					<strong>{state?.explorerGeneration ?? "—"}</strong>
 				</div>
 			</div>
 
-			<div className="fx-seg" role="group" aria-label="桌面图标可见性">
+			<div className="fx-seg" role="group" aria-label={FULL_DESKTOP_CONTROL_DEFINITIONS.iconsGroupLabel}>
 				<button
 					type="button"
 					className={state?.iconsVisible ? "active" : ""}
@@ -82,7 +114,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 					disabled={desktopMutationDisabled}
 					onClick={() => void props.setIconsVisible(true)}
 				>
-					显示图标
+					{FULL_DESKTOP_CONTROL_DEFINITIONS.iconActions.show}
 				</button>
 				<button
 					type="button"
@@ -91,11 +123,11 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 					disabled={desktopMutationDisabled}
 					onClick={() => void props.setIconsVisible(false)}
 				>
-					隐藏图标
+					{FULL_DESKTOP_CONTROL_DEFINITIONS.iconActions.hide}
 				</button>
 			</div>
 
-			<div className="fx-seg" role="group" aria-label="完整桌面软件交互">
+			<div className="fx-seg" role="group" aria-label={FULL_DESKTOP_CONTROL_DEFINITIONS.interactionGroupLabel}>
 				<button
 					type="button"
 					className={state && !state.interactionLocked ? "active" : ""}
@@ -103,7 +135,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 					disabled={desktopMutationDisabled}
 					onClick={() => void props.setInteractionLocked(false)}
 				>
-					允许交互
+					{FULL_DESKTOP_CONTROL_DEFINITIONS.interactionActions.allow}
 				</button>
 				<button
 					type="button"
@@ -112,7 +144,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 					disabled={desktopMutationDisabled}
 					onClick={() => void props.setInteractionLocked(true)}
 				>
-					锁定软件
+					{FULL_DESKTOP_CONTROL_DEFINITIONS.interactionActions.lock}
 				</button>
 			</div>
 
@@ -131,7 +163,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 						disabled={props.busy}
 						onClick={() => void props.recover()}
 					>
-						立即恢复普通窗口
+						{FULL_DESKTOP_CONTROL_DEFINITIONS.recoveryAction}
 					</button>
 				</div>
 			) : null}
@@ -144,7 +176,7 @@ export function FullDesktopControls(props: FullDesktopRuntimeController) {
 					disabled={props.busy}
 					onClick={() => void props.refresh()}
 				>
-					刷新状态
+					{FULL_DESKTOP_CONTROL_DEFINITIONS.refreshAction}
 				</button>
 			</div>
 		</div>
