@@ -100,3 +100,63 @@ test("desktop runtime owns lyric enable order and hotkey cleanup", async () => {
 	expect(events).toContain("window-unlisten");
 	host.remove();
 });
+
+test("desktop runtime commits a beat map key only after payload delivery succeeds", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	let shouldFail = true;
+	const sentKeys: string[] = [];
+	const desktop = {
+		async getWindowState() {
+			return WINDOW_STATE;
+		},
+		async listenWindowState() {
+			return () => {};
+		},
+		async configureGlobalHotkeys() {
+			return { ok: true, results: [] };
+		},
+		async listenGlobalHotkey() {
+			return () => {};
+		},
+		async updateDesktopLyricsPayload() {
+			if (shouldFail) throw new Error("delivery failed");
+		},
+		async showDesktopLyricsWindow() {},
+		async closeDesktopLyricsWindow() {},
+	} as unknown as DesktopRuntimePort;
+	const runtimeRef: { current: DesktopRuntimeResult | null } = { current: null };
+
+	function Harness() {
+		runtimeRef.current = useDesktopRuntime({
+			desktop,
+			buildLyricsPayload: () => ({ beatMapKey: "new-key", beatMap: { kicks: [1] } }),
+			lyricsPayloadVersion: 0,
+			hotkeyActions: {},
+			onLyricsPayloadSent: (payload) => sentKeys.push(String(payload.beatMapKey)),
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	let deliveryError: unknown = null;
+	try {
+		await runtimeRef.current!.setDesktopLyricsEnabled(true);
+	} catch (error) {
+		deliveryError = error;
+	}
+	expect(String(deliveryError)).toContain("delivery failed");
+	expect(sentKeys).toEqual([]);
+	shouldFail = false;
+	await act(async () => {
+		await runtimeRef.current!.setDesktopLyricsEnabled(true);
+	});
+	expect(sentKeys).toEqual(["new-key"]);
+
+	root.unmount();
+	host.remove();
+});

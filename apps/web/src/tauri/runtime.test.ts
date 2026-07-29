@@ -4,6 +4,7 @@ import {
 	configureGlobalHotkeys,
 	exportJsonFile,
 	getRuntimeConfig,
+	getFullDesktopRuntimeState,
 	getSidecarStatus,
 	getWindowState,
 	importJsonFile,
@@ -14,6 +15,10 @@ import {
 	minimizeWindow,
 	openExternalUrl,
 	openProviderLoginWindow,
+	recoverFullDesktopRuntime,
+	setDesktopIconsVisible,
+	setFullDesktopInteractionLocked,
+	setFullDesktopMode,
 	showDesktopLyricsWindow,
 	toggleWindowMaximize,
 	toggleWindowFullscreen,
@@ -131,4 +136,22 @@ test("provider login helper returns a no-cookie placeholder outside Tauri", asyn
 		reused: false,
 		partial: false,
 	});
+});
+
+test("full desktop helpers preserve the disabled contract outside Tauri", async () => {
+	const expected = {
+		phase: "disabled",
+		requestedMode: "disabled",
+		effectiveMode: "disabled",
+		iconsVisible: true,
+		interactionLocked: false,
+		recoveryRequired: false,
+		autoResumeSuppressed: false,
+		explorerGeneration: 0,
+	};
+	expect(await getFullDesktopRuntimeState()).toEqual(expected);
+	expect(await setFullDesktopMode("passive")).toEqual(expected);
+	expect(await setDesktopIconsVisible(false)).toEqual(expected);
+	expect(await setFullDesktopInteractionLocked(true)).toEqual(expected);
+	expect(await recoverFullDesktopRuntime()).toEqual(expected);
 });

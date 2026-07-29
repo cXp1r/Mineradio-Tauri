@@ -6,6 +6,7 @@ import {
 	type ShelfVisualSnapshot,
 	type VisualEngineFacade,
 	type VisualEngineOptions,
+	type VisualPerformanceSnapshot,
 	type VisualSettingsSnapshot,
 } from "@mineradio/visual-engine";
 import { getWindowState, isTauriRuntime, listenWindowState } from "../tauri/runtime";
@@ -30,6 +31,13 @@ export interface UseVisualEngineInput {
 	readonly shelfSnapshot: ShelfVisualSnapshot;
 	readonly settingsSnapshot: VisualSettingsSnapshot;
 	readonly events: LegacyVisualEventSink;
+	readonly performanceSnapshotReaderRef?: VisualPerformanceSnapshotReaderRef;
+}
+
+export type VisualPerformanceSnapshotReader = () => VisualPerformanceSnapshot | null;
+
+export interface VisualPerformanceSnapshotReaderRef {
+	current: VisualPerformanceSnapshotReader | null;
 }
 
 export interface UseVisualEngineDependencies {
@@ -130,6 +138,7 @@ export function useVisualEngine(
 		const resolved = dependenciesRef.current!;
 		let environment: VisualEnvironmentAdapter | null = null;
 		let facade: VisualEngineFacade | null = null;
+		let performanceReader: VisualPerformanceSnapshotReader | null = null;
 		let unsubscribeEnvironment: (() => void) | null = null;
 		let active = true;
 		let cleaned = false;
@@ -137,6 +146,12 @@ export function useVisualEngine(
 			if (cleaned) return;
 			cleaned = true;
 			active = false;
+			if (
+				performanceReader
+				&& input.performanceSnapshotReaderRef?.current === performanceReader
+			) {
+				input.performanceSnapshotReaderRef.current = null;
+			}
 			if (facadeRef.current === facade) facadeRef.current = null;
 			if (unsubscribeEnvironment) safelyCleanup(unsubscribeEnvironment);
 			if (environment) safelyCleanup(() => environment?.dispose());
@@ -161,6 +176,10 @@ export function useVisualEngine(
 				}),
 			});
 			facadeRef.current = facade;
+			performanceReader = () => facade?.getPerformanceSnapshot() ?? null;
+			if (input.performanceSnapshotReaderRef) {
+				input.performanceSnapshotReaderRef.current = performanceReader;
+			}
 
 			facade.setPlaybackSnapshot(playbackSnapshotRef.current);
 			facade.setLyricsSnapshot(lyricsSnapshotRef.current);
@@ -188,7 +207,7 @@ export function useVisualEngine(
 		}
 
 		return cleanup;
-	}, [input.audioElementRef, input.hostRef]);
+	}, [input.audioElementRef, input.hostRef, input.performanceSnapshotReaderRef]);
 
 	useEffect(() => {
 		facadeRef.current?.setPlaybackSnapshot(input.playbackSnapshot);

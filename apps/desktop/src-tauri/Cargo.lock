@@ -2110,10 +2110,12 @@ version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
  "dirs 5.0.1",
+ "getrandom 0.3.4",
  "minisign-verify",
  "rusqlite",
  "serde",
  "serde_json",
+ "sha2",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
@@ -2121,6 +2123,8 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "time",
+ "webview2-com",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

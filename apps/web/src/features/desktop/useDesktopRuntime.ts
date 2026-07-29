@@ -28,6 +28,8 @@ export interface DesktopRuntimeOptions {
 	hotkeyActions: Record<string, () => void>;
 	onWindowState?(state: DesktopWindowState): void;
 	onWindowCleanup?(): void;
+	onDesktopLyricsLockChanged?(clickThrough: boolean): void;
+	onLyricsPayloadSent?(payload: DesktopLyricsPushPayload): void;
 }
 
 export interface DesktopRuntimeResult {
@@ -48,6 +50,8 @@ export function useDesktopRuntime({
 	hotkeyActions,
 	onWindowState,
 	onWindowCleanup,
+	onDesktopLyricsLockChanged,
+	onLyricsPayloadSent,
 }: DesktopRuntimeOptions): DesktopRuntimeResult {
 	const [desktopLyricsEnabled, setDesktopLyricsEnabledState] = useState(false);
 	const [desktopWindowState, setDesktopWindowState] =
@@ -60,6 +64,8 @@ export function useDesktopRuntime({
 		hotkeyActions,
 		onWindowState,
 		onWindowCleanup,
+		onDesktopLyricsLockChanged,
+		onLyricsPayloadSent,
 	});
 	dependenciesRef.current = {
 		desktop,
@@ -67,7 +73,16 @@ export function useDesktopRuntime({
 		hotkeyActions,
 		onWindowState,
 		onWindowCleanup,
+		onDesktopLyricsLockChanged,
+		onLyricsPayloadSent,
 	};
+
+	const publishLyricsPayload = useCallback(async (payload: DesktopLyricsPushPayload) => {
+		await dependenciesRef.current.desktop.updateDesktopLyricsPayload(
+			payload as DesktopJsonValue,
+		);
+		dependenciesRef.current.onLyricsPayloadSent?.(payload);
+	}, []);
 
 	const publishWindowState = useCallback((state: DesktopWindowState) => {
 		setDesktopWindowState(state);
@@ -91,12 +106,12 @@ export function useDesktopRuntime({
 				true,
 			)
 		) {
-			await dependencies.desktop.updateDesktopLyricsPayload(payload as DesktopJsonValue);
+			await publishLyricsPayload(payload);
 		}
 		await dependencies.desktop.showDesktopLyricsWindow();
 		lyricsEnabledRef.current = true;
 		setDesktopLyricsEnabledState(true);
-	}, []);
+	}, [publishLyricsPayload]);
 
 	const toggleDesktopLyrics = useCallback(async () => {
 		await setDesktopLyricsEnabled(!lyricsEnabledRef.current);
@@ -124,6 +139,27 @@ export function useDesktopRuntime({
 			void currentDesktop.configureGlobalHotkeys([]);
 		};
 	}, [desktop, toggleDesktopLyrics]);
+
+	useEffect(() => {
+		let disposed = false;
+		let unlisten: (() => void) | null = null;
+		const currentDesktop = dependenciesRef.current.desktop;
+		if (typeof currentDesktop.listenDesktopLyricsLockChanged !== "function") {
+			return undefined;
+		}
+		void currentDesktop.listenDesktopLyricsLockChanged((clickThrough) => {
+			if (!disposed) {
+				dependenciesRef.current.onDesktopLyricsLockChanged?.(clickThrough);
+			}
+		}).then((dispose) => {
+			if (disposed) dispose();
+			else unlisten = dispose;
+		});
+		return () => {
+			disposed = true;
+			unlisten?.();
+		};
+	}, [desktop]);
 
 	useEffect(() => {
 		let disposed = false;
@@ -159,8 +195,8 @@ export function useDesktopRuntime({
 		) {
 			return;
 		}
-		void dependencies.desktop.updateDesktopLyricsPayload(payload as DesktopJsonValue);
-	}, [desktopLyricsEnabled, lyricsPayloadVersion]);
+		void publishLyricsPayload(payload).catch(() => {});
+	}, [desktopLyricsEnabled, lyricsPayloadVersion, publishLyricsPayload]);
 
 	return {
 		desktopLyricsEnabled,

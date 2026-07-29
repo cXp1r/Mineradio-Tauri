@@ -2,6 +2,14 @@ import { useCallback, useEffect, useRef, useState, type ReactElement } from "rea
 import { clampPreset, FX_DEFAULTS, type FxState, type FxStatePatch } from "@mineradio/visual-engine";
 import { SonicTopographyControls } from "./controls/SonicTopographyControls";
 import { StageLyricsControls } from "./controls/StageLyricsControls";
+import {
+  customLyricFontKey,
+  readCustomLyricFonts,
+  registerCustomLyricFont,
+  removeCustomLyricFont,
+  saveCustomLyricFont,
+  type CustomLyricFontRecord,
+} from "../desktop-lyrics/custom-lyric-font";
 
 const FX_FAB_AUTO_HIDE_STORE_KEY = "mineradio-fx-fab-auto-hide-v1";
 
@@ -327,6 +335,7 @@ export interface VisualControlPanelHostProps {
   onStringSettingChange?: (key: keyof FxState, value: string) => void;
   onFxPatchChange?: (patch: FxStatePatch) => void;
   onNotice?: (message: string) => void;
+  desktopRuntimeSlot?: ReactElement | null;
 }
 
 function readFxFabAutoHidePreference(): boolean {
@@ -463,6 +472,8 @@ export function VisualControlPanelHost(
   const [open, setOpen] = useState(false);
   const [autoHide, setAutoHide] = useState(readFxFabAutoHidePreference);
   const [peek, setPeek] = useState(false);
+  const [customFonts, setCustomFonts] = useState<CustomLyricFontRecord[]>(readCustomLyricFonts);
+  const customFontInputRef = useRef<HTMLInputElement | null>(null);
   const revealArmedRef = useRef(true);
   const previousAutoHideRef = useRef(autoHide);
   const preset = clampPreset(props.preset ?? 0);
@@ -632,6 +643,27 @@ export function VisualControlPanelHost(
     },
     [props],
   );
+  const importCustomLyricFont = useCallback(async (file: File | null | undefined) => {
+    if (!file) return;
+    try {
+      const record = await saveCustomLyricFont(file);
+      await registerCustomLyricFont(customLyricFontKey(record));
+      setCustomFonts(readCustomLyricFonts());
+      props.onStringSettingChange?.("lyricFont", customLyricFontKey(record));
+      props.onNotice?.(`已载入字体：${record.name}`);
+    } catch (error) {
+      props.onNotice?.(error instanceof Error ? error.message : "字体载入失败");
+    } finally {
+      if (customFontInputRef.current) customFontInputRef.current.value = "";
+    }
+  }, [props]);
+  const deleteCustomLyricFont = useCallback((record: CustomLyricFontRecord) => {
+    setCustomFonts(removeCustomLyricFont(record.id));
+    if (stringValue(props, "lyricFont") === customLyricFontKey(record)) {
+      props.onStringSettingChange?.("lyricFont", "sans");
+    }
+    props.onNotice?.(`已删除字体：${record.name}`);
+  }, [props]);
   const uiAccentColor = hexSettingValue(props, "uiAccentColor");
   const homeAccentColor = hexSettingValue(props, "homeAccentColor");
   const visualTintColor = hexSettingValue(props, "visualTintColor");
@@ -862,6 +894,45 @@ export function VisualControlPanelHost(
                 </button>
               ))}
             </div>
+            <input
+              ref={customFontInputRef}
+              className="fx-hidden-file-input"
+              type="file"
+              accept=".ttf,.otf,.woff,.woff2,font/ttf,font/otf,font/woff,font/woff2"
+              onChange={(event) => void importCustomLyricFont(event.currentTarget.files?.[0])}
+            />
+            <div className="fx-runtime-actions">
+              <button
+                type="button"
+                className="fx-mini-btn ghost"
+                onClick={() => customFontInputRef.current?.click()}
+              >
+                导入字体
+              </button>
+              {customFonts.map((record) => {
+                const key = customLyricFontKey(record);
+                const active = stringValue(props, "lyricFont") === key;
+                return (
+                  <span key={record.id} className="fx-custom-font-entry">
+                    <button
+                      type="button"
+                      className={active ? "fx-mini-btn ghost active" : "fx-mini-btn ghost"}
+                      onClick={() => props.onStringSettingChange?.("lyricFont", key)}
+                    >
+                      {record.name}
+                    </button>
+                    <button
+                      type="button"
+                      className="fx-custom-font-remove"
+                      aria-label={`删除字体 ${record.name}`}
+                      onClick={() => deleteCustomLyricFont(record)}
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
             {LYRIC_LAYOUT_SLIDERS.map(slider)}
           </div>
         </div>
@@ -895,6 +966,8 @@ export function VisualControlPanelHost(
             />
           </div>
         </div>
+
+        {props.desktopRuntimeSlot}
 
         <div className="fx-fold open" id="fx-stage-fold">
           <div className="fx-fold-head">

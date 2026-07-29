@@ -7,12 +7,13 @@ import {
 	type ShelfVisualSnapshot,
 	type VisualEngineFacade,
 	type VisualEngineOptions,
+	type VisualPerformanceSnapshot,
 	type VisualSettingsSnapshot,
 	type VisualVisibilityState,
 } from "@mineradio/visual-engine";
 import { createLegacyVisualEventBridge } from "./runtime/legacy-visual-events";
 import type { VisualEnvironmentAdapter } from "./runtime/visual-environment-adapter";
-import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine } from "./useVisualEngine";
+import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine, type VisualPerformanceSnapshotReader } from "./useVisualEngine";
 
 test("legacy composition routes adaptive FPS through the runtime visual performance policy", async () => {
 	const source = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
@@ -811,6 +812,46 @@ test("useVisualEngine submits all initial snapshots and visibility before mount"
 	expect(facade.visibilityCalls[0]).toEqual(HIDDEN);
 
 	await unmountAndFlush(root);
+	container.remove();
+});
+
+test("useVisualEngine publishes a read-only performance reader and clears it on disposal", async () => {
+	await prepareReactDom();
+	const facade = createFacadeRecord();
+	const environment = createEnvironmentRecord();
+	const performanceSnapshot = { runtime: { generation: 7 } } as unknown as VisualPerformanceSnapshot;
+	facade.facade.getPerformanceSnapshot = () => performanceSnapshot;
+	const performanceSnapshotReaderRef: { current: VisualPerformanceSnapshotReader | null } = { current: null };
+	const events = createLegacyVisualEventBridge();
+
+	function Harness() {
+		const hostRef = useRef<HTMLDivElement | null>(null);
+		const audioElementRef = useRef<HTMLAudioElement | null>(null);
+		useVisualEngine({
+			hostRef,
+			audioElementRef,
+			positionMs: 0,
+			playbackSnapshot: playback("diagnostics"),
+			lyricsSnapshot: lyrics("diagnostics"),
+			shelfSnapshot: shelf("diagnostics"),
+			settingsSnapshot: settings("diagnostics"),
+			events,
+			performanceSnapshotReaderRef,
+		}, {
+			createFacade: () => facade.facade,
+			createEnvironmentAdapter: () => environment.adapter,
+		});
+		return React.createElement("div", { ref: hostRef });
+	}
+
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	await renderAndFlush(root, React.createElement(Harness));
+	expect(performanceSnapshotReaderRef.current?.()).toBe(performanceSnapshot);
+
+	await unmountAndFlush(root);
+	expect(performanceSnapshotReaderRef.current).toBeNull();
 	container.remove();
 });
 

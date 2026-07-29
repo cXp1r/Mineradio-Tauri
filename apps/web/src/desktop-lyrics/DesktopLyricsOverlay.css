@@ -50,6 +50,20 @@
   max-width: calc(100vw - 8px);
   overflow: hidden;
   text-align: center;
+  transform: translate3d(
+      calc(var(--desktop-lyrics-float-x) + var(--desktop-lyrics-cinema-x)),
+      calc(var(--desktop-lyrics-float-y) + var(--desktop-lyrics-cinema-y)),
+      0
+    )
+    rotate(
+      calc(
+        var(--desktop-lyrics-float-rotate) +
+          var(--desktop-lyrics-cinema-rotate)
+      )
+    )
+    scale(var(--desktop-lyrics-cinema-scale));
+  transform-origin: center;
+  will-change: transform;
   -webkit-mask-image: linear-gradient(
     90deg,
     transparent 0,

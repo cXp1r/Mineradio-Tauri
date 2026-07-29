@@ -1,6 +1,10 @@
 import type { JsonValue } from "../../tauri/runtime";
 import type { CurrentBeatMapState } from "../playback/usePlaybackSessionRuntime";
-import type { FxState, LyricPalette } from "@mineradio/visual-engine";
+import {
+	customLyricFontFamily,
+	type FxState,
+	type LyricPalette,
+} from "@mineradio/visual-engine";
 
 export interface DesktopLyricsPayloadContext {
 	title?: string;
@@ -43,13 +47,18 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function normalizeDesktopLyricFontKey(key: unknown): string {
 	const value = String(key || "sans").trim().toLowerCase();
+	if (customLyricFontFamily(value)) return value;
 	return Object.prototype.hasOwnProperty.call(DESKTOP_LYRIC_FONT_STACKS, value)
 		? value
 		: "sans";
 }
 
 function desktopLyricFontStackForKey(key: unknown): string {
-	return DESKTOP_LYRIC_FONT_STACKS[normalizeDesktopLyricFontKey(key)];
+	const normalized = normalizeDesktopLyricFontKey(key);
+	const customFamily = customLyricFontFamily(normalized);
+	return customFamily
+		? `"${customFamily}",Inter,"Noto Sans SC","Microsoft YaHei",sans-serif`
+		: DESKTOP_LYRIC_FONT_STACKS[normalized];
 }
 
 function desktopLyricFontWeightValue(fx: FxState): number {
@@ -102,7 +111,6 @@ export function desktopLyricsBeatMapContext(
 ): Pick<DesktopLyricsPayloadContext, "beatMapKey" | "beatMap"> {
 	const key = state?.key ?? "none";
 	const shouldSendMap = force || key !== lastKeyRef.current;
-	lastKeyRef.current = key;
 	return {
 		beatMapKey: key,
 		...(shouldSendMap ? { beatMap: state?.map ?? null } : {}),

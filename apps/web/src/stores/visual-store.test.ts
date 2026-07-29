@@ -111,6 +111,19 @@ test("loadVisualFxFromStorage normalizes unsupported lyric font keys", () => {
   expect(fx?.lyricFont).toBe("hei");
 });
 
+test("loadVisualFxFromStorage preserves bounded custom lyric font identifiers", () => {
+  const storage = new Map<string, string>();
+  const fakeStorage = {
+    getItem: (key: string) => storage.get(key) ?? null,
+    setItem: (key: string, value: string) => storage.set(key, value),
+  };
+  fakeStorage.setItem(
+    VISUAL_SETTINGS_STORE_KEY,
+    JSON.stringify({ lyricFont: "custom:abc1234" }),
+  );
+  expect(loadVisualFxFromStorage(fakeStorage)?.lyricFont).toBe("custom:abc1234");
+});
+
 test("loadVisualFxFromStorage clamps baseline lyric layout controls", () => {
   const storage = new Map<string, string>();
   const fakeStorage = {

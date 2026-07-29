@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import {
 	createDesktopLyricsOverlayActions,
 	DesktopLyricsRoot,
+	mergeDesktopLyricsPayload,
 	type DesktopLyricsPayloadSetter,
 	isDesktopLyricsRoute,
 	subscribeDesktopLyricsBridge
@@ -72,6 +73,31 @@ test("normalizeDesktopLyricsEventPayload applies shared defaults to Tauri event 
 test("normalizeDesktopLyricsLockEvent accepts boolean lock events", () => {
 	expect(normalizeDesktopLyricsLockEvent(true)).toBe(true);
 	expect(normalizeDesktopLyricsLockEvent(false)).toBe(false);
+});
+
+test("mergeDesktopLyricsPayload retains a same-key beat map omitted by incremental payloads", () => {
+	const beatMap = { cameraBeats: [1.2], pulseBeats: [1.4] };
+	const current = normalizeDesktopLyricsEventPayload({
+		enabled: true,
+		text: "第一句",
+		beatMapKey: "netease:42",
+		beatMap
+	});
+	const incremental = normalizeDesktopLyricsEventPayload({
+		enabled: true,
+		text: "第二句",
+		beatMapKey: "netease:42"
+	});
+
+	expect(mergeDesktopLyricsPayload(current, incremental).beatMap).toEqual(beatMap);
+	expect(mergeDesktopLyricsPayload(current, {
+		...incremental,
+		beatMapKey: "qq:84"
+	}).beatMap).toBe(undefined);
+	expect(mergeDesktopLyricsPayload(current, {
+		...incremental,
+		beatMap: null
+	}).beatMap).toBeNull();
 });
 
 test("subscribeDesktopLyricsBridge applies payload and lock events", async () => {

@@ -5934,6 +5934,43 @@ html.control-glass-svg-ok #play-btn {
   background: transparent;
 }
 
+.wallpaper-engine-background {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  background: transparent;
+  pointer-events: none;
+}
+
+.wallpaper-engine-background-media {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: transparent;
+}
+
+/*
+ * Wallpaper Engine 激活时只能移除视觉引擎自身的不透明底图。
+ * WebGL renderer 保持 alpha 通道，歌词、粒子、歌单架与 UI 继续绘制在媒体或 DWM Scene 上方。
+ */
+[data-wallpaper-engine-background] ~ #custom-bg {
+  background: transparent !important;
+}
+
+[data-wallpaper-engine-background] ~ #custom-bg::before,
+[data-wallpaper-engine-background] ~ #custom-bg::after,
+[data-wallpaper-engine-background] ~ #custom-bg #custom-bg-video,
+[data-wallpaper-engine-background] ~ #album-bg {
+  opacity: 0 !important;
+}
+
+[data-wallpaper-engine-background="scene"] ~ #visual-host,
+[data-wallpaper-engine-background="scene"] ~ #visual-host canvas {
+  background: transparent !important;
+}
+
 #custom-bg {
   position: fixed;
   inset: 0;
@@ -7553,6 +7590,241 @@ body.controls-visible #fx-fab-hide-btn {
 
 #fx-panel .fx-mini-btn.ghost {
   background: transparent;
+}
+
+#fx-panel .desktop-runtime-controls {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+}
+
+#fx-panel .full-desktop-controls {
+  display: grid;
+  gap: 9px;
+  margin-top: 14px;
+  padding-bottom: 13px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.06);
+}
+
+#fx-panel .wallpaper-engine-preview {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border: 1px solid rgb(255 255 255 / 0.075);
+  border-radius: 10px;
+  object-fit: cover;
+  background: rgb(0 0 0 / 0.22);
+}
+
+#fx-panel .full-desktop-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+}
+
+#fx-panel .full-desktop-facts > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  border: 1px solid rgb(255 255 255 / 0.055);
+  border-radius: 8px;
+  padding: 7px;
+  background: rgb(255 255 255 / 0.018);
+}
+
+#fx-panel .full-desktop-facts span {
+  overflow: hidden;
+  color: rgb(178 208 214 / 0.62);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .full-desktop-facts strong {
+  overflow: hidden;
+  color: rgb(233 251 253 / 0.9);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .full-desktop-recovery {
+  display: grid;
+  gap: 8px;
+  border: 1px solid rgb(255 141 141 / 0.28);
+  border-radius: 9px;
+  padding: 9px;
+  color: rgb(255 205 205 / 0.9);
+  background: rgb(110 30 30 / 0.18);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#fx-panel .full-desktop-recovery .fx-mini-btn {
+  justify-self: start;
+  padding-inline: 10px;
+}
+
+#fx-panel .fx-runtime-summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  color: rgb(234 252 255 / 0.92);
+}
+
+#fx-panel .fx-runtime-summary small {
+  max-width: 62%;
+  overflow: hidden;
+  color: rgb(184 217 224 / 0.68);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .fx-runtime-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+#fx-panel .fx-runtime-path {
+  display: grid;
+  grid-template-columns: 66px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: rgb(184 217 224 / 0.68);
+  font-size: 10.5px;
+}
+
+#fx-panel .fx-runtime-path code {
+  overflow: hidden;
+  color: rgb(229 249 252 / 0.82);
+  font-family: "SFMono-Regular", Consolas, monospace;
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .fx-runtime-cache-list,
+#fx-panel .fx-runtime-diagnostic-grid {
+  display: grid;
+  gap: 6px;
+}
+
+#fx-panel .fx-runtime-cache-row {
+  display: grid;
+  grid-template-columns: 42px minmax(54px, auto) minmax(0, 1fr);
+  align-items: baseline;
+  gap: 7px;
+  border-bottom: 1px solid rgb(255 255 255 / 0.045);
+  padding-bottom: 5px;
+  color: rgb(203 230 234 / 0.72);
+  font-size: 10.5px;
+}
+
+#fx-panel .fx-runtime-cache-row strong {
+  color: rgb(236 252 255 / 0.9);
+  font-weight: 600;
+}
+
+#fx-panel .fx-runtime-cache-row small {
+  overflow: hidden;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .fx-runtime-primary-action {
+  border-color: rgb(109 226 238 / 0.3);
+  background: rgb(62 176 190 / 0.14);
+  color: rgb(219 253 255 / 0.94);
+}
+
+#fx-panel .fx-runtime-status {
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: rgb(190 220 225 / 0.74);
+  background: rgb(255 255 255 / 0.025);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+#fx-panel .fx-runtime-status[data-state="completed"] {
+  color: rgb(179 244 218 / 0.9);
+  background: rgb(27 112 78 / 0.16);
+}
+
+#fx-panel .fx-runtime-status[data-state="failed"] {
+  color: rgb(255 194 194 / 0.9);
+  background: rgb(128 34 34 / 0.16);
+}
+
+#fx-panel .fx-runtime-diagnostic-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+#fx-panel .fx-runtime-diagnostic-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+  border: 1px solid rgb(255 255 255 / 0.055);
+  border-radius: 8px;
+  padding: 7px;
+  background: rgb(255 255 255 / 0.018);
+}
+
+#fx-panel .fx-runtime-diagnostic-grid span,
+#fx-panel .fx-runtime-diagnostic-grid small {
+  overflow: hidden;
+  color: rgb(178 208 214 / 0.62);
+  font-size: 9.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .fx-runtime-diagnostic-grid strong {
+  overflow: hidden;
+  color: rgb(233 251 253 / 0.9);
+  font-size: 11px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#fx-panel .fx-runtime-warning {
+  border: 1px solid rgb(255 188 102 / 0.26);
+  border-radius: 9px;
+  padding: 7px 9px;
+  color: rgb(255 222 174 / 0.88);
+  background: rgb(85 48 10 / 0.22);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+#fx-panel .fx-hidden-file-input {
+  display: none;
+}
+
+#fx-panel .fx-custom-font-entry {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border-radius: 8px;
+  background: rgb(255 255 255 / 0.035);
+}
+
+#fx-panel .fx-custom-font-entry .fx-mini-btn {
+  border-radius: 8px 0 0 8px;
+}
+
+#fx-panel .fx-custom-font-remove {
+  width: 28px;
+  min-height: 30px;
+  border: 0;
+  color: rgb(255 191 191 / 0.82);
+  background: transparent;
+  cursor: pointer;
 }
 
 @media (max-width: 620px) {

@@ -9,7 +9,11 @@ import {
 	type StageLyricsLifecycle,
 	type StageLyricsMotionSnapshot,
 } from "@mineradio/visual-engine";
-import { resolveRuntimeWallpaperSafe, useVisualEngine } from "./useVisualEngine";
+import {
+	resolveRuntimeWallpaperSafe,
+	useVisualEngine,
+	type VisualPerformanceSnapshotReaderRef,
+} from "./useVisualEngine";
 import type { ShelfDetailRowClickPayload, ShelfPlayPlaylistPayload } from "./shelf-pointer-interactions";
 import type { ShelfDetailContentListController } from "./shelf-detail-data";
 import { PlayerController } from "../audio/player-controller";
@@ -52,6 +56,7 @@ export interface VisualEngineHostProps {
 	onShelfOpenDetailContent?: (payload: ShelfOpenDetailContentPayload, writer: ShelfDetailContentListController) => void;
 	onShelfOpenContentChange?: (open: boolean) => void;
 	desktopLyricsMotionRef?: RefObject<DesktopLyricsMotionSnapshot>;
+	performanceSnapshotReaderRef?: VisualPerformanceSnapshotReaderRef;
 }
 
 export type DesktopLyricsMotionSnapshot = StageLyricsMotionSnapshot;
@@ -360,6 +365,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		shelfSnapshot,
 		settingsSnapshot,
 		events: eventsRef.current,
+		performanceSnapshotReaderRef: props.performanceSnapshotReaderRef,
 	});
 
 	return (

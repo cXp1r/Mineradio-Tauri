@@ -26,6 +26,30 @@ test("Tauri desktop runtime delegates current command wrapper arguments", async 
 		toggleWindowMaximize: async () => { calls.push("maximize"); },
 		toggleWindowFullscreen: async () => { calls.push("fullscreen"); },
 		closeWindow: async () => { calls.push("close"); },
+		getWindowRuntimeState: async () => null,
+		setCloseBehavior: async (behavior) => {
+			calls.push(`close-behavior:${behavior}`);
+			return null;
+		},
+		showWindow: async () => { calls.push("show-window"); },
+		exitApplication: async () => { calls.push("exit-application"); },
+		getCacheSnapshot: async () => null,
+		chooseCacheDirectory: async () => null,
+		setCacheRoot: async (path) => {
+			calls.push(`cache-root:${path ?? "default"}`);
+			return null;
+		},
+		clearCacheCategory: async (category) => {
+			calls.push(`cache-clear:${category}`);
+			return null;
+		},
+		getDesktopDiagnostics: async () => null,
+		getResourceGovernance: async () => null,
+		trimApplicationWorkingSet: async (force) => {
+			calls.push(`trim:${force ? "force" : "normal"}`);
+			return null;
+		},
+		purgeSystemMemory: async () => null,
 		openExternalUrl: async (url) => {
 			calls.push(`external:${url}`);
 			return true;
@@ -40,6 +64,7 @@ test("Tauri desktop runtime delegates current command wrapper arguments", async 
 			results: bindings.map((binding) => ({ ...binding, ok: true })),
 		}),
 		listenGlobalHotkey: async () => () => undefined,
+		listenDesktopLyricsLockChanged: async () => () => undefined,
 		openProviderLoginWindow: async (provider) => ({
 			provider,
 			stored: true,
@@ -52,6 +77,7 @@ test("Tauri desktop runtime delegates current command wrapper arguments", async 
 	await runtime.minimizeWindow();
 	await runtime.openExternalUrl("https://example.com");
 	await runtime.showDesktopLyricsWindow();
+	await runtime.trimApplicationWorkingSet(true);
 	await runtime.updateDesktopLyricsPayload({ title: "测试歌曲" });
 	const hotkeys = await runtime.configureGlobalHotkeys([
 		{ action: "play-pause", accelerator: "Space" },
@@ -62,6 +88,7 @@ test("Tauri desktop runtime delegates current command wrapper arguments", async 
 		"minimize",
 		"external:https://example.com",
 		"lyrics:show",
+		"trim:force",
 		'lyrics:update:{"title":"测试歌曲"}',
 	]);
 	expect(hotkeys).toEqual({

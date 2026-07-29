@@ -58,6 +58,7 @@ function booleanValue(value: unknown, fallback: boolean): boolean {
 
 function lyricFontValue(value: unknown, fallback: string): string {
   const key = typeof value === "string" ? value.trim().toLowerCase() : "";
+  if (/^custom:[a-z0-9_-]{6,64}$/.test(key)) return key;
   return LYRIC_FONT_KEYS.has(key) ? key : fallback;
 }
 

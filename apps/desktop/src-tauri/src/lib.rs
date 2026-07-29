@@ -1,131 +1,22 @@
+mod app;
 mod commands;
 mod db;
 mod paths;
+mod platform;
+mod runtime;
 mod sidecar;
 mod updater;
 
 use std::{
     path::PathBuf,
-    process::Child,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        Mutex,
-    },
+    sync::{atomic::Ordering, Arc, Mutex},
     time::Duration,
 };
 use tauri::Manager;
 
-#[derive(serde::Serialize, Clone)]
-pub struct RuntimeConfig {
-    pub sidecar_base_url: String,
-    pub app_data_dir: String,
-    pub app_version: String,
-    pub schema_version: String,
-    pub updater_public_key_configured: bool,
-}
-
-#[derive(Default)]
-pub struct DesktopLyricsRuntimeState {
-    pub latest_payload: Option<serde_json::Value>,
-    pub click_through: bool,
-    pub hot_bounds: Option<commands::DesktopLyricsHotBounds>,
-    pub last_middle_at_ms: u64,
-    pub poller_running: bool,
-    pub poller_starting: bool,
-    pub poller_desired: bool,
-    pub poller_child: Option<DesktopLyricsPollerChild>,
-}
-
-pub struct DesktopLyricsPollerChild {
-    child: Option<Child>,
-}
-
-impl DesktopLyricsPollerChild {
-    pub fn new(child: Child) -> Self {
-        Self { child: Some(child) }
-    }
-
-    #[cfg(test)]
-    pub fn empty_for_test() -> Self {
-        Self { child: None }
-    }
-
-    pub fn terminate(mut self) -> Result<(), String> {
-        let Some(mut child) = self.child.take() else {
-            return Ok(());
-        };
-        let kill_result = child.kill();
-        let wait_result = child.wait();
-        match (kill_result, wait_result) {
-            (_, Ok(_)) => Ok(()),
-            (Ok(_), Err(wait_err)) => Err(wait_err.to_string()),
-            (Err(kill_err), Err(wait_err)) => Err(format!(
-                "kill failed: {}; wait failed: {}",
-                kill_err, wait_err
-            )),
-        }
-    }
-}
-
-impl Drop for DesktopLyricsPollerChild {
-    fn drop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
-}
-
-pub struct AppState {
-    pub config: RuntimeConfig,
-    pub desktop_lyrics: Mutex<DesktopLyricsRuntimeState>,
-    pub sidecar: Mutex<sidecar::SidecarRuntimeState>,
-    pub sidecar_supervisor_running: AtomicBool,
-    pub db: Option<Mutex<db::DbRuntimeState>>,
-    pub db_init_error: Option<String>,
-}
-
-impl AppState {
-    // 这些参数逐一对应应用启动阶段的配置、日志与数据库状态资源，显式签名便于核对装配关系。
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        sidecar_base_url: String,
-        app_data_dir: String,
-        app_version: String,
-        schema_version: String,
-        updater_public_key_configured: bool,
-        sidecar_log_path: PathBuf,
-        db: Option<Mutex<db::DbRuntimeState>>,
-        db_init_error: Option<String>,
-    ) -> Self {
-        Self {
-            config: RuntimeConfig {
-                sidecar_base_url: sidecar_base_url.clone(),
-                app_data_dir,
-                app_version,
-                schema_version,
-                updater_public_key_configured,
-            },
-            desktop_lyrics: Mutex::new(DesktopLyricsRuntimeState {
-                latest_payload: None,
-                click_through: true,
-                hot_bounds: None,
-                last_middle_at_ms: 0,
-                poller_running: false,
-                poller_starting: false,
-                poller_desired: false,
-                poller_child: None,
-            }),
-            sidecar: Mutex::new(sidecar::SidecarRuntimeState::new(
-                sidecar_base_url,
-                sidecar_log_path,
-            )),
-            sidecar_supervisor_running: AtomicBool::new(true),
-            db,
-            db_init_error,
-        }
-    }
-}
+pub use app::state::{
+    AppState, DesktopLyricsPollerChild, DesktopLyricsRuntimeState, RuntimeConfig,
+};
 
 fn build_and_start_sidecar(
     state: &AppState,
@@ -135,6 +26,9 @@ fn build_and_start_sidecar(
     app_version: &str,
     resource_dir: Option<&std::path::Path>,
 ) -> Result<(), sidecar::SidecarError> {
+    if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
+        return Ok(());
+    }
     let cmd = sidecar::build_sidecar_command_with_resource_dir(
         port,
         app_data_dir,
@@ -146,6 +40,10 @@ fn build_and_start_sidecar(
         .sidecar
         .lock()
         .map_err(|e| sidecar::SidecarError::Io(e.to_string()))?;
+    // cleanup 先关闭 ownership 再取得同一把锁；锁内复核可避免退出期间重启出新 child。
+    if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
+        return Ok(());
+    }
     sidecar::spawn_sidecar_into_runtime(&mut runtime, cmd, Duration::from_secs(2))
 }
 
@@ -160,7 +58,7 @@ fn start_sidecar_supervisor(
     std::thread::spawn(move || loop {
         std::thread::sleep(Duration::from_secs(3));
         let state = app.state::<AppState>();
-        if !state.sidecar_supervisor_running.load(Ordering::Relaxed) {
+        if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
             break;
         }
         let should_restart = match state.sidecar.lock() {
@@ -218,30 +116,6 @@ fn updater_public_key_configured_from_plugin_config(
         .unwrap_or(false)
 }
 
-fn single_instance_window_reactivation_steps() -> [&'static str; 3] {
-    ["show", "unminimize", "set_focus"]
-}
-
-fn reactivate_main_window_for_single_instance(app: &tauri::AppHandle) {
-    let Some(window) = app.get_webview_window(commands::labels::MAIN) else {
-        return;
-    };
-    for step in single_instance_window_reactivation_steps() {
-        match step {
-            "show" => {
-                let _ = window.show();
-            }
-            "unminimize" => {
-                let _ = window.unminimize();
-            }
-            "set_focus" => {
-                let _ = window.set_focus();
-            }
-            _ => {}
-        }
-    }
-}
-
 pub fn run() {
     let app_data_dir = paths::resolve_app_data_dir();
     let log_dir = paths::resolve_log_dir();
@@ -269,6 +143,21 @@ pub fn run() {
         }
     };
 
+    let runtime_settings = Arc::new(Mutex::new(
+        runtime::settings::RuntimeSettingsStore::for_app_data(&app_data_dir),
+    ));
+    let (cache_state, cache_init_error) = match runtime::cache::CacheRuntime::for_app_data(
+        &app_data_dir,
+        Arc::clone(&runtime_settings),
+    ) {
+        Ok(runtime) => (Some(Arc::new(Mutex::new(runtime))), None),
+        Err(error) => {
+            let message = format!("cache runtime initialization failed: {error}");
+            eprintln!("{message}");
+            (None, Some(message))
+        }
+    };
+
     let state = AppState::new(
         base_url.clone(),
         app_data_dir.to_string_lossy().to_string(),
@@ -278,23 +167,57 @@ pub fn run() {
         sidecar_log_path,
         db_state,
         db_init_error,
+        cache_state,
+        cache_init_error,
+        runtime_settings,
     );
 
     let setup_app_version = app_version.clone();
     let setup_app_data = app_data_dir.clone();
     let setup_log_dir = log_dir.clone();
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
-            reactivate_main_window_for_single_instance(app);
+            app::desktop_runtime::reactivate_main_window_for_single_instance(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .on_page_load(app::wallpaper_engine_runtime::handle_main_webview_page_load)
+        .register_asynchronous_uri_scheme_protocol(
+            "mineradio-wallpaper",
+            |context, request, responder| {
+                let app = context.app_handle().clone();
+                let webview_label = context.webview_label().to_owned();
+                tauri::async_runtime::spawn_blocking(move || {
+                    let state = app.state::<AppState>();
+                    let response = app::wallpaper_media_protocol::build_media_response(
+                        &webview_label,
+                        request,
+                        |project_id, role| {
+                            app::wallpaper_engine_runtime::resolve_media(
+                                state.inner(),
+                                project_id,
+                                role,
+                            )
+                        },
+                    );
+                    responder.respond(response);
+                });
+            },
+        )
         .manage(state)
         .invoke_handler(tauri::generate_handler![
             commands::get_runtime_config,
             commands::get_sidecar_status,
             commands::get_database_status,
+            commands::get_desktop_diagnostics,
+            commands::get_resource_governance,
+            commands::trim_application_working_set,
+            commands::purge_system_memory,
+            commands::get_cache_snapshot,
+            commands::choose_cache_directory,
+            commands::set_cache_root,
+            commands::clear_cache_category,
             commands::configure_global_hotkeys,
             commands::get_updater_status,
             commands::check_for_update,
@@ -303,7 +226,25 @@ pub fn run() {
             commands::window_toggle_maximize,
             commands::window_toggle_fullscreen,
             commands::window_close,
+            commands::window_show,
+            commands::application_exit,
             commands::get_window_state,
+            commands::get_window_runtime_state,
+            commands::set_close_behavior,
+            commands::get_full_desktop_runtime_state,
+            commands::set_full_desktop_mode,
+            commands::set_desktop_icons_visible,
+            commands::set_full_desktop_interaction_locked,
+            commands::recover_full_desktop_runtime,
+            commands::list_wallpaper_engine_projects,
+            commands::get_wallpaper_engine_project_details,
+            commands::choose_wallpaper_engine_directory,
+            commands::choose_wallpaper_engine_project_file,
+            commands::remove_wallpaper_engine_directory,
+            commands::get_wallpaper_engine_runtime_status,
+            commands::start_wallpaper_engine_scene,
+            commands::stop_wallpaper_engine_scene,
+            commands::recover_wallpaper_engine_runtime,
             commands::open_external,
             commands::export_json_file,
             commands::import_json_file,
@@ -325,7 +266,28 @@ pub fn run() {
             // NOTE: spawn + health-wait are best-effort. This setup closure only
             // runs under a real `tauri::Builder` app (`tauri dev`), never from
             // cargo tests (tests call only the pure module functions).
+            app::full_desktop_runtime::recover_before_main_window(app.handle())?;
+            app::main_window::create_main_window(app.handle())?;
+            app::wallpaper_engine_runtime::initialize_after_main_window(app.handle());
+            app::wallpaper_engine_runtime::start_reconcile_watcher_after_main_window(app.handle());
+            app::full_desktop_runtime::schedule_auto_resume_after_main_window(app.handle());
+            app::full_desktop_runtime::sync_native_recovery_surfaces(app.handle());
+            app::full_desktop_runtime::start_explorer_watcher_after_main_window(app.handle());
             let state = app.state::<AppState>();
+            let close_behavior = state
+                .window_runtime
+                .lock()
+                .map(|runtime| runtime.snapshot().lifecycle.close_behavior)
+                .unwrap_or_default();
+            if close_behavior == app::lifecycle::CloseBehavior::Tray {
+                if let Err(error) = app::tray::ensure_main_tray(app.handle()) {
+                    state.diagnostics.record_runtime_error(
+                        runtime::diagnostics::DiagnosticProbeKind::Tray,
+                        sidecar::now_ms(),
+                        format!("persisted tray initialization failed: {error}"),
+                    );
+                }
+            }
             let setup_resource_dir = app.path().resource_dir().ok();
             if let Err(e) = build_and_start_sidecar(
                 &state,
@@ -350,52 +312,10 @@ pub fn run() {
             );
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if window.label() != commands::labels::MAIN {
-                return;
-            }
-            let emit_mode = match event {
-                tauri::WindowEvent::Resized(_) | tauri::WindowEvent::Moved(_) => {
-                    Some(commands::WindowStateEmitMode::Debounced)
-                }
-                tauri::WindowEvent::Focused(_) | tauri::WindowEvent::ScaleFactorChanged { .. } => {
-                    Some(commands::WindowStateEmitMode::Now)
-                }
-                _ => None,
-            };
-            if let Some(mode) = emit_mode {
-                match mode {
-                    commands::WindowStateEmitMode::Now => {
-                        commands::emit_window_state_for_window(window)
-                    }
-                    commands::WindowStateEmitMode::Debounced => {
-                        commands::emit_window_state_debounced(window.clone());
-                    }
-                }
-            }
-            if !matches!(event, tauri::WindowEvent::CloseRequested { .. }) {
-                return;
-            }
-            let state = window.state::<AppState>();
-            state
-                .sidecar_supervisor_running
-                .store(false, Ordering::Relaxed);
-            let sidecar_child = state
-                .sidecar
-                .lock()
-                .ok()
-                .and_then(|mut runtime| sidecar::sidecar_runtime_mark_stopped(&mut runtime));
-            sidecar::terminate_sidecar_child(sidecar_child);
-
-            let lyrics_child = state.desktop_lyrics.lock().ok().and_then(|mut lyrics| {
-                let (_, child) =
-                    commands::desktop_lyrics_stop_middle_click_poller_state(&mut lyrics);
-                child
-            });
-            commands::desktop_lyrics_terminate_poller_child(lyrics_child);
-        })
-        .run(context)
-        .expect("failed to run MineRadio-Tauri shell");
+        .on_window_event(app::desktop_runtime::handle_window_event)
+        .build(context)
+        .expect("failed to build MineRadio-Tauri shell");
+    app.run(app::desktop_runtime::handle_run_event);
 }
 
 #[cfg(test)]
@@ -403,45 +323,42 @@ mod tests {
     use super::*;
 
     #[test]
-    fn app_state_new_builds_config() {
-        let conn = rusqlite::Connection::open_in_memory().unwrap();
-        let db_state = db::DbRuntimeState {
-            conn,
-            path: std::path::PathBuf::from("/data/mineradio.db"),
-        };
-
-        let s = AppState::new(
+    fn stopped_supervisor_cannot_start_a_new_sidecar_child() {
+        let settings_path = std::env::temp_dir().join(format!(
+            "mineradio-stopped-supervisor-settings-{}.json",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&settings_path);
+        let state = AppState::new(
             "http://127.0.0.1:1".into(),
             "/data".into(),
             "0.1.0".into(),
             "0.1.0".into(),
             false,
-            std::path::PathBuf::from("/logs/sidecar-runtime.log"),
-            Some(Mutex::new(db_state)),
+            PathBuf::from("/logs/sidecar-runtime.log"),
             None,
+            None,
+            None,
+            None,
+            Arc::new(Mutex::new(
+                runtime::settings::RuntimeSettingsStore::with_path(&settings_path),
+            )),
         );
-        assert_eq!(s.config.sidecar_base_url, "http://127.0.0.1:1");
-        assert_eq!(s.config.app_data_dir, "/data");
-        assert_eq!(s.config.app_version, "0.1.0");
-        assert_eq!(s.config.schema_version, "0.1.0");
-        assert!(!s.config.updater_public_key_configured);
-        let lyrics = s.desktop_lyrics.lock().expect("desktop lyrics state");
-        assert!(lyrics.latest_payload.is_none());
-        assert!(lyrics.click_through);
-        assert!(lyrics.hot_bounds.is_none());
-        assert_eq!(lyrics.last_middle_at_ms, 0);
-        assert!(!lyrics.poller_running);
-        assert!(!lyrics.poller_starting);
-        assert!(!lyrics.poller_desired);
-        assert!(lyrics.poller_child.is_none());
-        let sidecar = s.sidecar.lock().expect("sidecar state");
-        assert_eq!(sidecar.phase, sidecar::SidecarPhase::Starting);
-        assert_eq!(sidecar.base_url, "http://127.0.0.1:1");
-        assert!(sidecar.child.is_none());
-        assert_eq!(
-            sidecar.log_path,
-            std::path::PathBuf::from("/logs/sidecar-runtime.log")
-        );
+        state
+            .sidecar_supervisor_running
+            .store(false, Ordering::Release);
+
+        assert!(build_and_start_sidecar(
+            &state,
+            1,
+            std::path::Path::new("/data"),
+            std::path::Path::new("/logs"),
+            "0.1.0",
+            None,
+        )
+        .is_ok());
+        assert!(state.sidecar.lock().expect("sidecar state").child.is_none());
+        let _ = std::fs::remove_file(settings_path);
     }
 
     #[test]
@@ -466,13 +383,5 @@ mod tests {
         assert!(updater_public_key_configured_from_plugin_config(
             &tauri::utils::config::PluginConfig(plugins)
         ));
-    }
-
-    #[test]
-    fn single_instance_reactivation_uses_baseline_main_window_steps() {
-        assert_eq!(
-            single_instance_window_reactivation_steps(),
-            ["show", "unminimize", "set_focus"]
-        );
     }
 }

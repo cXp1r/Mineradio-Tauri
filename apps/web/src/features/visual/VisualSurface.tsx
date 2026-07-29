@@ -5,10 +5,15 @@ import {
   VisualEngineHost,
   type VisualEngineHostProps,
 } from "../../visual/VisualEngineHost";
+import {
+  WallpaperEngineBackground,
+  type WallpaperEngineBackgroundProps,
+} from "../wallpaper-engine/WallpaperEngineBackground";
 
 export interface VisualSurfaceProps {
   VisualComponent: (props: VisualEngineHostProps) => ReactElement | null;
   engineProps: VisualEngineHostProps;
+  wallpaperEngineBackgroundProps: WallpaperEngineBackgroundProps;
   controlPanelProps: ComponentProps<typeof VisualControlPanelHost>;
   aiDepthChip: {
     visible: boolean;
@@ -19,11 +24,13 @@ export interface VisualSurfaceProps {
 export function VisualSurface({
   VisualComponent = VisualEngineHost,
   engineProps,
+  wallpaperEngineBackgroundProps,
   controlPanelProps,
   aiDepthChip,
 }: VisualSurfaceProps): ReactElement {
   return (
     <>
+      <WallpaperEngineBackground {...wallpaperEngineBackgroundProps} />
       <VisualComponent {...engineProps} />
       <GuideParticlesHost />
       <div id="ai-depth-chip" className={aiDepthChip.visible ? "show" : ""}>

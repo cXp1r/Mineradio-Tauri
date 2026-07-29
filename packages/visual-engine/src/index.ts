@@ -445,6 +445,10 @@ export {
 } from "./stage-lyrics/lyric-mask";
 export type { LyricMaskResult, MakeLyricMaskOptions } from "./stage-lyrics/lyric-mask";
 export {
+	customLyricFontFamily,
+	customLyricFontId,
+} from "./stage-lyrics/lyric-text";
+export {
 	getLyricSunBloomTexture,
 	resetLyricSunBloomCache,
 } from "./stage-lyrics/lyric-sun-bloom";

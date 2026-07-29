@@ -17,11 +17,13 @@ Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
 | 主循环与调度 | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | visual-engine runtime | visual scheduler | analyser/视觉采样可限流，媒体状态不可限流 |
 | 3D 歌单架 | `04-shelf/**` | visual shelf modules、`shelf-detail-data.ts` | visual-engine + library controller | 数据增长时 DOM/GPU 对象保持有界 |
 | Home 2.0 | `05-playback/03-home-discover-weather.js`、`03a-home-dashboard.js`、`05-home-actions.js` | `home/EmptyHomeHost.tsx`、`App.tsx` | home controller/surface | 维持当前 API，允许重做 UI 组织 |
-| 完整桌面 | `desktop/full-desktop-mode-runtime.js` | 尚无 | Rust full desktop runtime | 先恢复 journal，再 attach/interactive |
-| 原生桌面图标 | `desktop/desktop-native-icon-layer-runtime.js`、`desktop-icon-shape-runtime.js` | 尚无 | Rust Windows platform | 系统修改必须可对称 rollback |
-| Wallpaper Engine | `desktop/wallpaper-engine-runtime.js`、`wallpaper-engine-library.js` | 尚无 | Rust wallpaper runtime | 只终止能证明由本应用启动的进程 |
+| 窗口、托盘与关闭 | `desktop/main.js` | `app/lifecycle.rs`、`app/tray.rs`、`app/desktop_runtime.rs`、`runtime/window.rs` | desktop runtime | 默认 exit、可选 tray；所有真实退出汇合到 exactly-once cleanup |
+| 完整桌面 | `desktop/full-desktop-mode-runtime.js` | `apps/desktop/src-tauri/src/runtime/full_desktop/**`、`apps/desktop/src-tauri/src/app/full_desktop_runtime.rs`、`apps/desktop/src-tauri/src/commands/full_desktop.rs`、Web `full-desktop-runtime` Port/Adapter/runtime | Rust full desktop runtime | 动态创建主窗口前恢复 journal；状态机统一 attach、reconcile、Escape/tray/exit rollback，无法证明恢复时 fail closed |
+| 原生桌面图标 | `desktop/desktop-native-icon-layer-runtime.js`、`desktop/desktop-icon-shape-runtime.js` | `apps/desktop/src-tauri/src/platform/windows/full_desktop.rs` | Rust Windows platform | 只操作经 parent/thread/PID/creation-time 验证的 WorkerW/DefView/ListView；快照化 mutation 必须在 deadline 内 best-effort 对称 rollback |
+| Wallpaper Engine | `desktop/wallpaper-engine-runtime.js`、`desktop/wallpaper-engine-library.js` | Rust core/Windows Adapter/app lifecycle + Web `WallpaperEngineRuntimePort`/Background/controller | Rust runtime/platform + Web controller/background | 只关闭 exact location，不终止共享 Wallpaper Engine 核心进程；图片/视频/preview 仅用登记 project-id/role custom protocol；exact signer、bounded absence/journal recovery、DWM 主背景、HWND rebind、周期 location mute、成功-session epoch cleanup 与 Full Desktop transition owner 已实现。原生 WGC/D3D 未启用，明确使用 `glassSamplerReady=false` 的 DOM/static fallback；真实 Scene/DWM/静音/cursor/mixed-DPI/soak 为 Field Validation Pending（non-blocking） |
 | 桌面歌词 | `desktop/main.js`、overlay preload | desktop lyrics Rust/React modules | desktop runtime | 保持锁定、穿透、拖动和显示器修正 |
 | 内存与资源 | `desktop/system-memory.js`、`00-state/08-desktop-render-power.js` | visual perf state、Rust diagnostics | resources runtime | 系统级释放默认关闭且不在前台播放运行 |
+| 缓存治理 | `desktop/main.js` cache handlers、`server.js` cache paths | `runtime/cache.rs`、`commands/cache.rs` | cache runtime | 只管理已验证分类，不接受任意删除路径，不跟随 reparse point |
 | Cuefield | `05-playback/16-cuefield-automix-core.js` 至 `18-cuefield-automix-integration.js` | 尚无完整服务 | future playback service | 等待未来 API capability，不进入本轮 |
 
 ## 明确不迁移的上游实现

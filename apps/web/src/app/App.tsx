@@ -23,6 +23,8 @@ import { AppShell, type AppShellProps } from "./AppShell";
 import {
   createDefaultSidecarClient,
   defaultDesktopRuntime,
+  defaultFullDesktopRuntime,
+  defaultWallpaperEngineRuntime,
 } from "./runtime/default-runtime-dependencies";
 import { useLyricsStore } from "../stores/lyrics-store";
 import { usePlaybackStore } from "../stores/playback-store";
@@ -37,6 +39,8 @@ import type {
   DesktopRuntimePort,
   DesktopWindowState,
 } from "../ports/desktop-runtime-port";
+import type { FullDesktopRuntimePort } from "../ports/full-desktop-runtime-port";
+import type { WallpaperEngineRuntimePort } from "../ports/wallpaper-engine-runtime-port";
 import {
   usePlaybackSessionRuntime,
   type CurrentBeatMapState,
@@ -55,6 +59,13 @@ import {
 } from "../features/accounts/useLoginQrRuntime";
 import { useAccountSessionController } from "../features/accounts/useAccountSessionController";
 import { useDesktopRuntime } from "../features/desktop/useDesktopRuntime";
+import { useDesktopManagementRuntime } from "../features/desktop/useDesktopManagementRuntime";
+import { DesktopRuntimeControls } from "../features/desktop/DesktopRuntimeControls";
+import { useFullDesktopRuntime } from "../features/desktop/useFullDesktopRuntime";
+import { FullDesktopControls } from "../features/desktop/FullDesktopControls";
+import { WallpaperEngineControls } from "../features/wallpaper-engine/WallpaperEngineControls";
+import { setFullDesktopModeWithWallpaperFallback } from "../features/wallpaper-engine/full-desktop-wallpaper-coordinator";
+import { useWallpaperEngineRuntime } from "../features/wallpaper-engine/useWallpaperEngineRuntime";
 import { useUpdaterController } from "../features/updater/useUpdaterController";
 import { useLikesController } from "../features/likes/useLikesController";
 export { isNeteaseLikeSupported } from "../features/likes/likes-policy";
@@ -83,6 +94,7 @@ export {
 import type { PlaylistPanelTab } from "../components/shell/PlaylistPanelHost";
 import type { SearchMode } from "../components/shell/SearchShell";
 import { buildDesktopLyricSnapshot } from "../desktop-lyrics/desktop-lyrics-snapshot";
+import { useCustomLyricFontRuntime } from "../desktop-lyrics/useCustomLyricFontRuntime";
 import type { SidecarRecoveryNoticeState } from "../components/shell/SidecarRecoveryNotice";
 import type { VisualGuideStep } from "../components/shell/VisualGuideHost";
 import { SplashHost, type SplashHostProps } from "../visual/SplashHost";
@@ -90,6 +102,7 @@ import {
   VisualEngineHost,
   type DesktopLyricsMotionSnapshot,
 } from "../visual/VisualEngineHost";
+import type { VisualPerformanceSnapshotReader } from "../visual/useVisualEngine";
 import {
   createPodcastRadioDetailOpener,
   createShelfDetailContentLoader,
@@ -217,6 +230,8 @@ export type AppProps = {
   initialRuntimeConfig?: SidecarRuntimeConnection["config"] | null;
   desktopLyricsRuntime?: DesktopLyricsRuntime;
   desktopRuntime?: DesktopRuntimePort;
+  fullDesktopRuntime?: FullDesktopRuntimePort;
+  wallpaperEngineRuntime?: WallpaperEngineRuntimePort;
 };
 
 export type DesktopLyricsRuntime = {
@@ -233,6 +248,8 @@ export function App({
   initialRuntimeConfig = null,
   desktopLyricsRuntime,
   desktopRuntime = defaultDesktopRuntime,
+  fullDesktopRuntime = defaultFullDesktopRuntime,
+  wallpaperEngineRuntime = defaultWallpaperEngineRuntime,
 }: AppProps = {}): ReactElement {
   const [sidecarClient, setSidecarClient] = useState<
     SidecarRuntimeConnection["client"] | null
@@ -458,12 +475,17 @@ export function App({
     null,
   );
   const desktopLyricsBeatMapKeyRef = useRef("none");
+  const visualPerformanceSnapshotReaderRef = useRef<VisualPerformanceSnapshotReader | null>(null);
   const desktopLyricsMotionRef = useRef<DesktopLyricsMotionSnapshot>({
     highBloom: 0,
     beatGlow: 0,
     beatPulse: 0,
     bass: 0,
   });
+  const readVisualPerformanceSnapshot = useCallback(
+    () => visualPerformanceSnapshotReaderRef.current?.() ?? null,
+    [],
+  );
   const lyricsPayloadRef = useRef(lyricsPayload);
   lyricsPayloadRef.current = lyricsPayload;
   const clearCurrentBeatMapRef = useRef<() => void>(() => undefined);
@@ -1166,6 +1188,10 @@ export function App({
     visualFx,
   ]);
 
+  useCustomLyricFontRuntime(visualFx.lyricFont, (fontKey) => {
+    updateVisualStringSetting("lyricFont", fontKey);
+  });
+
   const {
     desktopWindowState,
     toggleDesktopLyrics,
@@ -1181,7 +1207,33 @@ export function App({
     hotkeyActions: desktopHotkeyActions,
     onWindowState: applyDesktopWindowShellState,
     onWindowCleanup: clearDesktopWindowShell,
+    onDesktopLyricsLockChanged: (clickThrough) => {
+      updateVisualBooleanSetting("desktopLyricsClickThrough", clickThrough);
+    },
+    onLyricsPayloadSent: (payload) => {
+      if (typeof payload.beatMapKey === "string") {
+        desktopLyricsBeatMapKeyRef.current = payload.beatMapKey;
+      }
+    },
   });
+  const desktopManagement = useDesktopManagementRuntime(resolvedDesktopRuntime, {
+    getVisualPerformanceSnapshot: readVisualPerformanceSnapshot,
+  });
+  const fullDesktopManagement = useFullDesktopRuntime(fullDesktopRuntime);
+  const wallpaperEngineManagement = useWallpaperEngineRuntime(wallpaperEngineRuntime, {
+    windowState: desktopWindowState,
+  });
+  const setCoordinatedFullDesktopMode = useCallback(async (mode: "disabled" | "passive" | "interactive") => {
+    await setFullDesktopModeWithWallpaperFallback(
+      mode,
+      wallpaperEngineManagement.preparePassiveFallback,
+      fullDesktopManagement.setMode,
+    );
+  }, [fullDesktopManagement, wallpaperEngineManagement]);
+  const coordinatedFullDesktopManagement = useMemo(() => ({
+    ...fullDesktopManagement,
+    setMode: setCoordinatedFullDesktopMode,
+  }), [fullDesktopManagement, setCoordinatedFullDesktopMode]);
   setDesktopLyricsWindowEnabledRef.current = setDesktopLyricsWindowEnabled;
   toggleWindowFullscreenRef.current = toggleWindowFullscreen;
   const dismissEmptyHome = useCallback(() => {
@@ -1251,6 +1303,11 @@ export function App({
     onSplashDismissed: () => setSplashActive(false),
     visual: {
       VisualComponent,
+      wallpaperEngineBackgroundProps: {
+        project: wallpaperEngineManagement.selected,
+        runtime: wallpaperEngineManagement.runtime,
+        fullDesktopMode: fullDesktopManagement.state?.effectiveMode ?? "disabled",
+      },
       engineProps: {
         audioElementRef: audioRef,
         controllerRef,
@@ -1312,6 +1369,7 @@ export function App({
         },
         onShelfOpenContentChange: setShelfDetailOpen,
         desktopLyricsMotionRef,
+        performanceSnapshotReaderRef: visualPerformanceSnapshotReaderRef,
       },
       controlPanelProps: {
         preset: visualPreset,
@@ -1330,6 +1388,16 @@ export function App({
         onStringSettingChange: updateVisualStringSetting,
         onFxPatchChange: updateVisualFxPatch,
         onNotice: showNotice,
+        desktopRuntimeSlot: (
+          <>
+            <FullDesktopControls {...coordinatedFullDesktopManagement} />
+            <WallpaperEngineControls
+              {...wallpaperEngineManagement}
+              fullDesktopMode={fullDesktopManagement.state?.effectiveMode ?? "disabled"}
+            />
+            <DesktopRuntimeControls {...desktopManagement} />
+          </>
+        ),
       },
       aiDepthChip,
     },
