@@ -42,7 +42,12 @@
 
 ## 与 Sonic Topography 的边界
 
-维护者提供的公开社交媒体截图显示 Mineradio 原作者提到与“音域回响作者 Ajin”联动，并展示 Sonic Topography 预设。该材料支持已有 preset 7 的来源叙述，但截图没有出现 CmzYa、Workshop id `3747222633`，也没有给出 preset 8 vendor bundle 的再分发授权。
+维护者提供的公开社交媒体截图中，视觉预设面板同时显示：
+
+- “音域回响 Sonic-Topography / 作者 Ajin”；
+- 其右侧“音域回响 Wallpaper Engine / 作者 CmzYa”。
+
+因此该材料支持 Mineradio 原作者在公开发布内容中同时展示、区分并署名两项来源；preset 8 的 CmzYa 归属不是由 Ajin 来源链推断。截图没有显示 Workshop id `3747222633`，也没有出现 preset 8 vendor bundle 的授权范围或允许再分发原文；这些仍分别由上游 `project.json` 元数据和后续持久授权证据承担。
 
 因此禁止：
 
