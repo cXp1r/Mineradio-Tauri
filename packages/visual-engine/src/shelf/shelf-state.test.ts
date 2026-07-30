@@ -29,6 +29,7 @@ test("createShelfState pinnedOpen defaults false", () => {
 test("createShelfState selectedIdx starts at -1", () => {
 	const s = createShelfState();
 	expect(s.selectedIdx).toBe(-1);
+	expect(s.pointerForegroundEligible).toBe(true);
 });
 
 test("createShelfState paneMemory seeds mine:0 fav:0", () => {

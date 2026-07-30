@@ -83,7 +83,22 @@ import {
 import { createShelfTrackChangeGuard } from "../shelf-track-change-guard";
 import { isShelfPortraitViewport } from "../shelf-viewport";
 import { createVisualAudioDebugger } from "../visual-audio-debug";
+import {
+	createCursorActivityRuntime,
+	type CursorActivityRuntime,
+} from "./cursor-activity-runtime";
 import type { LegacyVisualEventSink } from "./legacy-visual-events";
+
+export function connectCursorActivityToShelf(input: {
+	readonly cursorActivity: Pick<CursorActivityRuntime, "getSnapshot" | "subscribe">;
+	readonly shelfManager: Pick<ShelfManager, "setPointerForegroundEligible">;
+}): () => void {
+	const sync = () => {
+		input.shelfManager.setPointerForegroundEligible(!input.cursorActivity.getSnapshot().hidden);
+	};
+	sync();
+	return input.cursorActivity.subscribe(sync);
+}
 
 export interface VisualEngineRefs {
 	hostRef: RefObject<HTMLDivElement | null>;
@@ -1413,6 +1428,24 @@ export function createLegacyVisualComposition(
 					if (contentList) options.events.onShelfOpenDetailContent(payload, contentList);
 				},
 			}));
+			const cursorActivity = registerOwnedDisposable(
+				scope,
+				isCurrent,
+				"cursor-activity",
+				"listener",
+				createCursorActivityRuntime({ window, document }),
+			);
+			const disconnectCursorActivity = connectCursorActivityToShelf({
+				cursorActivity,
+				shelfManager,
+			});
+			registerOwnedCleanup(
+				scope,
+				isCurrent,
+				"cursor-shelf-policy",
+				"subscription",
+				disconnectCursorActivity,
+			);
 			const sonicPlugin = createSonicTopographyPlugin();
 			const sonic = registerOwnedDisposable(
 				scope,

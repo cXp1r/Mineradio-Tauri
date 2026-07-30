@@ -27,6 +27,11 @@ body {
   overflow: hidden;
 }
 
+body.cursor-hidden,
+body.cursor-hidden * {
+  cursor: none !important;
+}
+
 html.desktop-shell-root,
 html.desktop-shell-root body {
   background: transparent;

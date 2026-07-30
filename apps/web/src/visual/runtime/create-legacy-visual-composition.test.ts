@@ -19,6 +19,7 @@ import {
 	shouldActivateSonicTopography,
 } from "./create-legacy-visual-composition";
 import { createLegacyVisualEventBridge } from "./legacy-visual-events";
+import { connectCursorActivityToShelf } from "./create-legacy-visual-composition";
 
 function deferred() {
 	let resolve!: () => void;
@@ -37,6 +38,35 @@ test("legacy visual composition factory is side-effect free", () => {
 	expect(typeof composition.mount).toBe("function");
 	expect(typeof composition.applyFrameSnapshot).toBe("function");
 	expect(typeof composition.dispose).toBe("function");
+});
+
+test("cursor activity policy immediately synchronizes Shelf and follows hidden edges", () => {
+	let hidden = false;
+	let listener: (() => void) | null = null;
+	let unsubscribeCalls = 0;
+	const eligibility: boolean[] = [];
+	const disconnect = connectCursorActivityToShelf({
+		cursorActivity: {
+			getSnapshot: () => ({ hidden, revision: hidden ? 1 : 0 }),
+			subscribe: (nextListener) => {
+				listener = nextListener;
+				return () => {
+					unsubscribeCalls += 1;
+					listener = null;
+				};
+			},
+		},
+		shelfManager: {
+			setPointerForegroundEligible: (value) => { eligibility.push(value); },
+		},
+	});
+
+	expect(eligibility).toEqual([true]);
+	hidden = true;
+	(listener as (() => void) | null)?.();
+	expect(eligibility).toEqual([true, false]);
+	disconnect();
+	expect(unsubscribeCalls).toBe(1);
 });
 
 test("Sonic production route activates only for preset 7 and normalizes quality", () => {

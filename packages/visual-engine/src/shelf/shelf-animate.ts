@@ -134,6 +134,7 @@ export interface ShelfManager {
 	getShelfPresence(): ShelfPresence;
 	setAppRevealed(revealed: boolean): void;
 	setSelectedIdx(idx: number): void;
+	setPointerForegroundEligible(eligible: boolean): void;
 	getSelectedIdx(): number;
 	clearSelected(): void;
 	getCenterIdx(): number;
@@ -270,9 +271,10 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 			if (group) {
 				group.visible = shouldShowShelfGroup();
 			}
-			applyGroupPose(ctx);
+			const pointerSelectionForegroundActive = hasEligiblePointerSelection();
+			applyGroupPose(ctx, pointerSelectionForegroundActive);
 			rebuildRenderedWindowIfNeeded();
-			applyRenderedCardLayout(ctx);
+			applyRenderedCardLayout(ctx, pointerSelectionForegroundActive);
 			syncDetailContentMeshes(ctx);
 
 			void nowFn;
@@ -294,6 +296,10 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		},
 		setSelectedIdx(idx) {
 			state.selectedIdx = idx;
+		},
+		setPointerForegroundEligible(eligible) {
+			if (state.pointerForegroundEligible === eligible) return;
+			state.pointerForegroundEligible = eligible;
 		},
 		getSelectedIdx() {
 			return state.selectedIdx;
@@ -658,13 +664,17 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		}
 	}
 
-	function applyRenderedCardLayout(ctx: FrameContext): void {
+	function applyRenderedCardLayout(
+		ctx: FrameContext,
+		pointerSelectionForegroundActive: boolean,
+	): void {
 		if (!group || renderedCards.size === 0) return;
 		const profile = getDefaultShelfLayoutProfile(opts.getLayoutProfileOverrides?.());
 		const center = state.centerSmooth;
 		const mode = state.mode === "stage" ? "stage" : "side";
 		const detailOpen = state.openCardIdx >= 0;
 		const passiveAlways = state.mode === "side" && state.presence === "always" && !state.pinnedOpen && !detailOpen;
+		const sidePointerSelectionActive = pointerSelectionForegroundActive && !detailOpen;
 		for (const [index, card] of renderedCards) {
 			const absD = Math.abs(index - center);
 			const breathPulse = computeBreathPulse(
@@ -692,7 +702,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 				paneSwitchDir: state.paneSwitchDir,
 				pulse: ctx.uniforms.uBeat.value,
 				breathPulse,
-				lift: index === state.selectedIdx ? 1 : 0,
+				lift: index === state.selectedIdx && (mode === "stage" || sidePointerSelectionActive) ? 1 : 0,
 				detailOpen,
 				passiveAlways,
 				pointerParallax: ctx.pointerParallax,
@@ -811,7 +821,10 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		return cardPool;
 	}
 
-	function applyGroupPose(ctx: FrameContext): void {
+	function applyGroupPose(
+		ctx: FrameContext,
+		pointerSelectionForegroundActive: boolean,
+	): void {
 		if (!group) return;
 		if (!group.position || !group.rotation) return;
 		const px = ctx.pointerParallax?.x || 0;
@@ -828,12 +841,17 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 		}
 		const detailOpen = state.openCardIdx >= 0;
 		const passiveAlwaysGroup = state.presence === "always" && !state.pinnedOpen && !detailOpen;
-		const liftedCardActive = state.selectedIdx >= 0;
-		group.renderOrder = passiveAlwaysGroup && !liftedCardActive ? 30 : 50;
+		group.renderOrder = passiveAlwaysGroup && !pointerSelectionForegroundActive ? 30 : 50;
 		group.position.set(0, 0, 0);
 		group.rotation.y += (px * 0.018 - group.rotation.y) * 0.045;
 		group.rotation.x += (-py * 0.010 - group.rotation.x) * 0.045;
 		group.rotation.z += (0 - group.rotation.z) * 0.045;
+	}
+
+	function hasEligiblePointerSelection(): boolean {
+		return state.pointerForegroundEligible
+			&& state.selectedIdx >= 0
+			&& state.selectedIdx < data.length;
 	}
 
 	function updateCardSpriteIfNeeded(

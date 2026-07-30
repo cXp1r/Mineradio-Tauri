@@ -1911,6 +1911,144 @@ test("ShelfManager applies baseline pointer rotation.x and render order in side 
 	expect(center?.renderOrder ?? 0).toBeGreaterThan(above?.renderOrder ?? 0);
 });
 
+test("passive Shelf retracts the selected card and foreground group when pointer eligibility ends", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 2;
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "A" }, { title: "B" }, { title: "C" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPresence("always");
+	manager.getState().centerTarget = 1;
+	manager.getState().centerSmooth = 1;
+	manager.setSelectedIdx(1);
+	manager.update(makeCtx(uniforms, 16));
+
+	const selected = renderedShelfCard(group, 1);
+	const eligibleY = selected?.position.y ?? 0;
+	expect(group.renderOrder).toBe(50);
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 32));
+
+	expect(manager.getSelectedIdx()).toBe(1);
+	expect(selected?.position.y ?? 0).toBeLessThan(eligibleY);
+	expect(group.renderOrder).toBe(30);
+
+	manager.setPointerForegroundEligible(true);
+	manager.update(makeCtx(uniforms, 48));
+	expect(manager.getSelectedIdx()).toBe(1);
+	expect(selected?.position.y).toBeCloseTo(eligibleY, 8);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("restoring pointer eligibility does not foreground a stale Shelf selection", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Only card" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPresence("always");
+	manager.setSelectedIdx(9);
+	manager.setPointerForegroundEligible(false);
+	manager.setPointerForegroundEligible(true);
+	manager.update(makeCtx(createRuntimeUniforms(), 16));
+
+	expect(manager.getSelectedIdx()).toBe(9);
+	expect(group.renderOrder).toBe(30);
+});
+
+test("cursor eligibility never changes stage Shelf selection posture or group layer", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "A" }, { title: "B" }, { title: "C" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("stage");
+	manager.getState().centerTarget = 1;
+	manager.getState().centerSmooth = 1;
+	manager.setSelectedIdx(1);
+	const uniforms = createRuntimeUniforms();
+	manager.update(makeCtx(uniforms, 16));
+	manager.update(makeCtx(uniforms, 32));
+	const selected = renderedShelfCard(group, 1);
+	const visiblePose = selected?.position.clone();
+	const visibleRenderOrder = selected?.renderOrder;
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 48));
+
+	expect(selected?.position.toArray()).toEqual(visiblePose?.toArray());
+	expect(selected?.renderOrder).toBe(visibleRenderOrder);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("cursor eligibility retracts pinned side card lift without lowering its group", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Pinned" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPinnedOpen(true);
+	manager.setSelectedIdx(0);
+	const uniforms = createRuntimeUniforms();
+	manager.update(makeCtx(uniforms, 16));
+	const selected = renderedShelfCard(group, 0);
+	const visibleY = selected?.position.y ?? 0;
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 32));
+
+	expect(selected?.position.y ?? 0).toBeLessThan(visibleY);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("side detail suppresses pointer lift and keeps its group layer across cursor edges", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Detail", playlistId: "detail" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setSelectedIdx(0);
+	manager.openDetail(0);
+	const uniforms = createRuntimeUniforms();
+	const frame = (now: number) => ({
+		...makeCtx(uniforms, now),
+		camera: camera as unknown as FrameContext["camera"],
+		viewport: { width: 800, height: 600 },
+	}) as FrameContext & { viewport: { width: number; height: number } };
+	manager.update(frame(16));
+	const selected = renderedShelfCard(group, 0);
+	const visiblePose = selected?.position.clone();
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(frame(32));
+
+	expect(selected?.position.toArray()).toEqual(visiblePose?.toArray());
+	expect(group.renderOrder).toBe(50);
+	expect(findDetailMeshes(group).every((mesh) => mesh.renderOrder > group.renderOrder)).toBe(true);
+});
+
 test("ShelfManager applies baseline stage pointer posture and group drift", async () => {
 	const three = await import("three");
 	const scene = new three.Scene();
