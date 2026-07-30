@@ -383,6 +383,24 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		return typeof opts.getShelfHasOpenContent === "function" ? !!opts.getShelfHasOpenContent() : false;
 	}
 
+	function getEffectiveRenderBase(): number {
+		return getShelfHasOpenContent() ? 24 : 38;
+	}
+
+	function applyLyricRowRenderBase(lyric: LyricGroup, renderBase: number): void {
+		(lyric.group as unknown as { renderOrder: number }).renderOrder = renderBase;
+	}
+
+	function syncLyricRowRenderBase(renderBase = getEffectiveRenderBase()): void {
+		const rows = new Set<LyricGroup>();
+		if (state.current) rows.add(state.current);
+		for (const entry of state.outgoing) rows.add(entry.lyric);
+		for (const lyric of lyricByClarityKey.values()) rows.add(lyric);
+		for (const lyric of rows) {
+			applyLyricRowRenderBase(lyric, renderBase);
+		}
+	}
+
 	function getShelfPinnedOpen(): boolean {
 		return typeof opts.getShelfPinnedOpen === "function" ? !!opts.getShelfPinnedOpen() : false;
 	}
@@ -1306,6 +1324,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			: undefined;
 		return buildLyricGroup(renderPayload.text, palette, {
 			threeFactory,
+			renderBase: getEffectiveRenderBase(),
 			dotTexture: opts.dotTexture,
 			pixelScale: opts.pixelScale,
 			maxAnisotropy: opts.maxAnisotropy,
@@ -1550,6 +1569,8 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			disposeLyricGroupSafe(lyric);
 			return;
 		}
+		// 在任何 scene attach 之前重读当前层级，避免异步构建跨过 detail 边沿后闪现旧 base。
+		applyLyricRowRenderBase(lyric, getEffectiveRenderBase());
 		if (!takeover) {
 			if (previousLyric && state.current === previousLyric) {
 				if (redrawOnly) {
@@ -2255,7 +2276,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		state.beatGlow = finiteOr(state.beatGlow, 0);
 		const layout = getLyricLayoutOptions();
 		const shelf = getShelfProfile(layout.preset);
-		(state.group as unknown as { renderOrder: number }).renderOrder = shelf.shelfDetailOpen ? 24 : 38;
+		const renderBase = shelf.shelfDetailOpen ? 24 : 38;
+		(state.group as unknown as { renderOrder: number }).renderOrder = renderBase;
+		syncLyricRowRenderBase(renderBase);
 		const skullLyricPreset = layout.preset === 6;
 		let solarBloom = lyricGlowStrength > 0
 			? (0.18 + glowBreath * 0.16 + musicBloom * 0.90 + state.beatGlow * 1.18 + Math.sin(t * 0.37 + 1.2) * 0.035) * glowDrive

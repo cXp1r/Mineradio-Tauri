@@ -18,6 +18,7 @@ import {
 
 export interface LyricGroupOptions extends LyricShaderMaterialOptions, LyricTextOptions {
 	threeFactory?: ThreeFactory;
+	renderBase?: number;
 	pixelScale?: number;
 	lyricGlowParticles?: boolean;
 	dotTexture?: THREE.Texture;
@@ -280,7 +281,9 @@ export async function buildLyricGroup(
 	const textWorldH = worldH * ((mask.textHeight || mask.fontSize) / mask.height);
 
 	const group = new THREE.Group() as THREE.Group;
-	(group as unknown as { renderOrder: number }).renderOrder = 42;
+	(group as unknown as { renderOrder: number }).renderOrder = Number.isFinite(opts.renderBase)
+		? Number(opts.renderBase)
+		: 38;
 	group.position.set((rand() - 0.5) * 0.08, 0.2, 1.46);
 	group.scale.setScalar(0.96);
 	group.userData.age = 0;

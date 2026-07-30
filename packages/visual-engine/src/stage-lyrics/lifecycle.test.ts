@@ -2380,6 +2380,70 @@ test("Sonic preset applies the unlocked Stage lyric offset policy", async () => 
 	lifecycle.dispose();
 });
 
+test("detail-open propagates the effective render base to current and outgoing lyric rows in one frame", async () => {
+	let open = false;
+	let now = 0.5;
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => now,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		particleLyricsFlagSupplier: () => true,
+		getShelfHasOpenContent: () => open,
+		dotTexture: makeFakeDotTexture(),
+		rand: () => 0.35,
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([
+		{ t: 0, text: "First row" },
+		{ t: 1, text: "Second row" },
+	]);
+	lifecycle.update(makeCtx(now, 0.016));
+	await lifecycle.whenIdle();
+	now = 1.1;
+	lifecycle.update(makeCtx(now, 0.016));
+	await lifecycle.whenIdle();
+
+	const rows = () => (lifecycle.group as unknown as {
+		children: Array<{ renderOrder?: number; userData?: { lyric?: unknown } }>;
+	}).children.filter((child) => child.userData?.lyric);
+	expect(rows().length).toBe(2);
+	expect(rows().map((row) => row.renderOrder)).toEqual([38, 38]);
+
+	open = true;
+	lifecycle.update(makeCtx(1.2, 0.016));
+	expect(rows().map((row) => row.renderOrder)).toEqual([24, 24]);
+
+	open = false;
+	lifecycle.update(makeCtx(1.3, 0.016));
+	expect(rows().map((row) => row.renderOrder)).toEqual([38, 38]);
+	lifecycle.dispose();
+});
+
+test("a lyric created while detail is open starts with render base 24", async () => {
+	const lifecycle = createStageLyricsLifecycle({
+		threeFactory: makeFakeThree(),
+		gsapProvider: () => makeFakeGsap([]),
+		customEaseProvider: async () => null,
+		currentTimeSupplier: () => 0.5,
+		isPlayingSupplier: () => true,
+		audioDurationSupplier: () => 9999,
+		particleLyricsFlagSupplier: () => true,
+		getShelfHasOpenContent: () => true,
+		dotTexture: makeFakeDotTexture(),
+		rand: () => 0.35,
+	} as never);
+	await lifecycle.mount(makeFakeScene() as never);
+	lifecycle.setLyricLines([{ t: 0, text: "Detail first frame" }]);
+	lifecycle.update(makeCtx(0.5, 0.016));
+	await lifecycle.whenIdle();
+	const row = findLyricChild(lifecycle.group as never) as { renderOrder?: number } | undefined;
+	expect(row?.renderOrder).toBe(24);
+	lifecycle.dispose();
+});
+
 test("shared queue and renderer upload gate keep the committed lyric until replacement textures are ready", async () => {
 	const scope = createVisualResourceScope("stage-lifecycle");
 	const cancellation = createCancellationScope("stage-lifecycle");
@@ -2578,6 +2642,7 @@ test("prewarmed next row stays off the upload gate until activation", async () =
 	const diagnostics = createVisualSubsystemDiagnosticsRegistry();
 	const uploads: unknown[] = [];
 	let now = 0.5;
+	let detailOpen = false;
 	const lifecycle = createStageLyricsLifecycle({
 		threeFactory: makeFakeThree(),
 		gsapProvider: () => makeFakeGsap([]),
@@ -2586,6 +2651,7 @@ test("prewarmed next row stays off the upload gate until activation", async () =
 		isPlayingSupplier: () => true,
 		audioDurationSupplier: () => 999,
 		particleLyricsFlagSupplier: () => true,
+		getShelfHasOpenContent: () => detailOpen,
 		dotTexture: makeFakeDotTexture(),
 		taskQueue: queue,
 		resourceScope: scope,
@@ -2606,11 +2672,18 @@ test("prewarmed next row stays off the upload gate until activation", async () =
 	expect(uploads).toHaveLength(1);
 	expect(diagnostics.snapshot()["stage-lyrics"]?.residentRows).toBe(2);
 
+	// detail 边沿必须先更新仍未 attach 的预热行；激活时不得闪现旧的 38 base。
+	detailOpen = true;
+	lifecycle.update(makeCtx(0.7, 0.016));
 	// 激活预热行时不再推进 raster queue，同一 Stage frame 只执行一次 GPU upload。
 	now = 2.1;
 	lifecycle.update(makeCtx(2.1, 0.016));
 	expect(lifecycle.getCurrentText()).toBe("B");
 	expect(uploads).toHaveLength(2);
+	const rows = (lifecycle.group as unknown as {
+		children: Array<{ renderOrder?: number; userData?: { lyric?: unknown } }>;
+	}).children.filter((child) => child.userData?.lyric);
+	expect(rows.map((row) => row.renderOrder)).toEqual([24, 24]);
 	lifecycle.dispose();
 	queue.dispose();
 	scope.dispose();

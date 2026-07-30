@@ -157,12 +157,13 @@ function makeFakeDotTexture() {
 	} as never;
 }
 
-test("buildLyricGroup builds a 5-child group with sun/glow/readability/textMesh/sparks", async () => {
+test("buildLyricGroup applies the caller render base on the creation frame", async () => {
 	const lyric = await buildLyricGroup("hello", DEFAULT_LYRIC_PALETTE, {
 		threeFactory: makeFakeThree(),
 		lyricGlowParticles: false,
 		dotTexture: makeFakeDotTexture(),
 		rand: () => 0.35,
+		renderBase: 24,
 	});
 	const g = lyric.group as unknown as {
 		renderOrder: number;
@@ -171,7 +172,7 @@ test("buildLyricGroup builds a 5-child group with sun/glow/readability/textMesh/
 		scale: { x: number; y: number; z: number };
 		userData: Record<string, unknown>;
 	};
-	expect(g.renderOrder).toBe(42);
+	expect(g.renderOrder).toBe(24);
 	expect(g.position.y).toBeCloseTo(0.2, 6);
 	expect(g.position.z).toBeCloseTo(1.46, 6);
 	expect(g.position.x).toBeGreaterThanOrEqual(-0.04);
@@ -184,6 +185,14 @@ test("buildLyricGroup builds a 5-child group with sun/glow/readability/textMesh/
 	expect(g.userData.age).toBe(0);
 	expect(typeof g.userData.floatSeed).toBe("number");
 	expect(g.userData.lastLyricProgress).toBe(0);
+});
+
+test("buildLyricGroup keeps the normal Stage render base by default", async () => {
+	const lyric = await buildLyricGroup("normal", DEFAULT_LYRIC_PALETTE, {
+		threeFactory: makeFakeThree(),
+		dotTexture: makeFakeDotTexture(),
+	});
+	expect((lyric.group as unknown as { renderOrder: number }).renderOrder).toBe(38);
 });
 
 test("buildLyricGroup assigns baseline renderOrders 40/41/42/43/44 across sun/glow/readability/text/sparks", async () => {
