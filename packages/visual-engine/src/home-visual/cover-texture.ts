@@ -24,7 +24,11 @@ export interface HomeCoverTextureUniforms {
 }
 
 export type HomeCoverImage = CanvasImageSource | { width?: number; height?: number; src?: string };
-export type HomeCoverLoader = (url: string, signal?: AbortSignal) => Promise<HomeCoverImage>;
+export type HomeCoverLoader = (
+	url: string,
+	signal?: AbortSignal,
+	fallbackUrl?: string,
+) => Promise<HomeCoverImage>;
 export type HomeAiDepthEstimator = (image: HomeCoverImage, signal?: AbortSignal) => Promise<HomeCoverImage | null>;
 export type HomeAiDepthMerger = (heuristic: HomeCoverImage, ai: HomeCoverImage) => HomeCoverImage | null;
 export type HomeCoverCanvasFactory = (width: number, height: number) => CanvasImageSource & {
@@ -55,7 +59,10 @@ export interface HomeCoverRuntimeOptions {
 }
 
 export interface HomeCoverTextureController {
-	setCoverUrl(url: string | null | undefined): void;
+	setCoverUrl(
+		url: string | null | undefined,
+		fallbackUrl?: string | null,
+	): void;
 	setAiDepthEnabled(enabled: boolean): void;
 	advanceColorMix(dtSeconds: number): void;
 	advanceDepth(dtSeconds: number): void;
@@ -68,7 +75,7 @@ export interface HomeCoverTextureController {
 const HTTP_URL_RE = /^https?:\/\//i;
 const INLINE_IMAGE_URL_RE = /^data:image\//i;
 const BLOB_URL_RE = /^blob:/i;
-const SAME_ORIGIN_IMAGE_PROXY_RE = /^\/image-proxy(?:[/?#]|$)/i;
+const OPAQUE_IMAGE_URL_RE = /^(?!https?:|data:|blob:|file:|javascript:|vbscript:)[a-z][a-z0-9+.-]*:\/\//i;
 const HOME_COVER_TEXTURE_CACHE_LIMIT = 18;
 let homeCoverControllerSequence = 0;
 
@@ -83,7 +90,10 @@ interface HomeCoverTextureCacheEntry {
 const homeCoverTextureCache = new Map<string, HomeCoverTextureCacheEntry>();
 
 function isAllowedCoverUrl(url: string): boolean {
-	return HTTP_URL_RE.test(url) || INLINE_IMAGE_URL_RE.test(url) || BLOB_URL_RE.test(url) || SAME_ORIGIN_IMAGE_PROXY_RE.test(url);
+	return HTTP_URL_RE.test(url)
+		|| INLINE_IMAGE_URL_RE.test(url)
+		|| BLOB_URL_RE.test(url)
+		|| OPAQUE_IMAGE_URL_RE.test(url);
 }
 
 export { coverTextureSizeForResolution } from "./home-particle-field";
@@ -134,8 +144,16 @@ export function trimHomeCoverTextureCache(maxEntries = HOME_COVER_TEXTURE_CACHE_
 	}
 }
 
-function coverTextureCacheKey(url: string, coverResolution: number): string {
-	return `${url}|tex=${coverTextureSizeForResolution(coverResolution)}`;
+function coverTextureCacheKey(
+	url: string,
+	fallbackUrl: string,
+	coverResolution: number,
+): string {
+	return JSON.stringify([
+		url,
+		fallbackUrl,
+		coverTextureSizeForResolution(coverResolution),
+	]);
 }
 
 function cacheEntryImages(entry: HomeCoverTextureCacheEntry): Set<HomeCoverImage> {
@@ -295,25 +313,16 @@ function loadImageElement(url: string, crossOrigin: boolean, signal?: AbortSigna
 	});
 }
 
-function proxiedCoverFallbackUrl(url: string): string | null {
-	try {
-		const base = typeof location !== "undefined" && location.href ? location.href : "http://127.0.0.1/";
-		const parsed = new URL(url, base);
-		if (!parsed.pathname.endsWith("/image-proxy")) return null;
-		const direct = parsed.searchParams.get("url")?.trim() ?? "";
-		if (!HTTP_URL_RE.test(direct)) return null;
-		return direct;
-	} catch {
-		return null;
-	}
-}
-
-async function defaultLoadImage(url: string, signal?: AbortSignal): Promise<HomeCoverImage> {
+async function defaultLoadImage(
+	url: string,
+	signal?: AbortSignal,
+	fallbackUrl?: string,
+): Promise<HomeCoverImage> {
 	try {
 		return await loadImageElement(url, true, signal);
 	} catch (firstError) {
 		if (signal?.aborted) throw firstError;
-		const directFallback = proxiedCoverFallbackUrl(url);
+		const directFallback = String(fallbackUrl ?? "").trim();
 		if (
 			typeof fetch !== "function" ||
 			typeof URL === "undefined" ||
@@ -385,6 +394,7 @@ export function createHomeCoverTextureController(
 		? createCoverDepthTween({ uHasDepth: uniforms.uHasDepth, uAiBoost: uniforms.uAiBoost })
 		: null;
 	let currentUrl = "";
+	let currentFallbackUrl = "";
 	let committedUrl = "";
 	let token = 0;
 	let aiDepthEnabled = !!opts.aiDepthEnabled;
@@ -480,6 +490,7 @@ export function createHomeCoverTextureController(
 	function clearCover(): void {
 		beginGeneration().cancel();
 		currentUrl = "";
+		currentFallbackUrl = "";
 		committedUrl = "";
 		preparedCoverImage = null;
 		heuristicEdgeImage = null;
@@ -692,15 +703,23 @@ export function createHomeCoverTextureController(
 		});
 	}
 
-	function setCoverUrl(rawUrl: string | null | undefined): void {
+	function setCoverUrl(
+		rawUrl: string | null | undefined,
+		rawFallbackUrl?: string | null,
+	): void {
 		if (disposed) return;
 		const url = String(rawUrl ?? "").trim();
+		const fallbackCandidate = String(rawFallbackUrl ?? "").trim();
+		const fallbackUrl = isAllowedCoverUrl(fallbackCandidate)
+			? fallbackCandidate
+			: "";
 		if (!url || !isAllowedCoverUrl(url)) {
 			clearCover();
 			return;
 		}
-		if (url === currentUrl && coverPending) return;
-		if (url === currentUrl && committedUrl === url && uniforms.uHasCover.value > 0.5) {
+		const sameSource = url === currentUrl && fallbackUrl === currentFallbackUrl;
+		if (sameSource && coverPending) return;
+		if (sameSource && committedUrl === url && uniforms.uHasCover.value > 0.5) {
 			if (
 				runtimeActive &&
 				aiEnhancementNeedsResume &&
@@ -718,12 +737,14 @@ export function createHomeCoverTextureController(
 		const generation = beginGeneration();
 		if (!runtimeActive) {
 			currentUrl = url;
+			currentFallbackUrl = fallbackUrl;
 			generation.cancel();
 			return;
 		}
 		currentUrl = url;
+		currentFallbackUrl = fallbackUrl;
 		const runToken = generation.token;
-		currentCoverCacheKey = coverTextureCacheKey(url, coverResolution);
+		currentCoverCacheKey = coverTextureCacheKey(url, fallbackUrl, coverResolution);
 		if (uniforms.uLoading) uniforms.uLoading.value = 1;
 		const cached = getHomeCoverTextureCache(currentCoverCacheKey, resourceScope);
 		coverPending = true;
@@ -733,7 +754,7 @@ export function createHomeCoverTextureController(
 			priority: "visible",
 			async run(signal) {
 				if (cached) return { preparedImage: cached.preparedImage, heuristicImage: cached.heuristicImage, cached };
-				const image = await loadImage(url, signal);
+				const image = await loadImage(url, signal, fallbackUrl);
 				if (signal.aborted) throw signal.reason;
 				const preparedImage = prepareSquareCoverCanvas(image, { coverResolution, createCanvas: opts.createCanvas });
 				let heuristicImage: HomeCoverImage | null = null;

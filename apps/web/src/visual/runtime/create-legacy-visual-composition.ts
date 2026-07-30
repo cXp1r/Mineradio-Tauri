@@ -107,6 +107,7 @@ export interface VisualEngineRefs {
 	wallpaperSafeRef?: RefObject<boolean>;
 	secondaryLeftDisplaySeamGuardRef?: RefObject<boolean>;
 	coverUrlRef?: RefObject<string>;
+	coverFallbackUrlRef?: RefObject<string>;
 	coverUrlVersionRef?: RefObject<number>;
 	beatMapKeyRef?: RefObject<string>;
 	beatMapRef?: RefObject<unknown>;
@@ -1242,6 +1243,7 @@ function createRuntimeRefs(
 		shelfItemsRef: { current: [] },
 		shelfItemsVersionRef: { current: 0 },
 		coverUrlRef: { current: "" },
+		coverFallbackUrlRef: { current: "" },
 		coverUrlVersionRef: { current: 0 },
 		beatMapKeyRef: { current: "" },
 		beatMapRef: { current: null },
@@ -1286,8 +1288,12 @@ function syncRuntimeRefs(refs: VisualEngineRefs, snapshot: VisualFrameSnapshot):
 		refs.shelfItemsRef.current = snapshot.shelf.items as ShelfItem[];
 		refs.shelfItemsVersionRef.current += 1;
 	}
-	if (refs.coverUrlRef!.current !== snapshot.playback.coverUrl) {
+	if (
+		refs.coverUrlRef!.current !== snapshot.playback.coverUrl
+		|| refs.coverFallbackUrlRef!.current !== snapshot.playback.coverFallbackUrl
+	) {
 		refs.coverUrlRef!.current = snapshot.playback.coverUrl;
+		refs.coverFallbackUrlRef!.current = snapshot.playback.coverFallbackUrl;
 		refs.coverUrlVersionRef!.current += 1;
 	}
 	if (
@@ -1505,12 +1511,20 @@ export function createLegacyVisualComposition(
 			syncHomeVisualPixelRatio();
 			let lastCoverLoadAttemptUrl = refs.coverUrlRef?.current ?? "";
 			let lastCoverLoadAttemptAt = performance.now();
-			const requestHomeVisualCover = (coverUrl: string, nowMs = performance.now()) => {
+			const requestHomeVisualCover = (
+				coverUrl: string,
+				coverFallbackUrl: string,
+				nowMs = performance.now(),
+			) => {
 				lastCoverLoadAttemptUrl = coverUrl;
 				lastCoverLoadAttemptAt = nowMs;
-				homeVisual.setCoverUrl(coverUrl);
+				homeVisual.setCoverUrl(coverUrl, coverFallbackUrl);
 			};
-			requestHomeVisualCover(lastCoverLoadAttemptUrl, lastCoverLoadAttemptAt);
+			requestHomeVisualCover(
+				lastCoverLoadAttemptUrl,
+				refs.coverFallbackUrlRef?.current ?? "",
+				lastCoverLoadAttemptAt,
+			);
 
 			let shelfManagerForCallback: ShelfManager | null = null;
 			const shelfResourceScope = scope.createChild("shelf");
@@ -1788,9 +1802,10 @@ export function createLegacyVisualComposition(
 				syncHomeVisualPixelRatio();
 				const uniforms = homeVisual.getField().materialUniforms as Record<string, { value: unknown }>;
 				const currentCoverUrl = refs?.coverUrlRef?.current ?? "";
+				const currentCoverFallbackUrl = refs?.coverFallbackUrlRef?.current ?? "";
 				if (refs?.coverUrlVersionRef && syncedCoverUrlVersion !== refs.coverUrlVersionRef.current) {
 					syncedCoverUrlVersion = refs.coverUrlVersionRef.current;
-					requestHomeVisualCover(currentCoverUrl, frame.now);
+					requestHomeVisualCover(currentCoverUrl, currentCoverFallbackUrl, frame.now);
 				} else if (shouldRetryVisualCoverLoad({
 					coverUrl: currentCoverUrl,
 					hasCover: Number(uniforms.uHasCover?.value ?? 0),
@@ -1798,7 +1813,7 @@ export function createLegacyVisualComposition(
 					lastAttemptAtMs: lastCoverLoadAttemptAt,
 					lastAttemptUrl: lastCoverLoadAttemptUrl,
 				})) {
-					requestHomeVisualCover(currentCoverUrl, frame.now);
+					requestHomeVisualCover(currentCoverUrl, currentCoverFallbackUrl, frame.now);
 				}
 				applyStageLyricPalette();
 				const homeActive = refs?.homeActiveRef?.current === true;

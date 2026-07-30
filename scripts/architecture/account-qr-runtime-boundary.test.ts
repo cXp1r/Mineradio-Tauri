@@ -16,7 +16,7 @@ test("App delegates login QR generation and polling to the account runtime", () 
 	);
 
 	expect(appSource).toContain("useLoginQrRuntime({");
-	expect(appSource).toContain("accounts: appServices?.music.accounts ?? null");
+	expect(appSource).toContain("accounts: applicationPorts?.music.accounts ?? null");
 	for (const forbidden of [
 		"loginQrRequestSeqRef",
 		"createProviderLoginQrKey(",

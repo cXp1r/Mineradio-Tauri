@@ -68,6 +68,7 @@ test("visual engine exports the M3 snapshot and facade contracts", () => {
 		playing: true,
 		durationMs: 180_000,
 		coverUrl: "https://example.test/cover.jpg",
+		coverFallbackUrl: "",
 		beatMapKey: "track-1:beat-map",
 		beatMap: { events: [] },
 		splashActive: false,

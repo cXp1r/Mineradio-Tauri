@@ -18,25 +18,18 @@ import type {
 import { isImportOnlyTrack } from "../shared-playlist/import-only-track";
 import { usePlaybackStore } from "../stores/playback-store";
 import { isPlayable, playSearchResult } from "../components/search/play-search-result";
+import type { DiscoverPort } from "../ports/music/discover-port";
+import type { LibraryPort } from "../ports/music/library-port";
+import type { LikesPort } from "../ports/music/likes-port";
+import type { SearchExperiencePort } from "../ports/music/search-port";
 import type { ShelfDetailRowClickPayload } from "./shelf-pointer-interactions";
 
-export interface ShelfDetailMutationClient {
-	likeSong?(provider: ProviderId, id: string, liked: boolean): Promise<unknown>;
-	addSongToPlaylist?(provider: ProviderId, playlistId: string, trackId: string): Promise<unknown>;
-}
-
 export interface ShelfDetailRowActionPayload extends ShelfDetailRowClickPayload {
-	client?: ShelfDetailMutationClient | null;
+	likes?: Pick<LikesPort, "likeSong"> | null;
 	isLiked?: (track: Track) => boolean;
 	onResult?: (message: string, tone?: "good" | "fail") => void;
 	onOpenCollect?: (track: Track) => void;
 	onOpenPodcastRadio?: (radioId: string, title: string) => void;
-}
-
-export interface PlaylistDetailClient {
-	playlistDetail(provider: ProviderId, id: string): Promise<PlaylistDetail>;
-	podcastMyItems?(key: string, limit?: number, offset?: number): Promise<PodcastMyItemsResponse>;
-	podcastPrograms?(id: string, limit?: number, offset?: number): Promise<PodcastProgramsResponse>;
 }
 
 export interface ShelfDetailContentListWriter {
@@ -47,7 +40,9 @@ export interface ShelfDetailContentListWriter {
 export type ShelfDetailContentListController = ShelfDetailContentListWriter & Pick<ShelfContentList, "open">;
 
 export interface ShelfDetailContentLoaderOptions {
-	client: PlaylistDetailClient | null | undefined;
+	library: Pick<LibraryPort, "playlistDetail"> | null | undefined;
+	discover: Pick<DiscoverPort, "podcastMyItems"> | null | undefined;
+	search: Pick<SearchExperiencePort, "podcastPrograms"> | null | undefined;
 	getContentList: () => ShelfDetailContentListWriter | ShelfContentList | null | undefined;
 }
 
@@ -242,14 +237,14 @@ export async function handleShelfDetailRowAction(payload: ShelfDetailRowActionPa
 			payload.onResult?.("导入曲目暂不支持红心同步", "fail");
 			return false;
 		}
-		if ((track.provider !== "netease" && track.provider !== "soda") || !payload.client?.likeSong) {
+		if ((track.provider !== "netease" && track.provider !== "soda") || !payload.likes) {
 
 			payload.onResult?.("当前来源暂不支持红心同步", "fail");
 			return false;
 		}
 		const liked = !(payload.isLiked?.(track) ?? false);
 		try {
-			await payload.client.likeSong(track.provider, track.id, liked);
+			await payload.likes.likeSong(track.provider, track.id, liked);
 			payload.onResult?.(liked ? "已加入红心喜欢" : "已取消红心", "good");
 			return true;
 		} catch {
@@ -280,27 +275,23 @@ export function createShelfDetailContentLoader(
 		const list = options.getContentList();
 		if (!list) return;
 		if (payload.contentKind === "podcast" || payload.playlistId.startsWith("podcast:") || payload.playlistId.startsWith("podcast-radio:")) {
-			if (!options.client) {
-				list.setErrorForToken(payload.requestToken, "播客信息不完整");
-				return;
-			}
 			try {
 				if (payload.playlistId.startsWith("podcast-radio:")) {
 					const id = payload.playlistId.slice("podcast-radio:".length);
-					if (!id || !options.client.podcastPrograms) {
+					if (!id || !options.search) {
 						list.setErrorForToken(payload.requestToken, "播客信息不完整");
 						return;
 					}
-					const detail = await options.client.podcastPrograms(id, 36, 0);
+					const detail = await options.search.podcastPrograms(id, 36, 0);
 					list.setRowsForToken(payload.requestToken, mapPodcastItemsToShelfRows(detail), "podcast");
 					return;
 				}
 				const key = payload.playlistId.replace(/^podcast:/, "");
-				if (!key || !options.client.podcastMyItems) {
+				if (!key || !options.discover) {
 					list.setErrorForToken(payload.requestToken, "播客信息不完整");
 					return;
 				}
-				const detail = await options.client.podcastMyItems(key, 36, 0);
+				const detail = await options.discover.podcastMyItems(key, 36, 0);
 				list.setRowsForToken(payload.requestToken, mapPodcastItemsToShelfRows(detail), "podcast");
 			} catch {
 				list.setErrorForToken(payload.requestToken, "播客加载失败");
@@ -308,13 +299,13 @@ export function createShelfDetailContentLoader(
 			return;
 		}
 		const parsedProvider = ProviderIdSchema.safeParse(payload.provider);
-		if (!options.client || !parsedProvider.success || !payload.playlistId) {
+		if (!options.library || !parsedProvider.success || !payload.playlistId) {
 			list.setErrorForToken(payload.requestToken, "歌单信息不完整");
 			return;
 		}
 
 		try {
-			const detail = await options.client.playlistDetail(parsedProvider.data, payload.playlistId);
+			const detail = await options.library.playlistDetail(parsedProvider.data, payload.playlistId);
 			const rows = mapPlaylistDetailToShelfRows(detail, parsedProvider.data);
 			list.setRowsForToken(payload.requestToken, rows, payload.contentKind);
 		} catch {

@@ -755,6 +755,29 @@ test("HomeVisual wake requeues a cancelled current-cover AI enhancement exactly 
 	await Promise.resolve();
 });
 
+test("HomeVisual wake preserves the explicit fallback for a source selected while suspended", async () => {
+	const loaded: Array<{ url: string; fallbackUrl: string | undefined }> = [];
+	const hv = await createHomeVisual({
+		scene: makeFakeScene() as never,
+		threeFactory: makeFakeThree(),
+		loadCoverImage: async (url, _signal, fallbackUrl) => {
+			loaded.push({ url, fallbackUrl });
+			return { width: 16, height: 16, src: url };
+		},
+	});
+	const source = "mineradio-image://cover/session-token/track-42";
+	const fallbackUrl = "https://img.example/track-42.jpg";
+
+	hv.setRuntimeActive(false);
+	hv.setCoverUrl(source, fallbackUrl);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.getCoverController().whenIdle();
+
+	expect(loaded).toEqual([{ url: source, fallbackUrl }]);
+	hv.dispose();
+});
+
 test("HomeVisual dispose makes a late back-cover resolve release itself instead of reviving", async () => {
 	const scene = makeFakeScene();
 	const baseFactory = makeFakeThree();

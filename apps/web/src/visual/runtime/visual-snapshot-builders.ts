@@ -54,6 +54,7 @@ export function buildPlaybackVisualSnapshot(
 		playing: input.playing,
 		durationMs: input.durationMs,
 		coverUrl: input.coverUrl,
+		coverFallbackUrl: input.coverFallbackUrl,
 		beatMapKey: input.beatMapKey,
 		beatMap: input.beatMap,
 		splashActive: input.splashActive,

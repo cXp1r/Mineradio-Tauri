@@ -6,7 +6,7 @@ Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
 
 | 领域 | 上游证据 | 当前 Tauri 证据 | 目标所有权 | 迁移规则 |
 | --- | --- | --- | --- | --- |
-| 启动与本地服务 | `desktop/main.js`、`server.js` | `src-tauri/src/sidecar.rs`、`api/sidecar-client.ts` | `ApiRuntimePort` + legacy adapter | M0–M9 保留现有 supervisor 和 HTTP 行为 |
+| 启动与本地服务 | `desktop/main.js`、`server.js` | `src-tauri/src/sidecar.rs`、`api/sidecar-client.ts`、`adapters/sidecar/legacy-application-runtime.ts` | `ApplicationRuntimePort` + `ApiRuntimePort` + Legacy Sidecar Adapter | M0–M9 保留现有 supervisor 和 HTTP 行为；业务 caller 只消费聚合 Ports |
 | 搜索 | `public/js/modules/05-playback/07-search.js` | `components/shell/SearchShell.tsx` | `SearchExperiencePort` + search controller | 先换依赖类型，不改请求与竞态控制 |
 | 播放 URL 与音质 | `05-playback/00-api-quality-output.js`、`11-provider-fallback.js` | `App.tsx`、`player-controller.ts` | playback runtime | 先冻结现有 reload/fallback，再引入 session id |
 | 队列与切歌 | `05-playback/09-queue-snapshot-autoplay.js` 至 `13-playback-start-audio.js` | playback store、`App.tsx` | playback store/runtime | 真实媒体时钟不受视觉 Frame Gate 限流 |

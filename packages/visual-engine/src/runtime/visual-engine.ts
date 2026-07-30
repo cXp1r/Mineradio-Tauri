@@ -60,6 +60,7 @@ const DEFAULT_PLAYBACK: PlaybackVisualSnapshot = Object.freeze({
 	playing: false,
 	durationMs: null,
 	coverUrl: "",
+	coverFallbackUrl: "",
 	beatMapKey: "",
 	beatMap: null,
 	splashActive: false,

@@ -19,6 +19,7 @@ import type { ShelfDetailContentListController } from "./shelf-detail-data";
 import { PlayerController } from "../audio/player-controller";
 import { resolveShelfItems } from "./shelf-items";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence, ShelfSettings } from "../stores/shelf-store";
+import type { MediaImageSource, MediaUrlPort } from "../ports/media-url-port";
 import { createLegacyVisualEventBridge } from "./runtime/legacy-visual-events";
 import {
 	buildLyricsVisualSnapshot,
@@ -41,7 +42,7 @@ export interface VisualEngineHostProps {
 	currentCoverUrl?: string | null;
 	beatMapKey?: string | null;
 	beatMap?: unknown;
-	sidecarBaseUrl?: string | null;
+	mediaUrl?: Pick<MediaUrlPort, "imageSource">;
 	coverResolution?: number;
 	fxDefaults?: Partial<FxState>;
 	fxState?: Partial<FxState>;
@@ -161,15 +162,13 @@ export function normalizeVisualCoverUrl(coverUrl: string): string {
 	return url;
 }
 
-export function resolveVisualCoverUrlForSidecar(coverUrl: string, sidecarBaseUrl: string | null | undefined): string {
+export function resolveVisualImageSource(
+	coverUrl: string,
+	mediaUrl: Pick<MediaUrlPort, "imageSource"> | null | undefined,
+): MediaImageSource {
 	const normalizedCoverUrl = normalizeVisualCoverUrl(coverUrl);
-	if (!normalizedCoverUrl) return "";
-	if (/^data:image\//i.test(normalizedCoverUrl) || /^blob:/i.test(normalizedCoverUrl)) return normalizedCoverUrl;
-	if (!/^https?:\/\//i.test(normalizedCoverUrl)) return "";
-	const base = String(sidecarBaseUrl ?? "").replace(/\/$/, "");
-	if (!base) return normalizedCoverUrl;
-	const params = new URLSearchParams({ url: normalizedCoverUrl });
-	return `${base}/image-proxy?${params.toString()}`;
+	if (!normalizedCoverUrl) return { uri: "" };
+	return mediaUrl?.imageSource(normalizedCoverUrl) ?? { uri: normalizedCoverUrl };
 }
 
 export function coverUrlToCssBackgroundImage(coverUrl: string): string | undefined {
@@ -178,10 +177,13 @@ export function coverUrlToCssBackgroundImage(coverUrl: string): string | undefin
 	return `url("${url.replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}")`;
 }
 
-export function mapShelfItemCoversForSidecar(items: ShelfItem[], sidecarBaseUrl: string | null | undefined): ShelfItem[] {
+export function mapShelfItemCoverSources(
+	items: ShelfItem[],
+	mediaUrl: Pick<MediaUrlPort, "imageSource"> | null | undefined,
+): ShelfItem[] {
 	return items.map((item) => {
 		if (!item.cover) return item;
-		const cover = resolveVisualCoverUrlForSidecar(item.cover, sidecarBaseUrl);
+		const cover = resolveVisualImageSource(item.cover, mediaUrl).uri;
 		return cover === item.cover ? item : { ...item, cover };
 	});
 }
@@ -244,19 +246,15 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	useEffect(() => {
 		if (visualShelfSettings.mergeCollections) setShelfPane("mine");
 	}, [visualShelfSettings.mergeCollections]);
-	// Baseline `#album-bg` uses the direct cover URL for the CSS background
-	// (CSS images do not need CORS), while the WebGL cover texture goes through
-	// the sidecar image proxy for crossOrigin compatibility. Using the proxy
-	// URL here would make the album background depend on sidecar availability
-	// even for a pure CSS property.
+	// CSS 背景继续使用直链；WebGL 来源由 MediaUrlPort 独立解析，二者互不泄漏 transport 细节。
 	const directCoverUrl = useMemo(
 		() => normalizeVisualCoverUrl(resolveVisualCoverUrl(props.currentCoverUrl, props.currentTrack)),
 		[props.currentCoverUrl, props.currentTrack],
 	);
 	const albumBgStyle = directCoverUrl ? { backgroundImage: coverUrlToCssBackgroundImage(directCoverUrl) } : undefined;
-	const webglCoverUrl = useMemo(
-		() => resolveVisualCoverUrlForSidecar(directCoverUrl, props.sidecarBaseUrl),
-		[directCoverUrl, props.sidecarBaseUrl],
+	const webglCoverSource = useMemo(
+		() => resolveVisualImageSource(directCoverUrl, props.mediaUrl),
+		[directCoverUrl, props.mediaUrl],
 	);
 
 	const handleShelfModeChange = useCallback((mode: "side") => {
@@ -270,7 +268,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		[props.playlists],
 	);
 	const shelfItems = useMemo(
-		() => mapShelfItemCoversForSidecar(
+		() => mapShelfItemCoverSources(
 			resolveShelfItems({
 				playlists: props.playlists ?? [],
 				podcastCollections: props.podcastCollections ?? [],
@@ -282,9 +280,9 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 					pane: shelfPane,
 				},
 			}),
-			props.sidecarBaseUrl,
+			props.mediaUrl,
 		),
-		[props.playlists, props.podcastCollections, props.queue, props.currentTrack, props.sidecarBaseUrl, visualShelfSettings.showPodcasts, visualShelfSettings.mergeCollections, shelfPane],
+		[props.playlists, props.podcastCollections, props.queue, props.currentTrack, props.mediaUrl, visualShelfSettings.showPodcasts, visualShelfSettings.mergeCollections, shelfPane],
 	);
 	const lyricLines = useMemo(() => mapLyricPayload(props.lyricsPayload), [props.lyricsPayload]);
 	const fallbackText = useMemo(() => trackFallbackText(props.currentTrack), [props.currentTrack]);
@@ -303,12 +301,13 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		trackKey,
 		playing: props.isPlaying,
 		durationMs,
-		coverUrl: webglCoverUrl,
+		coverUrl: webglCoverSource.uri,
+		coverFallbackUrl: webglCoverSource.fallbackUri ?? "",
 		beatMapKey: props.beatMapKey ?? "",
 		beatMap: props.beatMap ?? null,
 		splashActive: props.splashActive ?? false,
 		homeActive: props.homeActive ?? false,
-	}), [trackKey, props.isPlaying, durationMs, webglCoverUrl, props.beatMapKey, props.beatMap, props.splashActive, props.homeActive]);
+	}), [trackKey, props.isPlaying, durationMs, webglCoverSource, props.beatMapKey, props.beatMap, props.splashActive, props.homeActive]);
 	const lyricsSnapshot = useMemo(() => buildLyricsVisualSnapshot({
 		lines: lyricLines,
 		fallbackText,

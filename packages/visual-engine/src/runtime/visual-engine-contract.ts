@@ -43,6 +43,7 @@ export interface PlaybackVisualSnapshot {
 	readonly playing: boolean;
 	readonly durationMs: number | null;
 	readonly coverUrl: string;
+	readonly coverFallbackUrl: string;
 	readonly beatMapKey: string;
 	readonly beatMap: unknown;
 	readonly splashActive: boolean;

@@ -251,6 +251,7 @@ export async function createM4ParityRuntime(options: CreateM4ParityRuntimeOption
 			playing: true,
 			durationMs: 780_000,
 			coverUrl: "",
+			coverFallbackUrl: "",
 			beatMapKey: "",
 			beatMap: null,
 			splashActive: false,

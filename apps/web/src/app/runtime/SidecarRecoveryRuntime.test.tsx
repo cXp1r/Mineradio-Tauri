@@ -2,8 +2,10 @@ import { expect, test } from "bun:test";
 import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import type { CapabilityMatrix, ProviderLoginStatus } from "@mineradio/shared";
-import type { SidecarClient } from "../../api/sidecar-client";
-import type { AppServices } from "../app-services";
+import type {
+	ApplicationPorts,
+	ApplicationRuntimePort,
+} from "../../ports/application-runtime-port";
 import type { SidecarRecoveryNoticeState } from "../../components/shell/SidecarRecoveryNotice";
 import { SidecarRecoveryRuntime } from "./SidecarRecoveryRuntime";
 
@@ -16,8 +18,7 @@ test("SidecarRecoveryRuntime preserves bootstrap, account restore and recovery c
 		provider: "netease",
 		loggedIn: true,
 	} as ProviderLoginStatus;
-	const client = {} as SidecarClient;
-	const services = {
+	const ports = {
 		apiRuntime: {
 			getConfig: async () => {
 				throw new Error("测试不应重新读取配置");
@@ -48,7 +49,13 @@ test("SidecarRecoveryRuntime preserves bootstrap, account restore and recovery c
 				},
 			},
 		},
-	} as unknown as AppServices;
+	} as unknown as ApplicationPorts;
+	const applicationRuntime: ApplicationRuntimePort = {
+		async connect() {
+			calls.push("connect");
+			return ports;
+		},
+	};
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
@@ -56,20 +63,18 @@ test("SidecarRecoveryRuntime preserves bootstrap, account restore and recovery c
 	try {
 		flushSync(() => root.render(
 			<SidecarRecoveryRuntime
-				initialRuntimeConfig={{
-					sidecarBaseUrl: "http://127.0.0.1:39999",
-					appDataDir: "",
-					appVersion: "0.1.0",
-					schemaVersion: "1",
-					updaterPublicKeyConfigured: false,
-				}}
-				createSidecarClient={() => client}
-				servicesFactory={() => services}
+				applicationRuntime={applicationRuntime}
 				loginProviders={["netease"]}
-				onConnection={() => { calls.push("connection"); }}
+				onConnection={(connected) => {
+					expect(connected).toBe(ports);
+					calls.push("connection");
+				}}
 				onCapabilities={() => { calls.push("matrix"); }}
 				onProviderStatus={() => { calls.push("provider-status"); }}
-				onRefreshLibrary={() => { calls.push("library"); }}
+				onRefreshLibrary={(connected) => {
+					expect(connected).toBe(ports);
+					calls.push("library");
+				}}
 				onRecoveryState={(state) => { statuses.push(state); }}
 			/>,
 		));
@@ -84,6 +89,16 @@ test("SidecarRecoveryRuntime preserves bootstrap, account restore and recovery c
 		expect(calls).toContain("login:netease");
 		expect(calls).toContain("provider-status");
 		expect(calls).toContain("library");
+		expect(calls.filter((call) => call !== "status")).toEqual([
+			"connect",
+			"connection",
+			"health",
+			"capabilities",
+			"matrix",
+			"login:netease",
+			"provider-status",
+			"library",
+		]);
 		expect(statuses[0]?.phase).toBe("recovering");
 		expect(statuses[0]?.restarts).toBe(1);
 	} finally {

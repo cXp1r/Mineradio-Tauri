@@ -48,6 +48,7 @@ function playbackSnapshot(trackKey: string): PlaybackVisualSnapshot {
 		playing: false,
 		durationMs: null,
 		coverUrl: "",
+		coverFallbackUrl: "",
 		beatMapKey: "",
 		beatMap: null,
 		splashActive: false,
@@ -298,8 +299,8 @@ test("mount caches the latest snapshot and applies one frozen shared bundle", as
 	const engine = createVisualEngine({ mediaClock: clock, createComposition: () => composition });
 	const lyrics = { lines: [], fallbackText: "second", hasNativeKaraoke: false };
 	const shelf: ShelfVisualSnapshot = { items: [], pane: "fav", mode: "side", cameraMode: "static", presence: "always", mergeCollections: false, mineCount: 0, favCount: 0, secondaryLeftDisplaySeamGuard: false };
-	engine.setPlaybackSnapshot({ trackKey: "first", playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
-	engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 1, coverUrl: "cover", beatMapKey: "key", beatMap: null, splashActive: false, homeActive: true });
+	engine.setPlaybackSnapshot({ trackKey: "first", playing: false, durationMs: null, coverUrl: "", coverFallbackUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
+	engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 1, coverUrl: "cover", coverFallbackUrl: "", beatMapKey: "key", beatMap: null, splashActive: false, homeActive: true });
 	engine.setLyricsSnapshot(lyrics);
 	engine.setShelfSnapshot(shelf);
 	engine.setVisualSettings(fixedSettings(60));
@@ -331,8 +332,8 @@ test("an unresolved mount commits only the latest complete snapshot bundle", asy
 		applyPreset() {}, setVisibility() {}, dispose() {},
 	}) });
 	const mounted = engine.mount(document.createElement("div"));
-	engine.setPlaybackSnapshot({ trackKey: "first", playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
-	engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 99, coverUrl: "cover", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
+	engine.setPlaybackSnapshot({ trackKey: "first", playing: false, durationMs: null, coverUrl: "", coverFallbackUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
+	engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 99, coverUrl: "cover", coverFallbackUrl: "", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
 	engine.setLyricsSnapshot({ lines: [], fallbackText: "latest lyrics", hasNativeKaraoke: false });
 	engine.setShelfSnapshot({ items: [], pane: "fav", mode: "stage", cameraMode: "static", presence: "always", mergeCollections: false, mineCount: 0, favCount: 1, secondaryLeftDisplaySeamGuard: false });
 	engine.setVisualSettings(fixedSettings(30));
@@ -363,7 +364,7 @@ test("mounted updates do not remount and settings update scheduler policy", asyn
 		}),
 	});
 	await engine.mount(document.createElement("div"));
-	engine.setPlaybackSnapshot({ trackKey: "updated", playing: true, durationMs: 1, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: true });
+	engine.setPlaybackSnapshot({ trackKey: "updated", playing: true, durationMs: 1, coverUrl: "", coverFallbackUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: true });
 	engine.setLyricsSnapshot({ lines: [], fallbackText: "updated", hasNativeKaraoke: false });
 	engine.setShelfSnapshot({ items: [], pane: "mine", mode: "side", cameraMode: "static", presence: "always", mergeCollections: false, mineCount: 0, favCount: 0, secondaryLeftDisplaySeamGuard: false });
 	engine.setVisualSettings(fixedSettings());
@@ -731,7 +732,7 @@ test("initial delegate reentrancy stabilizes the latest cached state before sche
 					});
 					if (reentered) return;
 					reentered = true;
-					engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 1, coverUrl: "cover", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
+					engine.setPlaybackSnapshot({ trackKey: "latest", playing: true, durationMs: 1, coverUrl: "cover", coverFallbackUrl: "", beatMapKey: "beat", beatMap: null, splashActive: false, homeActive: true });
 					engine.setVisualSettings(latestSettings);
 					engine.setVisibility(latestVisibility);
 					engine.applyPreset(9);
@@ -825,7 +826,7 @@ test("initial delegate synchronization fails closed when frame revisions never s
 			applyFrameSnapshot() {
 				frameCalls += 1;
 				if (frameCalls >= 100) return;
-				engine.setPlaybackSnapshot({ trackKey: String(frameCalls), playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
+				engine.setPlaybackSnapshot({ trackKey: String(frameCalls), playing: false, durationMs: null, coverUrl: "", coverFallbackUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false });
 			},
 			applyPreset() {}, setVisibility() {}, dispose() { compositionDisposals += 1; },
 		}) });
@@ -1760,7 +1761,7 @@ test("a mounted frame delegate failure invalidates and cleans up the facade", as
 		}) });
 		await engine.mount(document.createElement("div"));
 		failFrame = true;
-		expect(() => engine.setPlaybackSnapshot({ trackKey: "failed", playing: false, durationMs: null, coverUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false })).toThrow("frame delegate failed");
+		expect(() => engine.setPlaybackSnapshot({ trackKey: "failed", playing: false, durationMs: null, coverUrl: "", coverFallbackUrl: "", beatMapKey: "", beatMap: null, splashActive: false, homeActive: false })).toThrow("frame delegate failed");
 		const performance = engine.getPerformanceSnapshot();
 		expect(performance.runtime.mounted).toBe(false);
 		expect(performance.runtime.running).toBe(false);

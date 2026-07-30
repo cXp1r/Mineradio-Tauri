@@ -4,7 +4,7 @@ import React from "react";
 import {
 	normalizeVisualCoverUrl,
 	resolveVisualCoverUrl,
-	resolveVisualCoverUrlForSidecar,
+	resolveVisualImageSource,
 	resolveVisualTrackKey,
 	resolveRuntimeShelfMode,
 	resolveVisualShelfSettings,
@@ -13,7 +13,7 @@ import {
 	syncDesktopLyricsMotionRef,
 	createStageLyricsHostSuppliers,
 	mapLyricPayload,
-	mapShelfItemCoversForSidecar,
+	mapShelfItemCoverSources,
 	countShelfPanePlaylists,
 	coverUrlToCssBackgroundImage,
 	VisualEngineHost,
@@ -32,6 +32,10 @@ test("VisualEngineHost builds immutable runtime snapshots while preserving its p
 	expect(source).toContain("lyricsSnapshot");
 	expect(source).toContain("shelfSnapshot");
 	expect(source).toContain("settingsSnapshot");
+	expect(source).toContain("mediaUrl?: Pick<MediaUrlPort, \"imageSource\">");
+	expect(source).not.toContain("sidecarBaseUrl");
+	expect(source).not.toContain("/image-proxy");
+	expect(source).not.toContain("URLSearchParams");
 });
 
 test("VisualEngineHost server-renders a visual-host placeholder div without invoking WebGL/AudioContext", () => {
@@ -60,16 +64,19 @@ test("VisualEngineHost restores baseline album background layer from the direct 
 			positionMs: 0,
 			isPlaying: false,
 			currentCoverUrl: "https://img.example/a.jpg",
-			sidecarBaseUrl: "http://127.0.0.1:4111",
+			mediaUrl: {
+				imageSource: (url: string) => ({
+					uri: "mineradio-image://cover/session-token/track-42",
+					fallbackUri: url,
+				}),
+			},
 		}),
 	);
 	expect(html).toContain('id="album-bg"');
 	expect(html).toContain('class="visible"');
-	// Baseline `loadCoverFromUrl` sets `#album-bg.style.backgroundImage = "url(" + directUrl + ")"`
-	// using the direct cover URL (CSS images do not need CORS). The WebGL cover
-	// texture separately goes through the sidecar image proxy for crossOrigin.
+	// CSS 背景保持直链，WebGL 的 opaque URI 不应泄漏到服务端渲染标记。
 	expect(html).toContain("https://img.example/a.jpg");
-	expect(html).not.toContain("image-proxy");
+	expect(html).not.toContain("mineradio-image://");
 });
 
 test("visual host keeps the WebGL canvas hit-testable for baseline stage drag and wheel controls", async () => {
@@ -152,12 +159,23 @@ test("coverUrlToCssBackgroundImage preserves quoted baseline url syntax safely",
 	expect(coverUrlToCssBackgroundImage("")).toBe(undefined);
 });
 
-test("resolveVisualCoverUrlForSidecar proxies remote covers through sidecar and preserves inline sources", () => {
-	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg");
-	expect(resolveVisualCoverUrlForSidecar("//p3.music.126.net/cover.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fp3.music.126.net%2Fcover.jpg");
-	expect(resolveVisualCoverUrlForSidecar("data:image/png;base64,abc", "http://127.0.0.1:4111")).toBe("data:image/png;base64,abc");
-	expect(resolveVisualCoverUrlForSidecar("file:///tmp/a.jpg", "http://127.0.0.1:4111")).toBe("");
-	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "")).toBe("https://img.example/a.jpg");
+test("resolveVisualImageSource delegates normalized covers to the media URL port without inspecting the URI", () => {
+	const calls: string[] = [];
+	const mediaUrl = {
+		imageSource(url: string) {
+			calls.push(url);
+			return {
+				uri: "mineradio-image://cover/session-token/track-42",
+				fallbackUri: url,
+			};
+		},
+	};
+
+	expect(resolveVisualImageSource("//p3.music.126.net/cover.jpg", mediaUrl)).toEqual({
+		uri: "mineradio-image://cover/session-token/track-42",
+		fallbackUri: "https://p3.music.126.net/cover.jpg",
+	});
+	expect(calls).toEqual(["https://p3.music.126.net/cover.jpg"]);
 });
 
 test("normalizeVisualCoverUrl keeps baseline protocol-relative provider covers usable for WebGL", () => {
@@ -247,13 +265,16 @@ test("mapLyricPayload sorts stage lyrics and native words like the Electron base
 	expect(lines[0].words?.map((word) => word.text)).toEqual(["first", "second"]);
 });
 
-test("mapShelfItemCoversForSidecar proxies playlist covers for canvas shelf textures", () => {
-	expect(mapShelfItemCoversForSidecar([
+test("mapShelfItemCoverSources resolves shelf textures through the media URL port", () => {
+	const mediaUrl = {
+		imageSource: (url: string) => ({ uri: url.startsWith("data:") ? url : `mineradio-image://cover/${encodeURIComponent(url)}` }),
+	};
+	expect(mapShelfItemCoverSources([
 		{ type: "playlist", title: "A", cover: "https://img.example/a.jpg" },
 		{ type: "queue", title: "B", cover: "data:image/png;base64,abc" },
 		{ type: "queue", title: "C" },
-	], "http://127.0.0.1:4111")).toEqual([
-		{ type: "playlist", title: "A", cover: "http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg" },
+	], mediaUrl)).toEqual([
+		{ type: "playlist", title: "A", cover: "mineradio-image://cover/https%3A%2F%2Fimg.example%2Fa.jpg" },
 		{ type: "queue", title: "B", cover: "data:image/png;base64,abc" },
 		{ type: "queue", title: "C" },
 	]);

@@ -77,9 +77,10 @@ test("setCoverUrl(url) loads the current cover image, marks texture dirty, and s
 	expect(uniforms.uLoading.value).toBe(0);
 });
 
-test("setCoverUrl(relative image-proxy) loads same-origin proxy covers for WebView2", async () => {
+test("setCoverUrl(opaque custom URI) loads transport-owned cover sources without inspecting their route", async () => {
 	const uniforms = makeUniforms();
 	const loaded: string[] = [];
+	const source = "mineradio-image://cover/session-token/track-42";
 	const ctl = createHomeCoverTextureController({
 		uniforms: uniforms as never,
 		loadImage: async (url) => {
@@ -88,11 +89,11 @@ test("setCoverUrl(relative image-proxy) loads same-origin proxy covers for WebVi
 		},
 	});
 
-	ctl.setCoverUrl("/image-proxy?url=https%3A%2F%2Fimg.example%2Fcover.jpg");
+	ctl.setCoverUrl(source);
 	await ctl.whenIdle();
 
-	expect(loaded).toEqual(["/image-proxy?url=https%3A%2F%2Fimg.example%2Fcover.jpg"]);
-	expect(uniforms.uCoverTex.value.image).toEqual({ width: 96, height: 96, src: "/image-proxy?url=https%3A%2F%2Fimg.example%2Fcover.jpg" });
+	expect(loaded).toEqual([source]);
+	expect(uniforms.uCoverTex.value.image).toEqual({ width: 96, height: 96, src: source });
 	expect(uniforms.uHasCover.value).toBe(1);
 });
 
@@ -160,7 +161,7 @@ test("setCoverUrl(blob) accepts local object URLs used by imported cover images"
 	expect(uniforms.uColorMixT.value).toBe(0);
 });
 
-test("setCoverUrl(proxy) falls back to the direct cover URL like the baseline loader", async () => {
+test("setCoverUrl(primary, fallback) uses the explicit direct fallback without parsing transport routes", async () => {
 	const uniforms = makeUniforms();
 	const originalImage = globalThis.Image;
 	const originalFetch = globalThis.fetch;
@@ -168,7 +169,7 @@ test("setCoverUrl(proxy) falls back to the direct cover URL like the baseline lo
 	const originalRevokeObjectUrl = URL.revokeObjectURL;
 	const loaded: string[] = [];
 	const direct = "http://p3.music.126.net/cover.jpg";
-	const proxy = `http://127.0.0.1:56764/image-proxy?url=${encodeURIComponent(direct)}`;
+	const primary = "https://opaque-media.example/cover/token-1";
 
 	class FakeImage {
 		crossOrigin = "";
@@ -201,10 +202,10 @@ test("setCoverUrl(proxy) falls back to the direct cover URL like the baseline lo
 			uniforms: uniforms as never,
 			createCanvas: (width, height) => ({ width, height, getContext: () => null }) as never,
 		});
-		ctl.setCoverUrl(proxy);
+		ctl.setCoverUrl(primary, direct);
 		await ctl.whenIdle();
 
-		expect(loaded).toEqual([proxy, "blob:http://127.0.0.1/bad-proxy-image", direct]);
+		expect(loaded).toEqual([primary, "blob:http://127.0.0.1/bad-proxy-image", direct]);
 		expect((uniforms.uCoverTex.value.image as { width: number }).width).toBe(64);
 		expect((uniforms.uCoverTex.value.image as { height: number }).height).toBe(64);
 		expect(uniforms.uHasCover.value).toBe(1);
@@ -214,6 +215,49 @@ test("setCoverUrl(proxy) falls back to the direct cover URL like the baseline lo
 		URL.createObjectURL = originalCreateObjectUrl;
 		URL.revokeObjectURL = originalRevokeObjectUrl;
 	}
+});
+
+test("setCoverUrl(primary, fallback) drops an unsafe fallback before invoking the loader", async () => {
+	const uniforms = makeUniforms();
+	const observedFallbacks: Array<string | undefined> = [];
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async (url, _signal, fallbackUrl) => {
+			observedFallbacks.push(fallbackUrl);
+			return { width: 64, height: 64, src: url };
+		},
+	});
+
+	ctl.setCoverUrl("mineradio-image://cover/token-1", "file:///Users/me/cover.png");
+	await ctl.whenIdle();
+
+	expect(observedFallbacks).toEqual([""]);
+	expect(uniforms.uHasCover.value).toBe(1);
+});
+
+test("setCoverUrl(primary, fallback) does not reuse a cached image when only fallback changes", async () => {
+	const uniforms = makeUniforms();
+	const loadedFallbacks: string[] = [];
+	const ctl = createHomeCoverTextureController({
+		uniforms: uniforms as never,
+		loadImage: async (_url, _signal, fallbackUrl) => {
+			const resolved = String(fallbackUrl ?? "");
+			loadedFallbacks.push(resolved);
+			return { width: 64, height: 64, src: resolved };
+		},
+	});
+	const primary = "mineradio-image://cover/stable-token";
+	const fallbackA = "https://img.example/fallback-a.jpg";
+	const fallbackB = "https://img.example/fallback-b.jpg";
+
+	ctl.setCoverUrl(primary, fallbackA);
+	await ctl.whenIdle();
+	expect((uniforms.uCoverTex.value.image as { src?: string }).src).toBe(fallbackA);
+
+	ctl.setCoverUrl(primary, fallbackB);
+	await ctl.whenIdle();
+	expect(loadedFallbacks).toEqual([fallbackA, fallbackB]);
+	expect((uniforms.uCoverTex.value.image as { src?: string }).src).toBe(fallbackB);
 });
 
 test("setCoverUrl(unsupported scheme) preserves safety behavior by clearing without loading", async () => {

@@ -579,6 +579,7 @@ function playback(trackKey: string): PlaybackVisualSnapshot {
 		playing: trackKey !== "idle",
 		durationMs: 120_000,
 		coverUrl: `${trackKey}.jpg`,
+		coverFallbackUrl: "",
 		beatMapKey: trackKey,
 		beatMap: null,
 		splashActive: false,

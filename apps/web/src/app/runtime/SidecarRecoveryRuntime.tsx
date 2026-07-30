@@ -4,17 +4,12 @@ import type {
 	ProviderId,
 	ProviderLoginStatus,
 } from "@mineradio/shared";
-import type { SidecarClient } from "../../api/sidecar-client";
 import type {
-	AppServices,
-	AppServicesFactory,
-} from "../app-services";
+	ApplicationPorts,
+	ApplicationRuntimePort,
+} from "../../ports/application-runtime-port";
 import type { ApiRuntimePort } from "../../ports/api-runtime-port";
 import type { SidecarRecoveryNoticeState } from "../../components/shell/SidecarRecoveryNotice";
-import {
-	getRuntimeConfig,
-	type RuntimeConfig,
-} from "../../tauri/runtime";
 import {
 	SIDECAR_RECOVERED_NOTICE_MS,
 	SIDECAR_STATUS_POLL_MS,
@@ -22,46 +17,24 @@ import {
 	nextSidecarStatusPollDelayMs,
 } from "./sidecar-recovery-policy";
 
-export interface SidecarRuntimeConnection {
-	config: RuntimeConfig;
-	client: SidecarClient;
-	services: AppServices;
-}
-
 export interface SidecarRecoveryRuntimeProps {
-	initialRuntimeConfig?: RuntimeConfig | null;
-	createSidecarClient: (config: RuntimeConfig) => SidecarClient;
-	servicesFactory: AppServicesFactory;
+	applicationRuntime: ApplicationRuntimePort;
 	loginProviders: readonly ProviderId[];
-	onConnection: (connection: SidecarRuntimeConnection) => void;
+	onConnection: (ports: ApplicationPorts) => void;
 	onCapabilities: (matrix: CapabilityMatrix) => void;
 	onProviderStatus: (status: ProviderLoginStatus) => void;
-	onRefreshLibrary: (connection: SidecarRuntimeConnection) => void;
+	onRefreshLibrary: (ports: ApplicationPorts) => void;
 	onRecoveryState: (state: SidecarRecoveryNoticeState) => void;
-	loadRuntimeConfig?: () => Promise<RuntimeConfig>;
-}
-
-function placeholderRuntimeConfig(): RuntimeConfig {
-	return {
-		sidecarBaseUrl: "",
-		appDataDir: "",
-		appVersion: "0.0.0-dev",
-		schemaVersion: "0.1.0",
-		updaterPublicKeyConfigured: false,
-	};
 }
 
 export function SidecarRecoveryRuntime({
-	initialRuntimeConfig = null,
-	createSidecarClient,
-	servicesFactory,
+	applicationRuntime,
 	loginProviders,
 	onConnection,
 	onCapabilities,
 	onProviderStatus,
 	onRefreshLibrary,
 	onRecoveryState,
-	loadRuntimeConfig = getRuntimeConfig,
 }: SidecarRecoveryRuntimeProps) {
 	const [apiRuntime, setApiRuntime] = useState<ApiRuntimePort | null>(null);
 
@@ -70,44 +43,39 @@ export function SidecarRecoveryRuntime({
 		let healthTimer: ReturnType<typeof setTimeout> | null = null;
 
 		async function boot(): Promise<void> {
-			let config: RuntimeConfig;
-			if (initialRuntimeConfig) config = initialRuntimeConfig;
-			else {
-				try {
-					config = await loadRuntimeConfig();
-				} catch {
-					config = placeholderRuntimeConfig();
-				}
+			let connectedPorts: ApplicationPorts | null;
+			try {
+				connectedPorts = await applicationRuntime.connect();
+			} catch {
+				return;
 			}
-			if (cancelled || !config.sidecarBaseUrl) return;
+			if (cancelled || !connectedPorts) return;
+			const ports = connectedPorts;
 
-			const client = createSidecarClient(config);
-			const services = servicesFactory(config, client);
-			const connection = { config, client, services };
-			setApiRuntime(services.apiRuntime);
-			onConnection(connection);
+			setApiRuntime(ports.apiRuntime);
+			onConnection(ports);
 
 			let attempts = 0;
 			async function pollHealth(): Promise<void> {
 				try {
-					await services.apiRuntime.health();
+					await ports.apiRuntime.health();
 					if (cancelled) return;
 					try {
-						const capabilities = await services.apiRuntime.capabilities();
+						const capabilities = await ports.apiRuntime.capabilities();
 						if (!cancelled) onCapabilities(capabilities);
 					} catch {
 						// 能力矩阵同步失败不阻断现有播放器启动。
 					}
 					const statusResults = await Promise.allSettled(
 						loginProviders.map((provider) => (
-							services.music.accounts.loginStatus(provider)
+							ports.music.accounts.loginStatus(provider)
 						)),
 					);
 					if (cancelled) return;
 					for (const result of statusResults) {
 						if (result.status === "fulfilled") onProviderStatus(result.value);
 					}
-					onRefreshLibrary(connection);
+					onRefreshLibrary(ports);
 				} catch {
 					if (cancelled) return;
 					attempts += 1;
@@ -128,15 +96,12 @@ export function SidecarRecoveryRuntime({
 			if (healthTimer) clearTimeout(healthTimer);
 		};
 	}, [
-		createSidecarClient,
-		initialRuntimeConfig,
-		loadRuntimeConfig,
+		applicationRuntime,
 		loginProviders,
 		onCapabilities,
 		onConnection,
 		onProviderStatus,
 		onRefreshLibrary,
-		servicesFactory,
 	]);
 
 	useEffect(() => {

@@ -37,6 +37,7 @@ function createFixture(result: SongUrlResult) {
 			calls.push(`playable:${url}`);
 			return `playable:${url}`;
 		},
+		imageSource(url: string) { return { uri: url }; },
 		imageUrl(url: string) { return url; },
 	} satisfies MediaUrlPort;
 	return { calls, playback, mediaUrl };

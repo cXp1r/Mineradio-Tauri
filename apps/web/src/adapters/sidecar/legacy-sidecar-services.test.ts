@@ -1,103 +1,86 @@
-import { expect, test } from "bun:test";
-import type { Track } from "@mineradio/shared";
-import { SidecarClientError, type SidecarClient } from "../../api/sidecar-client";
+import type { SidecarClient } from "../../api/sidecar-client";
+import {
+	runMusicServicesConformance,
+	type MusicServiceCall,
+	type MusicServiceOperation,
+	type MusicServicesConformanceHarness,
+} from "../../ports/music/music-services.conformance";
 import { createLegacySidecarServices } from "./legacy-sidecar-services";
 
-const track: Track = {
-	provider: "netease",
-	id: "track-1",
-	sourceId: "track-1",
-	title: "测试歌曲",
-	artists: ["测试歌手"],
-	album: "测试专辑",
-	coverUrl: "https://example.com/cover.jpg",
-	qualityHints: [],
-	playableState: "playable",
-	durationMs: 180_000,
+const legacyMethodOperations = {
+	search: "search.search",
+	searchAll: "search.searchAll",
+	podcastSearch: "search.podcastSearch",
+	podcastHot: "search.podcastHot",
+	podcastPrograms: "search.podcastPrograms",
+	songUrl: "playback.songUrl",
+	resolveSongUrl: "playback.resolveSongUrl",
+	trackQualities: "playback.trackQualities",
+	lyric: "lyrics.lyric",
+	loginStatus: "accounts.loginStatus",
+	createProviderLoginQrKey: "accounts.createLoginQrKey",
+	createProviderLoginQrImage: "accounts.createLoginQrImage",
+	checkProviderLoginQr: "accounts.checkLoginQr",
+	setProviderSessionCookie: "accounts.setSessionCookie",
+	clearProviderSessionCookie: "accounts.clearSessionCookie",
+	logout: "accounts.logout",
+	playlistList: "library.playlistList",
+	playlistDetail: "library.playlistDetail",
+	importSharedPlaylist: "library.importSharedPlaylist",
+	addSongToPlaylist: "library.addSongToPlaylist",
+	likeSong: "likes.likeSong",
+	checkSongLikes: "likes.checkSongLikes",
+	weatherRadio: "discover.weatherRadio",
+	discoverHome: "discover.discoverHome",
+	podcastDetail: "discover.podcastDetail",
+	podcastMy: "discover.podcastMy",
+	podcastMyItems: "discover.podcastMyItems",
+	podcastDjBeatmap: "discover.podcastDjBeatmap",
+} as const satisfies Partial<Record<keyof SidecarClient, MusicServiceOperation>>;
+
+type LegacyMusicMethod = keyof typeof legacyMethodOperations;
+
+const sidecarDefaults: Partial<Record<LegacyMusicMethod, Readonly<Record<number, unknown>>>> = {
+	weatherRadio: { 0: {} },
+	podcastSearch: { 1: 18 },
+	podcastHot: { 0: 18, 1: 0 },
+	podcastPrograms: { 1: 30, 2: 0 },
+	podcastMyItems: { 1: 36, 2: 0 },
+	podcastDjBeatmap: { 1: 0, 2: 0 },
 };
 
-test("legacy sidecar services preserve current request arguments", async () => {
-	const calls: unknown[][] = [];
-	const fakeClient = {
-		async search(...args: unknown[]) {
-			calls.push(["search", ...args]);
-			return [track];
-		},
-		async searchAll(...args: unknown[]) {
-			calls.push(["searchAll", ...args]);
-			return [track];
-		},
-		async resolveSongUrl(...args: unknown[]) {
-			calls.push(["resolveSongUrl", ...args]);
-			return { url: "https://example.com/audio.mp3", proxied: false };
-		},
-		async playlistDetail(...args: unknown[]) {
-			calls.push(["playlistDetail", ...args]);
-			return {
-				provider: "netease",
-				id: "playlist-1",
-				name: "测试歌单",
-				coverUrl: "",
-				trackIds: [track.id],
-				subscribed: false,
-				tracks: [track],
+function applySidecarDefaults(method: LegacyMusicMethod, args: unknown[]): unknown[] {
+	const normalized = [...args];
+	for (const [rawIndex, defaultValue] of Object.entries(sidecarDefaults[method] ?? {})) {
+		const index = Number(rawIndex);
+		if (normalized[index] === undefined) normalized[index] = defaultValue;
+	}
+	return normalized;
+}
+
+function createLegacyHarness(options: {
+	result?: unknown;
+	error?: unknown;
+}): MusicServicesConformanceHarness {
+	const calls: MusicServiceCall[] = [];
+	const client = new Proxy({}, {
+		get(_target, property) {
+			return (...args: unknown[]) => {
+				const method = property as LegacyMusicMethod;
+				const operation = legacyMethodOperations[method];
+				if (!operation) throw new Error(`未登记的 legacy Sidecar 方法：${String(property)}`);
+				calls.push({ operation, args: applySidecarDefaults(method, args) });
+				return options.error === undefined
+					? Promise.resolve(options.result)
+					: Promise.reject(options.error);
 			};
 		},
-	} as unknown as SidecarClient;
-	const services = createLegacySidecarServices(fakeClient);
+	}) as SidecarClient;
 
-	await services.search.search("netease", "测试", 12);
-	await services.search.searchAll("测试", 18, "qq");
-	await services.playback.resolveSongUrl(track, "lossless");
-	await services.library.playlistDetail("netease", "playlist-1");
+	return {
+		services: createLegacySidecarServices(client),
+		calls,
+	};
+}
 
-	expect(calls).toEqual([
-		["search", "netease", "测试", 12],
-		["searchAll", "测试", 18, "qq"],
-		["resolveSongUrl", track, "lossless"],
-		["playlistDetail", "netease", "playlist-1"],
-	]);
-});
-
-test("legacy sidecar services preserve the complete SidecarClientError instance", async () => {
-	const error = new SidecarClientError({
-		code: "PLAYBACK_RESTRICTED",
-		message: "当前歌曲不可播放",
-		provider: "qq",
-		retryable: true,
-		action: "refresh-key",
-		playbackKeyReady: false,
-		restriction: { category: "login_required" },
-		reason: "key-expired",
-		qqCode: 104003,
-		rawMessage: "provider raw message",
-		tried: ["qq", "netease"],
-	});
-	const fakeClient = {
-		async lyric() {
-			throw error;
-		},
-	} as unknown as SidecarClient;
-	const services = createLegacySidecarServices(fakeClient);
-
-	try {
-		await services.lyrics.lyric(track);
-		throw new Error("预期 legacy adapter 抛出错误");
-	} catch (caught) {
-		expect(caught).toBe(error);
-		const preserved = caught as SidecarClientError;
-		expect({
-			restriction: preserved.restriction,
-			reason: preserved.reason,
-			qqCode: preserved.qqCode,
-			rawMessage: preserved.rawMessage,
-			tried: preserved.tried,
-		}).toEqual({
-			restriction: { category: "login_required" },
-			reason: "key-expired",
-			qqCode: 104003,
-			rawMessage: "provider raw message",
-			tried: ["qq", "netease"],
-		});
-	}
-});
+runMusicServicesConformance("legacy MusicServices conformance", createLegacyHarness);

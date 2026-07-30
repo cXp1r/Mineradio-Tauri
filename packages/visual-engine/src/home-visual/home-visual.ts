@@ -55,7 +55,7 @@ export interface HomeVisual {
 	setPreset(p: number, opts?: PresetOpts): void;
 	getFx(): FxState;
 	getField(): HomeParticleField;
-	setCoverUrl(url: string | null | undefined): void;
+	setCoverUrl(url: string | null | undefined, fallbackUrl?: string | null): void;
 	getCoverController(): HomeCoverTextureController;
 	getRipples(): HomeRipples;
 	getSkullParticles(): THREE.Points | null;
@@ -170,6 +170,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	let disposed = false;
 	let backCoverGeneration = 0;
 	let runtimeWakePending = false;
+	let latestCoverFallbackUrl = "";
 	field.applyFxState(fx);
 	const initialHomeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
 	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && initialHomeFieldVisible;
@@ -263,7 +264,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		if (runtimeWakePending) {
 			runtimeWakePending = false;
 			const coverUrl = coverController.getCurrentUrl();
-			if (coverUrl) coverController.setCoverUrl(coverUrl);
+			if (coverUrl) coverController.setCoverUrl(coverUrl, latestCoverFallbackUrl);
 		}
 		field.applyFxState(fx);
 		coverController.setAiDepthEnabled(fx.aiDepth);
@@ -335,8 +336,9 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		getField() {
 			return field;
 		},
-		setCoverUrl(url) {
-			coverController.setCoverUrl(url);
+		setCoverUrl(url, fallbackUrl) {
+			latestCoverFallbackUrl = String(fallbackUrl ?? "").trim();
+			coverController.setCoverUrl(url, latestCoverFallbackUrl);
 		},
 		getCoverController() {
 			return coverController;

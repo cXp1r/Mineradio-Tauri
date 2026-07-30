@@ -6,22 +6,13 @@ import {
   type ReactElement,
 } from "react";
 import { AppRuntimeProvider } from "./AppRuntimeProvider";
-import {
-  createLegacyAppServices,
-  type AppServices,
-  type AppServicesFactory,
-} from "./app-services";
 export {
   deriveSidecarRecoveryNoticeState,
   nextSidecarStatusPollDelayMs,
 } from "./runtime/sidecar-recovery-policy";
-import {
-  type SidecarRecoveryRuntimeProps,
-  type SidecarRuntimeConnection,
-} from "./runtime/SidecarRecoveryRuntime";
 import { AppShell, type AppShellProps } from "./AppShell";
 import {
-  createDefaultSidecarClient,
+  defaultApplicationRuntime,
   defaultDesktopRuntime,
   defaultFullDesktopRuntime,
   defaultWallpaperEngineRuntime,
@@ -132,6 +123,10 @@ import {
   type HydratedShellPreferencesSnapshot,
 } from "./runtime/useShellPreferences";
 import type { PreferencesRepository } from "../ports/preferences-repository";
+import type {
+  ApplicationPorts,
+  ApplicationRuntimePort,
+} from "../ports/application-runtime-port";
 import {
   PLAYBACK_QUALITY_PREFERENCE,
   SETTINGS_FAB_AUTO_HIDE_PREFERENCE,
@@ -260,9 +255,7 @@ export function shouldUseSecondaryLeftDisplaySeamGuard(
 export type AppProps = {
   SplashComponent?: (props: SplashHostProps) => ReactElement | null;
   VisualComponent?: typeof VisualEngineHost;
-  createSidecarClient?: SidecarRecoveryRuntimeProps["createSidecarClient"];
-  servicesFactory?: AppServicesFactory;
-  initialRuntimeConfig?: SidecarRuntimeConnection["config"] | null;
+  applicationRuntime?: ApplicationRuntimePort;
   desktopLyricsRuntime?: DesktopLyricsRuntime;
   desktopRuntime?: DesktopRuntimePort;
   fullDesktopRuntime?: FullDesktopRuntimePort;
@@ -281,9 +274,7 @@ export type DesktopLyricsRuntime = {
 export function App({
   SplashComponent = SplashHost,
   VisualComponent = VisualEngineHost,
-  createSidecarClient = createDefaultSidecarClient,
-  servicesFactory = createLegacyAppServices,
-  initialRuntimeConfig = null,
+  applicationRuntime = defaultApplicationRuntime,
   desktopLyricsRuntime,
   desktopRuntime = defaultDesktopRuntime,
   fullDesktopRuntime = defaultFullDesktopRuntime,
@@ -292,10 +283,7 @@ export function App({
   preferences,
   hydratedPreferences,
 }: AppProps = {}): ReactElement {
-  const [sidecarClient, setSidecarClient] = useState<
-    SidecarRuntimeConnection["client"] | null
-  >(null);
-  const [appServices, setAppServices] = useState<AppServices | null>(null);
+  const [applicationPorts, setApplicationPorts] = useState<ApplicationPorts | null>(null);
   const resolvedDesktopRuntime = useMemo<DesktopRuntimePort>(() => {
     if (!desktopLyricsRuntime) return desktopRuntime;
     return {
@@ -305,7 +293,6 @@ export function App({
       updateDesktopLyricsPayload: desktopLyricsRuntime.updatePayload,
     };
   }, [desktopLyricsRuntime, desktopRuntime]);
-  const [sidecarBaseUrl, setSidecarBaseUrl] = useState("");
   const [splashActive, setSplashActive] = useState<boolean>(SHOW_SPLASH);
   const [searchModeRequest, setSearchModeRequest] = useState<SearchMode>("song");
   const [accountDropdownOpen, setAccountDropdownOpen] = useState(false);
@@ -458,7 +445,7 @@ export function App({
     isBusy: isTrackLikeBusy,
     toggle: toggleLikeTrack,
   } = useLikesController({
-    likes: appServices?.music.likes ?? null,
+    likes: applicationPorts?.music.likes ?? null,
     currentTrack,
     showToast,
     openProviderLogin: () => setLoginModalOpen(true),
@@ -505,9 +492,9 @@ export function App({
     );
   }, [currentTrack, queue]);
   const homeController = useHomeController({
-    discover: appServices?.music.discover ?? null,
-    library: appServices?.music.library ?? null,
-    search: appServices?.music.search ?? null,
+    discover: applicationPorts?.music.discover ?? null,
+    library: applicationPorts?.music.library ?? null,
+    search: applicationPorts?.music.search ?? null,
     currentTrack,
     positionMs,
     durationMs,
@@ -698,7 +685,7 @@ export function App({
     handleRuntimeEnded,
     handleRuntimeError,
   } = usePlaybackSessionRuntime({
-    appServices,
+    appServices: applicationPorts,
     controllerRef,
     localAudioUrlsRef,
     currentTrack,
@@ -752,8 +739,8 @@ export function App({
     rollbackFailedSourcePlayback,
   } =
     useSourceSwitchController({
-      search: appServices?.music.search ?? null,
-      playback: appServices?.music.playback ?? null,
+      search: applicationPorts?.music.search ?? null,
+      playback: applicationPorts?.music.playback ?? null,
       getPlaybackSnapshot: getSourceSwitchSnapshot,
       commit: commitSourceSwitch,
       showToast,
@@ -858,8 +845,8 @@ export function App({
   );
 
   const libraryController = useLibraryController({
-    library: appServices?.music.library ?? null,
-    discover: appServices?.music.discover ?? null,
+    library: applicationPorts?.music.library ?? null,
+    discover: applicationPorts?.music.discover ?? null,
     getCurrentTrack: () => usePlaybackStore.getState().currentTrack,
     playback: {
       setQueue,
@@ -1041,20 +1028,18 @@ export function App({
     [],
   );
 
-  const handleSidecarConnection = useCallback(
-    (connection: SidecarRuntimeConnection) => {
-      setSidecarClient(connection.client);
-      setAppServices(connection.services);
-      setSidecarBaseUrl(connection.config.sidecarBaseUrl);
+  const handleApplicationConnection = useCallback(
+    (ports: ApplicationPorts) => {
+      setApplicationPorts(ports);
     },
     [],
   );
 
   const handleRuntimeLibraryRefresh = useCallback(
-    (connection: SidecarRuntimeConnection) => {
+    (ports: ApplicationPorts) => {
       void refreshShelfPlaylists(
-        connection.services.music.library,
-        connection.services.music.discover,
+        ports.music.library,
+        ports.music.discover,
       );
     },
     [refreshShelfPlaylists],
@@ -1069,19 +1054,19 @@ export function App({
 
   const syncProviderLoginLibrary = useCallback(
     async (provider: LoginProviderId) => {
-      if (!appServices?.music.library) return;
+      if (!applicationPorts?.music.library) return;
       await refreshProviderPlaylists(provider);
       await refreshHomeDiscover();
     },
-    [appServices?.music.library, refreshHomeDiscover, refreshProviderPlaylists],
+    [applicationPorts?.music.library, refreshHomeDiscover, refreshProviderPlaylists],
   );
 
   const syncAccountProviderPlaylists = useCallback(
     async (provider: LoginProviderId) => {
-      if (!appServices?.music.library) return;
+      if (!applicationPorts?.music.library) return;
       await refreshProviderPlaylists(provider);
     },
-    [appServices?.music.library, refreshProviderPlaylists],
+    [applicationPorts?.music.library, refreshProviderPlaylists],
   );
 
   const refreshAccountLibrary = useCallback(() => {
@@ -1095,7 +1080,7 @@ export function App({
     importProviderCookie: importProviderSessionCookie,
     logoutProvider,
   } = useAccountSessionController({
-    accounts: appServices?.music.accounts ?? null,
+    accounts: applicationPorts?.music.accounts ?? null,
     syncProviderPlaylists: syncAccountProviderPlaylists,
     refreshHome: refreshHomeDiscover,
     refreshLibrary: refreshAccountLibrary,
@@ -1117,7 +1102,7 @@ export function App({
     refreshProviderLoginQr,
     resetProviderLoginQr,
   } = useLoginQrRuntime({
-    accounts: appServices?.music.accounts ?? null,
+    accounts: applicationPorts?.music.accounts ?? null,
     modalOpen: loginModalOpen,
     modalMode: loginModalMode,
     provider: loginProvider,
@@ -1493,11 +1478,9 @@ export function App({
 
   const shellProps: AppShellProps = {
     sidecarRuntimeProps: {
-      initialRuntimeConfig,
-      createSidecarClient,
-      servicesFactory,
+      applicationRuntime,
       loginProviders: LOGIN_PROVIDERS,
-      onConnection: handleSidecarConnection,
+      onConnection: handleApplicationConnection,
       onCapabilities: setMatrix,
       onProviderStatus: acceptProviderStatus,
       onRefreshLibrary: handleRuntimeLibraryRefresh,
@@ -1547,7 +1530,7 @@ export function App({
         currentCoverUrl: currentTrack?.coverUrl,
         beatMapKey: currentBeatMapState?.key,
         beatMap: currentBeatMapState?.map,
-        sidecarBaseUrl,
+        mediaUrl: applicationPorts?.mediaUrl,
         coverResolution: visualFx.coverResolution,
         fxState: visualFx,
         shelfSettings: {
@@ -1568,13 +1551,15 @@ export function App({
         onShelfDetailRowClick: (payload) => {
           void handleShelfDetailRowAction({
             ...payload,
-            client: sidecarClient,
+            likes: applicationPorts?.music.likes,
             isLiked: () => false,
             onResult: showToast,
             onOpenCollect: openCollectPicker,
             onOpenPodcastRadio: (radioId, title) => {
               const loader = createShelfDetailContentLoader({
-                client: sidecarClient,
+                library: applicationPorts?.music.library,
+                discover: applicationPorts?.music.discover,
+                search: applicationPorts?.music.search,
                 getContentList: () => shelfContentListRef.current,
               });
               createPodcastRadioDetailOpener({
@@ -1587,7 +1572,9 @@ export function App({
         onShelfOpenDetailContent: (payload, contentList) => {
           shelfContentListRef.current = contentList;
           const loader = createShelfDetailContentLoader({
-            client: sidecarClient,
+            library: applicationPorts?.music.library,
+            discover: applicationPorts?.music.discover,
+            search: applicationPorts?.music.search,
             getContentList: () => contentList,
           });
           void loader(payload);
@@ -1673,7 +1660,7 @@ export function App({
         onPlaylistDetailArtist: searchHomePlaylistDetailArtist,
       },
       searchProps: {
-        client: appServices?.music.search ?? null,
+        client: applicationPorts?.music.search ?? null,
         onFocus: focusSearch,
         onUpload: openLocalFileImport,
         onClearCustomCover: clearCustomCoverImage,
@@ -1690,7 +1677,7 @@ export function App({
         requestedMode: searchModeRequest,
       },
       searchDetailProps: {
-        client: sidecarClient,
+        client: applicationPorts?.music.search ?? null,
         onClose: focusSearch,
         onPlayResults: playSearchDetailTracks,
         onAppendQueue: appendSearchResult,
@@ -1884,7 +1871,7 @@ export function App({
   };
 
   return (
-    <AppRuntimeProvider services={appServices}>
+    <AppRuntimeProvider services={applicationPorts}>
       <AppShell {...shellProps} />
     </AppRuntimeProvider>
   );
