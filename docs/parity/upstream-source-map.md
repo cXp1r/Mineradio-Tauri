@@ -1,6 +1,17 @@
-# Electron 2.0.2 上游源码映射
+# Mineradio 2.0.3 上游源码映射
 
-Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`
+下表是活动上游行为身份的唯一机器可读记录。正式 tag 是 annotated tag，活动行为身份只使用其 peeled commit；tag object 与 release branch tip 均不得替代该 commit。
+
+| baseline_role | repository | tag | peeled_commit | tree | package_version |
+| --- | --- | --- | --- | --- | --- |
+| active | XxHuberrr/Mineradio | v2.0.3 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
+
+以下 provenance 记录解释 tag peel 与 release branch 同树关系，不构成第二个活动身份。
+
+| provenance_role | ref | object_id | resolved_commit | tree | package_version |
+| --- | --- | --- | --- | --- | --- |
+| release_tag | refs/tags/v2.0.3 | 631813e4baaea1c2115182050be736b6491097e5 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
+| release_branch | refs/heads/release/2.0.3 | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
 
 除 Sonic Topography 外，本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。Sonic 依据已确认的来源链、维护者审阅的公开合作证据与项目决策采用直接迁移；该证据不等于书面授权或许可放宽，实施仍须适配 visual-engine 的 scheduler、resource scope、typed settings 和生命周期 seam。
 

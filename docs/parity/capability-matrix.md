@@ -1,6 +1,10 @@
-# Mineradio 2.0.2 能力矩阵
+# Mineradio 2.0.3 能力矩阵
 
-上游行为基线：`XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224`。
+下表是活动上游行为身份的唯一机器可读记录；历史能力行仍可保留当时使用的 2.0.2 来源证据。
+
+| baseline_role | repository | tag | peeled_commit | tree | package_version |
+| --- | --- | --- | --- | --- | --- |
+| active | XxHuberrr/Mineradio | v2.0.3 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
 
 状态含义：`baseline` 表示当前已有并需要冻结，`implemented` 表示当前阶段界定的代码目标已实现并具备自动验证（不代表已经完成 Windows 实机或 release 验证），`partial` 表示已有部分实现，`missing` 表示尚未迁移，`blocked` 表示等待开发中的 `MineRadio-api`。验证栏中的 `Field Validation Pending (non-blocking)` 只阻止 `Field Validated / Release Verified`，不降低已经完成的代码状态。
 
