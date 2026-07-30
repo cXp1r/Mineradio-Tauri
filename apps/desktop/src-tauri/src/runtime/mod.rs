@@ -7,6 +7,8 @@ pub mod hotkeys;
 pub mod resources;
 pub mod settings;
 #[allow(dead_code)]
+pub mod updater;
+#[allow(dead_code)]
 pub mod wallpaper_engine;
 pub mod window;
 pub mod window_adapter;
