@@ -2046,6 +2046,7 @@ test("side detail suppresses pointer lift and keeps its group layer across curso
 
 	expect(selected?.position.toArray()).toEqual(visiblePose?.toArray());
 	expect(group.renderOrder).toBe(50);
+	expect(findDetailGroup(group)?.renderOrder ?? 0).toBeGreaterThan(group.renderOrder);
 	expect(findDetailMeshes(group).every((mesh) => mesh.renderOrder > group.renderOrder)).toBe(true);
 });
 

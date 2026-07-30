@@ -56,9 +56,9 @@ const updaterCapability = {
 const updaterCapabilityRow = renderCapability(updaterCapability);
 const d0InventoryCapabilities = [
 	["baseline.electron-2.0.3", "implemented", "P0", "parity", "none"],
-	["lyrics.stage-v2", "partial", "P0", "parity", "none"],
-	["visual.cursor-activity", "missing", "P0", "parity", "none"],
-	["visual.shelf-cursor-layer", "missing", "P0", "parity", "none"],
+	["lyrics.stage-v2", "implemented", "P0", "parity", "none"],
+	["visual.cursor-activity", "implemented", "P0", "parity", "none"],
+	["visual.shelf-cursor-layer", "implemented", "P0", "parity", "none"],
 	["visual.sonic-workshop", "blocked", "P0", "parity", "provenance-decision"],
 	["wallpaper.idle-dispose", "implemented", "P0", "parity", "none"],
 	["playback.startup-resume", "missing", "P0", "parity", "none"],
@@ -108,8 +108,8 @@ const upstreamReleaseProvenance = [
 const d0SourceMap = [
 	"| delta_id | current_tauri | convergence_mode | evidence |",
 	"| --- | --- | --- | --- |",
-	"| lyrics.nested-render-base | partial | parity | D1 layer characterization |",
-	"| visual.cursor-shelf-layer | missing | parity | D1 cursor and Shelf runtime |",
+	"| lyrics.nested-render-base | implemented | parity | D1 layer characterization |",
+	"| visual.cursor-shelf-layer | implemented | parity | D1 cursor and Shelf runtime |",
 	"| updater.github-release | partial | architecture-replacement | D2 signed GitHub Update Runtime |",
 	"| visual.sonic-workshop | blocked | parity | independent CmzYa / 3747222633 provenance decision |",
 	"| wallpaper.idle-dispose | implemented | parity | Rust idle and repeated dispose tests |",

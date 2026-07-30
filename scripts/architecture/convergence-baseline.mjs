@@ -23,9 +23,9 @@ const EXPECTED_UPDATER_AUTHORITY = {
 };
 const D0_INVENTORY_CAPABILITIES = new Map([
 	["baseline.electron-2.0.3", ["implemented", "P0", "parity", "none"]],
-	["lyrics.stage-v2", ["partial", "P0", "parity", "none"]],
-	["visual.cursor-activity", ["missing", "P0", "parity", "none"]],
-	["visual.shelf-cursor-layer", ["missing", "P0", "parity", "none"]],
+	["lyrics.stage-v2", ["implemented", "P0", "parity", "none"]],
+	["visual.cursor-activity", ["implemented", "P0", "parity", "none"]],
+	["visual.shelf-cursor-layer", ["implemented", "P0", "parity", "none"]],
 	["visual.sonic-workshop", ["blocked", "P0", "parity", "provenance-decision"]],
 	["wallpaper.idle-dispose", ["implemented", "P0", "parity", "none"]],
 	["playback.startup-resume", ["missing", "P0", "parity", "none"]],
@@ -49,8 +49,8 @@ const D0_INVENTORY_FIELDS = [
 	"blocked_by",
 ];
 const D0_SOURCE_MAP_DELTAS = new Map([
-	["lyrics.nested-render-base", ["partial", "parity"]],
-	["visual.cursor-shelf-layer", ["missing", "parity"]],
+	["lyrics.nested-render-base", ["implemented", "parity"]],
+	["visual.cursor-shelf-layer", ["implemented", "parity"]],
 	["updater.github-release", ["partial", "architecture-replacement"]],
 	["visual.sonic-workshop", ["blocked", "parity"]],
 	["wallpaper.idle-dispose", ["implemented", "parity"]],

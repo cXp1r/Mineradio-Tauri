@@ -17,8 +17,8 @@
 
 | delta_id | current_tauri | convergence_mode | evidence |
 | --- | --- | --- | --- |
-| lyrics.nested-render-base | partial | parity | 2.0.3 nested row/context/readability groups 与行级 render base 同步；当前 Stage 外层相对层级已实现，但 active/exiting row group 的 effective render-base 联合 characterization 仍待 D1 |
-| visual.cursor-shelf-layer | missing | parity | 上游 2500ms cursor auto-hide 与 `cursor-hidden` Shelf lift/foreground gate；当前没有等价 producer 或 Shelf gate，D1 必须补代码和测试 |
+| lyrics.nested-render-base | implemented | parity | 2.0.3 nested row/context/readability group 已由唯一 effective 38/24 base 驱动；current/outgoing/prewarm/async attach 与真实 Three.js render-list characterization 均有 D1 证据 |
+| visual.cursor-shelf-layer | implemented | parity | Web cursor runtime 实现 2500ms auto-hide、五类活动、visibility/dispose 与 `body.cursor-hidden`，并以 selection-preserving policy 驱动 passive Shelf lift/foreground gate |
 | updater.github-release | partial | architecture-replacement | 上游 2.0.3 使用外部 HTTPS 网盘页并交浏览器打开；Tauri 明确采用 GitHub Release + signed Update Runtime，不实现网盘/browser-only 模型 |
 | visual.sonic-workshop | blocked | parity | preset 8 作者 CmzYa、Steam Workshop project `3747222633` 与 vendor bundle 独立于 Sonic Topography；等待单独 provenance/再分发决定，不复用 Ajin 来源链 |
 | wallpaper.idle-dispose | implemented | parity | Rust Wallpaper Runtime 的 idle dispose 与 repeated dispose 自动测试已覆盖；无需以 Windows 实机验证替代代码结论 |
@@ -37,7 +37,7 @@
 | 歌词请求 | `06-lyrics/00-lyrics-fetch-parse.js` | lyrics store、custom lyrics、`App.tsx` | lyrics controller | 保留 fallback、自定义歌词与 stale request 语义 |
 | 舞台歌词 | `02-visual/10-lyrics-mask-textures.js` 至 `14-stage-lyrics-rendering.js` | `packages/visual-engine/src/stage-lyrics/**` | visual-engine | 保留旧 mesh 直到新正文 ready，双预算上传 |
 | Sonic Topography | `public/sonic-topography-preset.js`、`03-beat/06-sonic-audio-monitor.js`；原始来源 `yin-yizhen/sonic-topography@3ff303e` | `packages/visual-engine/src/sonic-topography/**` | visual-engine | 直接迁移视觉算法，保留 Ajin、来源 commit、Non-Commercial Learning License 和修改说明；不继承全局脚本结构 |
-| Cursor activity / Shelf cursor layer | 2.0.3 cursor activity producer、`body.cursor-hidden` 与 Shelf lift/layer gate | 尚未实现 | future Web cursor runtime + visual-engine Shelf input | 2500ms idle、activity/visibility/dispose、真实 cursor 呈现与 selection-preserving Shelf gate 必须作为 D1 代码差距实现 |
+| Cursor activity / Shelf cursor layer | 2.0.3 cursor activity producer、`body.cursor-hidden` 与 Shelf lift/layer gate | `apps/web/src/visual/runtime/cursor-activity-runtime.ts` + visual composition + `packages/visual-engine/src/shelf` | Web cursor runtime + visual-engine Shelf input | 2500ms idle、activity/visibility/dispose、真实 cursor 呈现与 selection-preserving Shelf gate 已实现；Windows 观感继续 Field Validation Pending (non-blocking) |
 | Sonic Workshop | 2.0.3 `public/sonic-workshop-preset.js`、`public/vendor/sonic-workshop/**`；CmzYa / Workshop `3747222633` | 尚未迁移 | independent future visual Module or explicit exclusion | 不得用 Sonic Topography/Ajin provenance 代替；来源决定前不复制 bundle |
 | 主循环与调度 | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | visual-engine runtime | visual scheduler | analyser/视觉采样可限流，媒体状态不可限流 |
 | 3D 歌单架 | `04-shelf/**` | visual shelf modules、`shelf-detail-data.ts` | visual-engine + library controller | 数据增长时 DOM/GPU 对象保持有界 |

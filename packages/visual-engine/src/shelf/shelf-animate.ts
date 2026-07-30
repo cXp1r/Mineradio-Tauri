@@ -50,6 +50,8 @@ import {
 	type ShelfState,
 } from "./shelf-state";
 
+const SHELF_DETAIL_GROUP_RENDER_ORDER = 230;
+
 export interface ShelfItem {
 	type?: string;
 	title?: string;
@@ -940,6 +942,7 @@ export function createShelfManager(opts: ShelfManagerOptions): ShelfManager {
 	function ensureDetailGroup(): THREE.Group | null {
 		if (detailGroup || !group || !three) return detailGroup;
 		detailGroup = new three.Group();
+		detailGroup.renderOrder = SHELF_DETAIL_GROUP_RENDER_ORDER;
 		detailGroup.userData.shelfContentDetailGroup = true;
 		group.add(detailGroup);
 		return detailGroup;
