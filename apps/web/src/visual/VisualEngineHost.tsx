@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement, type RefObject } from "react";
 import type { LyricPayload, LyricLine as SharedLyricLine, PlaylistSummary, PodcastCollection, Track } from "@mineradio/shared";
 import {
+	type AudioFrameSource,
 	type FxState,
 	type VisualLyricLine,
 	type ShelfItem,
@@ -16,7 +17,6 @@ import {
 } from "./useVisualEngine";
 import type { ShelfDetailRowClickPayload, ShelfPlayPlaylistPayload } from "./shelf-pointer-interactions";
 import type { ShelfDetailContentListController } from "./shelf-detail-data";
-import { PlayerController } from "../audio/player-controller";
 import { resolveShelfItems } from "./shelf-items";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence, ShelfSettings } from "../stores/shelf-store";
 import type { MediaImageSource, MediaUrlPort } from "../ports/media-url-port";
@@ -29,12 +29,12 @@ import {
 } from "./runtime/visual-snapshot-builders";
 
 export interface VisualEngineHostProps {
-	audioElementRef: RefObject<HTMLAudioElement | null>;
-	controllerRef: RefObject<PlayerController | null>;
+	audioFrameSource: AudioFrameSource;
 	lyricsPayload: LyricPayload | null;
 	positionMs: number;
 	durationMs?: number | null;
 	isPlaying: boolean;
+	playbackVolume: number;
 	queue?: Track[];
 	playlists?: PlaylistSummary[];
 	podcastCollections?: PodcastCollection[];
@@ -357,8 +357,9 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 
 	useVisualEngine({
 		hostRef,
-		audioElementRef: props.audioElementRef,
+		audioFrameSource: props.audioFrameSource,
 		positionMs: props.positionMs,
+		playbackVolume: props.playbackVolume,
 		playbackSnapshot,
 		lyricsSnapshot,
 		shelfSnapshot,

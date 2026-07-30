@@ -133,12 +133,19 @@
 | Global shell/preferences | document/body classes、全局 listener、toast、AI chip、空白 Home dismiss 和浏览器偏好持久化迁入 shell runtime/preferences | `bun test apps/web/src/app/App.test.tsx scripts/architecture/global-shell-boundary.test.ts` | `e252ee7` |
 | Feature surfaces/AppShell | Account、Home/Search、Library、Playback、Visual JSX 和 modal/overlay 顺序迁入 Surface；默认具体依赖迁出 App | `bun test apps/web/src/app/App.test.tsx scripts/architecture/app-composition-boundary.test.ts` | `989dd53` |
 
-## M2 playback session-state foundation
+## M2 Playback 2.0（Code Complete / Automated Verification Complete）
 
 | boundary | result | evidence | commit |
 | --- | --- | --- | --- |
 | Explicit session/load authority | `PlaybackPhase`、`playbackSessionId`、`loadRequestId` 与 recovery state 由 reducer/coordinator 显式持有；单调 `playbackIntentId` 使同曲重播创建新 session，旧 URL/歌词/load 结果与非原始 handle 被拒绝 | `playback-state-machine.test.ts`、`playback-session-coordinator.test.ts`、`usePlaybackSessionRuntime.test.tsx`、`playback-store.test.ts` | `bbfa5a7` 至 `da01812` |
 | Source-bound media lifecycle | `PlayerController` 以 `currentSrc` 优先、`src` fallback 归一化 source，并仅为匹配 source 暴露精确 load handle；`timeupdate`、`durationchange`、`ended` 经 authority guard，重复 ended 只接受一次，single ended 只触发一次 replacement load/play | `player-controller.test.ts`、`usePlaybackSessionRuntime.test.tsx`、`App.test.tsx` | `2f02465`、`1b78ad3`、`8dd2262`、`da01812` |
 | Preserved current policies | 保留远程非试听 source 的单次媒体恢复、long-pause/URL-age 刷新、trial/local 分支和 quality reload；quality reload 复用 session、更新 load token，并只在当前成功 load 后恢复 recovery budget | `playback-session-coordinator.test.ts`、`usePlaybackSessionRuntime.test.tsx` | `887b0cf`、`5090e7f`、`0083c20` |
+| Physical Audio owner | `PlaybackAudioRuntime` 独占两个 lifetime deck、pending/committed/retiring owner、Audio Graph、fade、probe 与输出路由；exact issued handle 和 exact source `ownerchange` 才能提交 application load，`stop()`/dispose 释放 physical owner 和资源 | `playback-audio-runtime.test.ts`、`player-controller.test.ts`、`PlaybackRuntimeHost.test.tsx`、`usePlaybackSessionRuntime.test.tsx` | 本 M2 收口提交 |
+| Album handoff | 同 Provider/专辑/封面且严格相邻的候选共用 8.5s preload、1.05s muted preroll 与 360–720ms equal-power handoff；采用、advance 和 store commit exact-once，失败、stale、新 intent 与 store rejection 可回滚 | `playback-handoff-policy.test.ts`、`gapless-playback-controller.test.ts`、`playback-audio-runtime.test.ts`、`usePlaybackSessionRuntime.test.tsx` | 本 M2 收口提交 |
+| Read-only Visual audio seam | Visual 只消费 `AudioFrameSource` 与数值播放状态，不创建/持有 Controller、`HTMLAudioElement`、`AudioContext`、MediaElementSource 或 sink mutation | Visual runtime/host suites、`playback-audio-owner-boundary.test.ts` | 本 M2 收口提交 |
+| Typed output routing | fade/gapless/crossfade、primary、最多四个 mirrors 与 Virtual Output Bridge 进入 `playback.audio.v2`；bridge 归一为 primary，消失设备保留 unavailable 状态，关闭路由恢复系统默认 sink | preference suites、`PlaybackAudioSettings.test.tsx`、`usePlaybackAudioSettings.test.tsx`、runtime routing/devicechange suites | 本 M2 收口提交 |
+| Bounded recovery and diagnostics | 9s play deadline、一次 ready retry、1600/3600ms stall、Graph/audibility 有界恢复与稳定错误码；diagnostics 深冻结、可序列化、脱敏，资源与 timer 有硬上限 | `playback-audio-runtime.test.ts`、`m2-playback-budget.test.ts` | 本 M2 收口提交 |
 
-M1 App Decomposition 已完成，M2 仅完成上述 playback session-state foundation。pending/committed audio owner separation、gapless、crossfade、Audio Graph recovery、stalled probes、输出路由/设备、fades 与 dual deck 仍是后续工作，不能视为已迁移；相关能力状态不变。Sidecar API 继续冻结为 `legacy-frozen`，本批没有切换或嵌入开发中的 `MineRadio-api` / Rust API。
+M2 代码和自动验证已经完成：播放域聚焦测试 `232 passed`，完整 Bun `2370 passed`，Rust `299 passed`，typecheck、Web build、performance budget、fmt、clippy、freeze audit 与 `git diff --check` 均通过。真实 WebView2 连播/听感、设备权限与拔插、四路 mirror/Virtual Bridge、前后台/睡眠及 30–60 分钟 Windows soak 保持 `Field Validation Pending (non-blocking)`；这些项目只阻止 `Field Validated / Release Verified`。
+
+生产 Adapter 继续是 `legacy-frozen` Bun Sidecar。本批没有切换或嵌入开发中的 `MineRadio-api` / Rust API，不代表应用已经单进程/单二进制，也不代表 localhost、supervisor 或 `externalBin` 已移除。

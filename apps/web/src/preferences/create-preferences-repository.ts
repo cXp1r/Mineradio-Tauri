@@ -7,6 +7,7 @@ import {
 import type { PreferencesRepository } from "../ports/preferences-repository";
 import {
 	DEFAULT_LEGACY_PREFERENCE_MAPPINGS,
+	stagePlaybackAudioLegacyAggregate,
 	type LegacyPreferenceMapping,
 	type LegacyPreferenceStorage,
 } from "./legacy-preferences";
@@ -43,6 +44,7 @@ export async function createPreferencesRepository(
 		options.storage === undefined
 			? getLegacyBrowserPreferenceStorage()
 			: options.storage;
+	stagePlaybackAudioLegacyAggregate(storage);
 	const mappings = mergeMappings(options.additionalLegacyMappings ?? []);
 	const useTauri =
 		options.forceRuntime === "tauri" ||

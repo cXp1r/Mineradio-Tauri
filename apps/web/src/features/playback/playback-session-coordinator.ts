@@ -240,6 +240,23 @@ export class PlaybackSessionCoordinator {
 		return true;
 	}
 
+	markOwnerPlaying(handle: PlaybackLoadHandle, sourceUrl: string): boolean {
+		if (!this.isCurrentLoadedSource(handle, sourceUrl)) return false;
+		return this.markPlaying(handle);
+	}
+
+	isCurrentLoadedSource(
+		handle: PlaybackLoadHandle,
+		sourceUrl: string,
+	): boolean {
+		return !!(
+			this.isPlaybackCurrent(handle) &&
+			this.loadedSource &&
+			sourceUrl.trim() &&
+			this.loadedSource.audioUrl === sourceUrl
+		);
+	}
+
 	markEnded(handle: PlaybackLoadHandle): boolean {
 		if (!this.isPlaybackCurrent(handle)) return false;
 		const accepted = this.tryDispatch({

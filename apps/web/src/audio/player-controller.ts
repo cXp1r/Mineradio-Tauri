@@ -1,14 +1,30 @@
-export type PlayerEventName =
-	| "play"
-	| "pause"
-	| "timeupdate"
-	| "durationchange"
-	| "ended"
-	| "error";
+import type { AudioFrameSource } from "@mineradio/visual-engine";
+import {
+	PlaybackAudioRuntime,
+	type AudioOutputDevice,
+	type OutputRoutingConfig,
+	type OutputRoutingSnapshot,
+	type PlaybackAudioDiagnostics,
+	type PlaybackAudioEventName,
+	type PlaybackAudioRuntimeOptions,
+	type PlaybackDeckId,
+	type PlaybackTransitionPreferences,
+	type PlayPreparedOptions,
+	type PrerollPreparedOptions,
+	type PreparedPlaybackHandle,
+} from "./playback-audio-runtime";
 
+export type PlayerEventName = PlaybackAudioEventName;
+
+/**
+ * generation/deckId 是 M2 runtime 的附加 owner 证据。旧 feature fake 只提供
+ * loadContext/sourceUrl 仍然合法，避免把深 Module 的内部标识扩散到全部 caller。
+ */
 export type MediaEventPayload = {
 	readonly loadContext: object | null;
 	readonly sourceUrl: string;
+	readonly generation?: number;
+	readonly deckId?: PlaybackDeckId;
 };
 
 export type TimeUpdatePayload = MediaEventPayload & {
@@ -21,210 +37,129 @@ export type ErrorPayload = MediaEventPayload & {
 	message: string;
 };
 
+export type OwnerChangePayload = MediaEventPayload & {
+	readonly previous: MediaEventPayload | null;
+	readonly current: MediaEventPayload;
+	readonly reason: "play" | "prepared" | "adopted";
+};
+
+export type PlaybackReadinessPayload = MediaEventPayload & {
+	readonly probe: "native" | "early" | "late";
+};
+
 export type Listener = (
-	payload: MediaEventPayload | TimeUpdatePayload | ErrorPayload,
+	payload: MediaEventPayload | TimeUpdatePayload | ErrorPayload | OwnerChangePayload | PlaybackReadinessPayload,
 ) => void;
 
 export type HandlerForEvent<E extends PlayerEventName> =
-	E extends "play" | "pause" | "ended"
+	E extends "play" | "playing" | "pause" | "ended"
 		? (payload: MediaEventPayload) => void
 		: E extends "timeupdate" | "durationchange"
 			? (payload: TimeUpdatePayload) => void
 			: E extends "error"
 				? (payload: ErrorPayload) => void
-				: Listener;
+				: E extends "ownerchange"
+					? (payload: OwnerChangePayload) => void
+					: E extends "waiting" | "stalled" | "canplay"
+						? (payload: PlaybackReadinessPayload) => void
+						: Listener;
 
-const MINERADIO_AUDIO_CONTEXT_KEY = "_mineradioAudioCtx";
-
-type MineradioAudioElement = HTMLAudioElement & {
-	[MINERADIO_AUDIO_CONTEXT_KEY]?: AudioContext;
+export type {
+	AudioOutputDevice,
+	OutputRoutingConfig,
+	OutputRoutingSnapshot,
+	PlaybackAudioDiagnostics,
+	PlaybackAudioRuntimeOptions,
+	PlaybackTransitionPreferences,
+	PlayPreparedOptions,
+	PrerollPreparedOptions,
+	PreparedPlaybackHandle,
 };
 
-interface SourceBinding {
-	readonly loadContext: object | null;
-	readonly sourceUrl: string;
-}
-
-function timeMsFromSeconds(seconds: number): number {
-	return Math.max(0, Math.floor(seconds * 1000));
-}
-
-function durationMsOrNull(duration: number): number | null {
-	return Number.isFinite(duration) ? Math.floor(duration * 1000) : null;
-}
-
-function createAudioElement(): HTMLAudioElement | null {
-	if (typeof window === "undefined") return null;
-	const ctor = (window as unknown as { Audio?: typeof Audio }).Audio;
-	if (typeof ctor !== "function") return null;
-	const audio = new ctor();
-	configureAudioElement(audio);
-	return audio;
-}
-
-function configureAudioElement(audio: HTMLAudioElement): void {
-	audio.crossOrigin = "anonymous";
-}
-
-async function resumeMineradioAudioContext(audio: HTMLAudioElement): Promise<void> {
-	const ctx = (audio as MineradioAudioElement)[MINERADIO_AUDIO_CONTEXT_KEY];
-	if (!ctx || ctx.state !== "suspended") return;
-	try {
-		await ctx.resume();
-	} catch {
-	}
-}
-
+/**
+ * 兼容旧 caller 的窄 facade。双 deck、owner handoff、Audio Graph、恢复预算与
+ * 输出路由全部保留在 PlaybackAudioRuntime implementation 内。
+ */
 export class PlayerController {
-	private readonly audio: HTMLAudioElement | null;
-	private readonly listeners = new Map<PlayerEventName, Set<Listener>>();
-	private readonly boundRelays: Record<PlayerEventName, EventListener>;
-	private sourceBinding: SourceBinding | null = null;
+	private readonly runtime: PlaybackAudioRuntime;
 
-	constructor(audio?: HTMLAudioElement) {
-		if (audio) {
-			this.audio = audio;
-		} else {
-			this.audio = createAudioElement();
-		}
-		if (this.audio) configureAudioElement(this.audio);
-
-		this.boundRelays = {
-			play: () => this.emitMediaEvent("play"),
-			pause: () => this.emitMediaEvent("pause"),
-			timeupdate: () => this.emitTimeUpdate(),
-			durationchange: () => this.emitDurationChange(),
-			ended: () => this.emitMediaEvent("ended"),
-			error: () => this.emitError(),
-		};
-
-		if (this.audio) {
-			const keys = Object.keys(this.boundRelays) as PlayerEventName[];
-			for (const key of keys) {
-				this.audio.addEventListener(key, this.boundRelays[key]);
-			}
-		}
-	}
-
-	private requireAudio(): HTMLAudioElement {
-		if (!this.audio) {
-			throw new Error("PlayerController has no audio element bound");
-		}
-		return this.audio;
+	constructor(audio?: HTMLAudioElement, options: PlaybackAudioRuntimeOptions = {}) {
+		this.runtime = new PlaybackAudioRuntime(audio, options);
 	}
 
 	load(url: string, loadContext?: object): void {
-		const audio = this.requireAudio();
-		configureAudioElement(audio);
-		audio.src = url;
-		this.sourceBinding = Object.freeze({
-			loadContext: loadContext ?? null,
-			sourceUrl: audio.src,
-		});
-		audio.load();
+		this.runtime.load(url, loadContext);
 	}
 
-	async play(): Promise<void> {
-		const audio = this.requireAudio();
-		const resumeBeforePlay = resumeMineradioAudioContext(audio);
-		const playPromise = audio.play();
-		await resumeBeforePlay;
-		await playPromise;
-		await resumeMineradioAudioContext(audio);
+	prepareNext(url: string, loadContext?: object): PreparedPlaybackHandle {
+		return this.runtime.prepareNext(url, loadContext);
+	}
+
+	playPrepared(handle: PreparedPlaybackHandle, options?: PlayPreparedOptions): Promise<void> {
+		return this.runtime.playPrepared(handle, options);
+	}
+
+	prerollPrepared(handle: PreparedPlaybackHandle, options?: PrerollPreparedOptions): Promise<void> {
+		return this.runtime.prerollPrepared(handle, options);
+	}
+
+	adoptPrepared(handle: PreparedPlaybackHandle, loadContext: object): boolean {
+		return this.runtime.adoptPrepared(handle, loadContext);
+	}
+
+	abort(handle: PreparedPlaybackHandle): void {
+		this.runtime.abort(handle);
+	}
+
+	play(): Promise<void> {
+		return this.runtime.play();
 	}
 
 	pause(): void {
-		const audio = this.requireAudio();
-		audio.pause();
+		this.runtime.pause();
+	}
+
+	stop(): void {
+		this.runtime.stop();
 	}
 
 	seek(timeMs: number): void {
-		const audio = this.requireAudio();
-		audio.currentTime = timeMs / 1000;
+		this.runtime.seek(timeMs);
 	}
 
 	setVolume(volume: number): void {
-		const audio = this.requireAudio();
-		audio.volume = Math.max(0, Math.min(1, volume));
+		this.runtime.setVolume(volume);
+	}
+
+	setTransitionPreferences(preferences: PlaybackTransitionPreferences): void {
+		this.runtime.setTransitionPreferences(preferences);
+	}
+
+	setOutputRouting(config: OutputRoutingConfig): Promise<OutputRoutingSnapshot> {
+		return this.runtime.setOutputRouting(config);
+	}
+
+	listOutputDevices(): Promise<readonly AudioOutputDevice[]> {
+		return this.runtime.listOutputDevices();
+	}
+
+	getActiveElement(): HTMLAudioElement | null {
+		return this.runtime.getActiveElement();
+	}
+
+	getAudioFrameSource(): AudioFrameSource {
+		return this.runtime.getAudioFrameSource();
+	}
+
+	diagnostics(): PlaybackAudioDiagnostics {
+		return this.runtime.diagnostics();
 	}
 
 	on<E extends PlayerEventName>(event: E, handler: HandlerForEvent<E>): () => void {
-		const listener = handler as Listener;
-		let set = this.listeners.get(event);
-		if (!set) {
-			set = new Set();
-			this.listeners.set(event, set);
-		}
-		set.add(listener);
-		return () => {
-			const existing = this.listeners.get(event);
-			if (existing) {
-				existing.delete(listener);
-			}
-		};
+		return this.runtime.on(event, handler as never);
 	}
 
-	private emitMediaEvent(event: "play" | "pause" | "ended"): void {
-		const payload = this.mediaEventPayload();
-		const set = this.listeners.get(event);
-		if (!set) return;
-		for (const handler of set) {
-			handler(payload);
-		}
-	}
-
-	private mediaEventPayload(): MediaEventPayload {
-		const audio = this.requireAudio();
-		const sourceUrl = audio.currentSrc || audio.src;
-		const binding = this.sourceBinding;
-		return {
-			loadContext: binding?.sourceUrl === sourceUrl
-				? binding.loadContext
-				: null,
-			sourceUrl,
-		};
-	}
-
-	private emitTimeUpdate(): void {
-		const audio = this.requireAudio();
-		const payload: TimeUpdatePayload = {
-			...this.mediaEventPayload(),
-			positionMs: timeMsFromSeconds(audio.currentTime),
-			durationMs: durationMsOrNull(audio.duration),
-		};
-		const set = this.listeners.get("timeupdate");
-		if (!set) return;
-		for (const handler of set) {
-			(handler as (p: TimeUpdatePayload) => void)(payload);
-		}
-	}
-
-	private emitDurationChange(): void {
-		const audio = this.requireAudio();
-		const payload: TimeUpdatePayload = {
-			...this.mediaEventPayload(),
-			positionMs: timeMsFromSeconds(audio.currentTime),
-			durationMs: durationMsOrNull(audio.duration),
-		};
-		const set = this.listeners.get("durationchange");
-		if (!set) return;
-		for (const handler of set) {
-			(handler as (p: TimeUpdatePayload) => void)(payload);
-		}
-	}
-
-	private emitError(): void {
-		const audio = this.requireAudio();
-		const mediaError = audio.error;
-		const payload: ErrorPayload = {
-			...this.mediaEventPayload(),
-			code: mediaError ? mediaError.code : 0,
-			message: mediaError?.message ?? "playback error",
-		};
-		const set = this.listeners.get("error");
-		if (!set) return;
-		for (const handler of set) {
-			(handler as (p: ErrorPayload) => void)(payload);
-		}
+	dispose(): void {
+		this.runtime.dispose();
 	}
 }

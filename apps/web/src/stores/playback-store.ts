@@ -9,6 +9,12 @@ export interface ReplaceCurrentSourceRequest {
 	preservePositionMs: number;
 }
 
+export interface PreparedHandoffCommitRequest {
+	candidate: Track;
+	expectedPlaybackIntentId: number;
+	expectedOutgoingTrackRef: string;
+}
+
 export interface PlaybackState {
 	currentTrack: Track | null;
 	playbackIntentId: number;
@@ -32,6 +38,7 @@ export interface PlaybackState {
 	insertAt: (index: number, track: Track) => void;
 	insertNext: (track: Track) => void;
 	replaceCurrentSource: (request: ReplaceCurrentSourceRequest) => boolean;
+	commitPreparedHandoff: (request: PreparedHandoffCommitRequest) => boolean;
 	playAt: (index: number) => void;
 	removeAt: (index: number) => void;
 	removeTrack: (track: Track) => void;
@@ -148,6 +155,31 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 				currentTrack: request.candidate,
 				positionMs: Math.max(0, request.preservePositionMs),
 				durationMs: request.candidate.durationMs ?? state.durationMs,
+				playbackIntentId: nextPlaybackIntent(state),
+			};
+		});
+		return committed;
+	},
+	commitPreparedHandoff: (request) => {
+		let committed = false;
+		set((state) => {
+			if (state.playbackIntentId !== request.expectedPlaybackIntentId) return {};
+			if (trackRef(state.currentTrack) !== request.expectedOutgoingTrackRef) return {};
+			if (state.mode === "single" || state.mode === "shuffle") return {};
+			const currentIndex = findTrackIndex(state.queue, state.currentTrack);
+			if (currentIndex < 0 || state.queue.length < 2) return {};
+			const nextIndex = currentIndex + 1 < state.queue.length
+				? currentIndex + 1
+				: state.mode === "loop"
+					? 0
+					: -1;
+			if (nextIndex < 0) return {};
+			const adjacent = state.queue[nextIndex];
+			if (!adjacent || trackRef(adjacent) !== trackRef(request.candidate)) return {};
+
+			committed = true;
+			return {
+				...playbackPatchForTrack(adjacent),
 				playbackIntentId: nextPlaybackIntent(state),
 			};
 		});

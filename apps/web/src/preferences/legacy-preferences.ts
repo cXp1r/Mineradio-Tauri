@@ -1,6 +1,7 @@
 import {
 	CAPSULE_AUTO_HIDE_PREFERENCE,
 	DIY_MODE_PREFERENCE,
+	PLAYBACK_AUDIO_PREFERENCE,
 	PLAYBACK_QUALITY_PREFERENCE,
 	PLAYLIST_PANEL_PINNED_PREFERENCE,
 	SEARCH_HISTORY_PREFERENCE,
@@ -29,6 +30,47 @@ export function defineLegacyPreferenceMapping<T>(
 	mapping: LegacyPreferenceMapping<T>,
 ): LegacyPreferenceMapping<T> {
 	return Object.freeze(mapping);
+}
+
+const PLAYBACK_AUDIO_AGGREGATE_LEGACY_KEY = "mineradio-playback-audio-v2";
+
+/**
+ * Electron 2.0.2 把播放音频设置拆在四个浏览器旧存储 key 中。
+ * Preferences Repository 的迁移事务以单 key 为单位，因此先在 Adapter
+ * 内合成为一个兼容 envelope，再交给既有 journal 原子提交。
+ */
+export function stagePlaybackAudioLegacyAggregate(
+	storage: LegacyPreferenceStorage | null,
+): void {
+	if (!storage || storage.getItem(PLAYBACK_AUDIO_AGGREGATE_LEGACY_KEY)) return;
+	const fadeRaw = storage.getItem("mineradio-audio-fade-v1");
+	const primaryRaw = storage.getItem("mineradio-audio-output-device-v1");
+	const mirrorsRaw = storage.getItem("mineradio-audio-output-mirror-v1");
+	const bridgeRaw = storage.getItem("mineradio-audio-input-bridge-v1");
+	if ([fadeRaw, primaryRaw, mirrorsRaw, bridgeRaw].every((value) => value === null)) {
+		return;
+	}
+	const parseJson = (raw: string | null): unknown => {
+		if (!raw) return undefined;
+		try {
+			return JSON.parse(raw);
+		} catch {
+			return undefined;
+		}
+	};
+	const fade = parseJson(fadeRaw) as Record<string, unknown> | undefined;
+	const bridge = parseJson(bridgeRaw) as Record<string, unknown> | undefined;
+	const candidate = PLAYBACK_AUDIO_PREFERENCE.parse({
+		fadeInMs: fade?.fadeInMs,
+		fadeOutMs: fade?.fadeOutMs,
+		gaplessEnabled: true,
+		crossfadeEnabled: true,
+		primaryOutputId: primaryRaw ?? "",
+		mirrorOutputIds: parseJson(mirrorsRaw),
+		inputBridge: bridge,
+	});
+	if (!candidate) return;
+	storage.setItem(PLAYBACK_AUDIO_AGGREGATE_LEGACY_KEY, JSON.stringify(candidate));
 }
 
 function booleanMapping(
@@ -67,6 +109,18 @@ function jsonMapping<T>(
 
 export const DEFAULT_LEGACY_PREFERENCE_MAPPINGS: readonly LegacyPreferenceMapping<unknown>[] =
 	Object.freeze([
+		{
+			legacyKey: PLAYBACK_AUDIO_AGGREGATE_LEGACY_KEY,
+			preferenceKey: PLAYBACK_AUDIO_PREFERENCE,
+			decode(raw: string) {
+				try {
+					return PLAYBACK_AUDIO_PREFERENCE.parse(JSON.parse(raw));
+				} catch {
+					return undefined;
+				}
+			},
+			encode: (value) => JSON.stringify(value),
+		},
 		{
 			legacyKey: "mineradio-playback-quality-v1",
 			preferenceKey: PLAYBACK_QUALITY_PREFERENCE,

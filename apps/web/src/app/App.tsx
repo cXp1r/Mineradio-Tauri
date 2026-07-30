@@ -37,6 +37,7 @@ import {
   type CurrentBeatMapState,
 } from "../features/playback/usePlaybackSessionRuntime";
 import { useSourceSwitchController } from "../features/playback/useSourceSwitchController";
+import { usePlaybackAudioSettings } from "../features/playback/usePlaybackAudioSettings";
 import {
   LOCAL_AUDIO_ACCEPT,
   usePlaybackUiController,
@@ -116,6 +117,7 @@ import {
   type ProviderLoginStatus,
   type Track,
 } from "@mineradio/shared";
+import type { AudioFrameSource } from "@mineradio/visual-engine";
 import {
   readPlaybackQualityPreference,
   savePlaybackQualityPreference,
@@ -141,10 +143,6 @@ const DESKTOP_RUNTIME_SEARCH_TERMS = Object.freeze([
   ...WALLPAPER_ENGINE_SETTINGS_SEARCH_TERMS,
   ...DESKTOP_RUNTIME_SETTINGS_SEARCH_TERMS,
 ]);
-
-function audioElementSupported(): boolean {
-  return typeof window !== "undefined" && "HTMLAudioElement" in globalThis;
-}
 
 function clampNumber(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -316,6 +314,9 @@ export function App({
   const durationMs = usePlaybackStore((s) => s.durationMs);
   const volume = usePlaybackStore((s) => s.volume);
   const muted = usePlaybackStore((s) => s.muted);
+  const commitPreparedHandoff = usePlaybackStore(
+    (s) => s.commitPreparedHandoff,
+  );
   const providerMatrix = useProviderStore((s) => s.matrix);
   const setMatrix = useProviderStore((s) => s.setMatrix);
   const sourceSwitchProviders = useMemo<ProviderId[]>(
@@ -578,12 +579,17 @@ export function App({
     enterPlaybackSurface,
   } = homeController;
 
-  // 首次渲染时同步创建 Audio，确保视觉引擎先绑定同一个媒体元素，
-  // 随后再由播放 Runtime 接管控制器生命周期。
-  const audioRef = useRef<HTMLAudioElement | null>(
-    typeof Audio !== "undefined" && audioElementSupported() ? new Audio() : null,
-  );
   const controllerRef = useRef<PlaybackControllerRef["current"]>(null);
+  const audioFrameSourceRef = useRef<AudioFrameSource | null>(null);
+  const playbackRateRef = useRef(1);
+  const playbackAudioFrameSource = useCallback<AudioFrameSource>(
+    () => audioFrameSourceRef.current?.() ?? null,
+    [],
+  );
+  const playbackAudioSettings = usePlaybackAudioSettings({
+    controllerRef,
+    preferences,
+  });
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -680,10 +686,12 @@ export function App({
     togglePlayback,
     handleRuntimeTimeUpdate,
     handleRuntimeDurationChange,
+    handleRuntimeOwnerChange,
     handleRuntimePlay,
     handleRuntimePause,
     handleRuntimeEnded,
     handleRuntimeError,
+    handleRuntimeStalled,
   } = usePlaybackSessionRuntime({
     appServices: applicationPorts,
     controllerRef,
@@ -691,6 +699,11 @@ export function App({
     currentTrack,
     playbackIntentId,
     positionMs,
+    queue,
+    playbackMode,
+    gaplessEnabled: playbackAudioSettings.preference.gaplessEnabled,
+    crossfadeEnabled: playbackAudioSettings.preference.crossfadeEnabled,
+    commitPreparedHandoff,
     getPlaybackSnapshot: getPlaybackSessionSnapshot,
     setPlaying,
     setPositionMs,
@@ -1331,7 +1344,7 @@ export function App({
         progressSpan: snapshot.progressSpan,
         positionMs: playback.positionMs,
         durationMs: duration,
-        playbackRate: audioRef.current?.playbackRate,
+        playbackRate: playbackRateRef.current,
         highBloom: motion.highBloom,
         beatGlow: motion.beatGlow,
         beatPulse: motion.beatPulse,
@@ -1517,12 +1530,12 @@ export function App({
         fullDesktopMode: fullDesktopManagement.state?.effectiveMode ?? "disabled",
       },
       engineProps: {
-        audioElementRef: audioRef,
-        controllerRef,
+        audioFrameSource: playbackAudioFrameSource,
         lyricsPayload,
         positionMs,
         durationMs,
         isPlaying,
+        playbackVolume: muted ? 0 : volume,
         queue,
         playlists: shelfPlaylists,
         podcastCollections: shelfPodcastCollections,
@@ -1806,6 +1819,7 @@ export function App({
           currentLyricPreference === "custom" ? "custom" : "original",
         hasCustomLyric: Boolean(currentCustomLyricText),
       },
+      audioSettings: playbackAudioSettings,
       recoveryState: sidecarRecoveryState,
     },
     playbackCustomization: {
@@ -1856,16 +1870,20 @@ export function App({
     },
     playbackRuntime: {
       runtimeProps: {
-        audioElementRef: audioRef,
         controllerRef,
+        audioFrameSourceRef,
+        playbackRateRef,
         volume,
         muted,
         onTimeUpdate: handleRuntimeTimeUpdate,
         onDurationChange: handleRuntimeDurationChange,
+        onOwnerChange: handleRuntimeOwnerChange,
         onPlay: handleRuntimePlay,
         onPause: handleRuntimePause,
         onEnded: handleRuntimeEnded,
         onError: handleRuntimeError,
+        onStalled: handleRuntimeStalled,
+        onControllerReady: playbackAudioSettings.handleControllerReady,
       },
     },
   };

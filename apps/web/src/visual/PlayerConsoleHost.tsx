@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode } from "react";
 import {
 	attachControlGlassNode,
 	createControlConsoleMotion,
@@ -78,6 +78,7 @@ export interface PlayerConsoleHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
+	renderVolumePanelExtras?: (active: boolean) => ReactNode;
 	onQualityChange?: (
 		quality: PlaybackQualityRequest,
 	) => Promise<void> | void;
@@ -399,6 +400,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const volume = Math.max(0, Math.min(1, props.volume ?? 0.84));
 	const muted = !!props.muted;
 	const volumePct = Math.round((muted ? 0 : volume) * 100);
+	const volumePanelExtras = props.renderVolumePanelExtras?.(volumeOpen);
 	const qualityOptions = qualityViewOptions(props.qualityOptions);
 	const quality = playbackQualityOption(props.playbackQuality, qualityOptions);
 	const currentLiked = props.currentLiked === true;
@@ -565,9 +567,12 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 						<button id="volume-btn" className={volumeOpen ? "ctrl-btn active" : "ctrl-btn"} ref={registerNormal("volume-btn")} type="button" title="音量" aria-label="音量" onClick={() => setVolumeOpen((open) => !open)} onDoubleClick={() => onToggleMuteRef.current?.()}>
 							<svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2}><path d="M11 5 6 9H3v6h3l5 4V5Z" />{volumePct > 0 ? <path d="M15.5 8.5a5 5 0 0 1 0 7" /> : <path d="M16 9l5 5M21 9l-5 5" />}</svg>
 						</button>
-						<div className={volumeOpen ? "volume-popover show" : "volume-popover"}>
+						<div className={`${volumeOpen ? "volume-popover show" : "volume-popover"}${volumePanelExtras ? " has-extras" : ""}`}>
 							<input id="volume-slider" type="range" min="0" max="100" value={volumePct} onChange={(event) => onVolumeChangeRef.current?.(Number(event.currentTarget.value) / 100)} aria-label="音量" />
 							<div id="volume-value">{volumePct}%</div>
+							{volumePanelExtras ? (
+								<div className="volume-panel-extras">{volumePanelExtras}</div>
+							) : null}
 						</div>
 					</div>
 					<button className="ctrl-btn lyrics-toggle-btn" ref={registerNormal("lyrics-toggle-btn")} type="button" title="歌词" aria-label="歌词" onClick={lyricsStub}>

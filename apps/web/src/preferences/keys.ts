@@ -16,6 +16,85 @@ function parseObject(value: unknown): JsonObject | undefined {
 		: undefined;
 }
 
+function boundedFadeMs(value: unknown, fallback: number): number {
+	const numeric = Number(value);
+	if (!Number.isFinite(numeric)) return fallback;
+	return Math.max(0, Math.min(3_000, Math.round(numeric)));
+}
+
+function normalizedDeviceIds(value: unknown): string[] {
+	if (!Array.isArray(value)) return [];
+	const ids: string[] = [];
+	const seen = new Set<string>();
+	for (const candidate of value) {
+		if (typeof candidate !== "string") continue;
+		const id = candidate.trim();
+		if (!id || seen.has(id)) continue;
+		seen.add(id);
+		ids.push(id);
+	}
+	return ids;
+}
+
+export interface PlaybackAudioPreference {
+	fadeInMs: number;
+	fadeOutMs: number;
+	gaplessEnabled: boolean;
+	crossfadeEnabled: boolean;
+	primaryOutputId: string;
+	mirrorOutputIds: string[];
+	inputBridge: {
+		enabled: boolean;
+		deviceId: string;
+	};
+}
+
+export const DEFAULT_PLAYBACK_AUDIO_PREFERENCE: Readonly<PlaybackAudioPreference> =
+	Object.freeze({
+		fadeInMs: 460,
+		fadeOutMs: 420,
+		gaplessEnabled: true,
+		crossfadeEnabled: true,
+		primaryOutputId: "",
+		mirrorOutputIds: [],
+		inputBridge: Object.freeze({ enabled: false, deviceId: "" }),
+	});
+
+function parsePlaybackAudioPreference(value: unknown): PlaybackAudioPreference | undefined {
+	const record = parseObject(value);
+	if (!record) return undefined;
+	const primaryOutputId = typeof record.primaryOutputId === "string"
+		? record.primaryOutputId.trim()
+		: "";
+	const bridge = parseObject(record.inputBridge);
+	const bridgeDeviceId = typeof bridge?.deviceId === "string"
+		? bridge.deviceId.trim()
+		: "";
+	const bridgeEnabled = bridge?.enabled === true && !!bridgeDeviceId;
+	const effectivePrimaryOutputId = bridgeEnabled
+		? bridgeDeviceId
+		: primaryOutputId;
+	const mirrors = normalizedDeviceIds(record.mirrorOutputIds)
+		.filter((id) => id !== effectivePrimaryOutputId)
+		.slice(0, 4);
+	return {
+		fadeInMs: boundedFadeMs(record.fadeInMs, 460),
+		fadeOutMs: boundedFadeMs(record.fadeOutMs, 420),
+		gaplessEnabled: typeof record.gaplessEnabled === "boolean"
+			? record.gaplessEnabled
+			: true,
+		crossfadeEnabled: typeof record.crossfadeEnabled === "boolean"
+			? record.crossfadeEnabled
+			: true,
+		primaryOutputId: effectivePrimaryOutputId,
+		mirrorOutputIds: mirrors,
+		inputBridge: {
+			enabled: bridgeEnabled,
+			deviceId: bridgeDeviceId,
+		},
+	};
+}
+
 function collectSearchHistoryCandidates(value: unknown): unknown[] | undefined {
 	if (Array.isArray(value)) return value;
 	if (value === null || typeof value !== "object") return undefined;
@@ -60,6 +139,13 @@ export const PLAYBACK_QUALITY_PREFERENCE = createJsonPreferenceKey({
 		if (!quality) return undefined;
 		return quality.toLowerCase() === "hi-res" ? "hires" : quality;
 	},
+});
+
+export const PLAYBACK_AUDIO_PREFERENCE = createJsonPreferenceKey({
+	name: "playback.audio.v2",
+	schemaVersion: 2,
+	defaultValue: DEFAULT_PLAYBACK_AUDIO_PREFERENCE,
+	parse: parsePlaybackAudioPreference,
 });
 
 export const CAPSULE_AUTO_HIDE_PREFERENCE = createJsonPreferenceKey({
@@ -149,6 +235,7 @@ export const SEARCH_HISTORY_PREFERENCE = createJsonPreferenceKey({
 
 export const M8_PREFERENCE_KEYS: readonly PreferenceKey<unknown>[] = Object.freeze([
 	PLAYBACK_QUALITY_PREFERENCE,
+	PLAYBACK_AUDIO_PREFERENCE,
 	CAPSULE_AUTO_HIDE_PREFERENCE,
 	PLAYLIST_PANEL_PINNED_PREFERENCE,
 	DIY_MODE_PREFERENCE,

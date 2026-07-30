@@ -17,7 +17,9 @@ import {
 import type {
 	ErrorPayload,
 	MediaEventPayload,
+	OwnerChangePayload,
 	PlayerController,
+	PlaybackReadinessPayload,
 	TimeUpdatePayload,
 } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
@@ -29,6 +31,10 @@ import {
 	type PlaybackReloadReason,
 } from "./playback-session-coordinator";
 import { resolvePlayableAudio } from "./resolve-playable-audio";
+import {
+	GaplessPlaybackController,
+	type GaplessPreparedHandle,
+} from "./gapless-playback-controller";
 
 export interface CurrentBeatMapState {
 	key: string;
@@ -56,6 +62,15 @@ export interface PlaybackSessionRuntimeOptions {
 	currentTrack: Track | null;
 	playbackIntentId: number;
 	positionMs: number;
+	queue?: readonly Track[];
+	playbackMode?: string;
+	gaplessEnabled?: boolean;
+	crossfadeEnabled?: boolean;
+	commitPreparedHandoff?(request: {
+		candidate: Track;
+		expectedPlaybackIntentId: number;
+		expectedOutgoingTrackRef: string;
+	}): boolean;
 	getPlaybackSnapshot(): PlaybackSessionSnapshot;
 	setPlaying(playing: boolean): void;
 	setPositionMs(positionMs: number): void;
@@ -95,10 +110,12 @@ export interface PlaybackSessionRuntimeResult {
 	togglePlayback(): void;
 	handleRuntimeTimeUpdate(payload: TimeUpdatePayload): void;
 	handleRuntimeDurationChange(payload: TimeUpdatePayload): void;
+	handleRuntimeOwnerChange(payload: OwnerChangePayload): void;
 	handleRuntimePlay(payload: MediaEventPayload): void;
 	handleRuntimePause(payload: MediaEventPayload): void;
 	handleRuntimeEnded(payload: MediaEventPayload): void;
 	handleRuntimeError(payload: ErrorPayload): void;
+	handleRuntimeStalled(payload: PlaybackReadinessPayload): void;
 }
 
 function playbackKeyForTrack(track: Track | null | undefined): string {
@@ -141,6 +158,38 @@ function isPodcastTrack(track: Track | null | undefined): boolean {
 	return record?.type === "podcast" || record?.source === "podcast";
 }
 
+interface GaplessCapablePlayerController {
+	prepareNext(url: string, loadContext?: object): GaplessPreparedHandle;
+	prerollPrepared?(
+		handle: GaplessPreparedHandle,
+		options?: { isCurrent?: () => boolean },
+	): Promise<void>;
+	playPrepared(
+		handle: GaplessPreparedHandle,
+		options?: {
+			crossfade?: boolean;
+			durationMs?: number;
+			isCurrent?: () => boolean;
+		},
+	): Promise<void>;
+	adoptPrepared(handle: GaplessPreparedHandle, loadContext: object): boolean;
+}
+
+function gaplessCapableController(
+	controller: PlayerController | null,
+): GaplessCapablePlayerController | null {
+	if (!controller) return null;
+	const candidate = controller as unknown as Partial<GaplessCapablePlayerController>;
+	if (
+		typeof candidate.prepareNext !== "function" ||
+		typeof candidate.playPrepared !== "function" ||
+		typeof candidate.adoptPrepared !== "function"
+	) {
+		return null;
+	}
+	return candidate as GaplessCapablePlayerController;
+}
+
 export function usePlaybackSessionRuntime({
 	appServices,
 	coordinator: providedCoordinator,
@@ -149,6 +198,11 @@ export function usePlaybackSessionRuntime({
 	currentTrack,
 	playbackIntentId,
 	positionMs,
+	queue = [],
+	playbackMode = "queue",
+	gaplessEnabled = false,
+	crossfadeEnabled = true,
+	commitPreparedHandoff,
 	getPlaybackSnapshot,
 	setPlaying,
 	setPositionMs,
@@ -180,6 +234,7 @@ export function usePlaybackSessionRuntime({
 	const [trialBanner, setTrialBanner] = useState<TrialBannerState | null>(null);
 	const [currentBeatMapState, setCurrentBeatMapState] =
 		useState<CurrentBeatMapState | null>(null);
+	const [gaplessRuntimeEpoch, setGaplessRuntimeEpoch] = useState(0);
 	const coordinatorRef = useRef<PlaybackSessionCoordinator | null>(null);
 	if (!coordinatorRef.current) {
 		coordinatorRef.current = providedCoordinator ?? new PlaybackSessionCoordinator();
@@ -191,6 +246,151 @@ export function usePlaybackSessionRuntime({
 	const reloadCurrentTrackAndPlayRef = useRef<
 		(options: { preservePosition: boolean; reason: PlaybackReloadReason }) => Promise<boolean>
 	>(async () => false);
+	const gaplessInputsRef = useRef({
+		appServices,
+		controllerRef,
+		localAudioUrlsRef,
+		currentTrack,
+		playbackIntentId,
+		queue,
+		playbackMode,
+		gaplessEnabled,
+		crossfadeEnabled,
+		commitPreparedHandoff,
+		playbackQuality,
+	});
+	gaplessInputsRef.current = {
+		appServices,
+		controllerRef,
+		localAudioUrlsRef,
+		currentTrack,
+		playbackIntentId,
+		queue,
+		playbackMode,
+		gaplessEnabled,
+		crossfadeEnabled,
+		commitPreparedHandoff,
+		playbackQuality,
+	};
+	const gaplessControllerRef = useRef<
+		GaplessPlaybackController<Track, GaplessPreparedHandle> | null
+	>(null);
+	const createGaplessController = () =>
+		new GaplessPlaybackController<Track, GaplessPreparedHandle>({
+			getContext: () => {
+				const inputs = gaplessInputsRef.current;
+				const activeTrack = inputs.currentTrack;
+				const activeKey = playbackKeyForTrack(activeTrack);
+				const currentIndex = activeTrack
+					? inputs.queue.findIndex(
+						(track) =>
+							track === activeTrack || playbackKeyForTrack(track) === activeKey,
+					)
+					: -1;
+				return {
+					enabled:
+						inputs.gaplessEnabled &&
+						!!activeTrack &&
+						!!inputs.commitPreparedHandoff &&
+						!!gaplessCapableController(inputs.controllerRef.current),
+					crossfade: inputs.crossfadeEnabled,
+					queue: inputs.queue,
+					currentIndex,
+					mode: inputs.playbackMode,
+					sessionId: coordinator.snapshot().playbackSessionId,
+					intentId: inputs.playbackIntentId,
+				};
+			},
+			resolve: async (candidate) => {
+				const inputs = gaplessInputsRef.current;
+				if (isPodcastTrack(candidate)) {
+					throw new Error("podcast 不参与 gapless 预加载");
+				}
+				const key = playbackKeyForTrack(candidate);
+				const localUrl = inputs.localAudioUrlsRef.current.get(key);
+				if (localUrl) return { audioUrl: localUrl, rawUrl: localUrl };
+				const services = inputs.appServices;
+				if (!services) throw new Error("gapless playback service unavailable");
+				const { result, audioUrl } = await resolvePlayableAudio({
+					playback: services.music.playback,
+					mediaUrl: services.mediaUrl,
+					track: candidate,
+					quality: inputs.playbackQuality,
+				});
+				if (result.trial) {
+					throw new Error("trial 音频降级到普通 next");
+				}
+				return { audioUrl, rawUrl: result.url };
+			},
+			prepareNext: (url, context) => {
+				const controller = gaplessCapableController(
+					gaplessInputsRef.current.controllerRef.current,
+				);
+				if (!controller) throw new Error("gapless player controller unavailable");
+				return controller.prepareNext(url, context);
+			},
+			prerollPrepared: (handle, options) => {
+				const controller = gaplessCapableController(
+					gaplessInputsRef.current.controllerRef.current,
+				);
+				if (!controller?.prerollPrepared) return Promise.resolve();
+				return controller.prerollPrepared(handle, {
+					isCurrent: options.isCurrent,
+				});
+			},
+			playPrepared: (handle, options) => {
+				const controller = gaplessCapableController(
+					gaplessInputsRef.current.controllerRef.current,
+				);
+				if (!controller) throw new Error("gapless player controller unavailable");
+				return controller.playPrepared(handle, {
+					crossfade: options.crossfadeMs > 0,
+					durationMs: options.crossfadeMs,
+					isCurrent: options.isCurrent,
+				}).finally(() => {
+					globalThis.setTimeout(() => {
+						setGaplessRuntimeEpoch((current) => current + 1);
+					}, 0);
+				});
+			},
+			commitPreparedHandoff: (request) => {
+				const commit = gaplessInputsRef.current.commitPreparedHandoff;
+				if (!commit) return false;
+				return commit({
+					candidate: request.candidate,
+					expectedPlaybackIntentId: request.expectedIntentId,
+					expectedOutgoingTrackRef: request.expectedOutgoingTrackKey,
+				});
+			},
+			onCommitted: () => {
+				setGaplessRuntimeEpoch((current) => current + 1);
+			},
+		});
+	if (
+		!gaplessControllerRef.current ||
+		gaplessControllerRef.current.diagnostics().disposed
+	) {
+		gaplessControllerRef.current = createGaplessController();
+	}
+	useEffect(() => {
+		const runtime = gaplessControllerRef.current?.diagnostics().disposed
+			? createGaplessController()
+			: gaplessControllerRef.current;
+		if (runtime) gaplessControllerRef.current = runtime;
+		return () => runtime?.dispose();
+	}, []);
+	useEffect(() => {
+		// queue/mode/gapless authority 在 React 状态提交后立即收回，不等待下一次媒体事件。
+		gaplessControllerRef.current?.reconcileContext();
+	}, [
+		commitPreparedHandoff,
+		controllerRef,
+		currentTrack,
+		gaplessEnabled,
+		playbackIntentId,
+		playbackMode,
+		queue,
+	]);
 
 	const loadBeatMap = useCallback((
 		services: AppServices,
@@ -274,14 +474,7 @@ export function usePlaybackSessionRuntime({
 			}
 			await controller.play();
 			if (!coordinator.isPlaybackCurrent(reload)) return false;
-			if (coordinator.markPlaying(reload)) setPlaying(true);
-			runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
-				track,
-				playbackIntentId,
-			);
-			setHomeForcedOpen(false);
-			setHomeSuppressed(true);
-			return true;
+			return coordinator.snapshot().phase === "playing";
 		} catch (error) {
 			if (!coordinator.isPlaybackCurrent(reload)) return false;
 			const message = error instanceof Error ? error.message : "playback error";
@@ -322,7 +515,9 @@ export function usePlaybackSessionRuntime({
 		const loadContext = payload.loadContext;
 		if (!loadContext) return null;
 		const handle = loadContext as PlaybackLoadHandle;
-		return coordinator.isPlaybackCurrent(handle) ? handle : null;
+		return coordinator.isCurrentLoadedSource(handle, payload.sourceUrl)
+			? handle
+			: null;
 	}, [coordinator]);
 	const runtimeLifecycleCallbacksRef = useRef({
 		onRuntimeTimeUpdate,
@@ -342,6 +537,10 @@ export function usePlaybackSessionRuntime({
 	const handleRuntimeTimeUpdate = useCallback((payload: TimeUpdatePayload) => {
 		if (!currentEventLoad(payload)) return;
 		runtimeLifecycleCallbacksRef.current.onRuntimeTimeUpdate?.(payload);
+		const durationMs = payload.durationMs;
+		if (durationMs == null || !Number.isFinite(durationMs)) return;
+		const remainingSeconds = Math.max(0, durationMs - payload.positionMs) / 1_000;
+		void gaplessControllerRef.current?.onTimeUpdate(remainingSeconds);
 	}, [currentEventLoad]);
 
 	const handleRuntimeDurationChange = useCallback((payload: TimeUpdatePayload) => {
@@ -351,8 +550,26 @@ export function usePlaybackSessionRuntime({
 
 	const handleRuntimeEnded = useCallback((payload: MediaEventPayload) => {
 		const boundLoad = currentEventLoad(payload);
-		if (!boundLoad || !coordinator.markEnded(boundLoad)) return;
-		runtimeLifecycleCallbacksRef.current.onRuntimeEnded?.();
+		if (!boundLoad) return;
+		const finishOrdinaryEnded = () => {
+			if (!coordinator.isPlaybackCurrent(boundLoad)) return;
+			if (!coordinator.markEnded(boundLoad)) return;
+			runtimeLifecycleCallbacksRef.current.onRuntimeEnded?.();
+		};
+		if (!gaplessInputsRef.current.gaplessEnabled) {
+			finishOrdinaryEnded();
+			return;
+		}
+		const gaplessRuntime = gaplessControllerRef.current;
+		if (!gaplessRuntime) {
+			finishOrdinaryEnded();
+			return;
+		}
+		void gaplessRuntime.onEnded().then((handled) => {
+			if (!handled) finishOrdinaryEnded();
+		}).catch(() => {
+			finishOrdinaryEnded();
+		});
 	}, [coordinator, currentEventLoad]);
 
 	const handleRuntimeErrorImpl = useCallback((payload: ErrorPayload) => {
@@ -401,6 +618,15 @@ export function usePlaybackSessionRuntime({
 	const handleRuntimeError = useCallback((payload: ErrorPayload) => {
 		handleRuntimeErrorRef.current(payload);
 	}, []);
+	const handleRuntimeStalled = useCallback((payload: PlaybackReadinessPayload) => {
+		// 只有 Runtime 的 3.6s late probe 会进入这里；沿用当前 load 的
+		// 单次 fresh URL 恢复预算，避免建立第二套无限 stalled retry。
+		handleRuntimeErrorRef.current({
+			...payload,
+			code: 0,
+			message: "音频加载停滞",
+		});
+	}, []);
 
 	const togglePlayback = useCallback(() => {
 		const snapshot = getPlaybackSnapshot();
@@ -431,9 +657,46 @@ export function usePlaybackSessionRuntime({
 	const handleRuntimePlay = useCallback((payload: MediaEventPayload) => {
 		const boundLoad = currentEventLoad(payload);
 		if (!boundLoad) return;
+		if (coordinator.snapshot().phase !== "paused") return;
 		if (!coordinator.markPlaying(boundLoad)) return;
 		setPlaying(true);
 	}, [coordinator, currentEventLoad, setPlaying]);
+
+	const handleRuntimeOwnerChangeImpl = useCallback((payload: OwnerChangePayload) => {
+		const current = payload.current;
+		if (
+			payload.loadContext !== current.loadContext ||
+			payload.sourceUrl !== current.sourceUrl ||
+			payload.generation !== current.generation ||
+			payload.deckId !== current.deckId
+		) return;
+		const loadContext = current.loadContext;
+		if (!loadContext) return;
+		const handle = loadContext as PlaybackLoadHandle;
+		if (!coordinator.markOwnerPlaying(handle, current.sourceUrl)) return;
+		setPlaying(true);
+		const track = getPlaybackSnapshot().currentTrack;
+		if (track) {
+			runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
+				track,
+				playbackIntentId,
+			);
+		}
+		setHomeForcedOpen(false);
+		setHomeSuppressed(true);
+	}, [
+		coordinator,
+		getPlaybackSnapshot,
+		playbackIntentId,
+		setHomeForcedOpen,
+		setHomeSuppressed,
+		setPlaying,
+	]);
+	const handleRuntimeOwnerChangeRef = useRef(handleRuntimeOwnerChangeImpl);
+	handleRuntimeOwnerChangeRef.current = handleRuntimeOwnerChangeImpl;
+	const handleRuntimeOwnerChange = useCallback((payload: OwnerChangePayload) => {
+		handleRuntimeOwnerChangeRef.current(payload);
+	}, []);
 
 	const handleRuntimePause = useCallback((payload: MediaEventPayload) => {
 		const boundLoad = currentEventLoad(payload);
@@ -517,24 +780,59 @@ export function usePlaybackSessionRuntime({
 		const controller = controllerRef.current;
 		const services = appServices;
 		if (!controller) return;
+		const gaplessRuntime = gaplessControllerRef.current;
+		const adopted = gaplessRuntime?.takeAdopted() ?? null;
+		const abortAdopted = () => {
+			if (!adopted) return;
+			try {
+				adopted.handle.abort();
+			} catch {
+				// 已提交 deck 的清理由 PlayerController 尽力完成。
+			}
+		};
 		if (!currentTrack) {
+			abortAdopted();
+			gaplessRuntime?.invalidate("playback-stopped");
 			coordinator.clear();
 			setCurrentBeatMapState(null);
 			setTrialBanner(null);
-			controller.pause();
+			controller.stop();
 			resetLyrics();
 			return;
 		}
 
 		const key = playbackKeyForTrack(currentTrack);
 		const localAudioUrl = localAudioUrlsRef.current.get(key);
-		if (!localAudioUrl && !services) return;
+		if (!adopted) {
+			const diagnostics = gaplessRuntime?.diagnostics();
+			if (diagnostics?.phase === "handoff") {
+				// store commit 会先触发 React；等待 controller 发布 adopted handle。
+				return;
+			}
+		}
+		const adoptedMatches = !!(
+			adopted &&
+			playbackKeyForTrack(adopted.candidate) === key &&
+			playbackIntentId === adopted.expectedIntentId + 1 &&
+			!playbackQualityReloadHandle
+		);
+		if (!adoptedMatches) {
+			abortAdopted();
+			gaplessRuntime?.invalidate("playback-intent-changed");
+		}
+		if (!adoptedMatches && !localAudioUrl && !services) return;
 		const session = coordinator.beginTrack(
 			key,
 			playbackIntentId,
 			playbackQualityReloadHandle ?? undefined,
 		);
-		if (!session) return;
+		if (!session) {
+			if (adoptedMatches) {
+				abortAdopted();
+				gaplessRuntime?.invalidate("adopt-session-rejected");
+			}
+			return;
+		}
 		setCurrentBeatMapState(null);
 		setTrialBanner(null);
 		const fallbackLyric = buildTrackLyricFallback(currentTrack);
@@ -545,6 +843,85 @@ export function usePlaybackSessionRuntime({
 			durationMs: getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
 		});
 		setLyricsPayload(resolvedFallbackLyric.payload);
+
+		if (adopted && adoptedMatches) {
+			const capableController = gaplessCapableController(controller);
+			const adoptedIsLocal = !!(
+				localAudioUrl &&
+				(adopted.source.audioUrl === localAudioUrl ||
+					adopted.source.rawUrl === localAudioUrl)
+			);
+			const sourceAccepted = coordinator.markLoaded(session, {
+				trackKey: key,
+				quality: playbackQuality,
+				resolvedAtMs: now(),
+				audioUrl: adopted.source.audioUrl,
+				rawUrl: adopted.source.rawUrl,
+				local: adoptedIsLocal,
+				trial: false,
+			});
+			const mediaAdopted = !!(
+				sourceAccepted &&
+				capableController?.adoptPrepared(adopted.handle, session)
+			);
+			gaplessRuntime?.invalidate(
+				mediaAdopted ? "prepared-adopted" : "prepared-adopt-failed",
+			);
+			if (!mediaAdopted) {
+				abortAdopted();
+				const message = "gapless prepared deck adoption failed";
+				if (sourceAccepted) coordinator.markMediaFailed(session, message);
+				setPlaying(false);
+				setSearchError(message);
+				showToast(message);
+				runtimeLifecycleCallbacksRef.current.onPlaybackFailed?.(
+					currentTrack,
+					playbackIntentId,
+					message,
+				);
+				return;
+			}
+
+			setTrialBanner(null);
+			if (adoptedIsLocal) {
+				setLyricsLoading(false);
+				return;
+			}
+			if (!services) return;
+			void (async () => {
+				try {
+					setLyricsLoading(true);
+					const lyric = ensureLyricFallbackPayload(
+						await services.music.lyrics.lyric(currentTrack),
+						currentTrack,
+					);
+					if (!coordinator.isLyricCurrent(session)) return;
+					originalLyricsPayloadRef.current = lyric;
+					const resolvedLyric = resolveLyricsForTrack({
+						track: currentTrack,
+						original: lyric,
+						durationMs:
+							getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
+					});
+					setLyricsPayload(resolvedLyric.payload);
+				} catch (error) {
+					if (!coordinator.isLyricCurrent(session)) return;
+					const message =
+						error instanceof Error ? error.message : "lyrics failed";
+					const fallback = buildTrackLyricFallback(currentTrack);
+					originalLyricsPayloadRef.current = fallback;
+					const resolvedLyric = resolveLyricsForTrack({
+						track: currentTrack,
+						original: fallback,
+						durationMs:
+							getPlaybackSnapshot().durationMs ?? currentTrack.durationMs,
+					});
+					setLyricsPayload(resolvedLyric.payload);
+					setLyricsError(message);
+				}
+			})();
+			return;
+		}
 
 		if (localAudioUrl) {
 			void (async () => {
@@ -564,14 +941,7 @@ export function usePlaybackSessionRuntime({
 					if (positionRef.current > 0) controller.seek(positionRef.current);
 					await controller.play();
 					if (!coordinator.isPlaybackCurrent(session)) return;
-					if (coordinator.markPlaying(session)) setPlaying(true);
-					runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
-						currentTrack,
-						playbackIntentId,
-					);
 					setLyricsLoading(false);
-					setHomeForcedOpen(false);
-					setHomeSuppressed(true);
 				} catch (error) {
 					if (!coordinator.isPlaybackCurrent(session)) return;
 					const message = error instanceof Error ? error.message : "playback error";
@@ -623,13 +993,6 @@ export function usePlaybackSessionRuntime({
 				if (positionRef.current > 0) controller.seek(positionRef.current);
 			await controller.play();
 			if (!coordinator.isPlaybackCurrent(session)) return;
-			if (coordinator.markPlaying(session)) setPlaying(true);
-			runtimeLifecycleCallbacksRef.current.onPlaybackReady?.(
-				currentTrack,
-				playbackIntentId,
-			);
-				setHomeForcedOpen(false);
-				setHomeSuppressed(true);
 			} catch (error) {
 				if (!coordinator.isPlaybackCurrent(session)) return;
 				const message = error instanceof Error ? error.message : "playback error";
@@ -682,6 +1045,7 @@ export function usePlaybackSessionRuntime({
 		coordinator,
 		currentTrack,
 		getPlaybackSnapshot,
+		gaplessRuntimeEpoch,
 		loadBeatMap,
 		localAudioUrlsRef,
 		now,
@@ -711,9 +1075,11 @@ export function usePlaybackSessionRuntime({
 		togglePlayback,
 		handleRuntimeTimeUpdate,
 		handleRuntimeDurationChange,
+		handleRuntimeOwnerChange,
 		handleRuntimePlay,
 		handleRuntimePause,
 		handleRuntimeEnded,
 		handleRuntimeError,
+		handleRuntimeStalled,
 	};
 }

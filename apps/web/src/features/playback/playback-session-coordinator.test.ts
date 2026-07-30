@@ -78,6 +78,25 @@ test("a cloned current handle cannot publish playing", () => {
 	expect(coordinator.snapshot()).toBe(loading);
 });
 
+test("owner commit requires the exact issued load and loaded media source", () => {
+	const coordinator = new PlaybackSessionCoordinator();
+	const session = coordinator.beginTrack("netease:first")!;
+	const source = remoteSource();
+	load(coordinator, session, source);
+	const loading = coordinator.snapshot();
+
+	expect(
+		coordinator.markOwnerPlaying(session, "https://media.example/wrong.mp3"),
+	).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	expect(
+		coordinator.markOwnerPlaying({ ...session }, source.audioUrl),
+	).toBe(false);
+	expect(coordinator.snapshot()).toBe(loading);
+	expect(coordinator.markOwnerPlaying(session, source.audioUrl)).toBe(true);
+	expect(coordinator.snapshot().phase).toBe("playing");
+});
+
 test("a cloned reload handle cannot complete the reload", () => {
 	const coordinator = new PlaybackSessionCoordinator();
 	const session = coordinator.beginTrack("netease:first")!;

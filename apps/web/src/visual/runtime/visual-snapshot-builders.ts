@@ -1,5 +1,6 @@
 import {
 	cloneFxState,
+	type AudioFrameBytes,
 	type FxState,
 	type ForegroundFramePolicy,
 	type LyricsVisualSnapshot,
@@ -113,7 +114,7 @@ export function buildVisualSettingsSnapshot(
 }
 
 export interface CreateVisualMediaClockInput {
-	readonly getAudioElement: () => HTMLAudioElement | null;
+	readonly getAudioFrame: () => AudioFrameBytes | null;
 	readonly getPositionMs: () => number;
 	readonly getPlaybackSnapshot: () => PlaybackVisualSnapshot;
 }
@@ -123,24 +124,20 @@ export function createVisualMediaClock(
 ): VisualMediaClock {
 	return {
 		currentTimeSeconds() {
-			const audioTime = Number(input.getAudioElement()?.currentTime);
+			const audioTime = Number(input.getAudioFrame()?.currentTimeSeconds);
 			if (Number.isFinite(audioTime) && audioTime >= 0) return audioTime;
 			const fallback = Number(input.getPositionMs());
 			return Number.isFinite(fallback) && fallback > 0 ? fallback / 1000 : 0;
 		},
 		durationSeconds() {
-			const audioDuration = Number(input.getAudioElement()?.duration);
-			if (Number.isFinite(audioDuration) && audioDuration > 0) return audioDuration;
 			const durationMs = input.getPlaybackSnapshot().durationMs;
 			return typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0
 				? durationMs / 1000
 				: null;
 		},
 		isPlaying() {
-			const audio = input.getAudioElement();
-			if (audio && typeof audio.paused === "boolean" && typeof audio.ended === "boolean") {
-				return !audio.paused && !audio.ended;
-			}
+			const audioFrame = input.getAudioFrame();
+			if (audioFrame) return audioFrame.playing;
 			return input.getPlaybackSnapshot().playing;
 		},
 	};

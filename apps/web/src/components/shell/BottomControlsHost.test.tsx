@@ -55,6 +55,29 @@ test("BottomControlsHost forwards current heart state and click callback", async
 	container.remove();
 });
 
+test("BottomControlsHost forwards optional volume panel extras without changing default controls", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	root.render(
+		React.createElement(BottomControlsHost, {
+			visible: true,
+			onReveal: () => undefined,
+			renderVolumePanelExtras: (active: boolean) => React.createElement(
+				"div",
+				{ className: "bottom-volume-extra", "data-active": active ? "1" : "0" },
+			),
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+
+	expect(container.querySelector("#volume-slider")).not.toBeNull();
+	expect(container.querySelector(".bottom-volume-extra")?.getAttribute("data-active")).toBe("0");
+	root.unmount();
+	container.remove();
+});
+
 test("BottomControlsHost mirrors baseline bottom handle wake and auto-hide hover timing", async () => {
 	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
 	document.body.className = "";

@@ -1623,12 +1623,17 @@ test("App resolves proxied Soda URLs against the sidecar base when reloading aft
 
 		appStubAudioInstances[0]?.dispatchEvent(new Event("error"));
 		const secondExpected = `${baseUrl}${relativeUrls[1]}`;
-		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== secondExpected; i += 1) {
+		for (
+			let i = 0;
+			i < 12 && !appStubAudioInstances.some((audio) => audio.src === secondExpected);
+			i += 1
+		) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
 
 		expect(resolveCount).toBe(2);
-		expect(appStubAudioInstances[0]?.src).toBe(secondExpected);
+		// M2 在备用 deck 成功播放后才提交 owner；旧 deck 仍保留旧 src。
+		expect(appStubAudioInstances.some((audio) => audio.src === secondExpected)).toBe(true);
 	} finally {
 		root?.unmount();
 		host.remove();
@@ -2866,12 +2871,23 @@ test("App derives Home Continue and Next Up from the live queue before recent hi
 		audio.dispatchEvent(new Event("timeupdate"));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		usePlaybackStore.getState().playAt(1);
+		for (
+			let i = 0;
+			i < 12 && !appStubAudioInstances.some(
+				(instance) => instance !== audio && instance.playCalled > 0,
+			);
+			i += 1
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		const secondAudio = appStubAudioInstances.find(
+			(instance) => instance !== audio && instance.playCalled > 0,
+		) ?? audio;
+		secondAudio.duration = 4;
+		secondAudio.currentTime = 2.2;
+		secondAudio.dispatchEvent(new Event("timeupdate"));
 		await new Promise((resolve) => setTimeout(resolve, 0));
-		audio.duration = 4;
-		audio.currentTime = 2.2;
-		audio.dispatchEvent(new Event("timeupdate"));
-		await new Promise((resolve) => setTimeout(resolve, 0));
-		audio.dispatchEvent(new Event("ended"));
+		secondAudio.dispatchEvent(new Event("ended"));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		(host.querySelector("#home-btn") as HTMLButtonElement).click();
 		await new Promise((resolve) => setTimeout(resolve, 0));

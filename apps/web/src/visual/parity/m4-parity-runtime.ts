@@ -10,6 +10,7 @@ import {
 	createVisualEngine,
 	DEFAULT_STAGE_LYRICS_SETTINGS,
 	type AudioFrameBytes,
+	type AudioFrameSource,
 	type ShelfContentRow,
 	type SonicPerformanceQuality,
 	type VisualEngineFacade,
@@ -17,7 +18,7 @@ import {
 	type VisualSchedulerDriver,
 } from "@mineradio/visual-engine";
 import { buildLyricsVisualSnapshot, buildPlaybackVisualSnapshot, buildShelfVisualSnapshot, buildVisualSettingsSnapshot } from "../runtime/visual-snapshot-builders";
-import { createLegacyVisualComposition, type LegacyVisualDebugController, type ManagedAudioFrameSource } from "../runtime/create-legacy-visual-composition";
+import { createLegacyVisualComposition, type LegacyVisualDebugController } from "../runtime/create-legacy-visual-composition";
 import { createLegacyVisualEventBridge } from "../runtime/legacy-visual-events";
 
 export type M4ParityScene = "stage" | "sonic" | "shelf";
@@ -118,7 +119,7 @@ function createManualSchedulerDriver(): ManualSchedulerDriver {
 	};
 }
 
-function createFixedAudioSource(readClockMs: () => number, readTrackKey: () => string): ManagedAudioFrameSource {
+function createFixedAudioSource(readClockMs: () => number, readTrackKey: () => string): AudioFrameSource {
 	const mainTime = new Uint8Array(1024).fill(128);
 	const beatTime = new Uint8Array(1024).fill(128);
 	const source = (() => {
@@ -143,27 +144,7 @@ function createFixedAudioSource(readClockMs: () => number, readTrackKey: () => s
 			currentTimeSeconds: timeSeconds,
 			trackKey: readTrackKey(),
 		} satisfies AudioFrameBytes;
-	}) as ManagedAudioFrameSource;
-	source.audioContext = null;
-	source.getDebugState = () => ({
-		audioContextState: "none",
-		sourceElementReady: false,
-		sourceAttached: false,
-		sourceAttachFailed: false,
-		playing: true,
-		currentTimeSeconds: readClockMs() / 1000,
-		mainSampleRate: 48_000,
-		mainFftSize: 1024,
-		mainFreqAvg: 0,
-		mainFreqPeak: 1,
-		mainTimeRms: 0,
-		beatSampleRate: 48_000,
-		beatFftSize: 1024,
-		beatFreqAvg: 0,
-		beatFreqPeak: 1,
-		beatTimeRms: 0,
 	});
-	source.dispose = () => {};
 	return source;
 }
 
@@ -221,7 +202,7 @@ export async function createM4ParityRuntime(options: CreateM4ParityRuntimeOption
 	let controller: LegacyVisualDebugController | null = null;
 	const random = createSeededRandom(options.seed);
 	const manualDriver = options.mode === "deterministic" ? createManualSchedulerDriver() : null;
-	const audioElementRef = { current: null };
+	const audioFrameSource = createFixedAudioSource(() => clockMs, () => trackKey);
 	const events = createLegacyVisualEventBridge();
 	const facade = createVisualEngine({
 		mediaClock: {
@@ -231,11 +212,11 @@ export async function createM4ParityRuntime(options: CreateM4ParityRuntimeOption
 		},
 		...(manualDriver ? { schedulerDriver: manualDriver } : {}),
 		createComposition: () => createLegacyVisualComposition({
-			audioElementRef,
+			audioFrameSource,
 			events,
 			enableGpuTimerQuery: true,
 			getPrefersReducedMotion: () => false,
-			createAudioFrameSource: () => createFixedAudioSource(() => clockMs, () => trackKey),
+			getPlaybackVolume: () => 1,
 			random,
 			onDebugController(next) {
 				controller = next;

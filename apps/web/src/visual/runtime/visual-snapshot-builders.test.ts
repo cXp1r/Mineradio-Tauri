@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { cloneFxState } from "@mineradio/visual-engine";
+import { cloneFxState, type AudioFrameBytes } from "@mineradio/visual-engine";
 import {
 	buildLyricsVisualSnapshot,
 	buildPlaybackVisualSnapshot,
@@ -142,13 +142,20 @@ test("reduced motion remains independent from the global foreground frame policy
 	expect(settings.foregroundFramePolicy).toEqual({ mode: "vsync" });
 });
 
-test("visual media clock prefers live audio state and falls back to React playback state", () => {
-	let audio: HTMLAudioElement | null = {
-		currentTime: 12.345,
-		duration: 180,
-		paused: false,
-		ended: false,
-	} as HTMLAudioElement;
+test("visual media clock prefers the read-only audio frame and falls back to React playback state", () => {
+	const emptyBytes = new Uint8Array(0);
+	let audioFrame: AudioFrameBytes | null = {
+		mainFreqData: emptyBytes,
+		mainTimeData: emptyBytes,
+		mainSampleRate: 0,
+		mainFftSize: 0,
+		beatFreqData: emptyBytes,
+		beatTimeData: emptyBytes,
+		beatSampleRate: 0,
+		beatFftSize: 0,
+		currentTimeSeconds: 12.345,
+		playing: true,
+	};
 	let positionMs = 10_000;
 	let playback = buildPlaybackVisualSnapshot({
 		trackKey: "track",
@@ -162,23 +169,23 @@ test("visual media clock prefers live audio state and falls back to React playba
 		homeActive: false,
 	});
 	const clock = createVisualMediaClock({
-		getAudioElement: () => audio,
+		getAudioFrame: () => audioFrame,
 		getPositionMs: () => positionMs,
 		getPlaybackSnapshot: () => playback,
 	});
 
 	expect(clock.currentTimeSeconds()).toBe(12.345);
-	expect(clock.durationSeconds()).toBe(180);
+	expect(clock.durationSeconds()).toBe(210);
 	expect(clock.isPlaying()).toBe(true);
 
-	audio = { currentTime: NaN, duration: NaN } as HTMLAudioElement;
+	audioFrame = { ...audioFrame, currentTimeSeconds: NaN };
 	positionMs = 15_500;
 	playback = buildPlaybackVisualSnapshot({ ...playback, playing: true });
 	expect(clock.currentTimeSeconds()).toBe(15.5);
 	expect(clock.durationSeconds()).toBe(210);
 	expect(clock.isPlaying()).toBe(true);
 
-	audio = null;
+	audioFrame = null;
 	playback = buildPlaybackVisualSnapshot({ ...playback, playing: false, durationMs: null });
 	expect(clock.currentTimeSeconds()).toBe(15.5);
 	expect(clock.durationSeconds()).toBeNull();

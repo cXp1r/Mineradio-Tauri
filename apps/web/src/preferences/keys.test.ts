@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
 	M8_PREFERENCE_KEYS,
+	PLAYBACK_AUDIO_PREFERENCE,
 	SEARCH_HISTORY_PREFERENCE,
 	normalizeSearchHistory,
 } from "./keys";
@@ -56,4 +57,47 @@ test("typed preference rejects a default that does not satisfy its schema", () =
 		message = error instanceof Error ? error.message : String(error);
 	}
 	expect(message).toContain("PREFERENCE_DEFAULT_INVALID");
+});
+
+test("启用且具有设备 ID 的虚拟桥接会成为有效主输出并从镜像中移除", () => {
+	const preference = PLAYBACK_AUDIO_PREFERENCE.parse({
+		fadeInMs: 460,
+		fadeOutMs: 420,
+		gaplessEnabled: true,
+		crossfadeEnabled: true,
+		primaryOutputId: "speaker-main",
+		mirrorOutputIds: ["virtual-cable", "monitor-a"],
+		inputBridge: {
+			enabled: true,
+			deviceId: "virtual-cable",
+		},
+	});
+
+	expect(preference?.primaryOutputId).toBe("virtual-cable");
+	expect(preference?.mirrorOutputIds).toEqual(["monitor-a"]);
+});
+
+test("镜像在剔除有效主输出后仍可保留最多四个设备", () => {
+	const preference = PLAYBACK_AUDIO_PREFERENCE.parse({
+		...PLAYBACK_AUDIO_PREFERENCE.defaultValue(),
+		primaryOutputId: "speaker-main",
+		mirrorOutputIds: [
+			"virtual-cable",
+			"monitor-a",
+			"monitor-b",
+			"monitor-c",
+			"monitor-d",
+		],
+		inputBridge: {
+			enabled: true,
+			deviceId: "virtual-cable",
+		},
+	});
+
+	expect(preference?.mirrorOutputIds).toEqual([
+		"monitor-a",
+		"monitor-b",
+		"monitor-c",
+		"monitor-d",
+	]);
 });

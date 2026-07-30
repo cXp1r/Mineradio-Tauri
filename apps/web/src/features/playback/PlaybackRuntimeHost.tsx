@@ -1,8 +1,11 @@
-import { useEffect, type ReactElement, type RefObject } from "react";
+import { useEffect, useRef, type ReactElement, type RefObject } from "react";
+import type { AudioFrameSource } from "@mineradio/visual-engine";
 import {
 	PlayerController,
 	type ErrorPayload,
 	type MediaEventPayload,
+	type OwnerChangePayload,
+	type PlaybackReadinessPayload,
 	type TimeUpdatePayload,
 } from "../../audio/player-controller";
 
@@ -13,78 +16,105 @@ export interface PlaybackRuntimeCallbacks {
 	onPause(payload: MediaEventPayload): void;
 	onEnded(payload: MediaEventPayload): void;
 	onError(payload: ErrorPayload): void;
+	onStalled?(payload: PlaybackReadinessPayload): void;
+	onOwnerChange(payload: OwnerChangePayload): void;
+	onControllerReady?(controller: PlayerController | null): void;
 }
 
 export interface PlaybackRuntimeHostProps extends PlaybackRuntimeCallbacks {
-	audioElementRef: RefObject<HTMLAudioElement | null>;
 	controllerRef: RefObject<PlayerController | null>;
+	audioFrameSourceRef: RefObject<AudioFrameSource | null>;
+	playbackRateRef: RefObject<number>;
 	volume: number;
 	muted: boolean;
-	createController?: (audio: HTMLAudioElement) => PlayerController;
-	createAudioElement?: () => HTMLAudioElement | null;
+	createController?: () => PlayerController;
 }
 
-function createDefaultController(audio: HTMLAudioElement): PlayerController {
-	return new PlayerController(audio);
-}
-
-function createDefaultAudioElement(): HTMLAudioElement | null {
-	if (typeof Audio === "undefined") return null;
-	return new Audio();
+function createDefaultController(): PlayerController {
+	return new PlayerController();
 }
 
 export function PlaybackRuntimeHost({
-	audioElementRef,
 	controllerRef,
+	audioFrameSourceRef,
+	playbackRateRef,
 	volume,
 	muted,
 	createController = createDefaultController,
-	createAudioElement = createDefaultAudioElement,
 	onTimeUpdate,
 	onDurationChange,
 	onPlay,
 	onPause,
 	onEnded,
 	onError,
+	onStalled,
+	onOwnerChange,
+	onControllerReady,
 }: PlaybackRuntimeHostProps): ReactElement | null {
+	const callbacksRef = useRef({
+		onTimeUpdate,
+		onDurationChange,
+		onPlay,
+		onPause,
+		onEnded,
+		onError,
+		onStalled,
+		onOwnerChange,
+		onControllerReady,
+	});
+	callbacksRef.current = {
+		onTimeUpdate,
+		onDurationChange,
+		onPlay,
+		onPause,
+		onEnded,
+		onError,
+		onStalled,
+		onOwnerChange,
+		onControllerReady,
+	};
+
 	useEffect(() => {
 		if (controllerRef.current) return;
-		let audio = audioElementRef.current;
-		if (!audio) {
-			audio = createAudioElement();
-			audioElementRef.current = audio;
-		}
-		if (!audio) return;
-
-		audio.preload = "metadata";
-		const controller = createController(audio);
+		const controller = createController();
+		const ownedFrameSource = controller.getAudioFrameSource();
 		controllerRef.current = controller;
+		audioFrameSourceRef.current = ownedFrameSource;
+		playbackRateRef.current = controller.getActiveElement()?.playbackRate || 1;
 		controller.setVolume(muted ? 0 : volume);
+		callbacksRef.current.onControllerReady?.(controller);
+		const handleOwnerChange = (payload: OwnerChangePayload) => {
+			callbacksRef.current.onOwnerChange(payload);
+			playbackRateRef.current = controller.getActiveElement()?.playbackRate || 1;
+		};
 		const unsubscribe = [
-			controller.on("timeupdate", onTimeUpdate),
-			controller.on("durationchange", onDurationChange),
-			controller.on("play", onPlay),
-			controller.on("pause", onPause),
-			controller.on("ended", onEnded),
-			controller.on("error", onError),
+			controller.on("timeupdate", (payload) => callbacksRef.current.onTimeUpdate(payload)),
+			controller.on("durationchange", (payload) => callbacksRef.current.onDurationChange(payload)),
+			controller.on("play", (payload) => callbacksRef.current.onPlay(payload)),
+			controller.on("pause", (payload) => callbacksRef.current.onPause(payload)),
+			controller.on("ended", (payload) => callbacksRef.current.onEnded(payload)),
+			controller.on("error", (payload) => callbacksRef.current.onError(payload)),
+			controller.on("stalled", (payload) => callbacksRef.current.onStalled?.(payload)),
+			controller.on("ownerchange", handleOwnerChange),
 		];
 
 		return () => {
 			for (const off of unsubscribe) off();
-			if (controllerRef.current === controller) controllerRef.current = null;
-			if (audioElementRef.current === audio) audioElementRef.current = null;
+			controller.dispose();
+			if (controllerRef.current === controller) {
+				controllerRef.current = null;
+				playbackRateRef.current = 1;
+				callbacksRef.current.onControllerReady?.(null);
+			}
+			if (audioFrameSourceRef.current === ownedFrameSource) {
+				audioFrameSourceRef.current = null;
+			}
 		};
 	}, [
-		audioElementRef,
+		audioFrameSourceRef,
 		controllerRef,
-		createAudioElement,
 		createController,
-		onDurationChange,
-		onEnded,
-		onError,
-		onPause,
-		onPlay,
-		onTimeUpdate,
+		playbackRateRef,
 	]);
 
 	useEffect(() => {

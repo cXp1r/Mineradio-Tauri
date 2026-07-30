@@ -143,6 +143,7 @@ const MAX_PREFERENCE_QUARANTINE_ENTRIES: usize = 32;
 
 const ALLOWED_PREFERENCE_KEYS: &[(&str, u32)] = &[
     ("playback.quality", 1),
+    ("playback.audio.v2", 2),
     ("shell.capsuleAutoHide", 1),
     ("shell.playlistPanelPinned", 1),
     ("shell.diyMode", 1),
@@ -156,6 +157,7 @@ const ALLOWED_PREFERENCE_KEYS: &[(&str, u32)] = &[
 ];
 
 const ALLOWED_LEGACY_PREFERENCE_MIGRATIONS: &[(&str, &str)] = &[
+    ("mineradio-playback-audio-v2", "playback.audio.v2"),
     ("mineradio-playback-quality-v1", "playback.quality"),
     (
         "mineradio-user-capsule-auto-hide-v1",

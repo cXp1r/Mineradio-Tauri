@@ -29,7 +29,8 @@ function deferred() {
 test("legacy visual composition factory is side-effect free", () => {
 	let touched = 0;
 	const composition = createLegacyVisualComposition({
-		audioElementRef: { get current() { touched += 1; return null; } },
+		audioFrameSource: () => { touched += 1; return null; },
+		getPlaybackVolume: () => 1,
 		events: createLegacyVisualEventBridge(),
 	});
 	expect(touched).toBe(0);
@@ -151,7 +152,8 @@ test("legacy composition surfaces child disposal failures through facade cleanup
 	const disposalOrder: string[] = [];
 	const reported: unknown[][] = [];
 	const legacy = createLegacyVisualComposition({
-		audioElementRef: { current: null },
+		audioFrameSource: () => null,
+		getPlaybackVolume: () => 1,
 		events: createLegacyVisualEventBridge(),
 	});
 	const engine = createVisualEngine({

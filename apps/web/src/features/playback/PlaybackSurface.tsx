@@ -6,6 +6,8 @@ import {
   type SidecarRecoveryNoticeState,
 } from "../../components/shell/SidecarRecoveryNotice";
 import { PlaybackRuntimeHost } from "./PlaybackRuntimeHost";
+import { PlaybackAudioSettings } from "./PlaybackAudioSettings";
+import type { PlaybackAudioSettingsResult } from "./usePlaybackAudioSettings";
 import type { PlaybackSessionRuntimeResult } from "./usePlaybackSessionRuntime";
 import type { TrackCustomizationControllerResult } from "../customization/useTrackCustomizationController";
 
@@ -30,6 +32,7 @@ type TrialView = Pick<
 export interface PlaybackSurfaceProps {
   controlsProps: ComponentProps<typeof BottomControlsHost>;
   recoveryState: SidecarRecoveryNoticeState | null;
+  audioSettings?: PlaybackAudioSettingsResult;
 }
 
 export interface PlaybackCustomizationOverlayProps {
@@ -53,10 +56,19 @@ export type PlaybackControllerRef = ComponentProps<
 export function PlaybackSurface({
   controlsProps,
   recoveryState,
+  audioSettings,
 }: PlaybackSurfaceProps): ReactElement {
+  const renderVolumePanelExtras = audioSettings
+    ? (active: boolean) => (
+        <PlaybackAudioSettings settings={audioSettings} active={active} />
+      )
+    : controlsProps.renderVolumePanelExtras;
   return (
     <>
-      <BottomControlsHost {...controlsProps} />
+      <BottomControlsHost
+        {...controlsProps}
+        renderVolumePanelExtras={renderVolumePanelExtras}
+      />
       {recoveryState ? (
         <SidecarRecoveryNotice state={recoveryState} />
       ) : null}

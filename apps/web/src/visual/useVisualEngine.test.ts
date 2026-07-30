@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import React, { StrictMode, act, useRef } from "react";
 import { createRoot } from "react-dom/client";
 import {
+	type AudioFrameSource,
 	type LyricsVisualSnapshot,
 	type PlaybackVisualSnapshot,
 	type ShelfVisualSnapshot,
@@ -13,7 +14,9 @@ import {
 } from "@mineradio/visual-engine";
 import { createLegacyVisualEventBridge } from "./runtime/legacy-visual-events";
 import type { VisualEnvironmentAdapter } from "./runtime/visual-environment-adapter";
-import { createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, initAudioSource, isRuntimeShelfPreviewActive, lyricPaletteFromHex, readVisualCurrentTimeSeconds, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine, type VisualPerformanceSnapshotReader } from "./useVisualEngine";
+import { createReadonlyAudioFrameSource, createStageLyricsHostSuppliers, createStageLyricsShelfSuppliers, isRuntimeShelfPreviewActive, lyricPaletteFromHex, resolveHomeVisualPreset, resolveRuntimeVisualPerformancePolicy, resolveRuntimeWallpaperSafe, resolveSkullMouthLyricsActive, resolveSkullShelfCompositionActive, resolveStageLyricLayoutOptions, resolveStageLyricPalette, shouldDimWallpaperParticlesForShelf, shouldResetLyricStageCameraView, shouldRetryVisualCoverLoad, setRuntimeShelfMode, useVisualEngine, type VisualPerformanceSnapshotReader } from "./useVisualEngine";
+
+const EMPTY_AUDIO_FRAME_SOURCE = () => null;
 
 test("legacy composition routes adaptive FPS through the runtime visual performance policy", async () => {
 	const source = await fetch(new URL("./runtime/create-legacy-visual-composition.ts", import.meta.url)).then((res) => res.text());
@@ -23,6 +26,9 @@ test("legacy composition routes adaptive FPS through the runtime visual performa
 	expect(source).toContain("height: policy.renderHeight ?? opts?.height");
 	expect(source).toContain("scheduler: context.scheduler");
 	expect(source).toContain("performance: context.performance");
+	expect(source.includes("createPlaybackAudioFrameAdapter")).toBe(false);
+	expect(source.includes("PlaybackAudioRuntime")).toBe(false);
+	expect(source.includes("createMediaElementSource")).toBe(false);
 });
 
 test("isRuntimeShelfPreviewActive follows side-auto shelf visibility readiness", () => {
@@ -191,130 +197,45 @@ test("setRuntimeShelfMode notifies the persistent shelf mode source", () => {
 	expect(calls).toEqual(["side"]);
 });
 
-test("readVisualCurrentTimeSeconds prefers frame-accurate audio time over React position state", () => {
-	expect(readVisualCurrentTimeSeconds({ currentTime: 12.345 } as HTMLAudioElement, 10_000)).toBe(12.345);
-	expect(readVisualCurrentTimeSeconds({ currentTime: NaN } as HTMLAudioElement, 10_000)).toBe(10);
-	expect(readVisualCurrentTimeSeconds(null, 0)).toBe(0);
+test("createReadonlyAudioFrameSource delegates frames without exposing playback ownership", () => {
+	const frame = {
+		mainFreqData: new Uint8Array([12]),
+		mainTimeData: new Uint8Array([128]),
+		mainSampleRate: 48_000,
+		mainFftSize: 2,
+		beatFreqData: new Uint8Array([18]),
+		beatTimeData: new Uint8Array([128]),
+		beatSampleRate: 48_000,
+		beatFftSize: 2,
+		playing: true,
+		currentTimeSeconds: 1.25,
+	};
+	let runtimeSource: AudioFrameSource | null = () => frame;
+	const source = createReadonlyAudioFrameSource({
+		getSource: () => runtimeSource,
+		getFallbackClock: () => ({ playing: false, currentTimeSeconds: 0.5 }),
+	});
+
+	expect(source()).toBe(frame);
+	expect(source.getDebugState().sourceAttached).toBe(true);
+	runtimeSource = null;
+	expect(source()?.currentTimeSeconds).toBe(0.5);
 });
 
-test("initAudioSource reuses the baseline cached MediaElementSource and AudioContext for the same audio element", async () => {
-	const originalWindow = globalThis.window;
-	const createdSources: unknown[] = [];
-	const createdContexts: unknown[] = [];
-	let resumeCount = 0;
-	const el = {
-		paused: false,
-		ended: false,
-		currentTime: 1.25,
-	} as HTMLAudioElement & Record<string, unknown>;
-	class FakeNode {
-		connections: unknown[] = [];
-		connect(node: unknown) {
-			this.connections.push(node);
-		}
-		disconnect() {
-			this.connections = [];
-		}
-	}
-	class FakeAnalyser extends FakeNode {
-		fftSize = 0;
-		frequencyBinCount = 4;
-		smoothingTimeConstant = 0;
-		getByteFrequencyData(data: Uint8Array) {
-			data.fill(24);
-		}
-		getByteTimeDomainData(data: Uint8Array) {
-			data.fill(128);
-		}
-	}
-	class FakeAudioContext {
-		state = "suspended";
-		sampleRate = 48_000;
-		destination = new FakeNode();
-		constructor() {
-			createdContexts.push(this);
-		}
-		createAnalyser() {
-			return new FakeAnalyser();
-		}
-		createGain() {
-			return { gain: { value: 0 }, connect() {}, disconnect() {} };
-		}
-		createMediaElementSource(audio: HTMLAudioElement) {
-			const source = new FakeNode();
-			createdSources.push({ source, audio, context: this });
-			return source;
-		}
-		resume() {
-			resumeCount += 1;
-			this.state = "running";
-			return Promise.resolve();
-		}
-	}
-	globalThis.window = {
-		AudioContext: FakeAudioContext,
-	} as unknown as Window & typeof globalThis;
-	try {
-		const first = await initAudioSource(() => el);
-		const firstFrame = first();
-		const second = await initAudioSource(() => el);
-		const secondFrame = second();
+test("createReadonlyAudioFrameSource dispose is idempotent and revokes its view only", () => {
+	const source = createReadonlyAudioFrameSource({
+		getSource: () => null,
+		getFallbackClock: () => ({ playing: true, currentTimeSeconds: 2.5 }),
+	});
+	source.dispose();
+	source.dispose();
+	const frame = source();
+	const debug = source.getDebugState();
 
-		expect(createdContexts.length).toBe(1);
-		expect(createdSources.length).toBe(1);
-		if (!firstFrame || !secondFrame) throw new Error("expected audio frames");
-		expect(firstFrame.playing).toBe(true);
-		expect(secondFrame.playing).toBe(true);
-		expect(resumeCount).toBeGreaterThan(0);
-		first.dispose();
-		second.dispose();
-	} finally {
-		globalThis.window = originalWindow;
-	}
-});
-
-test("initAudioSource exposes the cached AudioContext before the first analyser frame", async () => {
-	const originalWindow = globalThis.window;
-	const el = {} as HTMLAudioElement & Record<string, unknown>;
-	class FakeNode {
-		connect() {}
-		disconnect() {}
-	}
-	class FakeAnalyser extends FakeNode {
-		fftSize = 0;
-		frequencyBinCount = 4;
-		smoothingTimeConstant = 0;
-		getByteFrequencyData() {}
-		getByteTimeDomainData() {}
-	}
-	class FakeAudioContext {
-		state = "suspended";
-		sampleRate = 48_000;
-		destination = new FakeNode();
-		createAnalyser() {
-			return new FakeAnalyser();
-		}
-		createGain() {
-			return { gain: { value: 0 }, connect() {}, disconnect() {} };
-		}
-		createMediaElementSource() {
-			return new FakeNode();
-		}
-		resume() {
-			this.state = "running";
-			return Promise.resolve();
-		}
-	}
-	globalThis.window = {
-		AudioContext: FakeAudioContext,
-	} as unknown as Window & typeof globalThis;
-	try {
-		const frameSource = await initAudioSource(() => el);
-		expect(el._mineradioAudioCtx).toBe(frameSource.audioContext);
-		frameSource.dispose();
-	} finally {
-		globalThis.window = originalWindow;
-	}
+	expect(frame?.playing).toBe(false);
+	expect(frame?.currentTimeSeconds).toBe(0);
+	expect(debug.sourceElementReady).toBe(false);
+	expect(debug.sourceAttached).toBe(false);
 });
 
 test("shouldResetLyricStageCameraView fires only when leaving Home preview into playback stage", () => {
@@ -774,11 +695,11 @@ test("useVisualEngine submits all initial snapshots and visibility before mount"
 	const events = createLegacyVisualEventBridge();
 	function Harness() {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 1_000,
+			playbackVolume: 1,
 			playbackSnapshot: playback("initial"),
 			lyricsSnapshot: lyrics("initial"),
 			shelfSnapshot: shelf("initial"),
@@ -827,11 +748,11 @@ test("useVisualEngine publishes a read-only performance reader and clears it on 
 
 	function Harness() {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 0,
+			playbackVolume: 1,
 			playbackSnapshot: playback("diagnostics"),
 			lyricsSnapshot: lyrics("diagnostics"),
 			shelfSnapshot: shelf("diagnostics"),
@@ -875,11 +796,11 @@ test("useVisualEngine disposes every StrictMode facade and environment instance 
 	};
 	function Harness() {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 0,
+			playbackVolume: 1,
 			playbackSnapshot: playback("strict"),
 			lyricsSnapshot: lyrics("strict"),
 			shelfSnapshot: shelf("strict"),
@@ -919,11 +840,11 @@ test("useVisualEngine submits playback lyrics shelf settings and visibility chan
 	};
 	function Harness({ label }: { label: string }) {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: label === "b" ? 2_000 : 1_000,
+			playbackVolume: 1,
 			playbackSnapshot: playback(label),
 			lyricsSnapshot: lyrics(label),
 			shelfSnapshot: shelf(label),
@@ -967,11 +888,11 @@ test("useVisualEngine ignores a late mount resolution after cleanup", async () =
 	const events = createLegacyVisualEventBridge();
 	function Harness() {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 0,
+			playbackVolume: 1,
 			playbackSnapshot: playback("pending"),
 			lyricsSnapshot: lyrics("pending"),
 			shelfSnapshot: shelf("pending"),
@@ -1009,11 +930,11 @@ test("useVisualEngine handles a late mount rejection after cleanup without repor
 	const events = createLegacyVisualEventBridge();
 	function Harness() {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 0,
+			playbackVolume: 1,
 			playbackSnapshot: playback("pending"),
 			lyricsSnapshot: lyrics("pending"),
 			shelfSnapshot: shelf("pending"),
@@ -1050,11 +971,11 @@ test("useVisualEngine reports and closes an active mount rejection exactly once"
 	const events = createLegacyVisualEventBridge();
 	function Harness({ label }: { label: string }) {
 		const hostRef = useRef<HTMLDivElement | null>(null);
-		const audioElementRef = useRef<HTMLAudioElement | null>(null);
 		useVisualEngine({
 			hostRef,
-			audioElementRef,
+			audioFrameSource: EMPTY_AUDIO_FRAME_SOURCE,
 			positionMs: 0,
+			playbackVolume: 1,
 			playbackSnapshot: playback(label),
 			lyricsSnapshot: lyrics(label),
 			shelfSnapshot: shelf(label),

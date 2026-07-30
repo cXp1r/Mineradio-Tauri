@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactElement } from "react";
+import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { PlayerConsoleHost } from "../../visual/PlayerConsoleHost";
 import type { PlaybackMode } from "../../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../../stores/shelf-store";
@@ -23,6 +23,7 @@ export interface BottomControlsHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
+	renderVolumePanelExtras?: (active: boolean) => ReactNode;
 	onQualityChange?: (
 		quality: PlaybackQualityRequest,
 	) => Promise<void> | void;
@@ -198,6 +199,7 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				onSeek={props.onSeek}
 				onVolumeChange={props.onVolumeChange}
 				onToggleMute={props.onToggleMute}
+				renderVolumePanelExtras={props.renderVolumePanelExtras}
 				onQualityChange={props.onQualityChange}
 				onSourceSwitch={props.onSourceSwitch}
 				onShelfModeChange={props.onShelfModeChange}

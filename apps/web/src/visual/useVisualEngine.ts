@@ -1,6 +1,7 @@
 import { useEffect, useRef, type RefObject } from "react";
 import {
 	createVisualEngine,
+	type AudioFrameSource,
 	type LyricsVisualSnapshot,
 	type PlaybackVisualSnapshot,
 	type ShelfVisualSnapshot,
@@ -24,8 +25,9 @@ export * from "./runtime/create-legacy-visual-composition";
 
 export interface UseVisualEngineInput {
 	readonly hostRef: RefObject<HTMLDivElement | null>;
-	readonly audioElementRef: RefObject<HTMLAudioElement | null>;
+	readonly audioFrameSource: AudioFrameSource;
 	readonly positionMs: number;
+	readonly playbackVolume: number;
 	readonly playbackSnapshot: PlaybackVisualSnapshot;
 	readonly lyricsSnapshot: LyricsVisualSnapshot;
 	readonly shelfSnapshot: ShelfVisualSnapshot;
@@ -117,6 +119,7 @@ export function useVisualEngine(
 	if (!dependenciesRef.current) dependenciesRef.current = resolveDependencies(dependencies);
 
 	const positionMsRef = useRef(input.positionMs);
+	const playbackVolumeRef = useRef(input.playbackVolume);
 	const playbackSnapshotRef = useRef(input.playbackSnapshot);
 	const lyricsSnapshotRef = useRef(input.lyricsSnapshot);
 	const shelfSnapshotRef = useRef(input.shelfSnapshot);
@@ -125,6 +128,7 @@ export function useVisualEngine(
 	const facadeRef = useRef<VisualEngineFacade | null>(null);
 
 	positionMsRef.current = input.positionMs;
+	playbackVolumeRef.current = input.playbackVolume;
 	playbackSnapshotRef.current = input.playbackSnapshot;
 	lyricsSnapshotRef.current = input.lyricsSnapshot;
 	shelfSnapshotRef.current = input.shelfSnapshot;
@@ -162,7 +166,7 @@ export function useVisualEngine(
 			environment = resolved.createEnvironmentAdapter();
 			const initialVisibility = environment.getSnapshot();
 			const mediaClock = createVisualMediaClock({
-				getAudioElement: () => input.audioElementRef.current,
+				getAudioFrame: input.audioFrameSource,
 				getPositionMs: () => positionMsRef.current,
 				getPlaybackSnapshot: () => playbackSnapshotRef.current,
 			});
@@ -170,8 +174,9 @@ export function useVisualEngine(
 				mediaClock,
 				initialVisibility,
 				createComposition: () => createLegacyVisualComposition({
-					audioElementRef: input.audioElementRef,
+					audioFrameSource: input.audioFrameSource,
 					events: eventsRef.current,
+					getPlaybackVolume: () => playbackVolumeRef.current,
 					getPrefersReducedMotion: () => environment?.getPrefersReducedMotion() ?? false,
 				}),
 			});
@@ -207,7 +212,7 @@ export function useVisualEngine(
 		}
 
 		return cleanup;
-	}, [input.audioElementRef, input.hostRef, input.performanceSnapshotReaderRef]);
+	}, [input.audioFrameSource, input.hostRef, input.performanceSnapshotReaderRef]);
 
 	useEffect(() => {
 		facadeRef.current?.setPlaybackSnapshot(input.playbackSnapshot);

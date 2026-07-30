@@ -20,9 +20,11 @@ import {
 	type DesktopLyricsMotionSnapshot,
 } from "./VisualEngineHost";
 
-test("VisualEngineHost builds immutable runtime snapshots while preserving its public controllerRef prop", async () => {
+test("VisualEngineHost builds immutable runtime snapshots behind a read-only audio frame interface", async () => {
 	const source = await fetch(new URL("./VisualEngineHost.tsx", import.meta.url)).then((response) => response.text());
-	expect(source).toContain("controllerRef: RefObject<PlayerController | null>");
+	expect(source).toContain("audioFrameSource: AudioFrameSource");
+	expect(source).not.toContain("PlayerController");
+	expect(source).not.toContain("HTMLAudioElement");
 	expect(source).toContain("buildPlaybackVisualSnapshot");
 	expect(source).toContain("buildLyricsVisualSnapshot");
 	expect(source).toContain("buildShelfVisualSnapshot");
@@ -41,8 +43,8 @@ test("VisualEngineHost builds immutable runtime snapshots while preserving its p
 test("VisualEngineHost server-renders a visual-host placeholder div without invoking WebGL/AudioContext", () => {
 	const html = renderToStaticMarkup(
 		React.createElement(VisualEngineHost, {
-			audioElementRef: { current: null },
-			controllerRef: { current: null },
+			playbackVolume: 1,
+			audioFrameSource: () => null,
 			lyricsPayload: null,
 			positionMs: 0,
 			isPlaying: false,
@@ -58,8 +60,8 @@ test("VisualEngineHost server-renders a visual-host placeholder div without invo
 test("VisualEngineHost restores baseline album background layer from the direct cover URL", () => {
 	const html = renderToStaticMarkup(
 		React.createElement(VisualEngineHost, {
-			audioElementRef: { current: null },
-			controllerRef: { current: null },
+			playbackVolume: 1,
+			audioFrameSource: () => null,
 			lyricsPayload: null,
 			positionMs: 0,
 			isPlaying: false,

@@ -421,3 +421,53 @@ test("replaceCurrentSource 拒绝过期 intent 且不改变队列", () => {
 	expect(usePlaybackStore.getState().currentTrack).toBe(before.currentTrack);
 	expect(usePlaybackStore.getState().playbackIntentId).toBe(before.playbackIntentId);
 });
+
+test("prepared handoff 只为当前 owner 原子提交相邻候选一次", () => {
+	const outgoing = makeTrack("outgoing");
+	const incoming = makeTrack("incoming");
+	const tail = makeTrack("tail");
+	const store = usePlaybackStore.getState();
+	store.setQueue([outgoing, incoming, tail]);
+	store.playAt(0);
+	const expectedIntent = usePlaybackStore.getState().playbackIntentId;
+
+	const committed = usePlaybackStore.getState().commitPreparedHandoff({
+		candidate: incoming,
+		expectedPlaybackIntentId: expectedIntent,
+		expectedOutgoingTrackRef: "netease:outgoing",
+	});
+
+	expect(committed).toBe(true);
+	const state = usePlaybackStore.getState();
+	expect(state.currentTrack).toBe(incoming);
+	expect(state.positionMs).toBe(0);
+	expect(state.isPlaying).toBe(true);
+	expect(state.playbackIntentId).toBe(expectedIntent + 1);
+
+	// 旧 handoff 即使重复完成，也不能再次推进队列或 intent。
+	expect(usePlaybackStore.getState().commitPreparedHandoff({
+		candidate: incoming,
+		expectedPlaybackIntentId: expectedIntent,
+		expectedOutgoingTrackRef: "netease:outgoing",
+	})).toBe(false);
+	expect(usePlaybackStore.getState().currentTrack).toBe(incoming);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(expectedIntent + 1);
+});
+
+test("prepared handoff 拒绝非相邻候选并保留当前 owner", () => {
+	const outgoing = makeTrack("outgoing");
+	const incoming = makeTrack("incoming");
+	const wrong = makeTrack("wrong");
+	const store = usePlaybackStore.getState();
+	store.setQueue([outgoing, incoming, wrong]);
+	store.playAt(0);
+	const before = usePlaybackStore.getState();
+
+	expect(store.commitPreparedHandoff({
+		candidate: wrong,
+		expectedPlaybackIntentId: before.playbackIntentId,
+		expectedOutgoingTrackRef: "netease:outgoing",
+	})).toBe(false);
+	expect(usePlaybackStore.getState().currentTrack).toBe(outgoing);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(before.playbackIntentId);
+});
