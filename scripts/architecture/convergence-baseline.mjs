@@ -21,6 +21,46 @@ const EXPECTED_UPDATER_AUTHORITY = {
 	parity_level: "P1",
 	convergence_mode: "architecture-replacement",
 };
+const D0_INVENTORY_CAPABILITIES = new Map([
+	["baseline.electron-2.0.3", ["implemented", "P0", "parity", "none"]],
+	["lyrics.stage-v2", ["partial", "P0", "parity", "none"]],
+	["visual.cursor-activity", ["missing", "P0", "parity", "none"]],
+	["visual.shelf-cursor-layer", ["missing", "P0", "parity", "none"]],
+	["visual.sonic-workshop", ["blocked", "P0", "parity", "provenance-decision"]],
+	["wallpaper.idle-dispose", ["implemented", "P0", "parity", "none"]],
+	["playback.startup-resume", ["missing", "P0", "parity", "none"]],
+	["queue.drag-sort", ["missing", "P1", "parity", "none"]],
+	["library.drag-sort", ["missing", "P1", "parity", "none"]],
+	["lyrics.track-offset", ["missing", "P1", "parity", "none"]],
+	["beatmap.local-song", ["partial", "P1", "parity", "none"]],
+	["local-import.expanded", ["partial", "P1", "parity", "none"]],
+	["hotkeys.editor", ["missing", "P1", "parity", "none"]],
+	["visual.archive", ["missing", "P1", "parity", "none"]],
+	["visual.camera-gesture", ["missing", "P2", "parity", "none"]],
+	["wallpaper.library", ["partial", "P1", "parity", "none"]],
+	["wallpaper.wgc", ["missing", "P1", "parity", "none"]],
+	["accounts.provider-order", ["missing", "P1", "parity", "none"]],
+	["search.multi-provider-offset", ["partial", "P1", "parity", "none"]],
+]);
+const D0_INVENTORY_FIELDS = [
+	"current_tauri",
+	"parity_level",
+	"convergence_mode",
+	"blocked_by",
+];
+const D0_SOURCE_MAP_DELTAS = new Map([
+	["lyrics.nested-render-base", ["partial", "parity"]],
+	["visual.cursor-shelf-layer", ["missing", "parity"]],
+	["updater.github-release", ["partial", "architecture-replacement"]],
+	["visual.sonic-workshop", ["blocked", "parity"]],
+	["wallpaper.idle-dispose", ["implemented", "parity"]],
+]);
+const D0_SOURCE_MAP_COLUMNS = [
+	"delta_id",
+	"current_tauri",
+	"convergence_mode",
+	"evidence",
+];
 const EXTRACTION_HEADER = "| symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |";
 const ACTIVE_UPSTREAM_IDENTITY = {
 	repository: "XxHuberrr/Mineradio",
@@ -84,6 +124,7 @@ export function validateConvergenceBaseline(documents) {
 		"upstream-source-map",
 	));
 	errors.push(...validateUpstreamReleaseProvenance(documents.upstreamSourceMap));
+	errors.push(...validateD0SourceMap(documents.upstreamSourceMap));
 	for (const [documentName, source] of [
 		["capability-matrix", documents.capabilityMatrix],
 		["upstream-source-map", documents.upstreamSourceMap],
@@ -118,6 +159,42 @@ function activeMarkdownContains(source, marker) {
 	const lines = source.split(/\r?\n/);
 	const activeLines = identifyActiveMarkdownLines(lines);
 	return lines.some((line, index) => activeLines[index] && line.includes(marker));
+}
+
+function validateD0SourceMap(source) {
+	const documentName = "upstream-source-map";
+	const parsed = parseExactMarkdownTable(source, {
+		columns: D0_SOURCE_MAP_COLUMNS,
+		documentName,
+		missingName: "D0 delta map",
+		tableName: "D0 delta map",
+	});
+	if (!parsed.found) return parsed.errors;
+	const errors = [...parsed.errors];
+	const rows = new Map();
+	for (const parsedRow of parsed.rows) {
+		const deltaId = parsedRow.cells[0];
+		if (rows.has(deltaId)) {
+			errors.push(`${documentName}: D0 delta line ${parsedRow.line} duplicates ${deltaId} from line ${rows.get(deltaId).line}`);
+			continue;
+		}
+		rows.set(deltaId, {
+			line: parsedRow.line,
+			state: parsedRow.cells[1],
+			mode: parsedRow.cells[2],
+		});
+	}
+	for (const [deltaId, expected] of D0_SOURCE_MAP_DELTAS) {
+		const row = rows.get(deltaId);
+		if (!row) {
+			errors.push(`${documentName}: missing D0 delta ${deltaId}`);
+			continue;
+		}
+		if (row.state !== expected[0] || row.mode !== expected[1]) {
+			errors.push(`${documentName}: D0 delta line ${row.line} ${deltaId} tuple must be ${expected.join(" / ")}; found ${row.state} / ${row.mode}`);
+		}
+	}
+	return errors;
 }
 
 function parseExactMarkdownTable(source, options) {
@@ -291,6 +368,7 @@ function validateCapabilityMatrix(source) {
 		errors.push(`capability-matrix: delimiter line ${delimiterIndex + 1} is malformed`);
 	}
 	const capabilityLines = new Map();
+	const capabilityRows = new Map();
 	const updaterRows = [];
 	for (let index = headerIndex + 2; index < lines.length; index += 1) {
 		const line = lines[index];
@@ -329,6 +407,7 @@ function validateCapabilityMatrix(source) {
 			errors.push(`capability-matrix: line ${index + 1} capability "${row.capability_id}" duplicates line ${firstLine}`);
 		} else {
 			capabilityLines.set(row.capability_id, index + 1);
+			capabilityRows.set(row.capability_id, { line: index + 1, row });
 		}
 	}
 	if (updaterRows.length !== 1) {
@@ -348,6 +427,17 @@ function validateCapabilityMatrix(source) {
 				.map((field) => updater.row[field])
 				.join(" / ");
 			errors.push(`capability-matrix: line ${updater.line} updater authority must be ${expected}; found ${actual}`);
+		}
+	}
+	for (const [capabilityId, expectedValues] of D0_INVENTORY_CAPABILITIES) {
+		const inventory = capabilityRows.get(capabilityId);
+		if (!inventory) {
+			errors.push(`capability-matrix: missing D0 inventory capability ${capabilityId}`);
+			continue;
+		}
+		const actualValues = D0_INVENTORY_FIELDS.map((field) => inventory.row[field]);
+		if (actualValues.some((value, index) => value !== expectedValues[index])) {
+			errors.push(`capability-matrix: line ${inventory.line} capability "${capabilityId}" D0 tuple must be ${expectedValues.join(" / ")}; found ${actualValues.join(" / ")}`);
 		}
 	}
 	return errors;

@@ -13,6 +13,16 @@
 | release_tag | refs/tags/v2.0.3 | 631813e4baaea1c2115182050be736b6491097e5 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
 | release_branch | refs/heads/release/2.0.3 | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |
 
+2.0.3 reviewed delta 的活动映射如下。`partial`、`missing` 和 `blocked` 是代码或决策缺口，不能降格为 Field Validation Pending。
+
+| delta_id | current_tauri | convergence_mode | evidence |
+| --- | --- | --- | --- |
+| lyrics.nested-render-base | partial | parity | 2.0.3 nested row/context/readability groups 与行级 render base 同步；当前 Stage 外层相对层级已实现，但 active/exiting row group 的 effective render-base 联合 characterization 仍待 D1 |
+| visual.cursor-shelf-layer | missing | parity | 上游 2500ms cursor auto-hide 与 `cursor-hidden` Shelf lift/foreground gate；当前没有等价 producer 或 Shelf gate，D1 必须补代码和测试 |
+| updater.github-release | partial | architecture-replacement | 上游 2.0.3 使用外部 HTTPS 网盘页并交浏览器打开；Tauri 明确采用 GitHub Release + signed Update Runtime，不实现网盘/browser-only 模型 |
+| visual.sonic-workshop | blocked | parity | preset 8 作者 CmzYa、Steam Workshop project `3747222633` 与 vendor bundle 独立于 Sonic Topography；等待单独 provenance/再分发决定，不复用 Ajin 来源链 |
+| wallpaper.idle-dispose | implemented | parity | Rust Wallpaper Runtime 的 idle dispose 与 repeated dispose 自动测试已覆盖；无需以 Windows 实机验证替代代码结论 |
+
 除 Sonic Topography 外，本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。Sonic 依据已确认的来源链、维护者审阅的公开合作证据与项目决策采用直接迁移；该证据不等于书面授权或许可放宽，实施仍须适配 visual-engine 的 scheduler、resource scope、typed settings 和生命周期 seam。
 
 | 领域 | 上游证据 | 当前 Tauri 证据 | 目标所有权 | 迁移规则 |
@@ -27,6 +37,8 @@
 | 歌词请求 | `06-lyrics/00-lyrics-fetch-parse.js` | lyrics store、custom lyrics、`App.tsx` | lyrics controller | 保留 fallback、自定义歌词与 stale request 语义 |
 | 舞台歌词 | `02-visual/10-lyrics-mask-textures.js` 至 `14-stage-lyrics-rendering.js` | `packages/visual-engine/src/stage-lyrics/**` | visual-engine | 保留旧 mesh 直到新正文 ready，双预算上传 |
 | Sonic Topography | `public/sonic-topography-preset.js`、`03-beat/06-sonic-audio-monitor.js`；原始来源 `yin-yizhen/sonic-topography@3ff303e` | `packages/visual-engine/src/sonic-topography/**` | visual-engine | 直接迁移视觉算法，保留 Ajin、来源 commit、Non-Commercial Learning License 和修改说明；不继承全局脚本结构 |
+| Cursor activity / Shelf cursor layer | 2.0.3 cursor activity producer、`body.cursor-hidden` 与 Shelf lift/layer gate | 尚未实现 | future Web cursor runtime + visual-engine Shelf input | 2500ms idle、activity/visibility/dispose、真实 cursor 呈现与 selection-preserving Shelf gate 必须作为 D1 代码差距实现 |
+| Sonic Workshop | 2.0.3 `public/sonic-workshop-preset.js`、`public/vendor/sonic-workshop/**`；CmzYa / Workshop `3747222633` | 尚未迁移 | independent future visual Module or explicit exclusion | 不得用 Sonic Topography/Ajin provenance 代替；来源决定前不复制 bundle |
 | 主循环与调度 | `00-state/10-frame-scheduler.js`、`11-main-loop.js` | visual-engine runtime | visual scheduler | analyser/视觉采样可限流，媒体状态不可限流 |
 | 3D 歌单架 | `04-shelf/**` | visual shelf modules、`shelf-detail-data.ts` | visual-engine + library controller | 数据增长时 DOM/GPU 对象保持有界 |
 | Home 2.0 | `05-playback/03-home-discover-weather.js`、`03a-home-dashboard.js`、`05-home-actions.js` | `home/EmptyHomeHost.tsx`、`App.tsx` | home controller/surface | 维持当前 API，允许重做 UI 组织 |
@@ -34,6 +46,8 @@
 | 完整桌面 | `desktop/full-desktop-mode-runtime.js` | `apps/desktop/src-tauri/src/runtime/full_desktop/**`、`apps/desktop/src-tauri/src/app/full_desktop_runtime.rs`、`apps/desktop/src-tauri/src/commands/full_desktop.rs`、Web `full-desktop-runtime` Port/Adapter/runtime | Rust full desktop runtime | 动态创建主窗口前恢复 journal；状态机统一 attach、reconcile、Escape/tray/exit rollback，无法证明恢复时 fail closed |
 | 原生桌面图标 | `desktop/desktop-native-icon-layer-runtime.js`、`desktop/desktop-icon-shape-runtime.js` | `apps/desktop/src-tauri/src/platform/windows/full_desktop.rs` | Rust Windows platform | 只操作经 parent/thread/PID/creation-time 验证的 WorkerW/DefView/ListView；快照化 mutation 必须在 deadline 内 best-effort 对称 rollback |
 | Wallpaper Engine | `desktop/wallpaper-engine-runtime.js`、`desktop/wallpaper-engine-library.js` | Rust core/Windows Adapter/app lifecycle + Web `WallpaperEngineRuntimePort`/Background/controller | Rust runtime/platform + Web controller/background | 只关闭 exact location，不终止共享 Wallpaper Engine 核心进程；图片/视频/preview 仅用登记 project-id/role custom protocol；exact signer、bounded absence/journal recovery、DWM 主背景、HWND rebind、周期 location mute、成功-session epoch cleanup 与 Full Desktop transition owner 已实现。原生 WGC/D3D 未启用，明确使用 `glassSamplerReady=false` 的 DOM/static fallback；真实 Scene/DWM/静音/cursor/mixed-DPI/soak 为 Field Validation Pending（non-blocking） |
+| Wallpaper idle dispose | 2.0.3 idle Scene dispose 幂等成功 | Rust Wallpaper Runtime idle/repeated dispose tests | Rust runtime | 该语义已自动验证；与 Wallpaper library 搜索/星标/隐藏恢复 partial、native WGC missing 分开记录 |
+| 更新 | 2.0.3 external HTTPS download pages | existing Tauri updater；future signed Update Runtime | Rust Update Runtime Port | GitHub Release 是明确 architecture replacement；生产 contract 切换前当前状态保持 partial，且不经过 Bun Sidecar |
 | 桌面歌词 | `desktop/main.js`、overlay preload | desktop lyrics Rust/React modules | desktop runtime | 保持锁定、穿透、拖动和显示器修正 |
 | 内存与资源 | `desktop/system-memory.js`、`00-state/08-desktop-render-power.js` | visual perf state、Rust diagnostics | resources runtime | 系统级释放默认关闭且不在前台播放运行 |
 | 缓存治理 | `desktop/main.js` cache handlers、`server.js` cache paths | `runtime/cache.rs`、`commands/cache.rs` | cache runtime | 只管理已验证分类，不接受任意删除路径，不跟随 reparse point |

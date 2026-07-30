@@ -54,6 +54,46 @@ const updaterCapability = {
 	performance_budget: "startup non-blocking",
 };
 const updaterCapabilityRow = renderCapability(updaterCapability);
+const d0InventoryCapabilities = [
+	["baseline.electron-2.0.3", "implemented", "P0", "parity", "none"],
+	["lyrics.stage-v2", "partial", "P0", "parity", "none"],
+	["visual.cursor-activity", "missing", "P0", "parity", "none"],
+	["visual.shelf-cursor-layer", "missing", "P0", "parity", "none"],
+	["visual.sonic-workshop", "blocked", "P0", "parity", "provenance-decision"],
+	["wallpaper.idle-dispose", "implemented", "P0", "parity", "none"],
+	["playback.startup-resume", "missing", "P0", "parity", "none"],
+	["queue.drag-sort", "missing", "P1", "parity", "none"],
+	["library.drag-sort", "missing", "P1", "parity", "none"],
+	["lyrics.track-offset", "missing", "P1", "parity", "none"],
+	["beatmap.local-song", "partial", "P1", "parity", "none"],
+	["local-import.expanded", "partial", "P1", "parity", "none"],
+	["hotkeys.editor", "missing", "P1", "parity", "none"],
+	["visual.archive", "missing", "P1", "parity", "none"],
+	["visual.camera-gesture", "missing", "P2", "parity", "none"],
+	["wallpaper.library", "partial", "P1", "parity", "none"],
+	["wallpaper.wgc", "missing", "P1", "parity", "none"],
+	["accounts.provider-order", "missing", "P1", "parity", "none"],
+	["search.multi-provider-offset", "partial", "P1", "parity", "none"],
+] as const;
+const d0InventoryRows = d0InventoryCapabilities.map(([
+	capabilityId,
+	currentTauri,
+	parityLevel,
+	convergenceMode,
+	blockedBy,
+]) => renderCapability({
+	...exampleCapability,
+	capability_id: capabilityId,
+	current_tauri: currentTauri,
+	parity_level: parityLevel,
+	convergence_mode: convergenceMode,
+	blocked_by: blockedBy,
+}));
+const completeCapabilityRows = [
+	expandedCapabilityRow,
+	updaterCapabilityRow,
+	...d0InventoryRows,
+];
 const activeUpstreamIdentity = [
 	"| baseline_role | repository | tag | peeled_commit | tree | package_version |",
 	"| --- | --- | --- | --- | --- | --- |",
@@ -65,16 +105,24 @@ const upstreamReleaseProvenance = [
 	"| release_tag | refs/tags/v2.0.3 | 631813e4baaea1c2115182050be736b6491097e5 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |",
 	"| release_branch | refs/heads/release/2.0.3 | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |",
 ].join("\n");
+const d0SourceMap = [
+	"| delta_id | current_tauri | convergence_mode | evidence |",
+	"| --- | --- | --- | --- |",
+	"| lyrics.nested-render-base | partial | parity | D1 layer characterization |",
+	"| visual.cursor-shelf-layer | missing | parity | D1 cursor and Shelf runtime |",
+	"| updater.github-release | partial | architecture-replacement | D2 signed GitHub Update Runtime |",
+	"| visual.sonic-workshop | blocked | parity | independent CmzYa / 3747222633 provenance decision |",
+	"| wallpaper.idle-dispose | implemented | parity | Rust idle and repeated dispose tests |",
+].join("\n");
 const withActiveUpstreamIdentity = (body: string) => `${activeUpstreamIdentity}\n\n${body}`;
 
 const validDocuments = {
 	capabilityMatrix: withActiveUpstreamIdentity([
 		expandedCapabilityHeader,
 		expandedCapabilityDelimiter,
-		expandedCapabilityRow,
-		updaterCapabilityRow,
+		...completeCapabilityRows,
 	].join("\n")),
-	upstreamSourceMap: `${activeUpstreamIdentity}\n\n${upstreamReleaseProvenance}`,
+	upstreamSourceMap: `${activeUpstreamIdentity}\n\n${upstreamReleaseProvenance}\n\n${d0SourceMap}`,
 	appExtractionMap: "| symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |\n| --- | --- | --- | --- | --- | --- | --- | --- |",
 	apiFreeze: [
 		"SidecarClient",
@@ -141,7 +189,7 @@ test("M0 baseline rejects duplicate release provenance tables", () => {
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n\n${duplicateProvenance}`,
-	})).toContain("upstream-source-map: duplicate release provenance headers at lines 5, 10");
+	})).toContain("upstream-source-map: duplicate release provenance headers at lines 5, 18");
 });
 
 test("M0 baseline rejects legacy active markers beside the v2.0.3 identity", () => {
@@ -170,6 +218,37 @@ test("M0 baseline allows legacy active marker text inside fenced history", () =>
 		capabilityMatrix: `${validDocuments.capabilityMatrix}\n\n${capabilityHistory}`,
 		upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n\n${sourceMapHistory}`,
 	})).toEqual([]);
+});
+
+test("D0 inventory reports missing reviewed v2.0.3 and inherited gaps", () => {
+	const missingCapabilityIds = new Set([
+		"baseline.electron-2.0.3",
+		"visual.cursor-activity",
+		"playback.startup-resume",
+	]);
+	const missingInventory = d0InventoryRows.filter((_, index) =>
+		!missingCapabilityIds.has(d0InventoryCapabilities[index][0])).join("\n");
+	const errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			d0InventoryRows.join("\n"),
+			missingInventory,
+		),
+	});
+	expect(errors).toContain("capability-matrix: missing D0 inventory capability baseline.electron-2.0.3");
+	expect(errors).toContain("capability-matrix: missing D0 inventory capability visual.cursor-activity");
+	expect(errors).toContain("capability-matrix: missing D0 inventory capability playback.startup-resume");
+});
+
+test("D0 source map requires every reviewed v2.0.3 delta", () => {
+	const errors = validateConvergenceBaseline({
+		...validDocuments,
+		upstreamSourceMap: validDocuments.upstreamSourceMap.replace(
+			"| visual.sonic-workshop | blocked | parity | independent CmzYa / 3747222633 provenance decision |\n",
+			"",
+		),
+	});
+	expect(errors).toContain("upstream-source-map: missing D0 delta visual.sonic-workshop");
 });
 
 test("convergence guard rejects the legacy capability matrix schema", () => {
@@ -235,6 +314,7 @@ test("convergence guard requires blocked capabilities to name a blocker", () => 
 			blocked_by: "MineRadio-api",
 		}),
 		updaterCapabilityRow,
+		...d0InventoryRows,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -313,7 +393,7 @@ test("convergence guard rejects a hidden second capability table", () => {
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix: `${validDocuments.capabilityMatrix}\n\n${legacyTable}`,
-	})).toContain("capability-matrix: duplicate capability headers at lines 5, 10");
+	})).toContain("capability-matrix: duplicate capability headers at lines 5, 29");
 });
 
 test("convergence guard identifies capability headers by parsed column names", () => {
@@ -323,6 +403,7 @@ test("convergence guard identifies capability headers by parsed column names", (
 		expandedCapabilityDelimiter,
 		expandedCapabilityRow,
 		updaterCapabilityRow,
+		...d0InventoryRows,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -335,7 +416,7 @@ test("convergence guard reports capability rows with the wrong column count", ()
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain('capability-matrix: line 9 capability "visual.example" has 3 columns; expected 14');
+	})).toContain('capability-matrix: line 28 capability "visual.example" has 3 columns; expected 14');
 });
 
 test("convergence guard reports malformed capability headers by line", () => {
@@ -449,6 +530,7 @@ test("convergence guard treats escaped pipes as capability cell content", () => 
 		expandedCapabilityDelimiter,
 		escapedPipeRow,
 		updaterCapabilityRow,
+		...d0InventoryRows,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
