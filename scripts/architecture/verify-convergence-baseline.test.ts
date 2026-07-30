@@ -9,14 +9,51 @@ const expandedCapabilityHeader = "| capability_id | domain | upstream_source | t
 const capabilityRow = (cells: string[]) => `| ${cells.join(" | ")} |`;
 const legacyCapabilityDelimiter = capabilityRow(Array(13).fill("---"));
 const expandedCapabilityDelimiter = capabilityRow(Array(14).fill("---"));
+const expandedCapabilityColumns = expandedCapabilityHeader
+	.slice(1, -1)
+	.split("|")
+	.map((column) => column.trim());
+const renderCapability = (capability: Record<string, string>) => capabilityRow(
+	expandedCapabilityColumns.map((column) => capability[column] ?? ""),
+);
 const legacyCapabilityRow = capabilityRow([
 	"app.example", "app", "upstream", "target", "baseline", "P0", "app",
 	"none", "none", "tests", "none", "none", "bounded",
 ]);
-const expandedCapabilityRow = capabilityRow([
-	"app.example", "app", "upstream", "target", "baseline", "P0", "parity",
-	"app", "none", "none", "tests", "none", "none", "bounded",
-]);
+const exampleCapability = {
+	capability_id: "app.example",
+	domain: "app",
+	upstream_source: "upstream",
+	target_module: "target",
+	current_tauri: "baseline",
+	parity_level: "P0",
+	convergence_mode: "parity",
+	owner_layer: "app",
+	api_dependency: "none",
+	state_migration: "none",
+	verification: "tests",
+	feature_gate: "none",
+	blocked_by: "none",
+	performance_budget: "bounded",
+};
+const expandedCapabilityRow = renderCapability(exampleCapability);
+const updaterCapability = {
+	capability_id: "updater.github-release",
+	domain: "updater",
+	upstream_source: "2.0.3 external HTTPS download pages",
+	target_module: "GitHub Release + signed Update Runtime",
+	current_tauri: "partial",
+	parity_level: "P1",
+	convergence_mode: "architecture-replacement",
+	owner_layer: "Rust/Tauri adapter",
+	api_dependency: "none",
+	state_migration: "none",
+	verification: "Updater Interface TDD",
+	feature_gate: "none",
+	blocked_by: "none",
+	performance_budget: "startup non-blocking",
+};
+const updaterCapabilityRow = renderCapability(updaterCapability);
 const activeUpstreamIdentity = [
 	"| baseline_role | repository | tag | peeled_commit | tree | package_version |",
 	"| --- | --- | --- | --- | --- | --- |",
@@ -32,9 +69,10 @@ const withActiveUpstreamIdentity = (body: string) => `${activeUpstreamIdentity}\
 
 const validDocuments = {
 	capabilityMatrix: withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
-		legacyCapabilityRow,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
+		updaterCapabilityRow,
 	].join("\n")),
 	upstreamSourceMap: `${activeUpstreamIdentity}\n\n${upstreamReleaseProvenance}`,
 	appExtractionMap: "| symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |\n| --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -49,12 +87,6 @@ const validDocuments = {
 		"ApiError",
 	].join("\n"),
 };
-
-const expandedCapabilityMatrix = withActiveUpstreamIdentity([
-	expandedCapabilityHeader,
-	expandedCapabilityDelimiter,
-	expandedCapabilityRow,
-].join("\n"));
 
 test("M0 baseline accepts the active Mineradio v2.0.3 release identity", () => {
 	expect(validateConvergenceBaseline(validDocuments)).toEqual([]);
@@ -140,19 +172,157 @@ test("M0 baseline allows legacy active marker text inside fenced history", () =>
 	})).toEqual([]);
 });
 
-test("convergence guard accepts the expanded capability matrix schema", () => {
+test("convergence guard rejects the legacy capability matrix schema", () => {
 	expect(validateConvergenceBaseline({
 		...validDocuments,
-		capabilityMatrix: expandedCapabilityMatrix,
+		capabilityMatrix: withActiveUpstreamIdentity([
+			legacyCapabilityHeader,
+			legacyCapabilityDelimiter,
+			legacyCapabilityRow,
+		].join("\n")),
+	})).toContain("capability-matrix: header line 5 has 13 columns; expected 14");
+});
+
+test("convergence guard rejects invalid capability taxonomy values", () => {
+	const cases = [
+		{ column: "current_tauri", value: "done" },
+		{ column: "parity_level", value: "X" },
+		{ column: "parity_level", value: "P3" },
+		{ column: "convergence_mode", value: "unknown" },
+		{ column: "convergence_mode", value: "" },
+	];
+	for (const testCase of cases) {
+		const capabilityMatrix = withActiveUpstreamIdentity([
+			expandedCapabilityHeader,
+			expandedCapabilityDelimiter,
+			renderCapability({
+				...exampleCapability,
+				[testCase.column]: testCase.value,
+			}),
+		].join("\n"));
+		const renderedValue = testCase.value || "<empty>";
+		expect(validateConvergenceBaseline({
+			...validDocuments,
+			capabilityMatrix,
+		})).toContain(
+			`capability-matrix: line 7 capability "app.example" column ${testCase.column} has invalid value "${renderedValue}"`,
+		);
+	}
+});
+
+test("convergence guard requires blocked capabilities to name a blocker", () => {
+	const blockedCapability = {
+		...exampleCapability,
+		current_tauri: "blocked",
+	};
+	const blockedWithoutOwner = withActiveUpstreamIdentity([
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		renderCapability(blockedCapability),
+	].join("\n"));
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: blockedWithoutOwner,
+	})).toContain(
+		'capability-matrix: line 7 capability "app.example" column blocked_by must name a blocker for blocked state',
+	);
+
+	const blockedWithOwner = withActiveUpstreamIdentity([
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		renderCapability({
+			...blockedCapability,
+			blocked_by: "MineRadio-api",
+		}),
+		updaterCapabilityRow,
+	].join("\n"));
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: blockedWithOwner,
 	})).toEqual([]);
 });
 
-test("convergence guard identifies capability headers by parsed column names", () => {
-	const compactHeader = legacyCapabilityHeader.replaceAll(" | ", "|");
-	const capabilityMatrix = withActiveUpstreamIdentity([
-		compactHeader,
+test("convergence guard requires exactly one updater authority", () => {
+	const missingUpdaterMatrix = withActiveUpstreamIdentity([
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
+	].join("\n"));
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: missingUpdaterMatrix,
+	})).toContain("capability-matrix: expected exactly one updater authority; found 0");
+
+	const duplicateUpdaterMatrix = withActiveUpstreamIdentity([
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
+		updaterCapabilityRow,
+		updaterCapabilityRow,
+	].join("\n"));
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: duplicateUpdaterMatrix,
+	})).toContain("capability-matrix: expected exactly one updater authority; found 2 at lines 8, 9");
+});
+
+test("convergence guard freezes the GitHub Release updater authority tuple", () => {
+	const cases = [
+		{ field: "capability_id", value: "updater.signed" },
+		{ field: "domain", value: "desktop" },
+		{ field: "current_tauri", value: "baseline" },
+		{ field: "parity_level", value: "P0" },
+		{ field: "convergence_mode", value: "parity" },
+	];
+	const authorityFields = [
+		"capability_id",
+		"domain",
+		"current_tauri",
+		"parity_level",
+		"convergence_mode",
+	];
+	for (const testCase of cases) {
+		const changedUpdater = {
+			...updaterCapability,
+			[testCase.field]: testCase.value,
+		};
+		const capabilityMatrix = withActiveUpstreamIdentity([
+			expandedCapabilityHeader,
+			expandedCapabilityDelimiter,
+			expandedCapabilityRow,
+			renderCapability(changedUpdater),
+		].join("\n"));
+		const actualAuthority = authorityFields
+			.map((field) => changedUpdater[field as keyof typeof changedUpdater])
+			.join(" / ");
+		expect(validateConvergenceBaseline({
+			...validDocuments,
+			capabilityMatrix,
+		})).toContain(
+			`capability-matrix: line 8 updater authority must be updater.github-release / updater / partial / P1 / architecture-replacement; found ${actualAuthority}`,
+		);
+	}
+});
+
+test("convergence guard rejects a hidden second capability table", () => {
+	const legacyTable = [
+		legacyCapabilityHeader,
 		legacyCapabilityDelimiter,
 		legacyCapabilityRow,
+	].join("\n");
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: `${validDocuments.capabilityMatrix}\n\n${legacyTable}`,
+	})).toContain("capability-matrix: duplicate capability headers at lines 5, 10");
+});
+
+test("convergence guard identifies capability headers by parsed column names", () => {
+	const compactHeader = expandedCapabilityHeader.replaceAll(" | ", "|");
+	const capabilityMatrix = withActiveUpstreamIdentity([
+		compactHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
+		updaterCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -165,20 +335,22 @@ test("convergence guard reports capability rows with the wrong column count", ()
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain('capability-matrix: line 8 capability "visual.example" has 3 columns; expected 13');
+	})).toContain('capability-matrix: line 9 capability "visual.example" has 3 columns; expected 14');
 });
 
 test("convergence guard reports malformed capability headers by line", () => {
-	const capabilityMatrix = withActiveUpstreamIdentity("| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by |");
+	const capabilityMatrix = withActiveUpstreamIdentity(
+		expandedCapabilityHeader.replace(" | convergence_mode", ""),
+	);
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain("capability-matrix: header line 5 has 12 columns; expected 13 or 14");
+	})).toContain("capability-matrix: header line 5 has 13 columns; expected 14");
 });
 
 test("convergence guard reports unsupported capability columns by header line", () => {
 	const capabilityMatrix = withActiveUpstreamIdentity(
-		legacyCapabilityHeader.replace("target_module", "unexpected_target"),
+		expandedCapabilityHeader.replace("target_module", "unexpected_target"),
 	);
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -187,34 +359,37 @@ test("convergence guard reports unsupported capability columns by header line", 
 });
 
 test("convergence guard rejects arbitrary columns appended to the legacy schema", () => {
-	const unsupportedHeader = legacyCapabilityHeader.replace(
+	const unsupportedHeader = expandedCapabilityHeader.replace(
 		"performance_budget |",
 		"performance_budget | unexpected |",
 	);
 	const capabilityMatrix = withActiveUpstreamIdentity([
 		unsupportedHeader,
-		expandedCapabilityDelimiter,
-		expandedCapabilityRow,
+		capabilityRow(Array(15).fill("---")),
+		capabilityRow([...Array(14).fill("value"), "unexpected"]),
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain("capability-matrix: header line 5 has unsupported columns");
+	})).toContain("capability-matrix: header line 5 has 15 columns; expected 14");
 });
 
 test("convergence guard rejects capability delimiters with the wrong width", () => {
-	const capabilityMatrix = withActiveUpstreamIdentity(`${legacyCapabilityHeader}\n| --- |`);
+	const capabilityMatrix = withActiveUpstreamIdentity(`${expandedCapabilityHeader}\n| --- |`);
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain("capability-matrix: delimiter line 6 has 1 columns; expected 13");
+	})).toContain("capability-matrix: delimiter line 6 has 1 columns; expected 14");
 });
 
 test("convergence guard reports empty capability identifiers by line", () => {
-	const emptyCapabilityRow = legacyCapabilityRow.replace("app.example", "   ");
+	const emptyCapabilityRow = renderCapability({
+		...exampleCapability,
+		capability_id: "   ",
+	});
 	const capabilityMatrix = withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
 		emptyCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
@@ -225,10 +400,10 @@ test("convergence guard reports empty capability identifiers by line", () => {
 
 test("convergence guard reports duplicate capability identifiers with both lines", () => {
 	const capabilityMatrix = withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
-		legacyCapabilityRow,
-		legacyCapabilityRow,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
+		expandedCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -239,9 +414,9 @@ test("convergence guard reports duplicate capability identifiers with both lines
 test("convergence guard ignores capability tables inside fenced examples", () => {
 	const capabilityMatrix = withActiveUpstreamIdentity([
 		"```md",
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
-		legacyCapabilityRow,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
 		"```",
 	].join("\n"));
 	expect(validateConvergenceBaseline({
@@ -253,9 +428,9 @@ test("convergence guard ignores capability tables inside fenced examples", () =>
 test("convergence guard ignores capability tables inside HTML comments", () => {
 	const capabilityMatrix = withActiveUpstreamIdentity([
 		"<!--",
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
-		legacyCapabilityRow,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
+		expandedCapabilityRow,
 		"-->",
 	].join("\n"));
 	expect(validateConvergenceBaseline({
@@ -265,11 +440,15 @@ test("convergence guard ignores capability tables inside HTML comments", () => {
 });
 
 test("convergence guard treats escaped pipes as capability cell content", () => {
-	const escapedPipeRow = legacyCapabilityRow.replace("upstream", "upstream \\| source");
+	const escapedPipeRow = renderCapability({
+		...exampleCapability,
+		upstream_source: "upstream \\| source",
+	});
 	const capabilityMatrix = withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
 		escapedPipeRow,
+		updaterCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -278,10 +457,10 @@ test("convergence guard treats escaped pipes as capability cell content", () => 
 });
 
 test("convergence guard reports capability rows missing the closing pipe", () => {
-	const malformedCapabilityRow = legacyCapabilityRow.slice(0, -1);
+	const malformedCapabilityRow = expandedCapabilityRow.slice(0, -1);
 	const capabilityMatrix = withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
 		malformedCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
@@ -291,10 +470,10 @@ test("convergence guard reports capability rows missing the closing pipe", () =>
 });
 
 test("convergence guard reports non-canonical rows without outer pipes", () => {
-	const malformedCapabilityRow = legacyCapabilityRow.slice(1, -1).trim();
+	const malformedCapabilityRow = expandedCapabilityRow.slice(1, -1).trim();
 	const capabilityMatrix = withActiveUpstreamIdentity([
-		legacyCapabilityHeader,
-		legacyCapabilityDelimiter,
+		expandedCapabilityHeader,
+		expandedCapabilityDelimiter,
 		malformedCapabilityRow,
 	].join("\n"));
 	expect(validateConvergenceBaseline({

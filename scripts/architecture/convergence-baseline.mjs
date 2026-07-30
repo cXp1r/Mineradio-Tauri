@@ -1,10 +1,26 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-const CAPABILITY_HEADERS = [
-	"| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |",
-	"| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | convergence_mode | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |",
+const CAPABILITY_HEADER = "| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | convergence_mode | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |";
+const CAPABILITY_ENUMS = {
+	current_tauri: new Set(["baseline", "implemented", "partial", "missing", "blocked"]),
+	parity_level: new Set(["P0", "P1", "P2"]),
+	convergence_mode: new Set(["parity", "architecture-replacement", "intentional-exclusion"]),
+};
+const UPDATER_AUTHORITY_FIELDS = [
+	"capability_id",
+	"domain",
+	"current_tauri",
+	"parity_level",
+	"convergence_mode",
 ];
+const EXPECTED_UPDATER_AUTHORITY = {
+	capability_id: "updater.github-release",
+	domain: "updater",
+	current_tauri: "partial",
+	parity_level: "P1",
+	convergence_mode: "architecture-replacement",
+};
 const EXTRACTION_HEADER = "| symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |";
 const ACTIVE_UPSTREAM_IDENTITY = {
 	repository: "XxHuberrr/Mineradio",
@@ -239,25 +255,32 @@ function validateCapabilityMatrix(source) {
 	}
 	const lines = source.split(/\r?\n/);
 	const activeLines = identifyActiveMarkdownLines(lines);
-	const headerIndex = lines.findIndex((line, index) =>
-		activeLines[index] && parseMarkdownTableRow(line)?.[0] === "capability_id");
-	if (headerIndex < 0) {
+	const headerIndexes = [];
+	for (let index = 0; index < lines.length; index += 1) {
+		if (activeLines[index]
+			&& parseMarkdownTableRow(lines[index])?.[0] === "capability_id") {
+			headerIndexes.push(index);
+		}
+	}
+	if (headerIndexes.length === 0) {
 		return ["capability-matrix: missing required header"];
 	}
-	const columns = parseMarkdownTableRow(lines[headerIndex]);
-	if (columns.length !== 13 && columns.length !== 14) {
-		return [`capability-matrix: header line ${headerIndex + 1} has ${columns.length} columns; expected 13 or 14`];
+	const errors = [];
+	if (headerIndexes.length > 1) {
+		errors.push(`capability-matrix: duplicate capability headers at lines ${headerIndexes.map((index) => index + 1).join(", ")}`);
 	}
-	const supportedHeader = CAPABILITY_HEADERS.some((header) => {
-		const expectedColumns = parseMarkdownTableRow(header);
-		return expectedColumns.length === columns.length
-			&& expectedColumns.every((column, index) => column === columns[index]);
-	});
+	const headerIndex = headerIndexes[0];
+	const columns = parseMarkdownTableRow(lines[headerIndex]);
+	if (columns.length !== 14) {
+		return [...errors, `capability-matrix: header line ${headerIndex + 1} has ${columns.length} columns; expected 14`];
+	}
+	const expectedColumns = parseMarkdownTableRow(CAPABILITY_HEADER);
+	const supportedHeader = expectedColumns.every((column, index) =>
+		column === columns[index]);
 	if (!supportedHeader) {
-		return [`capability-matrix: header line ${headerIndex + 1} has unsupported columns`];
+		return [...errors, `capability-matrix: header line ${headerIndex + 1} has unsupported columns`];
 	}
 	const capabilityIndex = columns.indexOf("capability_id");
-	const errors = [];
 	const delimiterIndex = headerIndex + 1;
 	const delimiter = parseMarkdownTableRow(lines[delimiterIndex] || "");
 	if (!delimiter) {
@@ -268,6 +291,7 @@ function validateCapabilityMatrix(source) {
 		errors.push(`capability-matrix: delimiter line ${delimiterIndex + 1} is malformed`);
 	}
 	const capabilityLines = new Map();
+	const updaterRows = [];
 	for (let index = headerIndex + 2; index < lines.length; index += 1) {
 		const line = lines[index];
 		const cells = parseMarkdownTableRow(line);
@@ -284,15 +308,46 @@ function validateCapabilityMatrix(source) {
 		}
 		const row = Object.fromEntries(columns.map((column, cellIndex) =>
 			[column, cells[cellIndex]]));
+		if (row.domain === "updater" || row.capability_id.startsWith("updater.")) {
+			updaterRows.push({ line: index + 1, row });
+		}
 		if (!row.capability_id) {
 			errors.push(`capability-matrix: line ${index + 1} has empty capability_id`);
 			continue;
+		}
+		for (const [column, allowedValues] of Object.entries(CAPABILITY_ENUMS)) {
+			if (!allowedValues.has(row[column])) {
+				errors.push(`capability-matrix: line ${index + 1} capability "${row.capability_id}" column ${column} has invalid value "${row[column] || "<empty>"}"`);
+			}
+		}
+		if (row.current_tauri === "blocked"
+			&& (!row.blocked_by || row.blocked_by.trim().toLowerCase() === "none")) {
+			errors.push(`capability-matrix: line ${index + 1} capability "${row.capability_id}" column blocked_by must name a blocker for blocked state`);
 		}
 		const firstLine = capabilityLines.get(row.capability_id);
 		if (firstLine) {
 			errors.push(`capability-matrix: line ${index + 1} capability "${row.capability_id}" duplicates line ${firstLine}`);
 		} else {
 			capabilityLines.set(row.capability_id, index + 1);
+		}
+	}
+	if (updaterRows.length !== 1) {
+		const locations = updaterRows.length > 0
+			? ` at lines ${updaterRows.map((entry) => entry.line).join(", ")}`
+			: "";
+		errors.push(`capability-matrix: expected exactly one updater authority; found ${updaterRows.length}${locations}`);
+	} else {
+		const updater = updaterRows[0];
+		const authorityMatches = UPDATER_AUTHORITY_FIELDS.every((field) =>
+			updater.row[field] === EXPECTED_UPDATER_AUTHORITY[field]);
+		if (!authorityMatches) {
+			const expected = UPDATER_AUTHORITY_FIELDS
+				.map((field) => EXPECTED_UPDATER_AUTHORITY[field])
+				.join(" / ");
+			const actual = UPDATER_AUTHORITY_FIELDS
+				.map((field) => updater.row[field])
+				.join(" / ");
+			errors.push(`capability-matrix: line ${updater.line} updater authority must be ${expected}; found ${actual}`);
 		}
 	}
 	return errors;
