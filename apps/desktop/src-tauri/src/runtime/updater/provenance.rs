@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 const PROVENANCE_SCHEMA_VERSION: u64 = 2;
-const CANDIDATE_SCHEMA_VERSION: u64 = 1;
+const CANDIDATE_SCHEMA_VERSION: u64 = 2;
 const PROVENANCE_PLATFORM: &str = "windows-x86_64";
 const PROVENANCE_PACKAGE_TYPE: &str = "nsis";
 const PROVENANCE_INSTALL_MODE: &str = "currentUser";
@@ -104,7 +104,7 @@ pub(crate) struct ProvenanceVerificationInput<'a> {
     pub expected_target: &'a str,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VerifiedReleaseEvidence {
     candidate_id: ReleaseCandidateId,
     candidate_identity: Vec<u8>,
@@ -133,6 +133,22 @@ impl VerifiedReleaseEvidence {
 
     pub(crate) fn provenance_sha256(&self) -> &str {
         &self.provenance_sha256
+    }
+
+    pub(crate) fn repository(&self) -> &str {
+        &self.repository
+    }
+
+    pub(crate) fn tag(&self) -> &str {
+        &self.tag
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub(crate) fn installer_name(&self) -> &str {
+        &self.installer.name
     }
 
     pub(crate) fn verify_installer_measurement(
@@ -184,16 +200,13 @@ impl ProvenanceVerifier {
         let provenance = parse_canonical_provenance(input.raw_provenance)?;
         validate_expected_source(&provenance, &input)?;
 
-        let signature_text =
-            decode_tauri_text(input.provenance_signature, "invalid-provenance-signature")?;
-        let signature = Signature::decode(&signature_text).map_err(|error| {
-            ProvenanceError::new(
-                "invalid-provenance-signature",
-                format!("provenance 签名格式无效: {error}"),
-            )
-        })?;
+        let provenance_signature = decode_tauri_signature(
+            input.provenance_signature,
+            "provenance",
+            "invalid-provenance-signature",
+        )?;
         self.public_key
-            .verify(input.raw_provenance, &signature, true)
+            .verify(input.raw_provenance, &provenance_signature.signature, false)
             .map_err(|error| {
                 ProvenanceError::new(
                     "provenance-signature-rejected",
@@ -201,10 +214,23 @@ impl ProvenanceVerifier {
                 )
             })?;
 
-        validate_nonempty_signature(input.installer_signature, "安装包签名")?;
+        let installer_signature = decode_tauri_signature(
+            input.installer_signature,
+            "安装包",
+            "invalid-installer-signature",
+        )?;
+        // 此处只做不需要安装包字节的 key-id 与预哈希算法预检；完整 Minisign 验证由流式下载阶段完成。
+        self.public_key
+            .verify_stream(&installer_signature.signature)
+            .map_err(|error| {
+                ProvenanceError::new(
+                    "invalid-installer-signature",
+                    format!("安装包签名不属于固定 updater 公钥或不是预哈希签名: {error}"),
+                )
+            })?;
         let provenance_sha256 = sha256_hex(input.raw_provenance);
-        let installer_signature_sha256 = sha256_hex(input.installer_signature.as_bytes());
-        let provenance_signature_sha256 = sha256_hex(input.provenance_signature.as_bytes());
+        let installer_signature_sha256 = sha256_hex(&installer_signature.protected_identity);
+        let provenance_signature_sha256 = sha256_hex(&provenance_signature.protected_identity);
         let candidate = CandidateIdentityV1 {
             schema_version: CANDIDATE_SCHEMA_VERSION,
             repository: &provenance.repository,
@@ -399,21 +425,50 @@ fn decode_tauri_text(encoded: &str, error_code: &'static str) -> Result<String, 
     })
 }
 
-fn validate_nonempty_signature(signature: &str, label: &str) -> Result<(), ProvenanceError> {
-    if signature.trim().is_empty() {
+fn decode_tauri_signature(
+    encoded: &str,
+    label: &str,
+    error_code: &'static str,
+) -> Result<DecodedTauriSignature, ProvenanceError> {
+    let signature_text = decode_tauri_text(encoded, error_code)?;
+    if signature_text.contains('\r') {
         return Err(ProvenanceError::new(
-            "invalid-installer-signature",
-            format!("{label}不能为空"),
+            error_code,
+            format!("{label}签名必须使用 canonical LF 换行"),
         ));
     }
-    Ok(())
+    let canonical_text = signature_text.strip_suffix('\n').unwrap_or(&signature_text);
+    let lines = canonical_text.split('\n').collect::<Vec<_>>();
+    if lines.len() != 4
+        || !lines[0].starts_with("untrusted comment: ")
+        || !lines[2].starts_with("trusted comment: ")
+        || lines.iter().any(|line| line.is_empty())
+    {
+        return Err(ProvenanceError::new(
+            error_code,
+            format!("{label}签名必须是 canonical 四行 Minisign 结构"),
+        ));
+    }
+    let signature = Signature::decode(&signature_text).map_err(|error| {
+        ProvenanceError::new(error_code, format!("{label}签名格式无效: {error}"))
+    })?;
+    let protected_identity = format!("{}\n{}\n{}\n", lines[1], lines[2], lines[3]).into_bytes();
+    Ok(DecodedTauriSignature {
+        signature,
+        protected_identity,
+    })
+}
+
+struct DecodedTauriSignature {
+    signature: Signature,
+    protected_identity: Vec<u8>,
 }
 
 fn sha256_hex(input: &[u8]) -> String {
     format!("{:x}", Sha256::digest(input))
 }
 
-fn is_lower_hex(value: &str, expected_length: usize) -> bool {
+pub(super) fn is_lower_hex(value: &str, expected_length: usize) -> bool {
     value.len() == expected_length
         && value
             .bytes()
@@ -459,6 +514,7 @@ fn is_valid_repository(repository: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use base64::Engine as _;
     use serde::Deserialize;
 
     use super::*;
@@ -494,6 +550,16 @@ mod tests {
             expected_commit_sha: "0123456789abcdef0123456789abcdef01234567",
             expected_target: "windows-x86_64-nsis",
         }
+    }
+
+    fn rewrite_tauri_signature(encoded: &str, rewrite: impl FnOnce(&mut Vec<String>)) -> String {
+        let decoded = STANDARD
+            .decode(encoded)
+            .expect("fixture Tauri base64 应有效");
+        let text = String::from_utf8(decoded).expect("fixture 签名应为 UTF-8");
+        let mut lines = text.lines().map(str::to_owned).collect::<Vec<_>>();
+        rewrite(&mut lines);
+        STANDARD.encode(format!("{}\n", lines.join("\n")))
     }
 
     #[test]
@@ -600,7 +666,87 @@ mod tests {
                 .code(),
             "invalid-provenance-signature"
         );
+        let mut malformed_installer_signature = input(&contract);
+        malformed_installer_signature.installer_signature = "%%%";
+        assert_eq!(
+            verifier
+                .verify(malformed_installer_signature)
+                .expect_err("畸形安装包签名必须失败")
+                .code(),
+            "invalid-installer-signature"
+        );
         assert!(ProvenanceVerifier::from_tauri_pubkey("%%%").is_err());
+    }
+
+    #[test]
+    fn installer_signature_must_match_the_configured_key_before_candidate_creation() {
+        let contract = contract();
+        let verifier = ProvenanceVerifier::from_tauri_pubkey(&contract.encoded_public_key)
+            .expect("fixture 公钥应有效");
+        let wrong_key_id = rewrite_tauri_signature(&contract.installer_signature, |lines| {
+            let mut payload = STANDARD
+                .decode(&lines[1])
+                .expect("fixture Minisign payload 应有效");
+            payload[2] ^= 0xff;
+            lines[1] = STANDARD.encode(payload);
+        });
+        let mut invalid = input(&contract);
+        invalid.installer_signature = &wrong_key_id;
+
+        assert_eq!(
+            verifier
+                .verify(invalid)
+                .expect_err("错误 key id 的安装包签名不得生成 candidate")
+                .code(),
+            "invalid-installer-signature"
+        );
+    }
+
+    #[test]
+    fn untrusted_signature_comments_do_not_change_candidate_identity() {
+        let contract = contract();
+        let verifier = ProvenanceVerifier::from_tauri_pubkey(&contract.encoded_public_key)
+            .expect("fixture 公钥应有效");
+        let baseline = verifier
+            .verify(input(&contract))
+            .expect("fixture 应通过验证");
+        let installer_signature = rewrite_tauri_signature(&contract.installer_signature, |lines| {
+            lines[0] = "untrusted comment: 已被替换但不属于签名身份".into();
+        });
+        let provenance_signature =
+            rewrite_tauri_signature(&contract.provenance_signature, |lines| {
+                lines[0] = "untrusted comment: 另一条未签名说明".into();
+            });
+        let mut rewritten = input(&contract);
+        rewritten.installer_signature = &installer_signature;
+        rewritten.provenance_signature = &provenance_signature;
+
+        let evidence = verifier
+            .verify(rewritten)
+            .expect("只改变 untrusted comment 不应破坏有效签名");
+
+        assert_eq!(evidence.candidate_id(), baseline.candidate_id());
+        assert_eq!(evidence.candidate_identity(), baseline.candidate_identity());
+    }
+
+    #[test]
+    fn tauri_signature_rejects_trailing_lines_ignored_by_the_minisign_parser() {
+        let contract = contract();
+        let verifier = ProvenanceVerifier::from_tauri_pubkey(&contract.encoded_public_key)
+            .expect("fixture 公钥应有效");
+        let trailing = rewrite_tauri_signature(&contract.installer_signature, |lines| {
+            lines.push("未签名尾随内容".into());
+        });
+        let mut invalid = input(&contract);
+        invalid.installer_signature = &trailing;
+
+        assert_eq!(
+            verifier
+                .verify(invalid)
+                .expect_err("带尾随行的安装包签名必须失败")
+                .code(),
+            "invalid-installer-signature"
+        );
     }
 
     #[test]

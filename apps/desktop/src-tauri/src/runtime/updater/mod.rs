@@ -7,11 +7,13 @@ use std::{
 #[cfg(test)]
 use std::collections::VecDeque;
 
+use semver::Version;
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod github_source;
 pub(crate) mod provenance;
 
-use provenance::ReleaseCandidateId;
+use provenance::{ReleaseCandidateId, VerifiedReleaseEvidence};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -127,11 +129,46 @@ pub enum UpdateReceipt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedAssetLocator {
+    repository: String,
+    tag: String,
+    asset_name: String,
+}
+
+impl VerifiedAssetLocator {
+    fn from_evidence(evidence: &VerifiedReleaseEvidence) -> Self {
+        Self {
+            repository: evidence.repository().to_owned(),
+            tag: evidence.tag().to_owned(),
+            asset_name: evidence.installer_name().to_owned(),
+        }
+    }
+
+    fn canonical_url(&self) -> String {
+        format!(
+            "https://github.com/{}/releases/download/{}/{}",
+            self.repository, self.tag, self.asset_name
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum NormalizedReleaseTrust {
+    Verified {
+        evidence: VerifiedReleaseEvidence,
+        asset_locator: VerifiedAssetLocator,
+    },
+    #[cfg(test)]
+    Fake,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedRelease {
-    pub candidate_id: ReleaseCandidateId,
-    pub version: String,
-    pub notes: Vec<String>,
-    pub published_at: Option<String>,
+    candidate_id: ReleaseCandidateId,
+    version: String,
+    notes: Vec<String>,
+    published_at: Option<String>,
+    trust: NormalizedReleaseTrust,
 }
 
 impl NormalizedRelease {
@@ -151,12 +188,12 @@ impl NormalizedRelease {
             version,
             notes,
             published_at,
+            NormalizedReleaseTrust::Fake,
         )
     }
 
     pub(crate) fn from_verified<I, N>(
-        candidate_id: ReleaseCandidateId,
-        version: impl Into<String>,
+        evidence: VerifiedReleaseEvidence,
         notes: I,
         published_at: Option<&str>,
     ) -> Self
@@ -164,7 +201,19 @@ impl NormalizedRelease {
         I: IntoIterator<Item = N>,
         N: Into<String>,
     {
-        Self::from_candidate_id(candidate_id, version, notes, published_at)
+        let candidate_id = evidence.candidate_id().clone();
+        let version = evidence.version().to_owned();
+        let asset_locator = VerifiedAssetLocator::from_evidence(&evidence);
+        Self::from_candidate_id(
+            candidate_id,
+            version,
+            notes,
+            published_at,
+            NormalizedReleaseTrust::Verified {
+                evidence,
+                asset_locator,
+            },
+        )
     }
 
     fn from_candidate_id<I, N>(
@@ -172,6 +221,7 @@ impl NormalizedRelease {
         version: impl Into<String>,
         notes: I,
         published_at: Option<&str>,
+        trust: NormalizedReleaseTrust,
     ) -> Self
     where
         I: IntoIterator<Item = N>,
@@ -182,6 +232,29 @@ impl NormalizedRelease {
             version: version.into(),
             notes: notes.into_iter().map(Into::into).collect(),
             published_at: published_at.map(str::to_owned),
+            trust,
+        }
+    }
+
+    pub(crate) fn verified_asset_url(&self) -> Option<String> {
+        match &self.trust {
+            NormalizedReleaseTrust::Verified { asset_locator, .. } => {
+                Some(asset_locator.canonical_url())
+            }
+            #[cfg(test)]
+            NormalizedReleaseTrust::Fake => None,
+        }
+    }
+
+    pub(crate) fn release_page_url(&self) -> Option<String> {
+        match &self.trust {
+            NormalizedReleaseTrust::Verified { evidence, .. } => Some(format!(
+                "https://github.com/{}/releases/tag/{}",
+                evidence.repository(),
+                evidence.tag()
+            )),
+            #[cfg(test)]
+            NormalizedReleaseTrust::Fake => None,
         }
     }
 }
@@ -226,6 +299,7 @@ struct PendingCheck {
 #[derive(Debug)]
 struct UpdateState {
     snapshot: UpdateSnapshot,
+    normalized_candidate: Option<NormalizedRelease>,
     next_operation: u64,
     pending_check: Option<PendingCheck>,
 }
@@ -248,6 +322,7 @@ impl UpdateState {
                 remind_after: None,
                 skipped_version: None,
             },
+            normalized_candidate: None,
             next_operation: 1,
             pending_check: None,
         }
@@ -291,18 +366,70 @@ impl UpdateState {
         self.snapshot.operation = None;
         match result {
             Ok(Some(release)) => {
-                self.snapshot.phase = UpdatePhase::Available;
-                self.snapshot.candidate = Some(UpdateCandidateView {
-                    id: release.candidate_id.into_string(),
-                    version: release.version,
-                    notes: release.notes,
-                    published_at: release.published_at,
+                let decision = self.normalized_candidate.as_ref().map(|current| {
+                    if current.candidate_id == release.candidate_id {
+                        if current.version == release.version {
+                            CandidateRefreshDecision::Same
+                        } else {
+                            CandidateRefreshDecision::IdentityConflict
+                        }
+                    } else {
+                        match (
+                            Version::parse(&current.version),
+                            Version::parse(&release.version),
+                        ) {
+                            (Ok(current_version), Ok(incoming_version))
+                                if incoming_version > current_version =>
+                            {
+                                CandidateRefreshDecision::Higher
+                            }
+                            (Ok(current_version), Ok(incoming_version))
+                                if incoming_version == current_version =>
+                            {
+                                CandidateRefreshDecision::IdentityConflict
+                            }
+                            (Ok(_), Ok(_)) => CandidateRefreshDecision::Rollback,
+                            _ => CandidateRefreshDecision::InvalidVersion,
+                        }
+                    }
                 });
-                self.snapshot.fault = None;
+
+                match decision {
+                    None | Some(CandidateRefreshDecision::Higher) => {
+                        self.commit_candidate(release, UpdatePhase::Available);
+                    }
+                    Some(CandidateRefreshDecision::Same) => {
+                        self.commit_candidate(release, pending.previous_phase);
+                    }
+                    Some(CandidateRefreshDecision::IdentityConflict) => {
+                        self.snapshot.phase = pending.previous_phase;
+                        self.snapshot.fault = Some(candidate_fault(
+                            "UPDATE_CANDIDATE_IDENTITY_CONFLICT",
+                            "同版本更新 candidate identity 与当前可信 candidate 不一致",
+                        ));
+                    }
+                    Some(CandidateRefreshDecision::Rollback) => {
+                        self.snapshot.phase = pending.previous_phase;
+                        self.snapshot.fault = Some(candidate_fault(
+                            "UPDATE_CANDIDATE_ROLLBACK_REJECTED",
+                            "更新源返回了低于当前可信 candidate 的版本",
+                        ));
+                    }
+                    Some(CandidateRefreshDecision::InvalidVersion) => {
+                        self.snapshot.phase = pending.previous_phase;
+                        self.snapshot.fault = Some(candidate_fault(
+                            "UPDATE_CANDIDATE_VERSION_REJECTED",
+                            "更新源返回了无效 candidate 版本",
+                        ));
+                    }
+                }
             }
             Ok(None) => {
-                self.snapshot.phase = UpdatePhase::Current;
-                self.snapshot.candidate = None;
+                self.snapshot.phase = if self.normalized_candidate.is_some() {
+                    pending.previous_phase
+                } else {
+                    UpdatePhase::Current
+                };
                 self.snapshot.fault = None;
             }
             Err(error) => {
@@ -317,6 +444,36 @@ impl UpdateState {
         }
         self.snapshot.revision += 1;
         Some(self.snapshot.clone())
+    }
+
+    fn commit_candidate(&mut self, release: NormalizedRelease, phase: UpdatePhase) {
+        self.snapshot.phase = phase;
+        self.snapshot.candidate = Some(UpdateCandidateView {
+            id: release.candidate_id.as_str().to_owned(),
+            version: release.version.clone(),
+            notes: release.notes.clone(),
+            published_at: release.published_at.clone(),
+        });
+        self.normalized_candidate = Some(release);
+        self.snapshot.fault = None;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidateRefreshDecision {
+    Same,
+    Higher,
+    IdentityConflict,
+    Rollback,
+    InvalidVersion,
+}
+
+fn candidate_fault(code: &str, message: &str) -> UpdateFaultView {
+    UpdateFaultView {
+        stage: UpdateFaultStage::Check,
+        code: code.to_owned(),
+        retryable: false,
+        message: message.to_owned(),
     }
 }
 
@@ -369,6 +526,23 @@ impl UpdateRuntime {
             .clone()
     }
 
+    pub(crate) fn release_page_url(&self, candidate_id: Option<&str>) -> Option<String> {
+        let state = self.state.lock().expect("update runtime state poisoned");
+        if let Some(candidate_id) = candidate_id {
+            if let Some(candidate) = state.normalized_candidate.as_ref() {
+                if candidate.candidate_id.as_str() == candidate_id {
+                    return candidate.release_page_url();
+                }
+            }
+            return None;
+        }
+
+        Some(format!(
+            "https://github.com/{}/releases",
+            github_source::OFFICIAL_REPOSITORY
+        ))
+    }
+
     pub fn dispatch(&self, request: UpdateDispatchRequest) -> UpdateReceipt {
         let published = {
             let mut state = self.state.lock().expect("update runtime state poisoned");
@@ -382,18 +556,29 @@ impl UpdateRuntime {
                 UpdateIntent::Download { candidate_id }
                 | UpdateIntent::RemindLater { candidate_id }
                 | UpdateIntent::SkipVersion { candidate_id }
-                | UpdateIntent::InstallAndRestart { candidate_id }
-                | UpdateIntent::OpenRelease { candidate_id } => {
+                | UpdateIntent::InstallAndRestart { candidate_id } => {
                     if state
-                        .snapshot
-                        .candidate
+                        .normalized_candidate
                         .as_ref()
-                        .map(|value| value.id.as_str())
+                        .map(|value| value.candidate_id.as_str())
                         != Some(candidate_id.as_str())
                     {
                         return UpdateReceipt::StaleCandidate;
                     }
                     return UpdateReceipt::InvalidOrder;
+                }
+                UpdateIntent::OpenRelease { candidate_id } => {
+                    let Some(candidate) = state.normalized_candidate.as_ref() else {
+                        return UpdateReceipt::StaleCandidate;
+                    };
+                    if candidate.candidate_id.as_str() != candidate_id {
+                        return UpdateReceipt::StaleCandidate;
+                    }
+                    return if candidate.release_page_url().is_some() {
+                        UpdateReceipt::Accepted
+                    } else {
+                        UpdateReceipt::PolicyBlocked
+                    };
                 }
                 UpdateIntent::CancelDownload { operation_id } => {
                     if state

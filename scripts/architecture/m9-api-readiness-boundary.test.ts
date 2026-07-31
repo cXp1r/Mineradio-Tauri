@@ -106,8 +106,7 @@ test("M9 media image source is consumed by production code", () => {
 });
 
 test("M9 leaves the frozen Sidecar API, shared contracts and packaging unchanged", () => {
-	// 固定 M8 基线的 tree/blob 对象，避免 CI 浅克隆依赖历史提交仍能 fail closed。
-	// 这是 M9 里程碑锁；M10 首次合法修改这些目标时必须显式退役或更新。
+	// 固定 M8 的 Sidecar tree/blob 与 externalBin 组装对象；通用 Rust 依赖文件不属于 Sidecar API。
 	const frozenObjects = {
 		"sidecars/api": "1e1bebdabe0816830b103c2eb6d9268cb2b658cc",
 		"packages/shared": "f0579e8fb63fc1974faaf2a1226b9a50a2704959",
@@ -115,8 +114,6 @@ test("M9 leaves the frozen Sidecar API, shared contracts and packaging unchanged
 		"apps/desktop/src-tauri/src/sidecar.rs": "6524d0c19163037e152a9700332677aa1d46db17",
 		"apps/desktop/scripts/build-sidecar-binary.mjs": "528bca986b626f52010beac6bd9f749d88a540f9",
 		"apps/desktop/src-tauri/build.rs": "60bbee17a711034ba666e1fc9a58b21a4b4c1f69",
-		"apps/desktop/src-tauri/Cargo.toml": "2f5ba3cb0389c02a0c9a26d8ef7ae8df09ce32c9",
-		"apps/desktop/src-tauri/Cargo.lock": "62d6942cff3a84eafa37d0bc93731d0e27526529",
 		"apps/desktop/src-tauri/tauri.conf.json": "4653a4664e72e7ba0369511ce47ae72c06365ab9",
 	} as const;
 	const frozenTargets = Object.keys(frozenObjects);

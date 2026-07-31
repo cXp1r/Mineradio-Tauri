@@ -179,7 +179,50 @@ function signatureIdentity(signature, label) {
   if (typeof signature !== "string" || signature.trim().length === 0) {
     throw new Error(`${label}必须是非空字符串`);
   }
-  return createHash("sha256").update(signature, "utf8").digest("hex");
+  if (signature !== signature.trim()) {
+    throw new Error(`${label}必须是 canonical Tauri base64`);
+  }
+  const decoded = Buffer.from(signature, "base64");
+  if (decoded.toString("base64") !== signature) {
+    throw new Error(`${label}必须是 canonical Tauri base64`);
+  }
+  let signatureText;
+  try {
+    signatureText = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+  } catch {
+    throw new Error(`${label}Tauri base64 内容不是 UTF-8`);
+  }
+  if (signatureText.includes("\r")) {
+    throw new Error(`${label}签名必须使用 canonical LF 换行`);
+  }
+  const canonicalText = signatureText.endsWith("\n")
+    ? signatureText.slice(0, -1)
+    : signatureText;
+  const lines = canonicalText.split("\n");
+  if (
+    lines.length !== 4 ||
+    !lines[0].startsWith("untrusted comment: ") ||
+    !lines[2].startsWith("trusted comment: ") ||
+    lines.some((line) => line.length === 0)
+  ) {
+    throw new Error(`${label}签名必须是 canonical 四行 Minisign 结构`);
+  }
+  const signaturePayload = Buffer.from(lines[1], "base64");
+  const globalSignature = Buffer.from(lines[3], "base64");
+  if (
+    signaturePayload.toString("base64") !== lines[1] ||
+    signaturePayload.length !== 74 ||
+    signaturePayload[0] !== 0x45 ||
+    signaturePayload[1] !== 0x44 ||
+    globalSignature.toString("base64") !== lines[3] ||
+    globalSignature.length !== 64
+  ) {
+    throw new Error(`${label}签名 payload 不是 canonical 预哈希 Minisign`);
+  }
+  const protectedIdentity = `${lines[1]}\n${lines[2]}\n${lines[3]}\n`;
+  return createHash("sha256")
+    .update(protectedIdentity, "utf8")
+    .digest("hex");
 }
 
 export function canonicalReleaseCandidateIdentityText({
@@ -197,7 +240,7 @@ export function canonicalReleaseCandidateIdentityText({
   }
 
   const identity = {
-    schema_version: 1,
+    schema_version: 2,
     repository: provenance.repository,
     tag: provenance.tag,
     version,

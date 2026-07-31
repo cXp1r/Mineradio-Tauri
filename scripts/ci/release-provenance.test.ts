@@ -31,6 +31,16 @@ function validationJson(value: unknown) {
   return `${JSON.stringify(value)}\n`;
 }
 
+function rewriteTauriSignature(
+  encoded: string,
+  rewrite: (lines: string[]) => void,
+) {
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const lines = decoded.replace(/\n$/, "").split("\n");
+  rewrite(lines);
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8").toString("base64");
+}
+
 const cliPath = fileURLToPath(
   new URL("./release-provenance.mjs", import.meta.url),
 );
@@ -299,18 +309,56 @@ describe("createReleaseCandidateIdentity", () => {
     expect(createReleaseCandidateIdentity(stagingFixture)).toBe(
       createReleaseCandidateIdentity(githubFixture),
     );
-    expect(
+    expect(() =>
       createReleaseCandidateIdentity({
         ...stagingFixture,
         installerSignature: `${contract.installer_signature}tampered`,
       }),
-    ).not.toBe(createReleaseCandidateIdentity(githubFixture));
+    ).toThrow("canonical Tauri base64");
     expect(() =>
       createReleaseCandidateIdentity({
         ...githubFixture,
         version: "1.2.4",
       }),
     ).toThrow("候选版本与 provenance tag 不一致");
+  });
+
+  test("候选身份忽略 untrusted comment 并拒绝尾随 Minisign 行", () => {
+    const provenance = JSON.parse(
+      readFileSync(sharedProvenancePath, "utf8"),
+    );
+    const contract = JSON.parse(readFileSync(sharedContractPath, "utf8"));
+    const canonicalInput = {
+      provenance,
+      version: "1.2.3",
+      installerSignature: contract.installer_signature,
+      provenanceSignature: contract.provenance_signature,
+    };
+    const rewrittenComment = rewriteTauriSignature(
+      contract.installer_signature,
+      (lines) => {
+        lines[0] = "untrusted comment: 可变但不属于候选身份";
+      },
+    );
+    const trailingLine = rewriteTauriSignature(
+      contract.installer_signature,
+      (lines) => {
+        lines.push("未签名尾随内容");
+      },
+    );
+
+    expect(
+      createReleaseCandidateIdentity({
+        ...canonicalInput,
+        installerSignature: rewrittenComment,
+      }),
+    ).toBe(createReleaseCandidateIdentity(canonicalInput));
+    expect(() =>
+      createReleaseCandidateIdentity({
+        ...canonicalInput,
+        installerSignature: trailingLine,
+      }),
+    ).toThrow("canonical 四行 Minisign");
   });
 });
 

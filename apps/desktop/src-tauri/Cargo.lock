@@ -2112,7 +2112,10 @@ dependencies = [
  "dirs 5.0.1",
  "getrandom 0.3.4",
  "minisign-verify",
+ "reqwest",
  "rusqlite",
+ "rustls",
+ "semver",
  "serde",
  "serde_json",
  "sha2",
@@ -2123,6 +2126,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tauri-plugin-updater",
  "time",
+ "url",
  "webview2-com",
  "windows-sys 0.61.2",
 ]
