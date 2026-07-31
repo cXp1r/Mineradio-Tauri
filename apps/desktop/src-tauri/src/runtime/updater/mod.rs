@@ -9,6 +9,10 @@ use std::collections::VecDeque;
 
 use serde::{Deserialize, Serialize};
 
+pub(crate) mod provenance;
+
+use provenance::ReleaseCandidateId;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum UpdatePhase {
@@ -124,13 +128,14 @@ pub enum UpdateReceipt {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NormalizedRelease {
-    pub candidate_id: String,
+    pub candidate_id: ReleaseCandidateId,
     pub version: String,
     pub notes: Vec<String>,
     pub published_at: Option<String>,
 }
 
 impl NormalizedRelease {
+    #[cfg(test)]
     pub fn new<I, N>(
         candidate_id: impl Into<String>,
         version: impl Into<String>,
@@ -141,8 +146,39 @@ impl NormalizedRelease {
         I: IntoIterator<Item = N>,
         N: Into<String>,
     {
+        Self::from_candidate_id(
+            ReleaseCandidateId::fake(candidate_id),
+            version,
+            notes,
+            published_at,
+        )
+    }
+
+    pub(crate) fn from_verified<I, N>(
+        candidate_id: ReleaseCandidateId,
+        version: impl Into<String>,
+        notes: I,
+        published_at: Option<&str>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = N>,
+        N: Into<String>,
+    {
+        Self::from_candidate_id(candidate_id, version, notes, published_at)
+    }
+
+    fn from_candidate_id<I, N>(
+        candidate_id: ReleaseCandidateId,
+        version: impl Into<String>,
+        notes: I,
+        published_at: Option<&str>,
+    ) -> Self
+    where
+        I: IntoIterator<Item = N>,
+        N: Into<String>,
+    {
         Self {
-            candidate_id: candidate_id.into(),
+            candidate_id,
             version: version.into(),
             notes: notes.into_iter().map(Into::into).collect(),
             published_at: published_at.map(str::to_owned),
@@ -257,7 +293,7 @@ impl UpdateState {
             Ok(Some(release)) => {
                 self.snapshot.phase = UpdatePhase::Available;
                 self.snapshot.candidate = Some(UpdateCandidateView {
-                    id: release.candidate_id,
+                    id: release.candidate_id.into_string(),
                     version: release.version,
                     notes: release.notes,
                     published_at: release.published_at,

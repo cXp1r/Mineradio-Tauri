@@ -397,7 +397,7 @@ export async function defaultVerifySignature({
 
 function readUtf8File(filePath, label) {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       readFileSync(filePath),
     );
   } catch (error) {
@@ -536,13 +536,17 @@ async function verifyRemoteRelease({
     });
 
     const provenancePath = downloadedPaths.get("release-provenance.json");
+    const rawProvenance = readUtf8File(
+      provenancePath,
+      "release-provenance.json",
+    );
     const manifestPath = downloadedPaths.get("latest.json");
     const executablePath = downloadedPaths.get(validation.expectedExeName);
     const executableSignaturePath = downloadedPaths.get(
       `${validation.expectedExeName}.sig`,
     );
     await provenanceVerifier({
-      provenance: parseJsonFile(provenancePath, "release-provenance.json"),
+      rawProvenance,
       repository: input.repository,
       tag: input.tag,
       commitSha: input.commitSha,

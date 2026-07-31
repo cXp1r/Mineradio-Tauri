@@ -12,6 +12,10 @@ import { basename, join } from "node:path";
 import { describe, expect, test } from "bun:test";
 
 import { publishRelease } from "./publish-release.mjs";
+import {
+  canonicalReleaseProvenanceText,
+  createReleaseProvenance,
+} from "./release-provenance.mjs";
 
 const REPOSITORY = "zzstar101/Mineradio-Tauri";
 const TAG = "v1.2.3";
@@ -88,29 +92,16 @@ function createFixture() {
 
 function writeProvenance(paths: FixturePaths) {
   const assetPaths = [paths.exePath, paths.exeSigPath, paths.manifestPath];
-  const provenance = {
-    schema_version: 1,
+  const provenance = createReleaseProvenance({
     repository: REPOSITORY,
     tag: TAG,
-    commit_sha: COMMIT_SHA,
-    assets: assetPaths
-      .map((assetPath) => {
-        const content = readFileSync(assetPath);
-
-        return {
-          name: basename(assetPath),
-          size: content.byteLength,
-          sha256: sha256(content),
-        };
-      })
-      .sort((left, right) =>
-        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
-      ),
-  };
+    commitSha: COMMIT_SHA,
+    assetPaths,
+  });
 
   writeFileSync(
     paths.provenancePath,
-    `${JSON.stringify(provenance, null, 2)}\n`,
+    canonicalReleaseProvenanceText(provenance),
     "utf8",
   );
 }
@@ -1124,6 +1115,51 @@ describe("publishRelease", () => {
 
       await expect(runPublish(fixture, github)).rejects.toThrow(
         "release-provenance.json 不是有效的 UTF-8",
+      );
+      expect(writeRequests(github)).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("拒绝远端语义相同但不是 canonical encoding 的 provenance v2", async () => {
+    const fixture = createFixture();
+
+    try {
+      const provenance = JSON.parse(
+        readFileSync(fixture.paths.provenancePath, "utf8"),
+      );
+      writeFileSync(
+        fixture.paths.provenancePath,
+        `${JSON.stringify(provenance, null, 2)}\n`,
+        "utf8",
+      );
+      const release = matchingRelease(fixture, { draft: false });
+      const github = createFakeGitHub({ releases: [release], latestId: release.id });
+
+      await expect(runPublish(fixture, github)).rejects.toThrow(
+        "来源证明不是 canonical provenance v2 编码",
+      );
+      expect(writeRequests(github)).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("拒绝带 UTF-8 BOM 的远端 provenance v2", async () => {
+    const fixture = createFixture();
+
+    try {
+      const canonical = readFileSync(fixture.paths.provenancePath);
+      writeFileSync(
+        fixture.paths.provenancePath,
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), canonical]),
+      );
+      const release = matchingRelease(fixture, { draft: false });
+      const github = createFakeGitHub({ releases: [release], latestId: release.id });
+
+      await expect(runPublish(fixture, github)).rejects.toThrow(
+        "来源证明不是 canonical provenance v2 编码",
       );
       expect(writeRequests(github)).toHaveLength(0);
     } finally {

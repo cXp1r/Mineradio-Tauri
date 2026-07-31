@@ -95,9 +95,45 @@ fn main() {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    const SHARED_PROVENANCE: &[u8] =
+        include_bytes!("../src/runtime/updater/fixtures/provenance-v2.json");
+    const SHARED_CONTRACT: &str =
+        include_str!("../src/runtime/updater/fixtures/provenance-v2-contract.json");
     const VALID_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkKUldRZjZMUkNHQTlpNTNtbFllY080SXpUNTFUR1Bwdld1Y05TQ2gxQ0JNMFFUYUxuNzNZN0dGTzM=";
     const VALID_SIGNATURE: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIG1pbmlzaWduIHNlY3JldCBrZXkKUldRZjZMUkNHQTlpNTlTTE9GeHo2Tnh2QVNYREplUnR1Wnlrd1FlcGJERUd0ODdpZzFCTnBXYVZXdU5ybTczWWlJaUpicTcxV2krZFA5ZUtMOE9DMzUxdndJYXNTU2JYeHdBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNTU1Nzc5OTY2CWZpbGU6dGVzdApRdEtNWFd5WWN3ZHBaQWxQRjd0RTJFTkprUmQxdWp2S2psajFtOVJ0SFRCblpQYTVXS1U1dVdSczVHb1A1TS9WcUU4MVFGdU1LSTVrL1NmTlFVYU9BQT09";
     const WRONG_PUBLIC_KEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEQxRDBGMTI1MkNERkVEQjkKUldTNTdkOHNKZkhRMFQwVzh4WjBmeStXa1hHb0VlU3VlSEszVEVYbWRKVlRON3dvZlBRdm52R0UK";
+
+    #[test]
+    fn release_verifier_accepts_the_runtime_provenance_contract_fixture() {
+        let contract: serde_json::Value =
+            serde_json::from_str(SHARED_CONTRACT).expect("共享 provenance contract 应有效");
+        let public_key = contract["encoded_public_key"]
+            .as_str()
+            .expect("contract 应包含测试公钥");
+        let signature = contract["provenance_signature"]
+            .as_str()
+            .expect("contract 应包含 provenance 签名");
+        let config = format!(r#"{{"plugins":{{"updater":{{"pubkey":"{public_key}"}}}}}}"#);
+
+        assert!(
+            super::verify_updater_signature(&config, SHARED_PROVENANCE, signature).is_ok(),
+            "发布验签器和 Runtime 必须接受同一份 provenance 签名"
+        );
+
+        let mut tampered = SHARED_PROVENANCE.to_vec();
+        tampered[0] ^= 1;
+        assert!(
+            super::verify_updater_signature(&config, &tampered, signature).is_err(),
+            "字段替换后原签名必须失败"
+        );
+        let wrong_signature = contract["installer_signature"]
+            .as_str()
+            .expect("contract 应包含安装包签名");
+        assert!(
+            super::verify_updater_signature(&config, SHARED_PROVENANCE, wrong_signature).is_err(),
+            "来自其他产物的有效签名必须失败"
+        );
+    }
 
     #[test]
     fn accepts_tauri_encoded_valid_signature() {
