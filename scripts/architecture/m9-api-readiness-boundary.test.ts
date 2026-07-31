@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync, readdirSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
@@ -29,6 +30,24 @@ function productionSourceFiles(directory: string): string[] {
 
 function repositoryPath(path: string): string {
 	return relative(repositoryRoot, path).replaceAll("\\", "/");
+}
+
+function normalizedTauriConfigDigest(source: string): string {
+	const normalizedNewlines = source.replaceAll("\r\n", "\n");
+	const versionPattern = /("version"\s*:\s*)"[^"]+"/g;
+	const matches = [...normalizedNewlines.matchAll(versionPattern)];
+	if (matches.length !== 1) {
+		throw new Error("tauri.conf.json 必须只包含一个顶层产品版本字段");
+	}
+	const config = JSON.parse(normalizedNewlines) as { version?: unknown };
+	if (typeof config.version !== "string") {
+		throw new Error("tauri.conf.json 产品版本必须是字符串");
+	}
+	const versionAgnostic = normalizedNewlines.replace(
+		versionPattern,
+		'$1"__PRODUCT_VERSION__"',
+	);
+	return createHash("sha256").update(versionAgnostic).digest("hex");
 }
 
 test("M9 keeps concrete Sidecar transport inside api and legacy adapters", () => {
@@ -114,7 +133,6 @@ test("M9 leaves the frozen Sidecar API, shared contracts and packaging unchanged
 		"apps/desktop/src-tauri/src/sidecar.rs": "6889c8f6d8b200c1af4f7b0f05792cbe9775ddeb",
 		"apps/desktop/scripts/build-sidecar-binary.mjs": "528bca986b626f52010beac6bd9f749d88a540f9",
 		"apps/desktop/src-tauri/build.rs": "b1707ceaf4500df1f9467946959f40d0c732110a",
-		"apps/desktop/src-tauri/tauri.conf.json": "4653a4664e72e7ba0369511ce47ae72c06365ab9",
 	} as const;
 	const frozenTargets = Object.keys(frozenObjects);
 	const committedObjects = Object.fromEntries(frozenTargets.map((target) => {
@@ -143,4 +161,13 @@ test("M9 leaves the frozen Sidecar API, shared contracts and packaging unchanged
 	expect(untrackedResult.status).toBe(0);
 	expect(untrackedResult.stderr).toBe("");
 	expect(untrackedResult.stdout.trim()).toBe("");
+
+	// 产品版本由 release-version 门禁统一管理；除该字段外，Sidecar externalBin 与打包配置逐字冻结。
+	const tauriConfig = readFileSync(
+		resolve(repositoryRoot, "apps/desktop/src-tauri/tauri.conf.json"),
+		"utf8",
+	);
+	expect(normalizedTauriConfigDigest(tauriConfig)).toBe(
+		"bc8bd5d23b879fa5b4334241db4efef9fe1b78e41f6168e3001b8d139fb49b34",
+	);
 });

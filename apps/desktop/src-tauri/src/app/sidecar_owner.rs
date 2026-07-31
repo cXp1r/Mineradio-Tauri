@@ -272,14 +272,14 @@ mod tests {
     use crate::app::update_install_gate::UpdateInstallGate;
     use std::{ffi::OsString, path::Path, process::Command};
 
-    fn command_shape(
-        command: &Command,
-    ) -> (
+    type CommandShape = (
         OsString,
         Vec<OsString>,
         Option<PathBuf>,
         Vec<(OsString, Option<OsString>)>,
-    ) {
+    );
+
+    fn command_shape(command: &Command) -> CommandShape {
         (
             command.get_program().to_os_string(),
             command.get_args().map(OsString::from).collect(),

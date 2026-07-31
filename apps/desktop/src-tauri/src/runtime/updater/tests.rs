@@ -1432,13 +1432,15 @@ fn quarantine_rejects_same_version_republished_identity_without_an_in_memory_can
     tauri::async_runtime::block_on(async {
         let directory = RuntimeTestDirectory::new();
         let trusted = verified_fixture_evidence();
-        let mut policy = UpdatePolicySnapshot::default();
-        policy.quarantine = Some(UpdatePolicyQuarantine {
-            candidate_id: trusted.candidate_id().as_str().into(),
-            version: "1.2.3".into(),
-            reason: "UPDATE_INSTALLER_SIGNATURE_REJECTED".into(),
-            rejected_at: 1,
-        });
+        let policy = UpdatePolicySnapshot {
+            quarantine: Some(UpdatePolicyQuarantine {
+                candidate_id: trusted.candidate_id().as_str().into(),
+                version: "1.2.3".into(),
+                reason: "UPDATE_INSTALLER_SIGNATURE_REJECTED".into(),
+                rejected_at: 1,
+            }),
+            ..UpdatePolicySnapshot::default()
+        };
         let policy_store = Arc::new(MemoryUpdatePolicyStore::new(policy));
         let runtime = UpdateRuntime::with_recovery_and_policy(
             "0.1.0",

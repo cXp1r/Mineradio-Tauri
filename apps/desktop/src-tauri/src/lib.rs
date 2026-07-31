@@ -5,6 +5,8 @@ mod paths;
 mod platform;
 mod runtime;
 mod sidecar;
+#[cfg(feature = "updater-smoke")]
+pub mod updater_smoke;
 
 use std::{
     path::PathBuf,

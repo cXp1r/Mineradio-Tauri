@@ -179,6 +179,14 @@ impl LocalRelaunchArguments {
         }
     }
 
+    /// CI-only Draft smoke 不是产品进程，其 CLI 参数不得被候选应用继承。
+    #[cfg(feature = "updater-smoke")]
+    pub(crate) fn none_for_smoke() -> Self {
+        Self {
+            arguments: Vec::new(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn none_for_test() -> Self {
         Self {

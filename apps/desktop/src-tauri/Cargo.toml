@@ -1,6 +1,6 @@
 [package]
 name = "mineradio-tauri"
-version = "0.1.0"
+version = "1.0.0"
 description = "GPL-3.0-only Rust desktop runtime for MineRadio-Tauri; bundled web assets may carry separate license notices"
 authors = ["MineRadio-Tauri contributors"]
 edition = "2021"
@@ -57,3 +57,9 @@ windows-sys = { version = "0.61", features = [
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+updater-smoke = []
+
+[[example]]
+name = "updater-smoke"
+path = "examples/updater_smoke.rs"
+required-features = ["updater-smoke"]

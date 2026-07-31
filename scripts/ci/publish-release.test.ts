@@ -11,10 +11,17 @@ import { basename, join } from "node:path";
 
 import { describe, expect, test } from "bun:test";
 
-import { publishRelease } from "./publish-release.mjs";
+import {
+  finalizeDraftRelease,
+  prepareDraftRelease,
+  publishRelease,
+} from "./publish-release.mjs";
+import { runPublishReleaseDraft } from "./publish-release-draft.mjs";
 import {
   canonicalReleaseProvenanceText,
+  createReleaseCandidateIdentity,
   createReleaseProvenance,
+  parseCanonicalReleaseProvenance,
 } from "./release-provenance.mjs";
 
 const REPOSITORY = "zzstar101/Mineradio-Tauri";
@@ -24,6 +31,17 @@ const COMMIT_SHA = "0123456789abcdef0123456789abcdef01234567";
 const DEFAULT_BRANCH = "main";
 const API_ACCEPT = "application/vnd.github+json";
 const API_VERSION = "2022-11-28";
+const SIGNATURE_CONTRACT = JSON.parse(
+  readFileSync(
+    join(
+      import.meta.dir,
+      "../../apps/desktop/src-tauri/src/runtime/updater/fixtures/provenance-v2-contract.json",
+    ),
+    "utf8",
+  ),
+);
+const INSTALLER_SIGNATURE = SIGNATURE_CONTRACT.installer_signature as string;
+const PROVENANCE_SIGNATURE = SIGNATURE_CONTRACT.provenance_signature as string;
 
 type FixturePaths = {
   tauriConfigPath: string;
@@ -51,7 +69,7 @@ function createFixture() {
     provenancePath: join(root, "release-provenance.json"),
     provenanceSigPath: join(root, "release-provenance.json.sig"),
   };
-  const signature = "trusted-executable-signature\n";
+  const signature = INSTALLER_SIGNATURE;
   const releaseUrl = `https://github.com/${REPOSITORY}/releases/download/${TAG}/${exeName}`;
   const manifest = {
     version: VERSION,
@@ -75,7 +93,7 @@ function createFixture() {
   writeFileSync(paths.exeSigPath, signature, "utf8");
   writeFileSync(paths.manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
   writeProvenance(paths);
-  writeFileSync(paths.provenanceSigPath, "trusted-provenance-signature\n", "utf8");
+  writeFileSync(paths.provenanceSigPath, PROVENANCE_SIGNATURE, "utf8");
 
   return {
     root,
@@ -188,12 +206,15 @@ function createFakeGitHub(options: {
     latestResponseLost?: boolean;
   };
   immutableOnPublish?: boolean;
+  immutableReleasesEnabled?: boolean;
 } = {}) {
   const releases = [...(options.releases ?? [])];
   const requests: any[] = [];
   const faults = { ...(options.faults ?? {}) };
   let latestId = options.latestId ?? null;
   let tagReadCount = 0;
+  let publishDuringAssetDownloadName: string | undefined;
+  let immutableReleasesEnabled = options.immutableReleasesEnabled ?? true;
   let nextReleaseId = Math.max(200, ...releases.map((release) => release.id + 1));
   let nextAssetId = Math.max(
     2000,
@@ -219,6 +240,16 @@ function createFakeGitHub(options: {
     requests.push({ method, url: url.toString(), headers, body });
 
     const repositoryPrefix = `/repos/${REPOSITORY}`;
+
+    if (
+      method === "GET" &&
+      url.pathname === `${repositoryPrefix}/immutable-releases`
+    ) {
+      return jsonResponse({
+        enabled: immutableReleasesEnabled,
+        enforced_by_owner: false,
+      });
+    }
 
     if (
       method === "GET" &&
@@ -263,9 +294,17 @@ function createFakeGitHub(options: {
     );
     if (method === "GET" && assetMatch) {
       const assetId = Number(assetMatch[1]);
-      const asset = releases
-        .flatMap((release) => release.assets)
-        .find((candidate) => candidate.id === assetId);
+      const owner = releases.find((release) =>
+        release.assets.some((candidate: any) => candidate.id === assetId),
+      );
+      const asset = owner?.assets.find(
+        (candidate: any) => candidate.id === assetId,
+      );
+      if (owner && asset?.name === publishDuringAssetDownloadName) {
+        publishDuringAssetDownloadName = undefined;
+        owner.draft = false;
+        owner.immutable = true;
+      }
 
       return asset
         ? new Response(asset.bytes, {
@@ -402,6 +441,12 @@ function createFakeGitHub(options: {
     get latestId() {
       return latestId;
     },
+    publishDuringAssetDownload(name: string) {
+      publishDuringAssetDownloadName = name;
+    },
+    setImmutableReleasesEnabled(enabled: boolean) {
+      immutableReleasesEnabled = enabled;
+    },
   };
 }
 
@@ -419,6 +464,7 @@ async function runPublish(
       env: {
         GITHUB_TOKEN: "secret-token",
         GH_TOKEN: "must-also-be-removed",
+        IMMUTABLE_RELEASES_READ_TOKEN: "policy-token",
         SAFE_ENVIRONMENT_VALUE: "visible",
       },
       sleep: async () => {},
@@ -434,6 +480,61 @@ async function runPublish(
   );
 
   return verifierCalls;
+}
+
+function localCandidateId(fixture: ReturnType<typeof createFixture>) {
+  return createReleaseCandidateIdentity({
+    provenance: parseCanonicalReleaseProvenance(
+      readFileSync(fixture.paths.provenancePath, "utf8"),
+    ),
+    version: VERSION,
+    installerSignature: readFileSync(fixture.paths.exeSigPath, "utf8"),
+    provenanceSignature: readFileSync(
+      fixture.paths.provenanceSigPath,
+      "utf8",
+    ),
+  });
+}
+
+function releaseDependencies(github: ReturnType<typeof createFakeGitHub>) {
+  return {
+    fetch: github.fetch,
+    env: {
+      GITHUB_TOKEN: "secret-token",
+      GH_TOKEN: "must-also-be-removed",
+      IMMUTABLE_RELEASES_READ_TOKEN: "policy-token",
+      SAFE_ENVIRONMENT_VALUE: "visible",
+    },
+    sleep: async () => {},
+    verifySignature: async () => {},
+  };
+}
+
+function releaseCliArguments(input: ReturnType<typeof createFixture>["input"]) {
+  return [
+    "--repository",
+    input.repository,
+    "--tag",
+    input.tag,
+    "--commit-sha",
+    input.commitSha,
+    "--default-branch",
+    input.defaultBranch,
+    "--tauri-config-path",
+    input.tauriConfigPath,
+    "--signature-verifier-path",
+    input.signatureVerifierPath,
+    "--exe-path",
+    input.exePath,
+    "--exe-sig-path",
+    input.exeSigPath,
+    "--manifest-path",
+    input.manifestPath,
+    "--provenance-path",
+    input.provenancePath,
+    "--provenance-sig-path",
+    input.provenanceSigPath,
+  ];
 }
 
 function writeRequests(github: ReturnType<typeof createFakeGitHub>) {
@@ -466,6 +567,24 @@ describe("publishRelease", () => {
         await expect(runPublish(fixture, github, overrides)).rejects.toThrow(message);
         expect(github.requests).toHaveLength(0);
       }
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("缺少只读 immutable policy token 时在任何 GitHub 请求前失败", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+    const dependencies = {
+      ...releaseDependencies(github),
+      env: { GITHUB_TOKEN: "secret-token" },
+    };
+
+    try {
+      await expect(publishRelease(fixture.input, dependencies)).rejects.toThrow(
+        "IMMUTABLE_RELEASES_READ_TOKEN 不能为空",
+      );
+      expect(github.requests).toHaveLength(0);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }
@@ -526,7 +645,11 @@ describe("publishRelease", () => {
         ),
       )) {
         expect(request.headers["x-github-api-version"]).toBe(API_VERSION);
-        expect(request.headers.authorization).toBe("Bearer secret-token");
+        expect(request.headers.authorization).toBe(
+          request.url.endsWith("/immutable-releases")
+            ? "Bearer policy-token"
+            : "Bearer secret-token",
+        );
         expect(request.headers.accept).toBe(
           request.url.includes("/releases/assets/")
             ? "application/octet-stream"
@@ -542,6 +665,7 @@ describe("publishRelease", () => {
       for (const call of verifierCalls) {
         expect(call.env.GITHUB_TOKEN).toBeUndefined();
         expect(call.env.GH_TOKEN).toBeUndefined();
+        expect(call.env.IMMUTABLE_RELEASES_READ_TOKEN).toBeUndefined();
         expect(call.env.SAFE_ENVIRONMENT_VALUE).toBe("visible");
         expect(existsSync(call.artifactPath)).toBe(false);
         expect(existsSync(call.signaturePath)).toBe(false);
@@ -1122,6 +1246,20 @@ describe("publishRelease", () => {
     }
   });
 
+  test("仓库未启用 immutable releases 时在任何发布写入前失败", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub({ immutableReleasesEnabled: false });
+
+    try {
+      await expect(runPublish(fixture, github)).rejects.toThrow(
+        "仓库必须在公开 Draft 前启用 immutable releases",
+      );
+      expect(writeRequests(github)).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
   test("拒绝远端语义相同但不是 canonical encoding 的 provenance v2", async () => {
     const fixture = createFixture();
 
@@ -1162,6 +1300,332 @@ describe("publishRelease", () => {
         "来源证明不是 canonical provenance v2 编码",
       );
       expect(writeRequests(github)).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("protected draft lifecycle", () => {
+  test("Draft publish wrapper 强制 release id 后紧跟 expected candidate id", async () => {
+    await expect(
+      runPublishReleaseDraft(["101", "not-a-candidate-id"]),
+    ).rejects.toThrow("<release-id> <expected-candidate-id>");
+  });
+
+  test("Draft publish wrapper 将 exact candidate identity 传入受保护 Finalize", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      const candidateId = localCandidateId(fixture);
+
+      const published = await runPublishReleaseDraft(
+        [
+          String(prepared.releaseId),
+          candidateId,
+          ...releaseCliArguments(fixture.input),
+        ],
+        releaseDependencies(github),
+      );
+
+      expect(published.published).toBe(true);
+      expect(published.releaseId).toBe(prepared.releaseId);
+      expect(github.releases[0].draft).toBe(false);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("准备阶段冻结五项资产但绝不公开 Release", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+
+      expect(prepared).toEqual({
+        releaseId: expect.any(Number),
+        tag: TAG,
+        created: true,
+        draft: true,
+      });
+      expect(github.releases[0].draft).toBe(true);
+      expect(github.releases[0].assets).toHaveLength(5);
+      expect(github.latestId).toBeNull();
+      expect(
+        github.requests.filter(
+          (request) => request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("Draft smoke 后 immutable policy 漂移时保持 Draft", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      github.setImmutableReleasesEnabled(false);
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("仓库必须在公开 Draft 前启用 immutable releases");
+      expect(github.releases[0].draft).toBe(true);
+      expect(
+        github.requests.filter(
+          (request) => request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("受保护 Finalize 缺少严格 candidate identity 时保持 Draft", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("expectedCandidateId");
+      expect(github.releases[0].draft).toBe(true);
+      expect(
+        github.requests.filter(
+          (request) =>
+            request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("smoke candidate identity 与 exact 远端资产不一致时保持 Draft", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      const actualCandidateId = localCandidateId(fixture);
+      const wrongCandidateId = `${actualCandidateId[0] === "0" ? "1" : "0"}${actualCandidateId.slice(1)}`;
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          wrongCandidateId,
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("candidate identity 与 smoke evidence 不一致");
+      expect(github.releases[0].draft).toBe(true);
+      expect(
+        github.requests.filter(
+          (request) =>
+            request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("只有 exact smoke release id 才能在二次复验后公开", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId + 1,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("release id");
+      expect(github.releases[0].draft).toBe(true);
+
+      const published = await finalizeDraftRelease(
+        fixture.input,
+        prepared.releaseId,
+        localCandidateId(fixture),
+        releaseDependencies(github),
+      );
+
+      expect(published.published).toBe(true);
+      expect(published.releaseId).toBe(prepared.releaseId);
+      expect(github.releases[0].draft).toBe(false);
+      expect(github.latestId).toBe(prepared.releaseId);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("Finalize 开始前若 Draft 已被提前公开则拒绝接管", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      github.releases[0].draft = false;
+      github.releases[0].immutable = true;
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("在受保护公开步骤前已被公开");
+      expect(github.latestId).toBeNull();
+      expect(
+        github.requests.filter((request) => request.method === "PATCH"),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("Finalize 复验资产期间若 Draft 被并发公开则禁止继续", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      github.publishDuringAssetDownload(basename(fixture.paths.exePath));
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("在受保护公开 PATCH 前已被公开");
+      expect(github.releases[0].draft).toBe(false);
+      expect(github.latestId).toBeNull();
+      expect(
+        github.requests.filter((request) => request.method === "PATCH"),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("存在更高稳定版时必须在公开低版本 Draft 前失败", async () => {
+    const fixture = createFixture();
+    const higher = {
+      id: 909,
+      tag_name: "v2.0.0",
+      target_commitish: "f".repeat(40),
+      name: "MineRadio-Tauri v2.0.0",
+      draft: false,
+      prerelease: false,
+      immutable: true,
+      assets: [],
+    };
+    const github = createFakeGitHub({
+      releases: [higher],
+      latestId: higher.id,
+    });
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow(`存在高于当前 ${TAG} 的公开 Release: v2.0.0`);
+      const candidate = github.releases.find(
+        (release) => release.id === prepared.releaseId,
+      );
+      expect(candidate?.draft).toBe(true);
+      expect(github.latestId).toBe(higher.id);
+      expect(
+        github.requests.filter(
+          (request) =>
+            request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
+    } finally {
+      rmSync(fixture.root, { recursive: true, force: true });
+    }
+  });
+
+  test("Draft smoke 后资产 metadata 漂移会阻止公开", async () => {
+    const fixture = createFixture();
+    const github = createFakeGitHub();
+
+    try {
+      const prepared = await prepareDraftRelease(
+        fixture.input,
+        releaseDependencies(github),
+      );
+      github.releases[0].assets[0].digest = `sha256:${"0".repeat(64)}`;
+
+      await expect(
+        finalizeDraftRelease(
+          fixture.input,
+          prepared.releaseId,
+          localCandidateId(fixture),
+          releaseDependencies(github),
+        ),
+      ).rejects.toThrow("digest 不一致");
+      expect(github.releases[0].draft).toBe(true);
+      expect(
+        github.requests.filter(
+          (request) => request.method === "PATCH" && request.body.draft === false,
+        ),
+      ).toHaveLength(0);
     } finally {
       rmSync(fixture.root, { recursive: true, force: true });
     }

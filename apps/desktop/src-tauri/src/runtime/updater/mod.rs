@@ -12,6 +12,8 @@ use tokio_util::sync::CancellationToken;
 pub(crate) mod auto_check;
 pub(crate) mod cache;
 pub(crate) mod download;
+#[cfg(feature = "updater-smoke")]
+pub(crate) mod draft_source;
 pub(crate) mod github_source;
 pub(crate) mod install_attempt;
 pub(crate) mod managed_fs;
@@ -226,7 +228,7 @@ impl VerifiedAssetLocator {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum NormalizedReleaseTrust {
     Verified {
-        evidence: VerifiedReleaseEvidence,
+        evidence: Box<VerifiedReleaseEvidence>,
         asset_locator: VerifiedAssetLocator,
     },
     #[cfg(test)]
@@ -281,7 +283,7 @@ impl NormalizedRelease {
             notes,
             published_at,
             NormalizedReleaseTrust::Verified {
-                evidence,
+                evidence: Box::new(evidence),
                 asset_locator,
             },
         )
@@ -325,7 +327,7 @@ impl NormalizedRelease {
             } => Some(VerifiedInstallerPlan::new(
                 self.candidate_id.clone(),
                 asset_locator.canonical_url(),
-                evidence.clone(),
+                evidence.as_ref().clone(),
             )),
             #[cfg(test)]
             NormalizedReleaseTrust::Fake => None,

@@ -410,7 +410,7 @@ pub(crate) trait InstallerDownloader: Send + Sync {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct InstallerTransportError {
-    retryable: bool,
+    pub(crate) retryable: bool,
 }
 
 impl InstallerTransportError {
@@ -424,14 +424,14 @@ pub(crate) trait InstallerBody: Send {
     fn next_chunk(&mut self) -> InstallerChunkFuture<'_>;
 }
 
-type InstallerChunkFuture<'a> =
+pub(crate) type InstallerChunkFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, InstallerTransportError>> + Send + 'a>>;
 
 pub(crate) struct InstallerHttpResponse {
-    status: u16,
-    location: Option<String>,
-    content_length: Option<u64>,
-    body: Box<dyn InstallerBody>,
+    pub(crate) status: u16,
+    pub(crate) location: Option<String>,
+    pub(crate) content_length: Option<u64>,
+    pub(crate) body: Box<dyn InstallerBody>,
 }
 
 pub(crate) trait InstallerHttpTransport: Send + Sync {
@@ -770,6 +770,20 @@ impl StreamingInstallerDownloader {
             maximum_bytes: MAX_INSTALLER_BYTES,
             maximum_automatic_retries: MAX_AUTOMATIC_RETRIES,
         })
+    }
+
+    #[cfg(feature = "updater-smoke")]
+    pub(crate) fn with_staged_transport(
+        updater_directory: impl Into<PathBuf>,
+        transport: Arc<dyn InstallerHttpTransport>,
+    ) -> Self {
+        Self {
+            transport,
+            artifact_store: UpdateArtifactStore::new(updater_directory),
+            disk_space: Arc::new(SystemDiskSpaceProbe),
+            maximum_bytes: MAX_INSTALLER_BYTES,
+            maximum_automatic_retries: 0,
+        }
     }
 
     #[cfg(test)]
