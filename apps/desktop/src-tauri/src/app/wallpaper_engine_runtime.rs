@@ -406,6 +406,10 @@ pub fn rollback_full_desktop_transition(state: &AppState, mode: FullDesktopMode)
 /// 主窗口隐藏或最小化时释放 Scene；用户选择仍保留在 Web feature，恢复后显式创建
 /// 新 session。
 pub fn stop_for_window_deactivation(state: &AppState) -> Result<(), String> {
+    let _permit = match state.enter_update_install_mutation() {
+        Ok(permit) => permit,
+        Err(_) => return Ok(()),
+    };
     state.wallpaper_scene_epoch.fetch_add(1, Ordering::AcqRel);
     stop_for_window_deactivation_locked(state, None)
 }
@@ -462,6 +466,10 @@ pub fn schedule_stop_for_webview_failure(app: tauri::AppHandle) {
         .name("mineradio-wallpaper-webview-stop".to_owned())
         .spawn(move || {
             let state = worker_app.state::<AppState>();
+            let _permit = match state.enter_update_install_mutation() {
+                Ok(permit) => permit,
+                Err(_) => return,
+            };
             if let Err(error) =
                 stop_for_window_deactivation_locked(state.inner(), Some(expected_epoch))
             {
@@ -598,17 +606,13 @@ pub fn initialize_after_main_window(app: &tauri::AppHandle) {
 /// 锁；DWM/mute owner 退休后不依赖 Web polling 即可在一秒级进入重绑或可恢复状态。
 pub fn start_reconcile_watcher_after_main_window(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let stop = {
-        let Ok(mut watcher) = state.wallpaper_engine_watcher.lock() else {
-            return;
-        };
-        if watcher.worker.is_some() {
-            return;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        watcher.stop = Some(Arc::clone(&stop));
-        stop
+    let Ok(mut watcher) = state.wallpaper_engine_watcher.lock() else {
+        return;
     };
+    if watcher.worker.is_some() || watcher.stop.is_some() {
+        return;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
     let worker_app = app.clone();
     let worker_stop = Arc::clone(&stop);
     let worker = std::thread::Builder::new()
@@ -645,23 +649,11 @@ pub fn start_reconcile_watcher_after_main_window(app: &tauri::AppHandle) {
         });
     match worker {
         Ok(worker) => {
-            let wake = worker.thread().clone();
-            if let Ok(mut watcher) = state.wallpaper_engine_watcher.lock() {
-                if watcher
-                    .stop
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &stop))
-                {
-                    watcher.wake = Some(wake);
-                    watcher.worker = Some(worker);
-                }
-            }
+            watcher.wake = Some(worker.thread().clone());
+            watcher.stop = Some(stop);
+            watcher.worker = Some(worker);
         }
         Err(error) => {
-            if let Ok(mut watcher) = state.wallpaper_engine_watcher.lock() {
-                watcher.stop = None;
-                watcher.wake = None;
-            }
             state.diagnostics.record_runtime_error(
                 crate::runtime::diagnostics::DiagnosticProbeKind::WallpaperEngine,
                 now_ms(),
@@ -669,6 +661,65 @@ pub fn start_reconcile_watcher_after_main_window(app: &tauri::AppHandle) {
             );
         }
     }
+}
+
+// 由 #54 dormant native adapter 消费；普通 shutdown 继续使用既有无阻塞 reaper。
+#[allow(dead_code)]
+pub(crate) struct WallpaperWatcherInstallReceipt {
+    was_running: bool,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl WallpaperWatcherInstallReceipt {
+    pub(crate) fn join_bounded(&mut self, timeout: Duration) -> Result<bool, String> {
+        super::state::join_worker_bounded(
+            &mut self.worker,
+            timeout,
+            "WALLPAPER_ENGINE_WATCHER_JOIN_PANICKED",
+        )
+    }
+
+    pub(crate) fn restore(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Err("WALLPAPER_ENGINE_WATCHER_JOIN_INCOMPLETE".to_owned());
+        }
+        if self.was_running {
+            start_reconcile_watcher_after_main_window(app);
+            let running = app
+                .state::<AppState>()
+                .wallpaper_engine_watcher
+                .lock()
+                .map(|watcher| watcher.worker.is_some())
+                .unwrap_or(false);
+            if !running {
+                return Err("WALLPAPER_ENGINE_WATCHER_RESTART_FAILED".to_owned());
+            }
+        }
+        Ok(())
+    }
+}
+
+#[allow(dead_code)]
+pub(crate) fn take_reconcile_watcher_for_update(
+    state: &AppState,
+) -> Result<WallpaperWatcherInstallReceipt, String> {
+    let mut watcher = state
+        .wallpaper_engine_watcher
+        .lock()
+        .map_err(|_| "WALLPAPER_ENGINE_WATCHER_STATE_UNAVAILABLE".to_owned())?;
+    let was_running = watcher.worker.is_some() || watcher.stop.is_some();
+    if let Some(stop) = watcher.stop.take() {
+        stop.store(true, Ordering::Release);
+    }
+    if let Some(wake) = watcher.wake.take() {
+        wake.unpark();
+    }
+    let worker = watcher.worker.take();
+    Ok(WallpaperWatcherInstallReceipt {
+        was_running,
+        worker,
+    })
 }
 
 /// shutdown 先撤销 watcher ownership 并唤醒 worker；worker 在再次取得 runtime 锁前复核

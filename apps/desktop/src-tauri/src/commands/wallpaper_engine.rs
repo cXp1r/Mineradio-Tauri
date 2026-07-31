@@ -65,8 +65,10 @@ pub async fn choose_wallpaper_engine_directory(
     let path = selected
         .into_path()
         .map_err(|_| "WALLPAPER_LIBRARY_ROOT_INVALID".to_owned())?;
+    let permit = state.enter_update_install_mutation()?;
     let runtime = state.wallpaper_engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         wallpaper_engine_runtime::import_directory(&runtime, &path)
     })
     .await
@@ -96,8 +98,10 @@ pub async fn choose_wallpaper_engine_project_file(
     let path = selected
         .into_path()
         .map_err(|_| "WALLPAPER_LIBRARY_PROJECT_FILE_INVALID".to_owned())?;
+    let permit = state.enter_update_install_mutation()?;
     let runtime = state.wallpaper_engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         wallpaper_engine_runtime::import_project_file(&runtime, &path)
     })
     .await
@@ -110,8 +114,10 @@ pub async fn remove_wallpaper_engine_directory(
     root_id: String,
 ) -> Result<WallpaperLibraryView, String> {
     ensure_library_mutable(state.inner())?;
+    let permit = state.enter_update_install_mutation()?;
     let runtime = state.wallpaper_engine.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         wallpaper_engine_runtime::remove_directory(&runtime, &root_id)
     })
     .await
@@ -125,7 +131,13 @@ pub async fn get_wallpaper_engine_runtime_status(
 ) -> Result<WallpaperRuntimeState, String> {
     let runtime = state.wallpaper_engine.clone();
     let refresh = request.unwrap_or_default().refresh;
+    let permit = if refresh {
+        Some(state.enter_update_install_mutation()?)
+    } else {
+        None
+    };
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         wallpaper_engine_runtime::runtime_status(&runtime, refresh)
     })
     .await
@@ -138,9 +150,11 @@ pub async fn start_wallpaper_engine_scene(
     state: tauri::State<'_, AppState>,
     request: StartWallpaperSceneCommandRequest,
 ) -> Result<WallpaperRuntimeState, String> {
+    let permit = state.enter_update_install_mutation()?;
     let transition = state.desktop_wallpaper_transition.clone();
     let worker_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         let state = worker_app.state::<AppState>();
         // Tauri 窗口查询可能需要 event-loop 协作，不能在持有跨 runtime transition owner
         // 时执行，否则主线程的 minimize/exit 路径可能反向等待同一把锁。
@@ -183,9 +197,11 @@ pub async fn stop_wallpaper_engine_scene(
     state: tauri::State<'_, AppState>,
     request: Option<StopWallpaperSceneCommandRequest>,
 ) -> Result<WallpaperRuntimeState, String> {
+    let permit = state.enter_update_install_mutation()?;
     let runtime = state.wallpaper_engine.clone();
     let session_id = request.and_then(|request| request.session_id);
     tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
         wallpaper_engine_runtime::stop_scene(&runtime, session_id.as_deref())
     })
     .await
@@ -196,8 +212,12 @@ pub async fn stop_wallpaper_engine_scene(
 pub async fn recover_wallpaper_engine_runtime(
     state: tauri::State<'_, AppState>,
 ) -> Result<WallpaperRuntimeState, String> {
+    let permit = state.enter_update_install_mutation()?;
     let runtime = state.wallpaper_engine.clone();
-    tauri::async_runtime::spawn_blocking(move || wallpaper_engine_runtime::recover(&runtime))
-        .await
-        .map_err(|_| "WALLPAPER_ENGINE_WORKER_FAILED".to_owned())?
+    tauri::async_runtime::spawn_blocking(move || {
+        let _permit = permit;
+        wallpaper_engine_runtime::recover(&runtime)
+    })
+    .await
+    .map_err(|_| "WALLPAPER_ENGINE_WORKER_FAILED".to_owned())?
 }

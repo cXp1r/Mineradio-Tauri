@@ -7,6 +7,7 @@ pub fn desktop_lyrics_show_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let _permit = state.enter_update_install_mutation()?;
     desktop_lyrics::show_window(&app, state.inner())
 }
 
@@ -15,6 +16,7 @@ pub fn desktop_lyrics_close_window(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
 ) -> Result<(), String> {
+    let _permit = state.enter_update_install_mutation()?;
     desktop_lyrics::close_window(&app, state.inner())
 }
 
@@ -24,6 +26,7 @@ pub fn desktop_lyrics_set_click_through(
     state: tauri::State<'_, AppState>,
     click_through: bool,
 ) -> Result<(), String> {
+    let _permit = state.enter_update_install_mutation()?;
     desktop_lyrics::set_click_through(&app, state.inner(), click_through)
 }
 
@@ -33,11 +36,18 @@ pub fn desktop_lyrics_set_hot_bounds(
     state: tauri::State<'_, AppState>,
     bounds: DesktopLyricsHotBounds,
 ) -> Result<(), String> {
+    let _permit = state.enter_update_install_mutation()?;
     desktop_lyrics::set_hot_bounds(state.inner(), bounds)
 }
 
 #[tauri::command]
-pub fn desktop_lyrics_move_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), String> {
+pub fn desktop_lyrics_move_by(
+    app: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    dx: f64,
+    dy: f64,
+) -> Result<(), String> {
+    let _permit = state.enter_update_install_mutation()?;
     desktop_lyrics::move_by(&app, dx, dy)
 }
 

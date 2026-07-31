@@ -667,24 +667,19 @@ pub fn schedule_auto_resume_after_main_window(app: &tauri::AppHandle) {
 /// reconcile 投递回 Tauri 主线程，避免后台线程触碰 WebView/Win32 窗口状态。
 pub fn start_explorer_watcher_after_main_window(app: &tauri::AppHandle) {
     let state = app.state::<AppState>();
-    let (stop, policy) = {
-        let Ok(mut watcher) = state.full_desktop_watcher.lock() else {
-            record_failure(
-                state.inner(),
-                "启动 Explorer watcher 失败",
-                "watcher 锁不可用",
-            );
-            return;
-        };
-        if watcher.worker.is_some() {
-            return;
-        }
-        let stop = Arc::new(AtomicBool::new(false));
-        let policy = Arc::new(Mutex::new(ExplorerReconcilePolicy::new(sidecar::now_ms())));
-        watcher.stop = Some(Arc::clone(&stop));
-        watcher.policy = Some(Arc::clone(&policy));
-        (stop, policy)
+    let Ok(mut watcher) = state.full_desktop_watcher.lock() else {
+        record_failure(
+            state.inner(),
+            "启动 Explorer watcher 失败",
+            "watcher 锁不可用",
+        );
+        return;
     };
+    if watcher.worker.is_some() || watcher.stop.is_some() {
+        return;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let policy = Arc::new(Mutex::new(ExplorerReconcilePolicy::new(sidecar::now_ms())));
 
     let handle = app.clone();
     let worker_stop = Arc::clone(&stop);
@@ -694,25 +689,12 @@ pub fn start_explorer_watcher_after_main_window(app: &tauri::AppHandle) {
         .spawn(move || explorer_watcher_loop(handle, worker_stop, worker_policy));
     match worker {
         Ok(worker) => {
-            let wake = worker.thread().clone();
-            if let Ok(mut watcher) = state.full_desktop_watcher.lock() {
-                // stop 可能已在 spawn 期间发生；此时不重新挂接 orphan worker。
-                if watcher
-                    .stop
-                    .as_ref()
-                    .is_some_and(|current| Arc::ptr_eq(current, &stop))
-                {
-                    watcher.wake = Some(wake);
-                    watcher.worker = Some(worker);
-                }
-            }
+            watcher.wake = Some(worker.thread().clone());
+            watcher.stop = Some(stop);
+            watcher.policy = Some(policy);
+            watcher.worker = Some(worker);
         }
         Err(error) => {
-            if let Ok(mut watcher) = state.full_desktop_watcher.lock() {
-                watcher.stop = None;
-                watcher.policy = None;
-                watcher.wake = None;
-            }
             record_failure(state.inner(), "启动 Explorer watcher 失败", error);
         }
     }
@@ -729,6 +711,74 @@ fn wake_explorer_watcher(state: &AppState) {
     if let Some(wake) = wake {
         wake.unpark();
     }
+}
+
+// 由 #54 dormant native adapter 消费；在 production cutover 前不从普通退出路径调用。
+#[allow(dead_code)]
+pub(crate) struct ExplorerWatcherInstallReceipt {
+    was_running: bool,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+#[allow(dead_code)]
+impl ExplorerWatcherInstallReceipt {
+    pub(crate) fn join_bounded(&mut self, timeout: Duration) -> Result<bool, String> {
+        super::state::join_worker_bounded(
+            &mut self.worker,
+            timeout,
+            "FULL_DESKTOP_WATCHER_JOIN_PANICKED",
+        )
+    }
+
+    pub(crate) fn restore(&self, app: &tauri::AppHandle) -> Result<(), String> {
+        if self.worker.is_some() {
+            return Err("FULL_DESKTOP_WATCHER_JOIN_INCOMPLETE".to_owned());
+        }
+        if self.was_running {
+            start_explorer_watcher_after_main_window(app);
+            let running = app
+                .state::<AppState>()
+                .full_desktop_watcher
+                .lock()
+                .map(|watcher| watcher.worker.is_some())
+                .unwrap_or(false);
+            if !running {
+                return Err("FULL_DESKTOP_WATCHER_RESTART_FAILED".to_owned());
+            }
+        }
+        Ok(())
+    }
+}
+
+/// update-install 专用：先从共享状态撤销 watcher ownership，再由 caller 在无锁状态下
+/// 有界 join。Receipt 保留原先是否运行，rollback 不靠当前 UI 状态猜测。
+#[allow(dead_code)]
+pub(crate) fn take_explorer_watcher_for_update(
+    state: &AppState,
+) -> Result<ExplorerWatcherInstallReceipt, String> {
+    let mut watcher = state
+        .full_desktop_watcher
+        .lock()
+        .map_err(|_| "FULL_DESKTOP_WATCHER_STATE_UNAVAILABLE".to_owned())?;
+    let was_running = watcher.worker.is_some() || watcher.stop.is_some();
+    if let Some(policy) = watcher.policy.as_ref() {
+        policy
+            .lock()
+            .map_err(|_| "FULL_DESKTOP_WATCHER_POLICY_UNAVAILABLE".to_owned())?
+            .shutdown();
+    }
+    if let Some(stop) = watcher.stop.take() {
+        stop.store(true, Ordering::Release);
+    }
+    watcher.policy = None;
+    if let Some(wake) = watcher.wake.take() {
+        wake.unpark();
+    }
+    let worker = watcher.worker.take();
+    Ok(ExplorerWatcherInstallReceipt {
+        was_running,
+        worker,
+    })
 }
 
 /// 退出必须在 rollback 前取消 watcher；queued callback 会检查 stop 与 policy generation，

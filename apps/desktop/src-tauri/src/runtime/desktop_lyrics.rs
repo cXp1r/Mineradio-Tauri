@@ -779,7 +779,7 @@ fn desktop_lyrics_spawn_middle_click_poller(
 }
 
 #[cfg(not(target_os = "windows"))]
-fn desktop_lyrics_start_middle_click_poller(
+pub(crate) fn desktop_lyrics_start_middle_click_poller(
     app: tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), String> {
@@ -789,7 +789,7 @@ fn desktop_lyrics_start_middle_click_poller(
 }
 
 #[cfg(target_os = "windows")]
-fn desktop_lyrics_start_middle_click_poller(
+pub(crate) fn desktop_lyrics_start_middle_click_poller(
     app: tauri::AppHandle,
     state: &AppState,
 ) -> Result<(), String> {
@@ -864,6 +864,9 @@ pub fn update_payload(
     state: &AppState,
     mut payload: serde_json::Value,
 ) -> Result<(), String> {
+    // Payload 会确保窗口并重启 middle-click poller，因此必须在领域入口
+    // 取得 permit，避免新 caller 绕过 command 层破坏 update-install freeze。
+    let _permit = state.enter_update_install_mutation()?;
     {
         let mut lyrics = state.desktop_lyrics.lock().map_err(|e| e.to_string())?;
         payload = desktop_lyrics_payload_with_runtime_lock(payload, lyrics.click_through);

@@ -440,6 +440,7 @@ struct ActiveScene {
     project_id: String,
     ownership: SceneOwnership,
     activation: Option<SceneActivation>,
+    restart_request: StartWallpaperSceneRequest,
 }
 
 #[derive(Debug, Clone)]
@@ -520,6 +521,14 @@ impl WallpaperEngineRuntime {
 
     pub fn status(&self) -> &WallpaperRuntimeState {
         &self.state
+    }
+
+    /// Update-install 的可逆停机只能恢复同一 project/fps/物理边界组合；session 与
+    /// HWND 仍由下一次安全启动重新生成，不能从旧 ownership 猜测复用。
+    pub(crate) fn active_restart_recipe(&self) -> Option<StartWallpaperSceneRequest> {
+        self.active_scene
+            .as_ref()
+            .map(|scene| scene.restart_request.clone())
     }
 
     /// 刷新 active Scene 的实时 capture/mute health，并在同一 exact location 内安全
@@ -677,6 +686,11 @@ impl WallpaperEngineRuntime {
 
         let platform_request =
             platform_scene_request(generation, session_id, location, request, target);
+        let restart_request = StartWallpaperSceneRequest {
+            project_id: platform_request.project_id.clone(),
+            fps: Some(platform_request.fps),
+            physical_bounds: platform_request.physical_bounds,
+        };
         let prepared = match self.platform.prepare_scene(&platform_request) {
             Ok(value) => value,
             Err(error) => {
@@ -752,6 +766,7 @@ impl WallpaperEngineRuntime {
             project_id: prepared.request.project_id.clone(),
             ownership: ownership.clone(),
             activation: None,
+            restart_request,
         };
         if let Err(error) = self.journal_store.write_before_mutation(&journal) {
             let reason = error.code().to_owned();
@@ -1752,6 +1767,35 @@ mod tests {
         assert!(!recovered.state.active);
         assert!(!recovered.state.cleanup_required);
         assert!(journal.lock().expect("journal 锁应可用").value.is_none());
+    }
+
+    #[test]
+    fn active_scene_exposes_an_exact_normalized_restart_recipe() {
+        let directory = TestDirectory::new("restart-recipe");
+        let root = directory.add_scene("restartable");
+        let mut library =
+            WallpaperLibrary::open(directory.0.join("library.json")).expect("应打开库");
+        library.add_manual_root(&root).expect("应导入 Scene");
+        let id = library.scan(&[], true).expect("应扫描 Scene").projects[0]
+            .id
+            .clone();
+        let journal = Arc::new(Mutex::new(MemoryJournal::default()));
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = WallpaperEngineRuntime::with_platform(
+            library,
+            Box::new(journal),
+            Box::new(FakePlatform::new(events)),
+        );
+        let mut request = scene_request(id);
+        request.fps = Some(999);
+        let mut normalized = request.clone();
+        normalized.fps = Some(240);
+
+        runtime.start_scene(request.clone()).expect("Scene 应启动");
+
+        assert_eq!(runtime.active_restart_recipe(), Some(normalized));
+        runtime.stop_scene(None).expect("Scene 应停止");
+        assert_eq!(runtime.active_restart_recipe(), None);
     }
 
     #[test]

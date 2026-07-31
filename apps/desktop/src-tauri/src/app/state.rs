@@ -5,10 +5,15 @@ use std::{
         Arc, Mutex,
     },
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use crate::{db, runtime, sidecar};
+
+use super::{
+    sidecar_owner::{SidecarLaunchDescriptor, SidecarUpdateOwnerState},
+    update_install_gate::{UpdateInstallGate, UpdateInstallMutationPermit},
+};
 
 #[derive(serde::Serialize, Clone)]
 pub struct RuntimeConfig {
@@ -112,6 +117,41 @@ impl DesktopLyricsPollerChild {
             .map(|_| ())
             .map_err(|error| format!("desktop lyrics reaper start failed: {error}"))
     }
+
+    /// update-install 需要在继续关闭其他 owner 前得到线程已退出的确定证据。超时不
+    /// 丢弃 JoinHandle，caller 可在同一 recovery lease 上继续等待或回滚。
+    #[allow(dead_code)]
+    pub(crate) fn stop_and_join_bounded(&mut self, timeout: Duration) -> Result<bool, String> {
+        self.stop.store(true, Ordering::Release);
+        join_worker_bounded(
+            &mut self.worker,
+            timeout,
+            "DESKTOP_LYRICS_POLLER_JOIN_PANICKED",
+        )
+    }
+}
+
+// update-install adapter 在 #54 接线前 dormant；普通退出仍不可同步等待 UI 线程。
+#[allow(dead_code)]
+pub(crate) fn join_worker_bounded(
+    worker: &mut Option<JoinHandle<()>>,
+    timeout: Duration,
+    panic_code: &'static str,
+) -> Result<bool, String> {
+    let Some(current) = worker.as_ref() else {
+        return Ok(true);
+    };
+    let deadline = Instant::now() + timeout;
+    while !current.is_finished() {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Ok(false);
+        }
+        std::thread::sleep(remaining.min(Duration::from_millis(5)));
+    }
+    let current = worker.take().expect("finished worker 应仍由 owner 持有");
+    current.join().map_err(|_| panic_code.to_owned())?;
+    Ok(true)
 }
 
 impl Drop for DesktopLyricsPollerChild {
@@ -141,13 +181,24 @@ pub struct AppState {
     pub resources: runtime::resources::ResourceGovernor,
     pub window_activity: Mutex<runtime::resources::WindowActivity>,
     pub application_runtime_running: AtomicBool,
+    pub update_install_gate: UpdateInstallGate,
     pub sidecar: Mutex<sidecar::SidecarRuntimeState>,
     pub sidecar_supervisor_running: AtomicBool,
+    pub(crate) sidecar_update_owner: Mutex<SidecarUpdateOwnerState>,
+    pub(crate) sidecar_launch_descriptor: Mutex<Option<SidecarLaunchDescriptor>>,
     pub db: Option<Mutex<db::DbRuntimeState>>,
     pub db_init_error: Option<String>,
 }
 
 impl AppState {
+    pub(crate) fn enter_update_install_mutation(
+        &self,
+    ) -> Result<UpdateInstallMutationPermit, String> {
+        self.update_install_gate
+            .enter_mutation()
+            .map_err(|error| error.to_string())
+    }
+
     // 这些参数逐一对应应用启动阶段的配置、日志与数据库状态资源，显式签名便于核对装配关系。
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -267,11 +318,14 @@ impl AppState {
             resources: runtime::resources::ResourceGovernor::default(),
             window_activity: Mutex::new(runtime::resources::WindowActivity::Foreground),
             application_runtime_running: AtomicBool::new(true),
+            update_install_gate: UpdateInstallGate::default(),
             sidecar: Mutex::new(sidecar::SidecarRuntimeState::new(
                 sidecar_base_url,
                 sidecar_log_path,
             )),
             sidecar_supervisor_running: AtomicBool::new(true),
+            sidecar_update_owner: Mutex::new(SidecarUpdateOwnerState::default()),
+            sidecar_launch_descriptor: Mutex::new(None),
             db,
             db_init_error,
         }
@@ -328,6 +382,31 @@ mod tests {
         assert!(result.is_ok());
         let _ = release_tx.send(());
         terminator.join().expect("terminator thread");
+    }
+
+    #[test]
+    fn desktop_lyrics_bounded_join_retains_worker_after_timeout_for_retry() {
+        let stop = Arc::new(AtomicBool::new(false));
+        let worker_stop = Arc::clone(&stop);
+        let (release_tx, release_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            while !worker_stop.load(Ordering::Acquire) {
+                std::thread::yield_now();
+            }
+            let _ = release_rx.recv();
+        });
+        let mut child = DesktopLyricsPollerChild::new(stop, worker);
+
+        assert_eq!(
+            child.stop_and_join_bounded(Duration::from_millis(10)),
+            Ok(false)
+        );
+        release_tx.send(()).expect("应释放 worker");
+        assert_eq!(
+            child.stop_and_join_bounded(Duration::from_secs(1)),
+            Ok(true)
+        );
+        assert_eq!(child.stop_and_join_bounded(Duration::ZERO), Ok(true));
     }
 
     #[test]

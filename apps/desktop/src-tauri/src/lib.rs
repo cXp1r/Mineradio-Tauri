@@ -26,16 +26,27 @@ fn build_and_start_sidecar(
     app_version: &str,
     resource_dir: Option<&std::path::Path>,
 ) -> Result<(), sidecar::SidecarError> {
+    let update_owner = state
+        .sidecar_update_owner
+        .lock()
+        .map_err(|_| sidecar::SidecarError::Io("sidecar update owner unavailable".to_owned()))?;
+    if update_owner.supervisor_blocked() {
+        return Ok(());
+    }
     if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
         return Ok(());
     }
-    let cmd = sidecar::build_sidecar_command_with_resource_dir(
+    let plan = sidecar::resolve_sidecar_launch_plan_with_resource_dir(resource_dir);
+    let (cmd, descriptor) = app::sidecar_owner::SidecarLaunchDescriptor::command_and_descriptor(
+        plan,
         port,
-        app_data_dir,
-        log_dir,
-        app_version,
-        resource_dir,
+        app_data_dir.to_path_buf(),
+        log_dir.to_path_buf(),
+        app_version.to_owned(),
     );
+    let mut launch_descriptor = state.sidecar_launch_descriptor.lock().map_err(|_| {
+        sidecar::SidecarError::Io("sidecar launch descriptor unavailable".to_owned())
+    })?;
     let mut runtime = state
         .sidecar
         .lock()
@@ -44,7 +55,17 @@ fn build_and_start_sidecar(
     if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
         return Ok(());
     }
-    sidecar::spawn_sidecar_into_runtime(&mut runtime, cmd, Duration::from_secs(2))
+    let prior_child_id = runtime.child.as_ref().map(std::process::Child::id);
+    let prior_descriptor = launch_descriptor.clone();
+    // command 与 descriptor 来自同一个 resolved plan；在 owner/descriptor/runtime 锁域内
+    // 先预置回滚 recipe。若 spawn 根本未发生，child identity 不变并恢复旧 recipe。
+    *launch_descriptor = Some(descriptor);
+    let result = sidecar::spawn_sidecar_into_runtime(&mut runtime, cmd, Duration::from_secs(2));
+    let current_child_id = runtime.child.as_ref().map(std::process::Child::id);
+    if result.is_err() && current_child_id == prior_child_id {
+        *launch_descriptor = prior_descriptor;
+    }
+    result
 }
 
 fn start_sidecar_supervisor(
@@ -61,37 +82,51 @@ fn start_sidecar_supervisor(
         if !state.sidecar_supervisor_running.load(Ordering::Acquire) {
             break;
         }
-        let should_restart = match state.sidecar.lock() {
-            Ok(mut runtime) => {
-                sidecar::sidecar_runtime_child_exited(&mut runtime).unwrap_or_default()
-            }
-            Err(_) => false,
+        let should_restart = match state.sidecar_update_owner.lock() {
+            Ok(owner) if !owner.supervisor_blocked() => match state.sidecar.lock() {
+                Ok(mut runtime) => {
+                    sidecar::sidecar_runtime_child_exited(&mut runtime).unwrap_or_default()
+                }
+                Err(_) => false,
+            },
+            _ => false,
         };
         if !should_restart {
-            let should_probe_health = match state.sidecar.lock() {
-                Ok(runtime) => sidecar::sidecar_runtime_should_probe_health(&runtime),
-                Err(_) => false,
+            let should_probe_health = match state.sidecar_update_owner.lock() {
+                Ok(owner) if !owner.supervisor_blocked() => match state.sidecar.lock() {
+                    Ok(runtime) => sidecar::sidecar_runtime_should_probe_health(&runtime),
+                    Err(_) => false,
+                },
+                _ => false,
             };
             if should_probe_health {
                 if let Ok(health) = sidecar::wait_for_health(
                     &state.config.sidecar_base_url,
                     Duration::from_millis(500),
                 ) {
-                    if let Ok(mut runtime) = state.sidecar.lock() {
-                        if sidecar::sidecar_runtime_should_probe_health(&runtime) {
-                            sidecar::sidecar_runtime_mark_ready(
-                                &mut runtime,
-                                health,
-                                sidecar::now_ms(),
-                            );
+                    if let Ok(owner) = state.sidecar_update_owner.lock() {
+                        if !owner.supervisor_blocked() {
+                            if let Ok(mut runtime) = state.sidecar.lock() {
+                                if sidecar::sidecar_runtime_should_probe_health(&runtime) {
+                                    sidecar::sidecar_runtime_mark_ready(
+                                        &mut runtime,
+                                        health,
+                                        sidecar::now_ms(),
+                                    );
+                                }
+                            }
                         }
                     }
                 }
             }
             continue;
         }
-        if let Ok(mut runtime) = state.sidecar.lock() {
-            sidecar::sidecar_runtime_mark_restarting(&mut runtime);
+        if let Ok(owner) = state.sidecar_update_owner.lock() {
+            if !owner.supervisor_blocked() {
+                if let Ok(mut runtime) = state.sidecar.lock() {
+                    sidecar::sidecar_runtime_mark_restarting(&mut runtime);
+                }
+            }
         }
         let _ = build_and_start_sidecar(
             &state,
