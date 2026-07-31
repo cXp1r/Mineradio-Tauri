@@ -10,13 +10,17 @@ use super::download::{
     InstallerDownloadError, InstallerDownloadEvent, InstallerDownloadEvents, InstallerDownloader,
     VerifiedInstallerArtifact, VerifiedInstallerPlan,
 };
+use super::policy::{
+    MemoryUpdatePolicyStore, NativeUpdatePolicyStore, UpdatePolicySnapshot, UpdatePolicyStore,
+    UpdatePolicyStoreError,
+};
 use super::*;
 use tokio_util::sync::CancellationToken;
 
 const RAW_PROVENANCE: &[u8] = include_bytes!("fixtures/provenance-v2.json");
 const CONTRACT_JSON: &str = include_str!("fixtures/provenance-v2-contract.json");
 
-fn verified_fixture_release(notes: &[&str]) -> NormalizedRelease {
+fn verified_fixture_evidence() -> provenance::VerifiedReleaseEvidence {
     let contract: serde_json::Value =
         serde_json::from_str(CONTRACT_JSON).expect("共享 provenance contract 应有效");
     let public_key = contract["encoded_public_key"]
@@ -30,7 +34,7 @@ fn verified_fixture_release(notes: &[&str]) -> NormalizedRelease {
         .expect("contract 应包含安装包签名");
     let verifier =
         provenance::ProvenanceVerifier::from_tauri_pubkey(public_key).expect("fixture 公钥应有效");
-    let evidence = verifier
+    verifier
         .verify(provenance::ProvenanceVerificationInput {
             raw_provenance: RAW_PROVENANCE,
             provenance_signature,
@@ -41,8 +45,617 @@ fn verified_fixture_release(notes: &[&str]) -> NormalizedRelease {
             expected_commit_sha: "0123456789abcdef0123456789abcdef01234567",
             expected_target: "windows-x86_64-nsis",
         })
-        .expect("fixture provenance 应有效");
-    NormalizedRelease::from_verified(evidence, notes.iter().copied(), None)
+        .expect("fixture provenance 应有效")
+}
+
+fn fixture_public_key() -> String {
+    serde_json::from_str::<serde_json::Value>(CONTRACT_JSON)
+        .expect("共享 provenance contract 应有效")["encoded_public_key"]
+        .as_str()
+        .expect("contract 应包含公钥")
+        .to_owned()
+}
+
+fn verified_fixture_release(notes: &[&str]) -> NormalizedRelease {
+    NormalizedRelease::from_verified(verified_fixture_evidence(), notes.iter().copied(), None)
+}
+
+fn fixture_cache_store(directory: &RuntimeTestDirectory) -> Arc<cache::VerifiedCacheStore> {
+    Arc::new(
+        cache::VerifiedCacheStore::new(&directory.0, fixture_public_key())
+            .expect("fixture cache store 应能初始化"),
+    )
+}
+
+async fn write_fixture_verified_cache(directory: &RuntimeTestDirectory) {
+    let cache = directory.join("cache-v1");
+    std::fs::create_dir_all(&cache).expect("verified cache 目录应能创建");
+    std::fs::write(cache.join("installer.exe"), b"installer").expect("fixture 安装包应能写入");
+    fixture_cache_store(directory)
+        .commit_verified(
+            &verified_fixture_evidence(),
+            9,
+            "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+            10,
+            11,
+        )
+        .await
+        .expect("fixture verified cache 应能提交");
+}
+
+fn runtime_with_recovery_policy_and_downloader(
+    source: Arc<dyn UpdateSource>,
+    recovery: Arc<dyn UpdateStartupRecovery>,
+    policy_store: Arc<dyn UpdatePolicyStore>,
+    downloader: Arc<dyn InstallerDownloader>,
+) -> UpdateRuntime {
+    let mut runtime = UpdateRuntime::with_recovery_and_policy(
+        "0.1.0",
+        source,
+        Arc::new(NoopSnapshotSink),
+        recovery,
+        policy_store,
+    )
+    .expect("策略应能载入");
+    runtime.downloader = Some(downloader);
+    runtime
+}
+
+#[test]
+fn remind_later_from_available_persists_exact_candidate_and_survives_runtime_rebuild() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let recovery = fixture_cache_store(&directory);
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::default());
+        let runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+                verified_fixture_release(&[]),
+            ))])),
+            Arc::new(NoopSnapshotSink),
+            recovery.clone(),
+            policy_store.clone(),
+        )
+        .expect("默认策略应能载入");
+        assert!(runtime.run_pending_cache_recovery().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let before = runtime.snapshot();
+        let candidate = before.candidate.expect("检查后应有候选");
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: before.revision,
+                intent: UpdateIntent::RemindLater {
+                    candidate_id: candidate.id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+
+        let after = runtime.snapshot();
+        assert_eq!(after.phase, UpdatePhase::Available);
+        assert_eq!(after.candidate.as_ref(), Some(&candidate));
+        let persisted = policy_store.load().expect("提醒策略应已持久化");
+        let reminder = persisted.remind.expect("应保存 reminder");
+        assert_eq!(
+            (reminder.candidate_id.as_str(), reminder.version.as_str()),
+            (candidate.id.as_str(), candidate.version.as_str())
+        );
+        assert_eq!(after.remind_after, Some(reminder.until));
+
+        let rebuilt = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            policy_store,
+        )
+        .expect("已保存策略应能重新载入");
+        assert_eq!(rebuilt.snapshot().remind_after, Some(reminder.until));
+    });
+}
+
+#[test]
+fn remind_later_from_ready_preserves_verified_pair_and_recovers_both_after_rebuild() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        write_fixture_verified_cache(&directory).await;
+        let recovery = fixture_cache_store(&directory);
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::default());
+        let runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery.clone(),
+            policy_store.clone(),
+        )
+        .expect("默认策略应能载入");
+        assert!(runtime.run_pending_cache_recovery().await);
+        let before = runtime.snapshot();
+        assert_eq!(before.phase, UpdatePhase::ReadyToInstall);
+        let candidate = before.candidate.expect("缓存恢复后应有候选");
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: before.revision,
+                intent: UpdateIntent::RemindLater {
+                    candidate_id: candidate.id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+
+        let after = runtime.snapshot();
+        assert_eq!(after.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(after.candidate.as_ref(), Some(&candidate));
+        assert!(directory.join("cache-v1/candidate.json").is_file());
+        assert!(directory.join("cache-v1/installer.exe").is_file());
+        let persisted = policy_store.load().expect("提醒策略应已持久化");
+        let reminder = persisted.remind.expect("应保存 reminder");
+        assert_eq!(
+            (reminder.candidate_id.as_str(), reminder.version.as_str()),
+            (candidate.id.as_str(), candidate.version.as_str())
+        );
+
+        let rebuilt = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            policy_store,
+        )
+        .expect("已保存策略应能重新载入");
+        assert_eq!(rebuilt.snapshot().remind_after, Some(reminder.until));
+        assert!(rebuilt.run_pending_cache_recovery().await);
+        let recovered = rebuilt.snapshot();
+        assert_eq!(recovered.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(recovered.candidate.as_ref(), Some(&candidate));
+        assert_eq!(recovered.remind_after, Some(reminder.until));
+    });
+}
+
+#[test]
+fn skip_version_from_ready_persists_version_deletes_verified_pair_and_survives_rebuild() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        write_fixture_verified_cache(&directory).await;
+        let recovery = fixture_cache_store(&directory);
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::default());
+        let runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery.clone(),
+            policy_store.clone(),
+        )
+        .expect("默认策略应能载入");
+        assert!(runtime.run_pending_cache_recovery().await);
+        let ready = runtime.snapshot();
+        let candidate = ready.candidate.expect("缓存恢复后应有候选");
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::SkipVersion {
+                    candidate_id: candidate.id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+
+        let skipped = runtime.snapshot();
+        assert_eq!(skipped.phase, UpdatePhase::Current);
+        assert!(skipped.candidate.is_none());
+        assert_eq!(skipped.skipped_version.as_deref(), Some("1.2.3"));
+        assert!(!directory.join("cache-v1/candidate.json").exists());
+        assert!(!directory.join("cache-v1/installer.exe").exists());
+        let persisted = policy_store.load().expect("跳过策略应已持久化");
+        assert_eq!(persisted.skipped_version.as_deref(), Some("1.2.3"));
+
+        let rebuilt = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            policy_store,
+        )
+        .expect("跳过策略应能重新载入");
+        assert_eq!(rebuilt.snapshot().skipped_version.as_deref(), Some("1.2.3"));
+        assert!(rebuilt.run_pending_cache_recovery().await);
+        let recovered = rebuilt.snapshot();
+        assert!(recovered.candidate.is_none());
+        assert_eq!(recovered.skipped_version.as_deref(), Some("1.2.3"));
+    });
+}
+
+#[test]
+fn authenticity_quarantine_survives_rebuild_blocks_exact_candidate_and_clears_for_higher() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let recovery = fixture_cache_store(&directory);
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::default());
+        let failing_downloader = Arc::new(ScriptedDownloader {
+            events: vec![InstallerDownloadEvent::Verifying {
+                received_bytes: 9,
+                total_bytes: Some(9),
+            }],
+            outcome: ScriptedDownloadOutcome::AuthenticityFailure,
+            events_emitted: None,
+        });
+        let runtime = runtime_with_recovery_policy_and_downloader(
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+                verified_fixture_release(&[]),
+            ))])),
+            recovery.clone(),
+            policy_store.clone(),
+            failing_downloader,
+        );
+        assert!(runtime.run_pending_cache_recovery().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let candidate = runtime.snapshot().candidate.expect("检查后应有候选");
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::Download {
+                    candidate_id: candidate.id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_download().await);
+
+        let persisted = policy_store.load().expect("隔离策略应已持久化");
+        let quarantine = persisted.quarantine.expect("应保存 exact quarantine");
+        assert_eq!(
+            (
+                quarantine.candidate_id.as_str(),
+                quarantine.version.as_str(),
+                quarantine.reason.as_str(),
+            ),
+            (
+                candidate.id.as_str(),
+                candidate.version.as_str(),
+                "UPDATE_INSTALLER_SIGNATURE_REJECTED",
+            )
+        );
+        assert!(quarantine.rejected_at > 0);
+
+        let rebuilt = runtime_with_recovery_policy_and_downloader(
+            Arc::new(MemoryUpdateSource::with_outcomes([
+                Ok(Some(verified_fixture_release(&[]))),
+                Ok(Some(NormalizedRelease::new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "1.2.4",
+                    ["更高版本"],
+                    None,
+                ))),
+            ])),
+            recovery,
+            policy_store.clone(),
+            Arc::new(ScriptedDownloader {
+                events: Vec::new(),
+                outcome: ScriptedDownloadOutcome::AuthenticityFailure,
+                events_emitted: None,
+            }),
+        );
+        assert!(rebuilt.run_pending_cache_recovery().await);
+        assert_eq!(
+            rebuilt.dispatch(UpdateDispatchRequest {
+                expected_revision: rebuilt.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(rebuilt.run_pending_check().await);
+        assert_eq!(
+            rebuilt.dispatch(UpdateDispatchRequest {
+                expected_revision: rebuilt.snapshot().revision,
+                intent: UpdateIntent::Download {
+                    candidate_id: candidate.id,
+                },
+            }),
+            UpdateReceipt::PolicyBlocked
+        );
+
+        assert_eq!(
+            rebuilt.dispatch(UpdateDispatchRequest {
+                expected_revision: rebuilt.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(rebuilt.run_pending_check().await);
+        assert_eq!(
+            rebuilt.snapshot().candidate.map(|value| value.version),
+            Some("1.2.4".into())
+        );
+        assert!(policy_store
+            .load()
+            .expect("更高候选检查后策略应可读")
+            .quarantine
+            .is_none());
+    });
+}
+
+#[test]
+fn journaled_download_rejection_survives_policy_failure_and_replays_on_restart() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let recovery = fixture_cache_store(&directory);
+        let rejecting_policy = Arc::new(RejectQuarantinePolicyStore::default());
+        let runtime = runtime_with_recovery_policy_and_downloader(
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+                verified_fixture_release(&[]),
+            ))])),
+            recovery.clone(),
+            rejecting_policy,
+            Arc::new(JournaledAuthenticityDownloader {
+                updater_directory: directory.0.clone(),
+            }),
+        );
+        assert!(runtime.run_pending_cache_recovery().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let candidate = runtime.snapshot().candidate.expect("检查后应有候选");
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::Download {
+                    candidate_id: candidate.id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_download().await);
+        assert!(directory.join("quarantine-pending-v1.json").is_file());
+        assert_eq!(
+            runtime.snapshot().fault.map(|fault| fault.code),
+            Some("UPDATE_POLICY_TEST_REJECTED".into())
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::PolicyBlocked
+        );
+
+        let durable_policy = Arc::new(MemoryUpdatePolicyStore::default());
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+            verified_fixture_release(&[]),
+        ))]));
+        let rebuilt = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source.clone(),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            durable_policy.clone(),
+        )
+        .expect("重启策略应可载入");
+        assert!(rebuilt.run_pending_cache_recovery().await);
+        assert_eq!(source.check_count(), 0, "journal replay 不得触发联网检查");
+        assert!(!directory.join("quarantine-pending-v1.json").exists());
+        let quarantine = durable_policy
+            .load()
+            .expect("replay 后策略应可读")
+            .quarantine
+            .expect("replay 必须恢复 exact quarantine");
+        assert_eq!(quarantine.candidate_id, candidate.id);
+        assert_eq!(quarantine.version, candidate.version);
+        assert_eq!(quarantine.reason, "UPDATE_INSTALLER_SIGNATURE_REJECTED");
+        assert!(rebuilt.snapshot().candidate.is_none());
+    });
+}
+
+#[test]
+fn quarantine_rejects_same_version_republished_identity_without_an_in_memory_candidate() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let trusted = verified_fixture_evidence();
+        let mut policy = UpdatePolicySnapshot::default();
+        policy.quarantine = Some(UpdatePolicyQuarantine {
+            candidate_id: trusted.candidate_id().as_str().into(),
+            version: "1.2.3".into(),
+            reason: "UPDATE_INSTALLER_SIGNATURE_REJECTED".into(),
+            rejected_at: 1,
+        });
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::new(policy));
+        let runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([
+                Ok(Some(NormalizedRelease::new(
+                    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "1.2.3",
+                    ["同版换资产"],
+                    None,
+                ))),
+                Ok(Some(NormalizedRelease::new(
+                    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "1.2.4",
+                    ["严格更高版本"],
+                    None,
+                ))),
+            ])),
+            Arc::new(NoopSnapshotSink),
+            fixture_cache_store(&directory),
+            policy_store.clone(),
+        )
+        .expect("quarantine 策略应可载入");
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let rejected = runtime.snapshot();
+        assert!(rejected.candidate.is_none());
+        assert_eq!(
+            rejected.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_CANDIDATE_IDENTITY_CONFLICT")
+        );
+        assert!(policy_store.load().unwrap().quarantine.is_some());
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: rejected.revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        assert_eq!(
+            runtime
+                .snapshot()
+                .candidate
+                .map(|candidate| candidate.version),
+            Some("1.2.4".into())
+        );
+        assert!(policy_store.load().unwrap().quarantine.is_none());
+    });
+}
+
+#[test]
+fn successful_check_persists_checked_at_and_restores_it_on_runtime_rebuild() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let recovery = fixture_cache_store(&directory);
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::default());
+        let runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery.clone(),
+            policy_store.clone(),
+        )
+        .expect("默认策略应能载入");
+        assert!(runtime.run_pending_cache_recovery().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+
+        let persisted_checked_at = policy_store
+            .load()
+            .expect("成功检查后的策略应可读")
+            .last_successful_check_at
+            .expect("成功检查必须写入 checked_at");
+        assert!(persisted_checked_at > 0);
+        assert_eq!(runtime.snapshot().checked_at, Some(persisted_checked_at));
+
+        let rebuilt = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            policy_store,
+        )
+        .expect("成功检查时间应能重新载入");
+        assert_eq!(rebuilt.snapshot().checked_at, Some(persisted_checked_at));
+    });
+}
+
+#[test]
+fn runtime_constructor_fails_closed_for_corrupt_memory_or_native_policy() {
+    let directory = RuntimeTestDirectory::new();
+    let recovery = fixture_cache_store(&directory);
+    let invalid_memory = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+        schema_version: 99,
+        ..UpdatePolicySnapshot::default()
+    }));
+    let memory_error = UpdateRuntime::with_recovery_and_policy(
+        "0.1.0",
+        Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+        Arc::new(NoopSnapshotSink),
+        recovery.clone(),
+        invalid_memory,
+    )
+    .err()
+    .expect("非法内存策略必须阻止 Runtime 构造");
+    assert_eq!(memory_error.code(), "UPDATE_POLICY_SCHEMA_REJECTED");
+
+    let native = Arc::new(NativeUpdatePolicyStore::for_app_data(&directory.0));
+    std::fs::write(native.path(), b"{not-json").expect("测试应能写入损坏的 native policy");
+    let native_error = UpdateRuntime::with_recovery_and_policy(
+        "0.1.0",
+        Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+        Arc::new(NoopSnapshotSink),
+        recovery,
+        native,
+    )
+    .err()
+    .expect("损坏 native 策略必须阻止 Runtime 构造");
+    assert_eq!(native_error.code(), "UPDATE_POLICY_INVALID_JSON");
+}
+
+#[test]
+fn startup_recovery_restores_ready_to_install_without_calling_the_source() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let cache = directory.join("cache-v1");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+        let recovery =
+            Arc::new(cache::VerifiedCacheStore::new(&directory.0, fixture_public_key()).unwrap());
+        recovery
+            .commit_verified(
+                &verified_fixture_evidence(),
+                9,
+                "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                10,
+                11,
+            )
+            .await
+            .unwrap();
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+        let sink = Arc::new(MemorySnapshotSink::default());
+        let runtime = UpdateRuntime::with_recovery("0.1.0", source.clone(), sink, recovery);
+
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::RecoveringCache);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::PolicyBlocked
+        );
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(
+            snapshot.candidate.unwrap().id,
+            "1f524da9660c738e349f342d1e3f0bc9da3b28b9c4842636475ccdde59b9ee0e"
+        );
+        assert_eq!(source.check_count(), 0);
+    });
 }
 
 #[test]
@@ -598,6 +1211,63 @@ impl RuntimeTestDirectory {
 impl Drop for RuntimeTestDirectory {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[derive(Default)]
+struct RejectQuarantinePolicyStore {
+    snapshot: Mutex<UpdatePolicySnapshot>,
+}
+
+impl UpdatePolicyStore for RejectQuarantinePolicyStore {
+    fn load(&self) -> Result<UpdatePolicySnapshot, UpdatePolicyStoreError> {
+        Ok(self
+            .snapshot
+            .lock()
+            .expect("test policy store poisoned")
+            .clone())
+    }
+
+    fn save(&self, snapshot: &UpdatePolicySnapshot) -> Result<(), UpdatePolicyStoreError> {
+        if snapshot.quarantine.is_some() {
+            return Err(UpdatePolicyStoreError::runtime(
+                "UPDATE_POLICY_TEST_REJECTED",
+                "测试策略存储拒绝 quarantine",
+            ));
+        }
+        *self.snapshot.lock().expect("test policy store poisoned") = snapshot.clone();
+        Ok(())
+    }
+}
+
+struct JournaledAuthenticityDownloader {
+    updater_directory: PathBuf,
+}
+
+impl InstallerDownloader for JournaledAuthenticityDownloader {
+    fn run<'a>(
+        &'a self,
+        plan: VerifiedInstallerPlan,
+        _cancellation: CancellationToken,
+        _events: &'a dyn InstallerDownloadEvents,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VerifiedInstallerArtifact, InstallerDownloadError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move {
+            let error = InstallerDownloadError::fake_authenticity_failure();
+            let pending = cache::persist_pending_quarantine(
+                &self.updater_directory,
+                plan.candidate_id().as_str(),
+                plan.version(),
+                error.code(),
+            )
+            .map_err(|failure| InstallerDownloadError::policy_failure(failure.code))?;
+            Err(error.with_pending_rejection(pending))
+        })
     }
 }
 
@@ -1426,5 +2096,82 @@ fn higher_candidate_removes_the_previous_verified_file_before_replacing_authorit
             .expect("update runtime state poisoned")
             .verified_artifact
             .is_none());
+    });
+}
+
+#[test]
+fn higher_candidate_cleanup_failure_revokes_old_install_authority_and_blocks_runtime() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let artifact_path = directory.join("verified-installer.exe");
+        std::fs::create_dir(&artifact_path).unwrap();
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([
+            Ok(Some(verified_fixture_release(&[]))),
+            Ok(Some(NormalizedRelease::new(
+                "candidate-1.2.4",
+                "1.2.4",
+                ["更高版本"],
+                Some("2026-07-31T01:00:00Z"),
+            ))),
+        ]));
+        let downloader = Arc::new(ScriptedDownloader {
+            events: vec![InstallerDownloadEvent::Verifying {
+                received_bytes: 9,
+                total_bytes: Some(9),
+            }],
+            outcome: ScriptedDownloadOutcome::SuccessAt {
+                path: artifact_path,
+                before_return: None,
+            },
+            events_emitted: None,
+        });
+        let runtime = UpdateRuntime::with_downloader(
+            "0.1.0",
+            source,
+            Arc::new(MemorySnapshotSink::default()),
+            downloader,
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: 0,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let candidate_id = runtime.snapshot().candidate.unwrap().id;
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::Download { candidate_id },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_download().await);
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::ReadyToInstall);
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+
+        let blocked = runtime.snapshot();
+        assert_eq!(blocked.phase, UpdatePhase::Current);
+        assert!(blocked.candidate.is_none());
+        assert_eq!(
+            blocked.fault.as_ref().map(|fault| fault.stage),
+            Some(UpdateFaultStage::Cache)
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: blocked.revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::PolicyBlocked
+        );
     });
 }

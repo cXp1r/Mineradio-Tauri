@@ -3,22 +3,33 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod cache;
 pub(crate) mod download;
 pub(crate) mod github_source;
+pub(crate) mod managed_fs;
+pub(crate) mod policy;
 pub(crate) mod provenance;
 
+use cache::{CacheRecoveryFault, CacheRecoveryOutcome, UpdateStartupRecovery};
 use download::{
     InstallerDownloadError, InstallerDownloadEvent, InstallerDownloadEvents,
     InstallerDownloadFailureStage, InstallerDownloader, VerifiedInstallerArtifact,
     VerifiedInstallerPlan, PUBLIC_PROGRESS_INTERVAL_MS,
 };
+use policy::{
+    MemoryUpdatePolicyStore, NativeUpdatePolicyStore, UpdatePolicyQuarantine, UpdatePolicyReminder,
+    UpdatePolicySnapshot, UpdatePolicyStore, UpdatePolicyStoreError,
+};
 use provenance::{ReleaseCandidateId, VerifiedReleaseEvidence};
+
+const REMIND_LATER_MILLIS: u64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -316,6 +327,12 @@ struct PendingCheck {
     previous_phase: UpdatePhase,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCacheRecovery {
+    operation_id: String,
+    claimed: bool,
+}
+
 #[derive(Clone)]
 struct ClaimedDownload {
     operation_id: String,
@@ -343,10 +360,14 @@ struct UpdateState {
     snapshot: UpdateSnapshot,
     normalized_candidate: Option<NormalizedRelease>,
     next_operation: u64,
+    pending_cache_recovery: Option<PendingCacheRecovery>,
     pending_check: Option<PendingCheck>,
     active_download: Option<ActiveDownload>,
     quarantined_candidate: Option<ReleaseCandidateId>,
     verified_artifact: Option<VerifiedInstallerArtifact>,
+    verified_metadata_digest: Option<String>,
+    cache_cleanup_blocked: bool,
+    policy: UpdatePolicySnapshot,
 }
 
 impl UpdateState {
@@ -365,11 +386,79 @@ impl UpdateState {
             },
             normalized_candidate: None,
             next_operation: 1,
+            pending_cache_recovery: None,
             pending_check: None,
             active_download: None,
             quarantined_candidate: None,
             verified_artifact: None,
+            verified_metadata_digest: None,
+            cache_cleanup_blocked: false,
+            policy: UpdatePolicySnapshot::default(),
         }
+    }
+
+    fn hydrate_policy(&mut self, policy: UpdatePolicySnapshot) {
+        self.snapshot.checked_at = policy.last_successful_check_at;
+        self.snapshot.remind_after = policy.remind.as_ref().map(|remind| remind.until);
+        self.snapshot.skipped_version = policy.skipped_version.clone();
+        self.quarantined_candidate = policy
+            .quarantine
+            .as_ref()
+            .and_then(|value| ReleaseCandidateId::parse(value.candidate_id.clone()));
+        self.policy = policy;
+    }
+
+    fn clear_candidate_for_policy(&mut self, phase: UpdatePhase) {
+        self.snapshot.phase = phase;
+        self.snapshot.candidate = None;
+        self.normalized_candidate = None;
+        self.verified_artifact = None;
+        self.verified_metadata_digest = None;
+    }
+
+    fn finish_policy_failure(
+        &mut self,
+        expected_revision: u64,
+        error: &UpdatePolicyStoreError,
+    ) -> Option<UpdateSnapshot> {
+        if self.snapshot.revision != expected_revision {
+            return None;
+        }
+        self.snapshot.fault = Some(UpdateFaultView {
+            stage: UpdateFaultStage::Cache,
+            code: error.code().into(),
+            retryable: false,
+            message: "无法持久化本机更新策略".into(),
+        });
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
+    fn initialize_cache_recovery(&mut self) {
+        let operation_id = format!("cache-revalidation-{}", self.next_operation);
+        self.next_operation += 1;
+        self.pending_cache_recovery = Some(PendingCacheRecovery {
+            operation_id: operation_id.clone(),
+            claimed: false,
+        });
+        self.snapshot.phase = UpdatePhase::RecoveringCache;
+        self.snapshot.operation = Some(UpdateOperationView {
+            id: operation_id,
+            kind: UpdateOperationKind::CacheRevalidation,
+            received_bytes: 0,
+            total_bytes: None,
+            cancellable: false,
+        });
+        self.snapshot.fault = None;
+    }
+
+    fn claim_cache_recovery(&mut self) -> Option<PendingCacheRecovery> {
+        let pending = self.pending_cache_recovery.as_mut()?;
+        if pending.claimed {
+            return None;
+        }
+        pending.claimed = true;
+        Some(pending.clone())
     }
 
     fn begin_check(&mut self) -> UpdateSnapshot {
@@ -644,6 +733,111 @@ impl UpdateState {
         Some(self.snapshot.clone())
     }
 
+    fn finish_cache_recovery(
+        &mut self,
+        pending: &PendingCacheRecovery,
+        outcome: CacheRecoveryOutcome,
+    ) -> Option<UpdateSnapshot> {
+        if self
+            .snapshot
+            .operation
+            .as_ref()
+            .map(|operation| operation.id.as_str())
+            != Some(pending.operation_id.as_str())
+        {
+            return None;
+        }
+        self.snapshot.operation = None;
+        self.pending_cache_recovery = None;
+        match outcome {
+            CacheRecoveryOutcome::Recovered(recovered) => {
+                let recovered = *recovered;
+                if recovered.artifact.candidate_id() != &recovered.release.candidate_id {
+                    self.snapshot.phase = UpdatePhase::Idle;
+                    self.snapshot.fault = Some(UpdateFaultView {
+                        stage: UpdateFaultStage::Cache,
+                        code: "UPDATE_CACHE_IDENTITY_REJECTED".into(),
+                        retryable: false,
+                        message: "缓存 artifact 与 candidate identity 不一致".into(),
+                    });
+                    self.cache_cleanup_blocked = true;
+                } else {
+                    let metadata_digest = recovered.metadata_digest;
+                    self.commit_candidate(recovered.release, UpdatePhase::ReadyToInstall);
+                    self.verified_artifact = Some(recovered.artifact);
+                    self.verified_metadata_digest = Some(metadata_digest);
+                    self.cache_cleanup_blocked = false;
+                }
+            }
+            CacheRecoveryOutcome::PendingQuarantine(_) => {
+                self.snapshot.phase = UpdatePhase::Idle;
+                self.snapshot.fault = Some(UpdateFaultView {
+                    stage: UpdateFaultStage::Cache,
+                    code: "UPDATE_QUARANTINE_FINALIZATION_REQUIRED".into(),
+                    retryable: false,
+                    message: "隔离记录尚未完成策略提交与缓存清理".into(),
+                });
+                self.cache_cleanup_blocked = true;
+            }
+            CacheRecoveryOutcome::Empty { fault, quarantine } => {
+                self.snapshot.phase = UpdatePhase::Idle;
+                self.snapshot.candidate = None;
+                self.normalized_candidate = None;
+                self.verified_artifact = None;
+                self.verified_metadata_digest = None;
+                self.cache_cleanup_blocked = false;
+                self.snapshot.fault = fault.map(|fault| UpdateFaultView {
+                    stage: UpdateFaultStage::Cache,
+                    code: fault.code.into(),
+                    retryable: false,
+                    message: fault.message.into(),
+                });
+                if let Some(candidate) = quarantine {
+                    self.quarantined_candidate = ReleaseCandidateId::parse(candidate.candidate_id);
+                }
+            }
+            CacheRecoveryOutcome::Blocked(fault) => {
+                self.snapshot.phase = UpdatePhase::Idle;
+                self.snapshot.fault = Some(UpdateFaultView {
+                    stage: UpdateFaultStage::Cache,
+                    code: fault.code.into(),
+                    retryable: false,
+                    message: fault.message.into(),
+                });
+                self.cache_cleanup_blocked = true;
+            }
+        }
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
+    fn finish_interrupted_cache_recovery(
+        &mut self,
+        pending: &PendingCacheRecovery,
+    ) -> Option<UpdateSnapshot> {
+        if self
+            .snapshot
+            .operation
+            .as_ref()
+            .map(|operation| operation.id.as_str())
+            != Some(pending.operation_id.as_str())
+        {
+            return None;
+        }
+        self.pending_cache_recovery = None;
+        self.snapshot.phase = UpdatePhase::Idle;
+        self.snapshot.operation = None;
+        self.snapshot.fault = Some(UpdateFaultView {
+            stage: UpdateFaultStage::Cache,
+            code: "UPDATE_CACHE_RECOVERY_INTERRUPTED".into(),
+            retryable: true,
+            message: "更新缓存恢复任务被中断".into(),
+        });
+        self.cache_cleanup_blocked = true;
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
     fn finish_check(
         &mut self,
         pending: PendingCheck,
@@ -661,6 +855,29 @@ impl UpdateState {
         self.snapshot.operation = None;
         match result {
             Ok(Some(release)) => {
+                let policy_identity_conflict =
+                    self.policy.quarantine.as_ref().is_some_and(|value| {
+                        value.version == release.version
+                            && value.candidate_id != release.candidate_id.as_str()
+                    }) || self.policy.remind.as_ref().is_some_and(|value| {
+                        value.version == release.version
+                            && value.candidate_id != release.candidate_id.as_str()
+                    });
+                if policy_identity_conflict {
+                    self.snapshot.phase = pending.previous_phase;
+                    self.snapshot.fault = Some(candidate_fault(
+                        "UPDATE_CANDIDATE_IDENTITY_CONFLICT",
+                        "同版本更新 candidate identity 与跨重启可信策略不一致",
+                    ));
+                    self.snapshot.revision += 1;
+                    return Some(self.snapshot.clone());
+                }
+                if self.policy.skipped_version.as_deref() == Some(release.version.as_str()) {
+                    self.clear_candidate_for_policy(UpdatePhase::Current);
+                    self.snapshot.fault = None;
+                    self.snapshot.revision += 1;
+                    return Some(self.snapshot.clone());
+                }
                 let decision = self.candidate_refresh_decision(&release);
 
                 match decision {
@@ -770,6 +987,7 @@ impl UpdateState {
             .is_some_and(|artifact| artifact.candidate_id() == candidate_id)
         {
             self.verified_artifact = None;
+            self.verified_metadata_digest = None;
         }
     }
 
@@ -787,7 +1005,7 @@ impl UpdateState {
         {
             return None;
         }
-        self.snapshot.phase = pending.previous_phase;
+        self.clear_candidate_for_policy(UpdatePhase::Current);
         self.snapshot.operation = None;
         self.snapshot.fault = Some(UpdateFaultView {
             stage: UpdateFaultStage::Cache,
@@ -795,6 +1013,7 @@ impl UpdateState {
             retryable: false,
             message: error.message().into(),
         });
+        self.cache_cleanup_blocked = true;
         self.snapshot.revision += 1;
         Some(self.snapshot.clone())
     }
@@ -852,6 +1071,67 @@ fn candidate_fault(code: &str, message: &str) -> UpdateFaultView {
     }
 }
 
+fn policy_timestamp_millis() -> Result<u64, &'static str> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "UPDATE_POLICY_CLOCK_REJECTED")?;
+    u64::try_from(elapsed.as_millis()).map_err(|_| "UPDATE_POLICY_CLOCK_REJECTED")
+}
+
+fn policy_source_error(code: impl Into<String>) -> UpdateSourceError {
+    UpdateSourceError {
+        code: code.into(),
+        retryable: false,
+        message: "无法持久化本机更新策略".into(),
+    }
+}
+
+fn cache_policy_fault(code: &'static str) -> CacheRecoveryFault {
+    CacheRecoveryFault {
+        code,
+        message: "无法持久化本机更新策略",
+    }
+}
+
+fn is_strictly_higher_version(incoming: &str, previous: &str) -> bool {
+    match (Version::parse(incoming), Version::parse(previous)) {
+        (Ok(incoming), Ok(previous)) => {
+            incoming.pre.is_empty() && incoming.build.is_empty() && incoming > previous
+        }
+        _ => false,
+    }
+}
+
+/// 只有严格更高且已由 Source 完整验证的 candidate 才能解除旧策略。
+fn clear_superseded_policy(policy: &mut UpdatePolicySnapshot, incoming_version: &str) -> bool {
+    let mut changed = false;
+    if policy
+        .remind
+        .as_ref()
+        .is_some_and(|value| is_strictly_higher_version(incoming_version, &value.version))
+    {
+        policy.remind = None;
+        changed = true;
+    }
+    if policy
+        .skipped_version
+        .as_ref()
+        .is_some_and(|value| is_strictly_higher_version(incoming_version, value))
+    {
+        policy.skipped_version = None;
+        changed = true;
+    }
+    if policy
+        .quarantine
+        .as_ref()
+        .is_some_and(|value| is_strictly_higher_version(incoming_version, &value.version))
+    {
+        policy.quarantine = None;
+        changed = true;
+    }
+    changed
+}
+
 #[derive(Default)]
 struct SnapshotPublicationQueue {
     pending: VecDeque<UpdateSnapshot>,
@@ -859,12 +1139,15 @@ struct SnapshotPublicationQueue {
 }
 
 pub struct UpdateRuntime {
+    policy_gate: Mutex<()>,
     commit_gate: Mutex<()>,
     publication_queue: Mutex<SnapshotPublicationQueue>,
     state: Mutex<UpdateState>,
     source: Arc<dyn UpdateSource>,
     sink: Arc<dyn UpdateSnapshotSink>,
     downloader: Option<Arc<dyn InstallerDownloader>>,
+    recovery: Option<Arc<dyn UpdateStartupRecovery>>,
+    policy_store: Arc<dyn UpdatePolicyStore>,
     #[cfg(test)]
     download_commit_barrier: Mutex<Option<DownloadCommitBarrier>>,
 }
@@ -893,12 +1176,15 @@ impl UpdateRuntime {
         phase: UpdatePhase,
     ) -> Self {
         Self {
+            policy_gate: Mutex::new(()),
             commit_gate: Mutex::new(()),
             publication_queue: Mutex::new(SnapshotPublicationQueue::default()),
             state: Mutex::new(UpdateState::with_phase(current_version, phase)),
             source,
             sink,
             downloader,
+            recovery: None,
+            policy_store: Arc::new(MemoryUpdatePolicyStore::default()),
             #[cfg(test)]
             download_commit_barrier: Mutex::new(None),
         }
@@ -916,6 +1202,63 @@ impl UpdateRuntime {
             sink,
             Some(downloader),
             UpdatePhase::Idle,
+        )
+    }
+
+    pub(crate) fn with_recovery(
+        current_version: impl Into<String>,
+        source: Arc<dyn UpdateSource>,
+        sink: Arc<dyn UpdateSnapshotSink>,
+        recovery: Arc<dyn UpdateStartupRecovery>,
+    ) -> Self {
+        Self::with_recovery_and_policy(
+            current_version,
+            source,
+            sink,
+            recovery,
+            Arc::new(MemoryUpdatePolicyStore::default()),
+        )
+        .expect("memory update policy store should initialize")
+    }
+
+    pub(crate) fn with_recovery_and_policy(
+        current_version: impl Into<String>,
+        source: Arc<dyn UpdateSource>,
+        sink: Arc<dyn UpdateSnapshotSink>,
+        recovery: Arc<dyn UpdateStartupRecovery>,
+        policy_store: Arc<dyn UpdatePolicyStore>,
+    ) -> Result<Self, UpdatePolicyStoreError> {
+        let policy = policy_store.load()?;
+        let mut runtime = Self::build(current_version, source, sink, None, UpdatePhase::Idle);
+        runtime.recovery = Some(recovery);
+        runtime.policy_store = policy_store;
+        runtime
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .hydrate_policy(policy);
+        runtime
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .initialize_cache_recovery();
+        Ok(runtime)
+    }
+
+    /// #54 生产切换使用的 native policy 组合入口；这里只组装依赖，不提前接入 bootstrap。
+    pub(crate) fn with_recovery_and_native_policy(
+        current_version: impl Into<String>,
+        source: Arc<dyn UpdateSource>,
+        sink: Arc<dyn UpdateSnapshotSink>,
+        recovery: Arc<dyn UpdateStartupRecovery>,
+        policy_directory: impl AsRef<std::path::Path>,
+    ) -> Result<Self, UpdatePolicyStoreError> {
+        Self::with_recovery_and_policy(
+            current_version,
+            source,
+            sink,
+            recovery,
+            Arc::new(NativeUpdatePolicyStore::for_app_data(policy_directory)),
         )
     }
 
@@ -972,7 +1315,235 @@ impl UpdateRuntime {
         ))
     }
 
+    fn queue_policy_failure(&self, expected_revision: u64, error: &UpdatePolicyStoreError) -> bool {
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .finish_policy_failure(expected_revision, error);
+        let should_drain = published
+            .map(|snapshot| self.queue_committed_snapshot(snapshot))
+            .unwrap_or(false);
+        drop(commit);
+        should_drain
+    }
+
+    /// 函数自行持有 policy_gate，确保持久化与状态提交不会被另一个 intent 穿插。
+    fn dispatch_remind_later(&self, expected_revision: u64, candidate_id: &str) -> UpdateReceipt {
+        let policy_guard = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
+        let now = match policy_timestamp_millis() {
+            Ok(now) => now,
+            Err(code) => {
+                let error = UpdatePolicyStoreError::runtime(code, "本机时钟无法生成更新策略时间");
+                let should_drain = self.queue_policy_failure(expected_revision, &error);
+                drop(policy_guard);
+                if should_drain {
+                    self.drain_publications();
+                }
+                return UpdateReceipt::PolicyBlocked;
+            }
+        };
+        let (mut policy, version) = {
+            let _commit = self
+                .commit_gate
+                .lock()
+                .expect("update runtime commit gate poisoned");
+            let state = self.state.lock().expect("update runtime state poisoned");
+            if state.snapshot.phase == UpdatePhase::Disabled {
+                return UpdateReceipt::RuntimeUnavailable;
+            }
+            if state.snapshot.revision != expected_revision {
+                return UpdateReceipt::InvalidOrder;
+            }
+            if state.snapshot.phase == UpdatePhase::RecoveringCache || state.cache_cleanup_blocked {
+                return UpdateReceipt::PolicyBlocked;
+            }
+            let Some(candidate) = state.normalized_candidate.as_ref() else {
+                return UpdateReceipt::StaleCandidate;
+            };
+            if candidate.candidate_id.as_str() != candidate_id {
+                return UpdateReceipt::StaleCandidate;
+            }
+            if !matches!(
+                state.snapshot.phase,
+                UpdatePhase::Available | UpdatePhase::ReadyToInstall
+            ) {
+                return UpdateReceipt::InvalidOrder;
+            }
+            (state.policy.clone(), candidate.version.clone())
+        };
+        policy.remind = Some(UpdatePolicyReminder {
+            candidate_id: candidate_id.to_owned(),
+            version,
+            until: now.saturating_add(REMIND_LATER_MILLIS),
+        });
+        if let Err(error) = self.policy_store.save(&policy) {
+            let should_drain = self.queue_policy_failure(expected_revision, &error);
+            drop(policy_guard);
+            if should_drain {
+                self.drain_publications();
+            }
+            return UpdateReceipt::PolicyBlocked;
+        }
+
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = {
+            let mut state = self.state.lock().expect("update runtime state poisoned");
+            if state.snapshot.revision != expected_revision
+                || state
+                    .normalized_candidate
+                    .as_ref()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    != Some(candidate_id)
+                || !matches!(
+                    state.snapshot.phase,
+                    UpdatePhase::Available | UpdatePhase::ReadyToInstall
+                )
+            {
+                return UpdateReceipt::InvalidOrder;
+            }
+            state.hydrate_policy(policy);
+            state.snapshot.fault = None;
+            state.snapshot.revision += 1;
+            state.snapshot.clone()
+        };
+        let should_drain = self.queue_committed_snapshot(published);
+        drop(commit);
+        drop(policy_guard);
+        if should_drain {
+            self.drain_publications();
+        }
+        UpdateReceipt::Accepted
+    }
+
+    /// 函数自行持有 policy_gate。先持久化 skip，再删除 cache；崩溃后恢复仍会服从 skip。
+    fn dispatch_skip_version(&self, expected_revision: u64, candidate_id: &str) -> UpdateReceipt {
+        let policy_guard = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
+        let (mut policy, version, artifact) = {
+            let _commit = self
+                .commit_gate
+                .lock()
+                .expect("update runtime commit gate poisoned");
+            let state = self.state.lock().expect("update runtime state poisoned");
+            if state.snapshot.phase == UpdatePhase::Disabled {
+                return UpdateReceipt::RuntimeUnavailable;
+            }
+            if state.snapshot.revision != expected_revision {
+                return UpdateReceipt::InvalidOrder;
+            }
+            if state.snapshot.phase == UpdatePhase::RecoveringCache || state.cache_cleanup_blocked {
+                return UpdateReceipt::PolicyBlocked;
+            }
+            let Some(candidate) = state.normalized_candidate.as_ref() else {
+                return UpdateReceipt::StaleCandidate;
+            };
+            if candidate.candidate_id.as_str() != candidate_id {
+                return UpdateReceipt::StaleCandidate;
+            }
+            if !matches!(
+                state.snapshot.phase,
+                UpdatePhase::Available | UpdatePhase::ReadyToInstall
+            ) {
+                return UpdateReceipt::InvalidOrder;
+            }
+            (
+                state.policy.clone(),
+                candidate.version.clone(),
+                state.verified_artifact.clone(),
+            )
+        };
+        policy.skipped_version = Some(version);
+        if policy
+            .remind
+            .as_ref()
+            .is_some_and(|value| value.candidate_id == candidate_id)
+        {
+            policy.remind = None;
+        }
+        if policy
+            .quarantine
+            .as_ref()
+            .is_some_and(|value| value.candidate_id == candidate_id)
+        {
+            policy.quarantine = None;
+        }
+        if let Err(error) = self.policy_store.save(&policy) {
+            let should_drain = self.queue_policy_failure(expected_revision, &error);
+            drop(policy_guard);
+            if should_drain {
+                self.drain_publications();
+            }
+            return UpdateReceipt::PolicyBlocked;
+        }
+        let cleanup_error = artifact
+            .as_ref()
+            .and_then(|artifact| artifact.discard().err());
+
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = {
+            let mut state = self.state.lock().expect("update runtime state poisoned");
+            if state.snapshot.revision != expected_revision
+                || state
+                    .normalized_candidate
+                    .as_ref()
+                    .map(|candidate| candidate.candidate_id.as_str())
+                    != Some(candidate_id)
+            {
+                return UpdateReceipt::InvalidOrder;
+            }
+            state.hydrate_policy(policy);
+            state.clear_candidate_for_policy(UpdatePhase::Current);
+            state.cache_cleanup_blocked = cleanup_error.is_some();
+            state.snapshot.fault = cleanup_error.map(|error| UpdateFaultView {
+                stage: UpdateFaultStage::Cache,
+                code: error.code().into(),
+                retryable: false,
+                message: error.message().into(),
+            });
+            state.snapshot.revision += 1;
+            state.snapshot.clone()
+        };
+        let should_drain = self.queue_committed_snapshot(published);
+        drop(commit);
+        drop(policy_guard);
+        if should_drain {
+            self.drain_publications();
+        }
+        UpdateReceipt::Accepted
+    }
+
     pub fn dispatch(&self, request: UpdateDispatchRequest) -> UpdateReceipt {
+        match &request.intent {
+            UpdateIntent::RemindLater { candidate_id } => {
+                return self
+                    .dispatch_remind_later(request.expected_revision, candidate_id.as_str());
+            }
+            UpdateIntent::SkipVersion { candidate_id } => {
+                return self
+                    .dispatch_skip_version(request.expected_revision, candidate_id.as_str());
+            }
+            _ => {}
+        }
+        let policy = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
         let commit = self
             .commit_gate
             .lock()
@@ -984,6 +1555,9 @@ impl UpdateRuntime {
             }
             if request.expected_revision != state.snapshot.revision {
                 return UpdateReceipt::InvalidOrder;
+            }
+            if state.snapshot.phase == UpdatePhase::RecoveringCache || state.cache_cleanup_blocked {
+                return UpdateReceipt::PolicyBlocked;
             }
             match &request.intent {
                 UpdateIntent::Download { candidate_id } => {
@@ -1011,9 +1585,7 @@ impl UpdateRuntime {
                     }
                     state.begin_download(plan)
                 }
-                UpdateIntent::RemindLater { candidate_id }
-                | UpdateIntent::SkipVersion { candidate_id }
-                | UpdateIntent::InstallAndRestart { candidate_id } => {
+                UpdateIntent::InstallAndRestart { candidate_id } => {
                     if state
                         .normalized_candidate
                         .as_ref()
@@ -1023,6 +1595,9 @@ impl UpdateRuntime {
                         return UpdateReceipt::StaleCandidate;
                     }
                     return UpdateReceipt::InvalidOrder;
+                }
+                UpdateIntent::RemindLater { .. } | UpdateIntent::SkipVersion { .. } => {
+                    unreachable!("policy intents are dispatched before the generic state path")
                 }
                 UpdateIntent::OpenRelease { candidate_id } => {
                     let Some(candidate) = state.normalized_candidate.as_ref() else {
@@ -1086,6 +1661,7 @@ impl UpdateRuntime {
         };
         let should_drain = self.queue_committed_snapshot(published);
         drop(commit);
+        drop(policy);
         if should_drain {
             self.drain_publications();
         }
@@ -1107,28 +1683,80 @@ impl UpdateRuntime {
         let request = CheckRequest {
             current_version: self.snapshot().current_version,
         };
-        let result = self.source.check(request).await;
+        let mut result = self.source.check(request).await;
+        let _policy = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
+        let (mut next_policy, mut replacement_artifact) = {
+            let state = self.state.lock().expect("update runtime state poisoned");
+            (
+                state.policy.clone(),
+                state.verified_artifact_replaced_by(&result),
+            )
+        };
+        let mut policy_to_hydrate = None;
+        if result.is_ok() {
+            match policy_timestamp_millis() {
+                Ok(checked_at) => {
+                    next_policy.last_successful_check_at = Some(checked_at);
+                    if let Ok(Some(release)) = &result {
+                        let accepted = {
+                            let state = self.state.lock().expect("update runtime state poisoned");
+                            matches!(
+                                state.candidate_refresh_decision(release),
+                                None | Some(CandidateRefreshDecision::Same)
+                                    | Some(CandidateRefreshDecision::Higher)
+                            )
+                        };
+                        if accepted {
+                            clear_superseded_policy(&mut next_policy, &release.version);
+                        }
+                    }
+                    match self.policy_store.save(&next_policy) {
+                        Ok(()) => policy_to_hydrate = Some(next_policy),
+                        Err(error) => {
+                            replacement_artifact = None;
+                            result = Err(policy_source_error(error.code()));
+                        }
+                    }
+                }
+                Err(code) => {
+                    replacement_artifact = None;
+                    result = Err(policy_source_error(code));
+                }
+            }
+        }
+        let replacement_result = replacement_artifact
+            .as_ref()
+            .map(VerifiedInstallerArtifact::discard)
+            .transpose();
+
         let commit = self
             .commit_gate
             .lock()
             .expect("update runtime commit gate poisoned");
         let published = {
             let mut state = self.state.lock().expect("update runtime state poisoned");
-            match state.verified_artifact_replaced_by(&result) {
-                Some(artifact) => match artifact.discard() {
-                    Ok(()) => {
+            if let Some(policy) = policy_to_hydrate {
+                state.hydrate_policy(policy);
+            }
+            match replacement_result {
+                Ok(None) => state.finish_check(pending.clone(), result),
+                Ok(Some(())) => {
+                    if let Some(artifact) = replacement_artifact.as_ref() {
                         state.clear_verified_artifact(artifact.candidate_id());
-                        state.finish_check(pending, result)
                     }
-                    Err(error) => state.finish_check_replacement_failure(pending, error),
-                },
-                None => state.finish_check(pending, result),
+                    state.finish_check(pending.clone(), result)
+                }
+                Err(error) => state.finish_check_replacement_failure(pending.clone(), error),
             }
         };
         if let Some(snapshot) = published {
             let should_drain = self.queue_committed_snapshot(snapshot);
             drop(commit);
             lease.complete();
+            drop(_policy);
             if should_drain {
                 self.drain_publications();
             }
@@ -1136,6 +1764,147 @@ impl UpdateRuntime {
         } else {
             drop(commit);
             lease.complete();
+            drop(_policy);
+            false
+        }
+    }
+
+    pub(crate) async fn run_pending_cache_recovery(&self) -> bool {
+        let pending = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .claim_cache_recovery();
+        let Some(pending) = pending else {
+            return false;
+        };
+        let Some(recovery) = self.recovery.as_ref() else {
+            return false;
+        };
+        let mut lease = CacheRecoveryRunLease::new(self, pending.clone());
+        let current_version = self.snapshot().current_version;
+        let mut outcome = recovery.recover(&current_version).await;
+        let _policy = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
+        let mut next_policy = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .policy
+            .clone();
+        let mut policy_changed = false;
+        let mut pending_finalize = None;
+        match &outcome {
+            CacheRecoveryOutcome::Recovered(recovered) => {
+                let candidate_id = recovered.release.candidate_id.as_str();
+                let version = recovered.release.version.as_str();
+                let rejected_by_policy = next_policy.skipped_version.as_deref() == Some(version)
+                    || next_policy
+                        .quarantine
+                        .as_ref()
+                        .is_some_and(|value| value.version == version)
+                    || next_policy.remind.as_ref().is_some_and(|value| {
+                        value.version == version && value.candidate_id != candidate_id
+                    });
+                if rejected_by_policy {
+                    outcome = match recovered.artifact.discard() {
+                        Ok(()) => CacheRecoveryOutcome::Empty {
+                            fault: None,
+                            quarantine: None,
+                        },
+                        Err(error) => CacheRecoveryOutcome::Blocked(CacheRecoveryFault {
+                            code: error.code(),
+                            message: "无法清理被本机策略拒绝的更新缓存",
+                        }),
+                    };
+                } else {
+                    policy_changed = clear_superseded_policy(&mut next_policy, version);
+                }
+            }
+            CacheRecoveryOutcome::Empty {
+                quarantine: Some(rejected),
+                ..
+            } => match policy_timestamp_millis() {
+                Ok(rejected_at) => {
+                    next_policy.quarantine = Some(UpdatePolicyQuarantine {
+                        candidate_id: rejected.candidate_id.clone(),
+                        version: rejected.version.clone(),
+                        reason: rejected.reason_code.clone(),
+                        rejected_at,
+                    });
+                    policy_changed = true;
+                }
+                Err(code) => {
+                    outcome = CacheRecoveryOutcome::Blocked(cache_policy_fault(code));
+                }
+            },
+            CacheRecoveryOutcome::PendingQuarantine(pending) => {
+                let rejected = pending.rejected();
+                next_policy.quarantine = Some(UpdatePolicyQuarantine {
+                    candidate_id: rejected.candidate_id.clone(),
+                    version: rejected.version.clone(),
+                    reason: rejected.reason_code.clone(),
+                    rejected_at: rejected.rejected_at,
+                });
+                policy_changed = true;
+                pending_finalize = Some((**pending).clone());
+            }
+            CacheRecoveryOutcome::Empty { .. } | CacheRecoveryOutcome::Blocked(_) => {}
+        }
+        let policy_to_hydrate = if policy_changed {
+            match self.policy_store.save(&next_policy) {
+                Ok(()) => Some(next_policy),
+                Err(error) => {
+                    outcome = CacheRecoveryOutcome::Blocked(cache_policy_fault(error.code()));
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        if let Some(pending) = pending_finalize {
+            if policy_to_hydrate.is_some() {
+                outcome = match pending.finalize() {
+                    Ok(()) => CacheRecoveryOutcome::Empty {
+                        fault: Some(CacheRecoveryFault {
+                            code: "UPDATE_CACHE_AUTHENTICITY_REJECTED",
+                            message: "已验证更新缓存无法重新通过来源与签名验证",
+                        }),
+                        quarantine: None,
+                    },
+                    Err(error) => CacheRecoveryOutcome::Blocked(CacheRecoveryFault {
+                        code: error.code,
+                        message: "隔离策略已保存，但无法完成 rejection journal",
+                    }),
+                };
+            }
+        }
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = {
+            let mut state = self.state.lock().expect("update runtime state poisoned");
+            if let Some(policy) = policy_to_hydrate {
+                state.hydrate_policy(policy);
+            }
+            state.finish_cache_recovery(&pending, outcome)
+        };
+        if let Some(snapshot) = published {
+            let should_drain = self.queue_committed_snapshot(snapshot);
+            drop(commit);
+            lease.complete();
+            drop(_policy);
+            if should_drain {
+                self.drain_publications();
+            }
+            true
+        } else {
+            drop(commit);
+            lease.complete();
+            drop(_policy);
             false
         }
     }
@@ -1176,10 +1945,10 @@ impl UpdateRuntime {
             barrier.arrived.notify_one();
             barrier.release.notified().await;
         }
-        let commit = self
-            .commit_gate
+        let _policy = self
+            .policy_gate
             .lock()
-            .expect("update runtime commit gate poisoned");
+            .expect("update runtime policy gate poisoned");
         if claimed.cancellation.is_cancelled() {
             if let Ok(artifact) = &result {
                 result = match artifact.discard() {
@@ -1188,15 +1957,99 @@ impl UpdateRuntime {
                 };
             }
         }
-        let published = self
-            .state
+        let mut policy_to_hydrate = None;
+        let mut policy_failed = false;
+        let should_quarantine = result.as_ref().err().is_some_and(|error| {
+            error.is_authenticity_failure()
+                && !error.is_cancelled()
+                && !(claimed.cancellation.is_cancelled()
+                    && error.stage() == InstallerDownloadFailureStage::Download)
+        });
+        let pending_rejection = result
+            .as_ref()
+            .err()
+            .and_then(InstallerDownloadError::pending_rejection)
+            .cloned();
+        if should_quarantine {
+            let next_policy = {
+                let state = self.state.lock().expect("update runtime state poisoned");
+                state.normalized_candidate.as_ref().and_then(|candidate| {
+                    if candidate.candidate_id != claimed.candidate_id {
+                        return None;
+                    }
+                    let quarantine = if let Some(pending) = pending_rejection.as_ref() {
+                        let rejected = pending.rejected();
+                        if rejected.candidate_id != claimed.candidate_id.as_str()
+                            || rejected.version != candidate.version
+                        {
+                            return None;
+                        }
+                        UpdatePolicyQuarantine {
+                            candidate_id: rejected.candidate_id.clone(),
+                            version: rejected.version.clone(),
+                            reason: rejected.reason_code.clone(),
+                            rejected_at: rejected.rejected_at,
+                        }
+                    } else {
+                        UpdatePolicyQuarantine {
+                            candidate_id: claimed.candidate_id.as_str().into(),
+                            version: candidate.version.clone(),
+                            reason: result
+                                .as_ref()
+                                .expect_err("quarantine requires an error")
+                                .code()
+                                .into(),
+                            rejected_at: policy_timestamp_millis().ok()?,
+                        }
+                    };
+                    let mut policy = state.policy.clone();
+                    policy.quarantine = Some(quarantine);
+                    Some(policy)
+                })
+            };
+            match next_policy {
+                Some(policy) => match self.policy_store.save(&policy) {
+                    Ok(()) => {
+                        policy_to_hydrate = Some(policy);
+                        if let Some(pending) = pending_rejection.as_ref() {
+                            if let Err(error) = pending.finalize() {
+                                policy_failed = true;
+                                result = Err(InstallerDownloadError::policy_failure(error.code));
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        policy_failed = true;
+                        result = Err(InstallerDownloadError::policy_failure(error.code()));
+                    }
+                },
+                _ => {
+                    policy_failed = true;
+                    result = Err(InstallerDownloadError::policy_failure(
+                        "UPDATE_POLICY_QUARANTINE_REJECTED",
+                    ));
+                }
+            }
+        }
+        let commit = self
+            .commit_gate
             .lock()
-            .expect("update runtime state poisoned")
-            .finish_download(&claimed, result);
+            .expect("update runtime commit gate poisoned");
+        let published = {
+            let mut state = self.state.lock().expect("update runtime state poisoned");
+            if let Some(policy) = policy_to_hydrate {
+                state.hydrate_policy(policy);
+            }
+            if policy_failed {
+                state.cache_cleanup_blocked = true;
+            }
+            state.finish_download(&claimed, result)
+        };
         if let Some(snapshot) = published {
             let should_drain = self.queue_committed_snapshot(snapshot);
             drop(commit);
             lease.complete();
+            drop(_policy);
             if should_drain {
                 self.drain_publications();
             }
@@ -1204,6 +2057,7 @@ impl UpdateRuntime {
         } else {
             drop(commit);
             lease.complete();
+            drop(_policy);
             false
         }
     }
@@ -1350,6 +2204,54 @@ impl UpdateRuntime {
         drop(commit);
         if should_drain {
             self.drain_publications();
+        }
+    }
+
+    fn finish_interrupted_cache_recovery(&self, pending: &PendingCacheRecovery) {
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .finish_interrupted_cache_recovery(pending);
+        let should_drain = published
+            .map(|snapshot| self.queue_committed_snapshot(snapshot))
+            .unwrap_or(false);
+        drop(commit);
+        if should_drain {
+            self.drain_publications();
+        }
+    }
+}
+
+struct CacheRecoveryRunLease<'a> {
+    runtime: &'a UpdateRuntime,
+    pending: PendingCacheRecovery,
+    completed: bool,
+}
+
+impl<'a> CacheRecoveryRunLease<'a> {
+    fn new(runtime: &'a UpdateRuntime, pending: PendingCacheRecovery) -> Self {
+        Self {
+            runtime,
+            pending,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for CacheRecoveryRunLease<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.runtime
+                .finish_interrupted_cache_recovery(&self.pending);
         }
     }
 }

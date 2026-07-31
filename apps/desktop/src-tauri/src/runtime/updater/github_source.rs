@@ -1646,7 +1646,7 @@ mod tests {
     #[test]
     fn github_and_memory_sources_share_the_normalized_release_contract() {
         let contract = contract();
-        let github_snapshots = run_source_contract(|case| {
+        let mut github_snapshots = run_source_contract(|case| {
             let transport = match case {
                 SourceContractCase::Current | SourceContractCase::Available => {
                     success_transport(&contract)
@@ -1669,7 +1669,7 @@ mod tests {
                     .expect("fixture source 应可创建"),
             )
         });
-        let memory_snapshots = run_source_contract(|case| {
+        let mut memory_snapshots = run_source_contract(|case| {
             let outcome = match case {
                 SourceContractCase::Current => Ok(None),
                 SourceContractCase::Available => {
@@ -1684,6 +1684,16 @@ mod tests {
             Arc::new(MemoryUpdateSource::with_outcomes([outcome]))
         });
 
+        assert!(github_snapshots[0].checked_at.is_some());
+        assert!(github_snapshots[1].checked_at.is_some());
+        assert!(github_snapshots[2].checked_at.is_none());
+        assert!(memory_snapshots[0].checked_at.is_some());
+        assert!(memory_snapshots[1].checked_at.is_some());
+        assert!(memory_snapshots[2].checked_at.is_none());
+        // 成功检查时间来自 wall clock；契约只要求两种 Source 都持久化成功事实。
+        for snapshot in github_snapshots.iter_mut().chain(&mut memory_snapshots) {
+            snapshot.checked_at = snapshot.checked_at.map(|_| 1);
+        }
         assert_eq!(memory_snapshots, github_snapshots);
         assert_eq!(github_snapshots[0].phase, UpdatePhase::Current);
         assert_eq!(github_snapshots[0].candidate, None);

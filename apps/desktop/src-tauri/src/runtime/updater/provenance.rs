@@ -25,6 +25,15 @@ impl ReleaseCandidateId {
         self.0
     }
 
+    pub(crate) fn parse(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()))
+        .then_some(Self(value))
+    }
+
     #[cfg(test)]
     pub(crate) fn fake(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -140,6 +149,10 @@ impl VerifiedReleaseEvidence {
         &self.candidate_identity
     }
 
+    pub(crate) fn raw_provenance(&self) -> &[u8] {
+        &self.raw_provenance
+    }
+
     pub(crate) fn provenance_sha256(&self) -> &str {
         &self.provenance_sha256
     }
@@ -152,12 +165,44 @@ impl VerifiedReleaseEvidence {
         &self.tag
     }
 
+    pub(crate) fn commit_sha(&self) -> &str {
+        &self.commit_sha
+    }
+
     pub(crate) fn version(&self) -> &str {
         &self.version
     }
 
     pub(crate) fn installer_name(&self) -> &str {
         &self.installer.name
+    }
+
+    pub(crate) fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub(crate) fn installer_size(&self) -> u64 {
+        self.installer.size
+    }
+
+    pub(crate) fn installer_sha256(&self) -> &str {
+        &self.installer.sha256
+    }
+
+    pub(crate) fn installer_signature(&self) -> &str {
+        &self.installer_signature
+    }
+
+    pub(crate) fn provenance_signature(&self) -> &str {
+        &self.provenance_signature
+    }
+
+    pub(crate) fn installer_signature_sha256(&self) -> &str {
+        &self.installer_signature_sha256
+    }
+
+    pub(crate) fn provenance_signature_sha256(&self) -> &str {
+        &self.provenance_signature_sha256
     }
 
     pub(crate) fn installer_verification_material(
