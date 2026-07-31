@@ -259,6 +259,8 @@ jobs:
 
       - name: Build unsigned NSIS bundle
         shell: pwsh
+        env:
+          MINERADIO_OFFICIAL_DISTRIBUTION: github-release-v1
         run: |
           $ErrorActionPreference = "Stop"
           & bun run --filter ./apps/desktop tauri build --bundles nsis --ci --no-sign -- --locked

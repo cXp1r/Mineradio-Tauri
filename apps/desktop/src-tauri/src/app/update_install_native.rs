@@ -789,9 +789,8 @@ impl NativeInstallOwnerPort for TauriNativeInstallOwners {
     }
 }
 
-pub(crate) fn dormant_native_quiescence(app: tauri::AppHandle) -> NativeInstallQuiescence {
-    // #54 只能在 bounded blocking worker 内创建并调用此同步 Adapter；
-    // 本 factory 保持 dormant，不在 setup/command 中接入 production updater。
+pub(crate) fn production_native_quiescence(app: tauri::AppHandle) -> NativeInstallQuiescence {
+    // coordinator 只在 bounded blocking worker 内调用同步 native Adapter。
     let gate = app.state::<AppState>().update_install_gate.clone();
     NativeInstallQuiescence::new(gate, Arc::new(TauriNativeInstallOwners::new(app)))
 }

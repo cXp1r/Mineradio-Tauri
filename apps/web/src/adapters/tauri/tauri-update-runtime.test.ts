@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type { UpdateSnapshot } from "../../ports/update-runtime-port";
 import {
+	createDisabledUpdateRuntimePort,
 	createTauriUpdateRuntimePort,
 	type TauriUpdateRuntimeDependencies,
 } from "./tauri-update-runtime";
@@ -18,6 +19,60 @@ function snapshot(revision: number, phase: UpdateSnapshot["phase"] = "idle"): Up
 		skippedVersion: null,
 	};
 }
+
+test("standalone Web bootstrap receives a stable disabled runtime", async () => {
+	const port = await createTauriUpdateRuntimePort();
+
+	expect(port.getSnapshot()).toEqual({
+		revision: 0,
+		phase: "disabled",
+		currentVersion: "0.0.0-dev",
+		candidate: null,
+		operation: null,
+		fault: null,
+		checkedAt: null,
+		remindAfter: null,
+		skippedVersion: null,
+	});
+	expect(await port.dispatch({ kind: "check-now" })).toBe("runtime-unavailable");
+	port.dispose();
+});
+
+test("bootstrap failure fallback is a disposable read-only disabled port", async () => {
+	const port = createDisabledUpdateRuntimePort("1.0.0");
+	let notifications = 0;
+	const unsubscribe = port.subscribe(() => {
+		notifications += 1;
+	});
+
+	expect(port.getSnapshot().phase).toBe("disabled");
+	expect(port.getSnapshot().currentVersion).toBe("1.0.0");
+	expect(await port.dispatch({ kind: "check-now" })).toBe("runtime-unavailable");
+	unsubscribe();
+	port.dispose();
+	expect(notifications).toBe(0);
+});
+
+test("initial snapshot failure releases the listener installed before the read", async () => {
+	let unlistenCalls = 0;
+	let message = "";
+	try {
+		await createTauriUpdateRuntimePort({
+			listenSnapshot: async () => () => {
+				unlistenCalls += 1;
+			},
+			readSnapshot: async () => {
+				throw new Error("snapshot unavailable");
+			},
+			dispatch: async () => "accepted",
+		});
+	} catch (error) {
+		message = error instanceof Error ? error.message : String(error);
+	}
+
+	expect(message).toBe("snapshot unavailable");
+	expect(unlistenCalls).toBe(1);
+});
 
 test("Tauri update adapter listens before snapshot and keeps the highest initialization revision", async () => {
 	const calls: string[] = [];
@@ -79,6 +134,86 @@ test("a revision gap stops local publication and resynchronizes a full snapshot"
 	expect(reads).toBe(2);
 	expect(port.getSnapshot()).toEqual(snapshot(4, "available"));
 	expect(notifications).toBe(1);
+	port.dispose();
+});
+
+test("a failed revision resync retries through one delayed timer without a native event", async () => {
+	let emit: ((value: UpdateSnapshot) => void) | undefined;
+	let reads = 0;
+	const retries: Array<() => void> = [];
+	const port = await createTauriUpdateRuntimePort({
+		listenSnapshot: async (listener) => {
+			emit = listener;
+			return () => {};
+		},
+		readSnapshot: async () => {
+			reads += 1;
+			if (reads === 1) return snapshot(1, "idle");
+			if (reads === 2) throw new Error("temporary snapshot failure");
+			return snapshot(5, "available");
+		},
+		dispatch: async () => "accepted",
+		scheduleResyncRetry(callback) {
+			retries.push(callback);
+			return () => {};
+		},
+	});
+
+	emit?.(snapshot(3, "current"));
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(reads).toBe(2);
+	expect(port.getSnapshot()).toEqual(snapshot(1, "idle"));
+	expect(retries.length).toBe(1);
+
+	retries.shift()?.();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(reads).toBe(3);
+	expect(port.getSnapshot()).toEqual(snapshot(5, "available"));
+	port.dispose();
+});
+
+test("a malformed revision resync is also treated as a failed read", async () => {
+	let emit: ((value: UpdateSnapshot) => void) | undefined;
+	let reads = 0;
+	const retries: Array<() => void> = [];
+	const port = await createTauriUpdateRuntimePort({
+		listenSnapshot: async (listener) => {
+			emit = listener;
+			return () => {};
+		},
+		readSnapshot: async () => {
+			reads += 1;
+			if (reads === 1) return snapshot(1, "idle");
+			if (reads === 2) {
+				return {
+					...snapshot(3, "available"),
+					candidate: { id: "x", version: "1.0.0", notes: null, publishedAt: null },
+				} as unknown as UpdateSnapshot;
+			}
+			return snapshot(5, "available");
+		},
+		dispatch: async () => "accepted",
+		scheduleResyncRetry(callback) {
+			retries.push(callback);
+			return () => {};
+		},
+	});
+
+	emit?.(snapshot(3, "current"));
+	await Promise.resolve();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(reads).toBe(2);
+	expect(retries.length).toBe(1);
+
+	retries.shift()?.();
+	await Promise.resolve();
+	await Promise.resolve();
+	expect(reads).toBe(3);
+	expect(port.getSnapshot()).toEqual(snapshot(5, "available"));
 	port.dispose();
 });
 

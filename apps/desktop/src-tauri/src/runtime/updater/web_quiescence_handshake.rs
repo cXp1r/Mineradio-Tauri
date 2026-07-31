@@ -85,6 +85,17 @@ impl WebQuiescenceHandshakeError {
     pub(crate) fn code(&self) -> &'static str {
         self.code
     }
+
+    /// 这些错误只说明旧 WebView 没有完成 acknowledgement，可由新 listener 安全重放。
+    /// store 损坏、identity 冲突和 native 证据错误不在此列，继续 fail closed。
+    pub(crate) fn requires_listener_reconciliation(&self) -> bool {
+        matches!(
+            self.code,
+            "UPDATE_WEB_QUIESCENCE_ACK_TIMEOUT"
+                | "UPDATE_WEB_QUIESCENCE_ACK_FAILED"
+                | "UPDATE_WEB_QUIESCENCE_STALE_ACKNOWLEDGEMENT"
+        )
+    }
 }
 
 impl From<WebQuiescenceError> for WebQuiescenceHandshakeError {
@@ -309,6 +320,23 @@ mod tests {
         PlaybackCheckpointMode, PlaybackCheckpointSourceKind, WebQuiescencePhase,
         WEB_QUIESCENCE_FILE_NAME,
     };
+
+    #[test]
+    fn only_listener_acknowledgement_failures_are_reconnectable() {
+        for failure in [
+            WebQuiescenceHandshakeError::port(WebQuiescencePortFailure::TimedOut),
+            WebQuiescenceHandshakeError::port(WebQuiescencePortFailure::Failed),
+            WebQuiescenceHandshakeError::stale_acknowledgement(),
+        ] {
+            assert!(failure.requires_listener_reconciliation());
+        }
+        for code in [
+            "UPDATE_WEB_QUIESCENCE_STALE_IDENTITY",
+            "UPDATE_WEB_QUIESCENCE_NATIVE_ROLLBACK_REQUIRED",
+        ] {
+            assert!(!WebQuiescenceHandshakeError { code }.requires_listener_reconciliation());
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

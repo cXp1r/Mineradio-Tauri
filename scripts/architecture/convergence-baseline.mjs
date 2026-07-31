@@ -17,7 +17,7 @@ const UPDATER_AUTHORITY_FIELDS = [
 const EXPECTED_UPDATER_AUTHORITY = {
 	capability_id: "updater.github-release",
 	domain: "updater",
-	current_tauri: "partial",
+	current_tauri: "implemented",
 	parity_level: "P1",
 	convergence_mode: "architecture-replacement",
 };
@@ -51,7 +51,7 @@ const D0_INVENTORY_FIELDS = [
 const D0_SOURCE_MAP_DELTAS = new Map([
 	["lyrics.nested-render-base", ["implemented", "parity"]],
 	["visual.cursor-shelf-layer", ["implemented", "parity"]],
-	["updater.github-release", ["partial", "architecture-replacement"]],
+	["updater.github-release", ["implemented", "architecture-replacement"]],
 	["visual.sonic-workshop", ["missing", "parity"]],
 	["wallpaper.idle-dispose", ["implemented", "parity"]],
 ]);

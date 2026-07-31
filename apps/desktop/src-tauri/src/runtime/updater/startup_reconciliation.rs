@@ -18,6 +18,7 @@ use super::{
         InstallAttemptMarkerV1, InstallAttemptReconciliationV1, InstallAttemptRecovery,
         InstallAttemptStore, ReconciliationDisposition,
     },
+    policy::NativeUpdatePolicyStore,
     quiescence::{CheckpointEvidence, WebQuiescenceIdentity, WebQuiescenceReconciliation},
     web_quiescence_handshake::{
         WebPlaybackQuiescencePort, WebQuiescenceHandshake, WebQuiescenceHandshakeError,
@@ -387,10 +388,53 @@ impl InstallAttemptClock for SystemInstallAttemptClock {
     }
 }
 
+/// 生产 install-attempt authenticity rejection adapter。它与 Update Runtime 共享同一个
+/// native policy store，使 exact quarantine 的检查与写入处于同一 I/O 临界区。
+pub(crate) struct NativeInstallAttemptRejectionPolicy {
+    store: Arc<NativeUpdatePolicyStore>,
+    clock: Arc<dyn InstallAttemptClock>,
+}
+
+impl NativeInstallAttemptRejectionPolicy {
+    pub(crate) fn new(store: Arc<NativeUpdatePolicyStore>) -> Self {
+        Self::with_clock(store, Arc::new(SystemInstallAttemptClock))
+    }
+
+    fn with_clock(
+        store: Arc<NativeUpdatePolicyStore>,
+        clock: Arc<dyn InstallAttemptClock>,
+    ) -> Self {
+        Self { store, clock }
+    }
+}
+
+impl InstallAttemptRejectionPolicyPort for NativeInstallAttemptRejectionPolicy {
+    fn persist_exact_rejection<'a>(
+        &'a self,
+        expected: &'a InstallAttemptArtifactIdentity,
+        reason: &'a CacheRecoveryFault,
+    ) -> RecoveryFuture<'a, Result<(), CacheRecoveryFault>> {
+        Box::pin(async move {
+            let rejected_at = self.clock.now_millis()?;
+            self.store
+                .persist_exact_quarantine(
+                    expected.candidate_id(),
+                    expected.version(),
+                    reason.code,
+                    rejected_at,
+                )
+                .map_err(|error| CacheRecoveryFault {
+                    code: error.code(),
+                    message: "无法持久化 exact install-attempt quarantine 策略",
+                })
+        })
+    }
+}
+
 /// 启动恢复的深模块。它先协调 install-attempt/Web/cache 三方证据，再把控制权
 /// 交回普通 cache 恢复，避免普通版本清理提前销毁升级结果证据。
 pub(crate) struct InstallAttemptStartupRecovery {
-    attempts: InstallAttemptStore,
+    attempts: Arc<InstallAttemptStore>,
     cache: Arc<dyn InstallAttemptCachePort>,
     web: Arc<dyn InstallAttemptWebPort>,
     quarantine: Arc<dyn InstallAttemptQuarantinePort>,
@@ -399,7 +443,7 @@ pub(crate) struct InstallAttemptStartupRecovery {
 
 impl InstallAttemptStartupRecovery {
     pub(crate) fn new(
-        attempts: InstallAttemptStore,
+        attempts: Arc<InstallAttemptStore>,
         cache: Arc<dyn InstallAttemptCachePort>,
         web: Arc<dyn InstallAttemptWebPort>,
         quarantine: Arc<dyn InstallAttemptQuarantinePort>,
@@ -414,7 +458,7 @@ impl InstallAttemptStartupRecovery {
     }
 
     pub(crate) fn with_clock(
-        attempts: InstallAttemptStore,
+        attempts: Arc<InstallAttemptStore>,
         cache: Arc<dyn InstallAttemptCachePort>,
         web: Arc<dyn InstallAttemptWebPort>,
         quarantine: Arc<dyn InstallAttemptQuarantinePort>,
@@ -801,7 +845,11 @@ fn web_store_fault(error: super::quiescence::WebQuiescenceError) -> CacheRecover
 
 fn web_handshake_fault(error: WebQuiescenceHandshakeError) -> CacheRecoveryFault {
     CacheRecoveryFault {
-        code: error.code(),
+        code: if error.requires_listener_reconciliation() {
+            super::WEB_RECONCILIATION_REQUIRED_FAULT
+        } else {
+            error.code()
+        },
         message: GENERIC_BLOCKED_MESSAGE,
     }
 }
@@ -870,6 +918,7 @@ mod tests {
     use crate::runtime::updater::{
         download::VerifiedInstallerArtifact,
         install_attempt::{InstallAttemptFileSystem, InstallAttemptInput, ParentDurability},
+        policy::{NativeUpdatePolicyStore, UpdatePolicyStore},
         provenance::ReleaseCandidateId,
         NormalizedRelease,
     };
@@ -1100,7 +1149,7 @@ mod tests {
 
     struct Harness {
         _root: TestDirectory,
-        attempts: InstallAttemptStore,
+        attempts: Arc<InstallAttemptStore>,
         cache: Arc<FakeCache>,
         web: Arc<FakeWeb>,
         quarantine: Arc<FakeQuarantine>,
@@ -1112,7 +1161,7 @@ mod tests {
             let root = TestDirectory::new(label);
             let events = Arc::new(EventLog::default());
             Self {
-                attempts: InstallAttemptStore::with_updater_directory(&root.0),
+                attempts: Arc::new(InstallAttemptStore::with_updater_directory(&root.0)),
                 cache: Arc::new(FakeCache::new(events.clone())),
                 web: Arc::new(FakeWeb::new(events.clone())),
                 quarantine: Arc::new(FakeQuarantine::new(events.clone())),
@@ -1173,6 +1222,88 @@ mod tests {
 
     fn auth_fault() -> CacheRecoveryFault {
         authenticity_fault()
+    }
+
+    fn rejection_identity(candidate_id: &str) -> InstallAttemptArtifactIdentity {
+        InstallAttemptArtifactIdentity::new(
+            candidate_id,
+            "1.2.3",
+            PROVENANCE,
+            METADATA,
+            INSTALLER,
+            9,
+        )
+        .unwrap()
+    }
+
+    struct RejectionClock(u64);
+
+    impl InstallAttemptClock for RejectionClock {
+        fn now_millis(&self) -> Result<u64, CacheRecoveryFault> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn native_rejection_policy_persists_exact_quarantine_idempotently() {
+        let root = TestDirectory::new("native-rejection-idempotent");
+        let store = Arc::new(NativeUpdatePolicyStore::for_app_data(&root.0));
+        let expected = rejection_identity(CANDIDATE);
+        let reason = CacheRecoveryFault {
+            code: "UPDATE_CACHE_AUTHENTICITY_REJECTED",
+            message: "测试 authenticity rejection",
+        };
+
+        NativeInstallAttemptRejectionPolicy::with_clock(
+            store.clone(),
+            Arc::new(RejectionClock(500)),
+        )
+        .persist_exact_rejection(&expected, &reason)
+        .await
+        .unwrap();
+        NativeInstallAttemptRejectionPolicy::with_clock(
+            store.clone(),
+            Arc::new(RejectionClock(900)),
+        )
+        .persist_exact_rejection(&expected, &reason)
+        .await
+        .unwrap();
+
+        let quarantine = store.load().unwrap().quarantine.unwrap();
+        assert_eq!(quarantine.candidate_id, CANDIDATE);
+        assert_eq!(quarantine.version, "1.2.3");
+        assert_eq!(quarantine.reason, "UPDATE_CACHE_AUTHENTICITY_REJECTED");
+        assert_eq!(quarantine.rejected_at, 500);
+    }
+
+    #[tokio::test]
+    async fn native_rejection_policy_rejects_same_version_republished_candidate() {
+        let root = TestDirectory::new("native-rejection-republished");
+        let store = Arc::new(NativeUpdatePolicyStore::for_app_data(&root.0));
+        let reason = CacheRecoveryFault {
+            code: "UPDATE_CACHE_AUTHENTICITY_REJECTED",
+            message: "测试 authenticity rejection",
+        };
+        let policy = NativeInstallAttemptRejectionPolicy::with_clock(
+            store.clone(),
+            Arc::new(RejectionClock(500)),
+        );
+        policy
+            .persist_exact_rejection(&rejection_identity(CANDIDATE), &reason)
+            .await
+            .unwrap();
+
+        let replacement = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let error = policy
+            .persist_exact_rejection(&rejection_identity(replacement), &reason)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.code, "UPDATE_POLICY_QUARANTINE_IDENTITY_CONFLICT");
+        let quarantine = store.load().unwrap().quarantine.unwrap();
+        assert_eq!(quarantine.candidate_id, CANDIDATE);
+        assert_eq!(quarantine.version, "1.2.3");
+        assert_eq!(quarantine.rejected_at, 500);
     }
 
     fn outcome_code(outcome: &CacheRecoveryOutcome) -> Option<&'static str> {
@@ -1546,7 +1677,7 @@ mod tests {
 
         let events = Arc::new(EventLog::default());
         let recovery = InstallAttemptStartupRecovery::with_clock(
-            attempts,
+            Arc::new(attempts),
             Arc::new(FakeCache::new(events.clone())),
             Arc::new(FakeWeb::new(events.clone())),
             Arc::new(FakeQuarantine::new(events.clone())),
@@ -1631,7 +1762,7 @@ mod tests {
         let events = Arc::new(EventLog::default());
         let cache = Arc::new(FakeCache::new(events.clone()));
         let recovery = InstallAttemptStartupRecovery::with_clock(
-            attempts,
+            Arc::new(attempts),
             cache.clone(),
             Arc::new(FakeWeb::new(events.clone())),
             Arc::new(FakeQuarantine::new(events.clone())),

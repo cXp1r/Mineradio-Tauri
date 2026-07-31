@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
 	DESKTOP_COMMAND_REGISTRATION_ORDER,
+	D2_UPDATE_RUNTIME_COMMANDS,
+	D2_UPDATE_RUNTIME_INTERFACES,
 	FROZEN_DESKTOP_COMMANDS,
 	FROZEN_DESKTOP_ERROR_STRINGS,
 	FROZEN_DESKTOP_COMMAND_INTERFACES,
@@ -25,7 +27,7 @@ const frozenContractSources = [
 	"app/state.rs",
 	"sidecar.rs",
 	"db.rs",
-	"updater.rs",
+	"runtime/updater/mod.rs",
 	"runtime/hotkeys.rs",
 	"runtime/window_contract.rs",
 	"runtime/desktop_lyrics.rs",
@@ -48,6 +50,7 @@ test("M5/M6/M7/M8 preserves frozen desktop commands and only adds approved manif
 			...M6_ADDITIVE_DESKTOP_COMMANDS,
 			...M7_ADDITIVE_DESKTOP_COMMANDS,
 			...M8_ADDITIVE_DESKTOP_COMMANDS,
+			...D2_UPDATE_RUNTIME_COMMANDS,
 		]),
 	);
 });
@@ -63,6 +66,9 @@ test("frozen command parameter and return interfaces match the approved fixture"
 		expect(interfaces[command]).toBe(expected);
 	}
 	for (const [command, expected] of Object.entries(M8_DESKTOP_COMMAND_INTERFACES)) {
+		expect(interfaces[command]).toBe(expected);
+	}
+	for (const [command, expected] of Object.entries(D2_UPDATE_RUNTIME_INTERFACES)) {
 		expect(interfaces[command]).toBe(expected);
 	}
 });
@@ -82,7 +88,7 @@ test("frozen deterministic command errors match the approved fixture", () => {
 test("every literal frontend desktop invoke is registered in the Rust manifest", () => {
 	const webSources = [
 		"../../apps/web/src/tauri/runtime.ts",
-		"../../apps/web/src/tauri/updater.ts",
+		"../../apps/web/src/adapters/tauri/tauri-update-runtime.ts",
 		"../../apps/web/src/tauri/db.ts",
 		"../../apps/web/src/adapters/tauri/tauri-preferences.ts",
 		"../../apps/web/src/desktop-lyrics/desktop-lyrics-bridge.ts",
@@ -96,6 +102,7 @@ test("every literal frontend desktop invoke is registered in the Rust manifest",
 		...M6_ADDITIVE_DESKTOP_COMMANDS,
 		...M7_ADDITIVE_DESKTOP_COMMANDS,
 		...M8_ADDITIVE_DESKTOP_COMMANDS,
+		...D2_UPDATE_RUNTIME_COMMANDS,
 	]);
 
 	for (const command of invokes) expect(registered.has(command)).toBe(true);

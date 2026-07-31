@@ -13,20 +13,13 @@ pub(crate) mod auto_check;
 pub(crate) mod cache;
 pub(crate) mod download;
 pub(crate) mod github_source;
-// #54 production cutover 前保持 install transaction deep modules dormant。
-#[allow(dead_code)]
 pub(crate) mod install_attempt;
 pub(crate) mod managed_fs;
-#[allow(dead_code)]
 pub(crate) mod nsis_install;
 pub(crate) mod policy;
 pub(crate) mod provenance;
 pub(crate) mod quiescence;
-// #54 production cutover 前保持启动协调器 dormant；核心顺序已由独立测试冻结。
-#[allow(dead_code)]
 pub(crate) mod startup_reconciliation;
-// #54 production cutover 前保持 transport-neutral dormant，只由契约测试消费。
-#[allow(dead_code)]
 pub(crate) mod web_quiescence_handshake;
 
 use auto_check::{AutomaticCheckOutcome, SystemUpdateTime, UpdateTime, SUCCESS_INTERVAL_MILLIS};
@@ -43,6 +36,8 @@ use policy::{
 use provenance::{ReleaseCandidateId, VerifiedReleaseEvidence};
 
 const REMIND_LATER_MILLIS: u64 = 24 * 60 * 60 * 1_000;
+pub(crate) const WEB_RECONCILIATION_REQUIRED_FAULT: &str =
+    "UPDATE_WEB_QUIESCENCE_RECONCILIATION_REQUIRED";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -155,6 +150,53 @@ pub enum UpdateReceipt {
     InvalidOrder,
     PolicyBlocked,
     RuntimeUnavailable,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpdateInstallOutcome {
+    InstallerSpawned,
+    RecoveryCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpdateInstallFault {
+    stage: UpdateFaultStage,
+    code: String,
+    retryable: bool,
+    message: String,
+    recovery_required: bool,
+}
+
+impl UpdateInstallFault {
+    pub(crate) fn new(
+        stage: UpdateFaultStage,
+        code: impl Into<String>,
+        retryable: bool,
+        message: impl Into<String>,
+        recovery_required: bool,
+    ) -> Self {
+        Self {
+            stage,
+            code: code.into(),
+            retryable,
+            message: message.into(),
+            recovery_required,
+        }
+    }
+}
+
+pub(crate) trait UpdateInstaller: Send + Sync {
+    fn install_exact<'a>(
+        &'a self,
+        candidate_id: String,
+        artifact: VerifiedInstallerArtifact,
+        started_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + 'a>>;
+
+    fn retry_recovery(
+        &self,
+        updated_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + '_>>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -334,6 +376,25 @@ impl UpdateSnapshotSink for NoopSnapshotSink {
     fn publish(&self, _snapshot: UpdateSnapshot) {}
 }
 
+struct DisabledUpdateSource;
+
+impl UpdateSource for DisabledUpdateSource {
+    fn check(
+        &self,
+        _request: CheckRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<NormalizedRelease>, UpdateSourceError>> + Send + '_>,
+    > {
+        Box::pin(async {
+            Err(UpdateSourceError {
+                code: "UPDATE_RUNTIME_DISABLED".into(),
+                retryable: false,
+                message: "此构建未启用官方更新能力".into(),
+            })
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 struct PendingCheck {
     operation_id: String,
@@ -375,6 +436,23 @@ struct ActiveDownload {
     last_progress_commit_ms: u64,
 }
 
+#[derive(Clone)]
+struct ClaimedInstall {
+    operation_id: String,
+    candidate_id: ReleaseCandidateId,
+    artifact: VerifiedInstallerArtifact,
+    recovery_required: bool,
+}
+
+#[derive(Debug)]
+struct ActiveInstall {
+    operation_id: String,
+    candidate_id: ReleaseCandidateId,
+    artifact: VerifiedInstallerArtifact,
+    claimed: bool,
+    recovery_required: bool,
+}
+
 #[derive(Debug)]
 struct UpdateState {
     snapshot: UpdateSnapshot,
@@ -383,6 +461,7 @@ struct UpdateState {
     pending_cache_recovery: Option<PendingCacheRecovery>,
     pending_check: Option<PendingCheck>,
     active_download: Option<ActiveDownload>,
+    active_install: Option<ActiveInstall>,
     quarantined_candidate: Option<ReleaseCandidateId>,
     verified_artifact: Option<VerifiedInstallerArtifact>,
     verified_metadata_digest: Option<String>,
@@ -409,6 +488,7 @@ impl UpdateState {
             pending_cache_recovery: None,
             pending_check: None,
             active_download: None,
+            active_install: None,
             quarantined_candidate: None,
             verified_artifact: None,
             verified_metadata_digest: None,
@@ -481,6 +561,23 @@ impl UpdateState {
         Some(pending.clone())
     }
 
+    fn rearm_web_reconciliation_cache_recovery(&mut self) -> Option<UpdateSnapshot> {
+        if self.snapshot.phase != UpdatePhase::Idle
+            || !self.cache_cleanup_blocked
+            || self.snapshot.operation.is_some()
+            || self.pending_cache_recovery.is_some()
+            || !self.snapshot.fault.as_ref().is_some_and(|fault| {
+                fault.stage == UpdateFaultStage::Cache
+                    && fault.code == WEB_RECONCILIATION_REQUIRED_FAULT
+            })
+        {
+            return None;
+        }
+        self.initialize_cache_recovery();
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
     fn begin_check(&mut self, trigger: CheckTrigger) -> UpdateSnapshot {
         let operation_id = format!("check-{}", self.next_operation);
         self.next_operation += 1;
@@ -546,6 +643,134 @@ impl UpdateState {
             cancellation: active.cancellation.clone(),
             completion: active.completion.clone(),
         })
+    }
+
+    fn begin_install(&mut self) -> Option<UpdateSnapshot> {
+        let candidate = self.normalized_candidate.as_ref()?;
+        let artifact = self.verified_artifact.as_ref()?;
+        if artifact.candidate_id() != &candidate.candidate_id {
+            return None;
+        }
+        let operation_id = format!("install-{}", self.next_operation);
+        self.next_operation += 1;
+        self.active_install = Some(ActiveInstall {
+            operation_id: operation_id.clone(),
+            candidate_id: candidate.candidate_id.clone(),
+            artifact: artifact.clone(),
+            claimed: false,
+            recovery_required: false,
+        });
+        self.snapshot.phase = UpdatePhase::PreparingInstall;
+        self.snapshot.operation = Some(UpdateOperationView {
+            id: operation_id,
+            kind: UpdateOperationKind::Install,
+            received_bytes: 0,
+            total_bytes: None,
+            cancellable: false,
+        });
+        self.snapshot.fault = None;
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
+    fn claim_install(&mut self) -> Option<ClaimedInstall> {
+        let active = self.active_install.as_mut()?;
+        if active.claimed {
+            return None;
+        }
+        active.claimed = true;
+        Some(ClaimedInstall {
+            operation_id: active.operation_id.clone(),
+            candidate_id: active.candidate_id.clone(),
+            artifact: active.artifact.clone(),
+            recovery_required: active.recovery_required,
+        })
+    }
+
+    fn finish_install(
+        &mut self,
+        claimed: &ClaimedInstall,
+        result: Result<UpdateInstallOutcome, UpdateInstallFault>,
+    ) -> Option<UpdateSnapshot> {
+        let active = self.active_install.as_ref()?;
+        if active.operation_id != claimed.operation_id
+            || active.candidate_id != claimed.candidate_id
+            || self
+                .snapshot
+                .operation
+                .as_ref()
+                .map(|operation| operation.id.as_str())
+                != Some(claimed.operation_id.as_str())
+        {
+            return None;
+        }
+
+        match result {
+            Ok(UpdateInstallOutcome::InstallerSpawned) => {
+                self.snapshot.phase = UpdatePhase::Installing;
+                self.snapshot.operation = None;
+                self.snapshot.fault = None;
+                self.active_install = None;
+            }
+            Ok(UpdateInstallOutcome::RecoveryCompleted) => {
+                self.snapshot.phase = UpdatePhase::ReadyToInstall;
+                self.snapshot.operation = None;
+                // 保留触发 rollback 的稳定 fault，便于用户理解安装为何没有启动。
+                self.active_install = None;
+            }
+            Err(fault) if fault.recovery_required => {
+                self.snapshot.phase = UpdatePhase::PreparingInstall;
+                self.snapshot.fault = Some(UpdateFaultView {
+                    stage: fault.stage,
+                    code: fault.code,
+                    retryable: fault.retryable,
+                    message: fault.message,
+                });
+                if let Some(active) = self.active_install.as_mut() {
+                    active.claimed = false;
+                    active.recovery_required = true;
+                }
+            }
+            Err(fault) => {
+                self.snapshot.phase = UpdatePhase::ReadyToInstall;
+                self.snapshot.operation = None;
+                self.snapshot.fault = Some(UpdateFaultView {
+                    stage: fault.stage,
+                    code: fault.code,
+                    retryable: fault.retryable,
+                    message: fault.message,
+                });
+                self.active_install = None;
+            }
+        }
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
+    }
+
+    fn finish_interrupted_install(&mut self, claimed: &ClaimedInstall) -> Option<UpdateSnapshot> {
+        let active = self.active_install.as_mut()?;
+        if active.operation_id != claimed.operation_id
+            || active.candidate_id != claimed.candidate_id
+            || self
+                .snapshot
+                .operation
+                .as_ref()
+                .map(|operation| operation.id.as_str())
+                != Some(claimed.operation_id.as_str())
+        {
+            return None;
+        }
+        active.claimed = false;
+        active.recovery_required = true;
+        self.snapshot.phase = UpdatePhase::PreparingInstall;
+        self.snapshot.fault = Some(UpdateFaultView {
+            stage: UpdateFaultStage::Quiesce,
+            code: "UPDATE_INSTALL_INTERRUPTED".into(),
+            retryable: true,
+            message: "安装准备被中断，正在等待 exact rollback 恢复".into(),
+        });
+        self.snapshot.revision += 1;
+        Some(self.snapshot.clone())
     }
 
     fn apply_download_event(
@@ -1180,6 +1405,7 @@ pub struct UpdateRuntime {
     source: Arc<dyn UpdateSource>,
     sink: Arc<dyn UpdateSnapshotSink>,
     downloader: Option<Arc<dyn InstallerDownloader>>,
+    installer: Option<Arc<dyn UpdateInstaller>>,
     recovery: Option<Arc<dyn UpdateStartupRecovery>>,
     policy_store: Arc<dyn UpdatePolicyStore>,
     time: Arc<dyn UpdateTime>,
@@ -1218,6 +1444,7 @@ impl UpdateRuntime {
             source,
             sink,
             downloader,
+            installer: None,
             recovery: None,
             policy_store: Arc::new(MemoryUpdatePolicyStore::default()),
             time: Arc::new(SystemUpdateTime),
@@ -1281,6 +1508,23 @@ impl UpdateRuntime {
         Ok(runtime)
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn with_production_dependencies(
+        current_version: impl Into<String>,
+        source: Arc<dyn UpdateSource>,
+        sink: Arc<dyn UpdateSnapshotSink>,
+        downloader: Arc<dyn InstallerDownloader>,
+        recovery: Arc<dyn UpdateStartupRecovery>,
+        policy_store: Arc<dyn UpdatePolicyStore>,
+        installer: Arc<dyn UpdateInstaller>,
+    ) -> Result<Self, UpdatePolicyStoreError> {
+        let mut runtime =
+            Self::with_recovery_and_policy(current_version, source, sink, recovery, policy_store)?;
+        runtime.downloader = Some(downloader);
+        runtime.installer = Some(installer);
+        Ok(runtime)
+    }
+
     /// #54 生产切换使用的 native policy 组合入口；这里只组装依赖，不提前接入 bootstrap。
     pub(crate) fn with_recovery_and_native_policy(
         current_version: impl Into<String>,
@@ -1326,12 +1570,49 @@ impl UpdateRuntime {
         Self::build(current_version, source, sink, None, UpdatePhase::Disabled)
     }
 
+    pub(crate) fn disabled_without_network(
+        current_version: impl Into<String>,
+        sink: Arc<dyn UpdateSnapshotSink>,
+    ) -> Self {
+        Self::build(
+            current_version,
+            Arc::new(DisabledUpdateSource),
+            sink,
+            None,
+            UpdatePhase::Disabled,
+        )
+    }
+
     pub fn snapshot(&self) -> UpdateSnapshot {
         self.state
             .lock()
             .expect("update runtime state poisoned")
             .snapshot
             .clone()
+    }
+
+    pub(crate) fn rearm_web_reconciliation_recovery(&self) -> bool {
+        if self.recovery.is_none() {
+            return false;
+        }
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .rearm_web_reconciliation_cache_recovery();
+        let rearmed = published.is_some();
+        let should_drain = published
+            .map(|snapshot| self.queue_committed_snapshot(snapshot))
+            .unwrap_or(false);
+        drop(commit);
+        if should_drain {
+            self.drain_publications();
+        }
+        rearmed
     }
 
     pub(crate) fn release_page_url(&self, candidate_id: Option<&str>) -> Option<String> {
@@ -1622,15 +1903,22 @@ impl UpdateRuntime {
                     state.begin_download(plan)
                 }
                 UpdateIntent::InstallAndRestart { candidate_id } => {
-                    if state
-                        .normalized_candidate
-                        .as_ref()
-                        .map(|value| value.candidate_id.as_str())
-                        != Some(candidate_id.as_str())
-                    {
+                    let Some(candidate) = state.normalized_candidate.as_ref() else {
+                        return UpdateReceipt::StaleCandidate;
+                    };
+                    if candidate.candidate_id.as_str() != candidate_id {
                         return UpdateReceipt::StaleCandidate;
                     }
-                    return UpdateReceipt::InvalidOrder;
+                    if state.snapshot.phase != UpdatePhase::ReadyToInstall {
+                        return UpdateReceipt::InvalidOrder;
+                    }
+                    if self.installer.is_none() {
+                        return UpdateReceipt::RuntimeUnavailable;
+                    }
+                    let Some(snapshot) = state.begin_install() else {
+                        return UpdateReceipt::PolicyBlocked;
+                    };
+                    snapshot
                 }
                 UpdateIntent::RemindLater { .. } | UpdateIntent::SkipVersion { .. } => {
                     unreachable!("policy intents are dispatched before the generic state path")
@@ -2160,6 +2448,87 @@ impl UpdateRuntime {
         }
     }
 
+    pub(crate) async fn run_pending_install(&self) -> bool {
+        let claimed = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .claim_install();
+        let Some(claimed) = claimed else {
+            return false;
+        };
+        let Some(installer) = self.installer.as_ref() else {
+            self.finish_interrupted_install(&claimed);
+            return false;
+        };
+        let mut lease = InstallRunLease::new(self, claimed.clone());
+        let started_at = match self.time.now_millis() {
+            Ok(value) => value,
+            Err(code) => {
+                let result = Err(UpdateInstallFault::new(
+                    UpdateFaultStage::Install,
+                    code,
+                    true,
+                    "本机时钟无法生成安装事务时间",
+                    claimed.recovery_required,
+                ));
+                let committed = self.finish_install_result(&claimed, result);
+                lease.complete();
+                return committed;
+            }
+        };
+        let result = if claimed.recovery_required {
+            installer.retry_recovery(started_at).await
+        } else {
+            installer
+                .install_exact(
+                    claimed.candidate_id.as_str().to_owned(),
+                    claimed.artifact.clone(),
+                    started_at,
+                )
+                .await
+        };
+        let committed = self.finish_install_result(&claimed, result);
+        lease.complete();
+        committed
+    }
+
+    /// 一个已接受的安装事务最多自动执行一次 exact rollback 恢复。
+    /// 这保证 WebView 重载时并发 reconcile worker 即使未取得 claim，原 owner
+    /// 在释放 claim 后仍会闭合恢复事务；再次失败则等待下一次显式 reconcile。
+    pub(crate) async fn run_pending_install_transaction(&self) -> bool {
+        let committed = self.run_pending_install().await;
+        if committed && self.snapshot().phase == UpdatePhase::PreparingInstall {
+            let _ = self.run_pending_install().await;
+        }
+        committed
+    }
+
+    fn finish_install_result(
+        &self,
+        claimed: &ClaimedInstall,
+        result: Result<UpdateInstallOutcome, UpdateInstallFault>,
+    ) -> bool {
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .finish_install(claimed, result);
+        let committed = published.is_some();
+        let should_drain = published
+            .map(|snapshot| self.queue_committed_snapshot(snapshot))
+            .unwrap_or(false);
+        drop(commit);
+        if should_drain {
+            self.drain_publications();
+        }
+        committed
+    }
+
     fn handle_download_event(
         &self,
         operation_id: &str,
@@ -2223,16 +2592,14 @@ impl UpdateRuntime {
         }
     }
 
-    pub(crate) async fn shutdown_active_download(&self) -> bool {
+    fn begin_active_download_shutdown(&self) -> Option<Option<CancellationToken>> {
         let commit = self
             .commit_gate
             .lock()
             .expect("update runtime commit gate poisoned");
         let (completion, published) = {
             let mut state = self.state.lock().expect("update runtime state poisoned");
-            let Some(active) = state.active_download.as_mut() else {
-                return false;
-            };
+            let active = state.active_download.as_mut()?;
             active.cancel_requested = true;
             active.cancellation.cancel();
             let completion = active.claimed.then(|| active.completion.clone());
@@ -2260,6 +2627,18 @@ impl UpdateRuntime {
         if should_drain {
             self.drain_publications();
         }
+        Some(completion)
+    }
+
+    /// 最终 RunEvent::Exit 必须同步撤销网络 authority，不能依赖一个可能来不及调度的 task。
+    pub(crate) fn request_active_download_shutdown(&self) -> bool {
+        self.begin_active_download_shutdown().is_some()
+    }
+
+    pub(crate) async fn shutdown_active_download(&self) -> bool {
+        let Some(completion) = self.begin_active_download_shutdown() else {
+            return false;
+        };
         if let Some(completion) = completion {
             completion.cancelled().await;
         }
@@ -2281,6 +2660,25 @@ impl UpdateRuntime {
             .unwrap_or(false);
         drop(commit);
         claimed.completion.cancel();
+        if should_drain {
+            self.drain_publications();
+        }
+    }
+
+    fn finish_interrupted_install(&self, claimed: &ClaimedInstall) {
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = self
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .finish_interrupted_install(claimed);
+        let should_drain = published
+            .map(|snapshot| self.queue_committed_snapshot(snapshot))
+            .unwrap_or(false);
+        drop(commit);
         if should_drain {
             self.drain_publications();
         }
@@ -2407,6 +2805,34 @@ impl Drop for DownloadRunLease<'_> {
     fn drop(&mut self) {
         if !self.completed {
             self.runtime.finish_interrupted_claim(&self.claimed);
+        }
+    }
+}
+
+struct InstallRunLease<'a> {
+    runtime: &'a UpdateRuntime,
+    claimed: ClaimedInstall,
+    completed: bool,
+}
+
+impl<'a> InstallRunLease<'a> {
+    fn new(runtime: &'a UpdateRuntime, claimed: ClaimedInstall) -> Self {
+        Self {
+            runtime,
+            claimed,
+            completed: false,
+        }
+    }
+
+    fn complete(&mut self) {
+        self.completed = true;
+    }
+}
+
+impl Drop for InstallRunLease<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.runtime.finish_interrupted_install(&self.claimed);
         }
     }
 }

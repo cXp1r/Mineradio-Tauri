@@ -168,6 +168,46 @@ impl NativeUpdatePolicyStore {
         &self.path
     }
 
+    /// 在同一个 native I/O 临界区内完成 exact quarantine 的读改写。
+    /// 重放同一条拒绝证据是幂等成功；任何已有的不同 identity/reason 都拒绝覆盖，
+    /// 严格更高版本的解除权仍只属于 Update Runtime 的 source policy。
+    pub(crate) fn persist_exact_quarantine(
+        &self,
+        candidate_id: &str,
+        version: &str,
+        reason: &str,
+        rejected_at: u64,
+    ) -> Result<(), UpdatePolicyStoreError> {
+        let _guard = self
+            .io_lock
+            .lock()
+            .expect("native update policy store poisoned");
+        let mut snapshot = self.load_locked()?;
+        match snapshot.quarantine.as_ref() {
+            Some(existing)
+                if existing.candidate_id == candidate_id
+                    && existing.version == version
+                    && existing.reason == reason =>
+            {
+                return Ok(())
+            }
+            Some(_) => {
+                return Err(UpdatePolicyStoreError::new(
+                    "UPDATE_POLICY_QUARANTINE_IDENTITY_CONFLICT",
+                    "已有更新隔离证据与本次 exact rejection 不一致",
+                ))
+            }
+            None => {}
+        }
+        snapshot.quarantine = Some(UpdatePolicyQuarantine {
+            candidate_id: candidate_id.to_owned(),
+            version: version.to_owned(),
+            reason: reason.to_owned(),
+            rejected_at,
+        });
+        self.save_locked(&snapshot)
+    }
+
     fn load_locked(&self) -> Result<UpdatePolicySnapshot, UpdatePolicyStoreError> {
         let (parent, file_name) = policy_location(&self.path)?;
         let Some(directory) = StableDirectory::open_existing(parent).map_err(|error| {

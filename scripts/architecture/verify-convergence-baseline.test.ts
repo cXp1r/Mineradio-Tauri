@@ -42,7 +42,7 @@ const updaterCapability = {
 	domain: "updater",
 	upstream_source: "2.0.3 external HTTPS download pages",
 	target_module: "GitHub Release + signed Update Runtime",
-	current_tauri: "partial",
+	current_tauri: "implemented",
 	parity_level: "P1",
 	convergence_mode: "architecture-replacement",
 	owner_layer: "Rust/Tauri adapter",
@@ -110,7 +110,7 @@ const d0SourceMap = [
 	"| --- | --- | --- | --- |",
 	"| lyrics.nested-render-base | implemented | parity | D1 layer characterization |",
 	"| visual.cursor-shelf-layer | implemented | parity | D1 cursor and Shelf runtime |",
-	"| updater.github-release | partial | architecture-replacement | D2 signed GitHub Update Runtime |",
+	"| updater.github-release | implemented | architecture-replacement | D2 signed GitHub Update Runtime |",
 	"| visual.sonic-workshop | missing | parity | independent CmzYa / 3747222633 migration-pending Module |",
 	"| wallpaper.idle-dispose | implemented | parity | Rust idle and repeated dispose tests |",
 ].join("\n");
@@ -379,7 +379,7 @@ test("convergence guard freezes the GitHub Release updater authority tuple", () 
 			...validDocuments,
 			capabilityMatrix,
 		})).toContain(
-			`capability-matrix: line 8 updater authority must be updater.github-release / updater / partial / P1 / architecture-replacement; found ${actualAuthority}`,
+			`capability-matrix: line 8 updater authority must be updater.github-release / updater / implemented / P1 / architecture-replacement; found ${actualAuthority}`,
 		);
 	}
 });

@@ -165,6 +165,11 @@ pub fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             );
         }
         tauri::RunEvent::Exit => {
+            if let Some(updater) =
+                app.try_state::<super::updater_runtime::ApplicationUpdateRuntime>()
+            {
+                updater.shutdown();
+            }
             if app_update_exit_run_decision(app) != UpdateExitRunDecision::Normal {
                 // sealed install 已由 reversible native lease 完成所有退出前工作；这里
                 // 禁止重新进入普通 cleanup。不可取消的异常退出则保留 recovery 证据。

@@ -17,6 +17,7 @@ use crate::runtime::updater::{
     web_quiescence_handshake::{
         PreparedWebQuiescence, WebPlaybackQuiescencePort, WebQuiescenceHandshake,
     },
+    UpdateFaultStage, UpdateInstallFault, UpdateInstallOutcome, UpdateInstaller,
 };
 
 use super::{
@@ -74,6 +75,141 @@ impl UpdateInstallCoordinatorFault {
 pub(crate) enum UpdateInstallCoordinatorOutcome {
     InstallerSpawned,
     RecoveryCompleted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RuntimeInstallFaultProjection {
+    stage: UpdateFaultStage,
+    retryable: bool,
+    message: &'static str,
+    fallback_code: &'static str,
+}
+
+fn project_runtime_install_fault(
+    stage: UpdateInstallCoordinatorStage,
+) -> RuntimeInstallFaultProjection {
+    match stage {
+        UpdateInstallCoordinatorStage::Authority => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: false,
+            message: "安装授权已失效，无法继续本次安装",
+            fallback_code: "UPDATE_INSTALL_AUTHORITY_FAILED",
+        },
+        UpdateInstallCoordinatorStage::WebPrepare => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Quiesce,
+            retryable: true,
+            message: "无法安全暂停播放状态",
+            fallback_code: "UPDATE_WEB_QUIESCENCE_FAILED",
+        },
+        UpdateInstallCoordinatorStage::NativePrepare => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Quiesce,
+            retryable: true,
+            message: "无法安全暂停桌面运行时",
+            fallback_code: "UPDATE_INSTALL_NATIVE_PREPARE_FAILED",
+        },
+        UpdateInstallCoordinatorStage::CacheRevalidation => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Cache,
+            retryable: false,
+            message: "已验证安装包复核失败",
+            fallback_code: "UPDATE_CACHE_REVALIDATION_FAILED",
+        },
+        UpdateInstallCoordinatorStage::InstallPlan => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: false,
+            message: "无法生成安全的安装计划",
+            fallback_code: "UPDATE_INSTALL_PLAN_FAILED",
+        },
+        UpdateInstallCoordinatorStage::MarkerPublish => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: true,
+            message: "无法持久化安装事务",
+            fallback_code: "UPDATE_INSTALL_MARKER_PUBLISH_FAILED",
+        },
+        UpdateInstallCoordinatorStage::ExitSeal => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: true,
+            message: "无法封存安装退出事务",
+            fallback_code: "UPDATE_INSTALL_EXIT_SEAL_FAILED",
+        },
+        UpdateInstallCoordinatorStage::InstallerSpawn => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: true,
+            message: "无法启动已验证的更新安装包",
+            fallback_code: "UPDATE_INSTALL_SPAWN_FAILED",
+        },
+        UpdateInstallCoordinatorStage::InstallerIdentity => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: false,
+            message: "安装包身份复核失败",
+            fallback_code: "UPDATE_INSTALL_IDENTITY_FAILED",
+        },
+        UpdateInstallCoordinatorStage::MarkerTombstone => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: true,
+            message: "安装事务标记清理尚未完成",
+            fallback_code: "UPDATE_INSTALL_MARKER_TOMBSTONE_FAILED",
+        },
+        UpdateInstallCoordinatorStage::NativeRollback => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Quiesce,
+            retryable: true,
+            message: "桌面运行时恢复尚未完成",
+            fallback_code: "UPDATE_INSTALL_NATIVE_ROLLBACK_FAILED",
+        },
+        UpdateInstallCoordinatorStage::WebRollback => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Quiesce,
+            retryable: true,
+            message: "播放状态恢复尚未完成",
+            fallback_code: "UPDATE_WEB_QUIESCENCE_ROLLBACK_FAILED",
+        },
+        UpdateInstallCoordinatorStage::MarkerConsume => RuntimeInstallFaultProjection {
+            stage: UpdateFaultStage::Install,
+            retryable: true,
+            message: "安装事务收尾尚未完成",
+            fallback_code: "UPDATE_INSTALL_MARKER_CONSUME_FAILED",
+        },
+    }
+}
+
+fn stable_runtime_fault_code(raw: &str, fallback: &'static str) -> String {
+    let is_stable_code = raw.len() <= 96
+        && raw.starts_with("UPDATE_")
+        && raw
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_');
+    if is_stable_code {
+        raw.to_owned()
+    } else {
+        fallback.to_owned()
+    }
+}
+
+fn runtime_install_fault_retryable(
+    projection: RuntimeInstallFaultProjection,
+    recovery_required: bool,
+) -> bool {
+    recovery_required || projection.retryable
+}
+
+fn map_runtime_install_fault(fault: UpdateInstallCoordinatorFault) -> UpdateInstallFault {
+    let projection = project_runtime_install_fault(fault.stage);
+    let retryable = runtime_install_fault_retryable(projection, fault.recovery_required);
+    let code = stable_runtime_fault_code(&fault.code, projection.fallback_code);
+    UpdateInstallFault::new(
+        projection.stage,
+        code,
+        retryable,
+        projection.message,
+        fault.recovery_required,
+    )
+}
+
+fn map_runtime_install_outcome(outcome: UpdateInstallCoordinatorOutcome) -> UpdateInstallOutcome {
+    match outcome {
+        UpdateInstallCoordinatorOutcome::InstallerSpawned => UpdateInstallOutcome::InstallerSpawned,
+        UpdateInstallCoordinatorOutcome::RecoveryCompleted => {
+            UpdateInstallOutcome::RecoveryCompleted
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1472,6 +1608,52 @@ impl UpdateInstallCoordinatorPort for UpdateInstallCoordinator {
     }
 }
 
+#[derive(Clone)]
+pub(crate) struct RuntimeUpdateInstallerAdapter {
+    coordinator: Arc<UpdateInstallCoordinator>,
+}
+
+impl RuntimeUpdateInstallerAdapter {
+    pub(crate) fn new(coordinator: Arc<UpdateInstallCoordinator>) -> Self {
+        Self { coordinator }
+    }
+}
+
+impl UpdateInstaller for RuntimeUpdateInstallerAdapter {
+    fn install_exact<'a>(
+        &'a self,
+        candidate_id: String,
+        artifact: VerifiedInstallerArtifact,
+        started_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            UpdateInstallCoordinatorPort::install_exact(
+                self.coordinator.as_ref(),
+                candidate_id,
+                artifact,
+                started_at,
+            )
+            .await
+            .map(map_runtime_install_outcome)
+            .map_err(map_runtime_install_fault)
+        })
+    }
+
+    fn retry_recovery(
+        &self,
+        updated_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + '_>>
+    {
+        Box::pin(async move {
+            UpdateInstallCoordinatorPort::retry_recovery(self.coordinator.as_ref(), updated_at)
+                .await
+                .map(map_runtime_install_outcome)
+                .map_err(map_runtime_install_fault)
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -1504,6 +1686,134 @@ mod tests {
         },
     };
     use crate::runtime::updater::nsis_install::{NsisSpawnPortError, NsisSpawnRequest};
+
+    #[test]
+    fn runtime_installer_adapter_maps_every_coordinator_stage_to_a_stable_core_domain() {
+        let cases = [
+            (
+                UpdateInstallCoordinatorStage::Authority,
+                UpdateFaultStage::Install,
+                false,
+            ),
+            (
+                UpdateInstallCoordinatorStage::WebPrepare,
+                UpdateFaultStage::Quiesce,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::NativePrepare,
+                UpdateFaultStage::Quiesce,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::CacheRevalidation,
+                UpdateFaultStage::Cache,
+                false,
+            ),
+            (
+                UpdateInstallCoordinatorStage::InstallPlan,
+                UpdateFaultStage::Install,
+                false,
+            ),
+            (
+                UpdateInstallCoordinatorStage::MarkerPublish,
+                UpdateFaultStage::Install,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::ExitSeal,
+                UpdateFaultStage::Install,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::InstallerSpawn,
+                UpdateFaultStage::Install,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::InstallerIdentity,
+                UpdateFaultStage::Install,
+                false,
+            ),
+            (
+                UpdateInstallCoordinatorStage::MarkerTombstone,
+                UpdateFaultStage::Install,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::NativeRollback,
+                UpdateFaultStage::Quiesce,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::WebRollback,
+                UpdateFaultStage::Quiesce,
+                true,
+            ),
+            (
+                UpdateInstallCoordinatorStage::MarkerConsume,
+                UpdateFaultStage::Install,
+                true,
+            ),
+        ];
+
+        for (coordinator_stage, core_stage, retryable) in cases {
+            let projection = project_runtime_install_fault(coordinator_stage);
+            assert_eq!(projection.stage, core_stage);
+            assert_eq!(projection.retryable, retryable);
+            assert!(!projection.message.is_empty());
+            assert!(!projection.message.contains("http"));
+            assert!(!projection.message.contains('/'));
+            assert!(!projection.message.contains('\\'));
+        }
+    }
+
+    #[test]
+    fn runtime_installer_adapter_preserves_only_bounded_typed_codes() {
+        let fallback = "UPDATE_INSTALL_FAILED";
+        assert_eq!(
+            stable_runtime_fault_code("UPDATE_INSTALL_SPAWN_FAILED", fallback),
+            "UPDATE_INSTALL_SPAWN_FAILED"
+        );
+        assert_eq!(
+            stable_runtime_fault_code(
+                "https://release-assets.githubusercontent.com/file.exe?token=secret",
+                fallback,
+            ),
+            fallback
+        );
+        assert_eq!(
+            stable_runtime_fault_code(r"C:\\Users\\name\\installer.exe", fallback),
+            fallback
+        );
+        assert_eq!(
+            stable_runtime_fault_code(&format!("UPDATE_{}", "A".repeat(100)), fallback),
+            fallback
+        );
+        assert_eq!(
+            stable_runtime_fault_code("UPDATE_INSTALL_FAILED\u{202e}EXE", fallback),
+            fallback
+        );
+    }
+
+    #[test]
+    fn runtime_installer_adapter_forces_recovery_faults_to_retryable() {
+        let authority = project_runtime_install_fault(UpdateInstallCoordinatorStage::Authority);
+        assert!(!runtime_install_fault_retryable(authority, false));
+        assert!(runtime_install_fault_retryable(authority, true));
+    }
+
+    #[test]
+    fn runtime_installer_adapter_maps_terminal_outcomes_exactly() {
+        assert_eq!(
+            map_runtime_install_outcome(UpdateInstallCoordinatorOutcome::InstallerSpawned),
+            UpdateInstallOutcome::InstallerSpawned
+        );
+        assert_eq!(
+            map_runtime_install_outcome(UpdateInstallCoordinatorOutcome::RecoveryCompleted),
+            UpdateInstallOutcome::RecoveryCompleted
+        );
+    }
 
     struct FakeWeb {
         events: Arc<Mutex<Vec<&'static str>>>,

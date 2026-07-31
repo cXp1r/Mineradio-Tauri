@@ -19,7 +19,7 @@
 | --- | --- | --- | --- |
 | lyrics.nested-render-base | implemented | parity | 2.0.3 nested row/context/readability group 已由唯一 effective 38/24 base 驱动；current/outgoing/prewarm/async attach 与真实 Three.js render-list characterization 均有 D1 证据 |
 | visual.cursor-shelf-layer | implemented | parity | Web cursor runtime 实现 2500ms auto-hide、五类活动、visibility/dispose 与 `body.cursor-hidden`，并以 selection-preserving policy 驱动 passive Shelf lift/foreground gate |
-| updater.github-release | partial | architecture-replacement | 上游 2.0.3 使用外部 HTTPS 网盘页并交浏览器打开；Tauri 明确采用 GitHub Release + signed Update Runtime，不实现网盘/browser-only 模型 |
+| updater.github-release | implemented | architecture-replacement | 上游 2.0.3 使用外部 HTTPS 网盘页并交浏览器打开；Tauri 已切换为 GitHub Release + signed Rust UpdateRuntime，不实现网盘/browser-only 模型；Bun Sidecar 保持 `legacy-frozen` 且不参与更新链 |
 | visual.sonic-workshop | missing | parity | 维护者已选择 migration-pending：未来以独立 visual Module 重实现 CmzYa / Workshop `3747222633` 的可观察行为；当前不复制 vendor bundle，legacy numeric `8` 继续迁为 Sonic Topography `7` |
 | wallpaper.idle-dispose | implemented | parity | Rust Wallpaper Runtime 的 idle dispose 与 repeated dispose 自动测试已覆盖；无需以 Windows 实机验证替代代码结论 |
 
@@ -47,7 +47,7 @@
 | 原生桌面图标 | `desktop/desktop-native-icon-layer-runtime.js`、`desktop/desktop-icon-shape-runtime.js` | `apps/desktop/src-tauri/src/platform/windows/full_desktop.rs` | Rust Windows platform | 只操作经 parent/thread/PID/creation-time 验证的 WorkerW/DefView/ListView；快照化 mutation 必须在 deadline 内 best-effort 对称 rollback |
 | Wallpaper Engine | `desktop/wallpaper-engine-runtime.js`、`desktop/wallpaper-engine-library.js` | Rust core/Windows Adapter/app lifecycle + Web `WallpaperEngineRuntimePort`/Background/controller | Rust runtime/platform + Web controller/background | 只关闭 exact location，不终止共享 Wallpaper Engine 核心进程；图片/视频/preview 仅用登记 project-id/role custom protocol；exact signer、bounded absence/journal recovery、DWM 主背景、HWND rebind、周期 location mute、成功-session epoch cleanup 与 Full Desktop transition owner 已实现。原生 WGC/D3D 未启用，明确使用 `glassSamplerReady=false` 的 DOM/static fallback；真实 Scene/DWM/静音/cursor/mixed-DPI/soak 为 Field Validation Pending（non-blocking） |
 | Wallpaper idle dispose | 2.0.3 idle Scene dispose 幂等成功 | Rust Wallpaper Runtime idle/repeated dispose tests | Rust runtime | 该语义已自动验证；与 Wallpaper library 搜索/星标/隐藏恢复 partial、native WGC missing 分开记录 |
-| 更新 | 2.0.3 external HTTPS download pages | existing Tauri updater；future signed Update Runtime | Rust Update Runtime Port | GitHub Release 是明确 architecture replacement；生产 contract 切换前当前状态保持 partial，且不经过 Bun Sidecar |
+| 更新 | 2.0.3 external HTTPS download pages | signed Rust UpdateRuntime + thin Tauri/Web adapters | Rust Update Runtime Port | GitHub Release 是明确 architecture replacement；生产 authority 已切换，且 Bun Sidecar 保持 `legacy-frozen`、不参与更新链 |
 | 桌面歌词 | `desktop/main.js`、overlay preload | desktop lyrics Rust/React modules | desktop runtime | 保持锁定、穿透、拖动和显示器修正 |
 | 内存与资源 | `desktop/system-memory.js`、`00-state/08-desktop-render-power.js` | visual perf state、Rust diagnostics | resources runtime | 系统级释放默认关闭且不在前台播放运行 |
 | 缓存治理 | `desktop/main.js` cache handlers、`server.js` cache paths | `runtime/cache.rs`、`commands/cache.rs` | cache runtime | 只管理已验证分类，不接受任意删除路径，不跟随 reparse point |

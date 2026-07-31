@@ -1,104 +1,72 @@
-use crate::{updater, AppState};
-use tauri_plugin_updater::UpdaterExt;
+use crate::{
+    app::{
+        update_web_quiescence::UpdateWebQuiescenceAcknowledgement,
+        updater_runtime::ApplicationUpdateRuntime, window_labels,
+    },
+    runtime::updater::{UpdateDispatchRequest, UpdateReceipt, UpdateSnapshot},
+};
 
+fn is_main_update_caller(label: &str) -> bool {
+    label == window_labels::MAIN
+}
+
+/// Command 只读取 Rust authority；Web 没有第二份可写 updater 状态。
 #[tauri::command]
-pub async fn get_updater_status(
-    state: tauri::State<'_, AppState>,
-) -> Result<updater::UpdaterStatus, String> {
-    Ok(updater::unavailable_status(
-        &state.config.app_version,
-        state.config.updater_public_key_configured,
-    ))
+pub fn get_update_runtime_snapshot(
+    caller: tauri::WebviewWindow,
+    runtime: tauri::State<'_, ApplicationUpdateRuntime>,
+) -> UpdateSnapshot {
+    if !is_main_update_caller(caller.label()) {
+        return runtime.restricted_snapshot();
+    }
+    runtime.snapshot()
 }
 
 #[tauri::command]
-pub async fn check_for_update(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<updater::UpdaterStatus, String> {
-    let (current_version, has_public_key) = {
-        let config = &state.config;
-        (
-            config.app_version.clone(),
-            config.updater_public_key_configured,
-        )
-    };
-
-    match app.updater() {
-        Ok(updater_client) => match updater_client.check().await {
-            Ok(Some(update)) => Ok(updater::update_to_status(&update, has_public_key)),
-            Ok(None) => Ok(updater::unavailable_status(
-                &current_version,
-                has_public_key,
-            )),
-            Err(e) => Ok(updater::check_error_status(
-                &current_version,
-                "UPDATER_CHECK_FAILED",
-                &e.to_string(),
-                has_public_key,
-            )),
-        },
-        Err(e) => Ok(updater::check_error_status(
-            &current_version,
-            "UPDATER_NOT_CONFIGURED",
-            &e.to_string(),
-            has_public_key,
-        )),
+pub fn dispatch_update_runtime_intent(
+    caller: tauri::WebviewWindow,
+    runtime: tauri::State<'_, ApplicationUpdateRuntime>,
+    request: UpdateDispatchRequest,
+) -> UpdateReceipt {
+    if !is_main_update_caller(caller.label()) {
+        return UpdateReceipt::RuntimeUnavailable;
     }
+    runtime.dispatch(request)
 }
 
 #[tauri::command]
-pub async fn install_update(
-    app: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-) -> Result<updater::UpdaterStatus, String> {
-    let (current_version, has_public_key) = {
-        let config = &state.config;
-        (
-            config.app_version.clone(),
-            config.updater_public_key_configured,
-        )
-    };
-
-    if !has_public_key {
-        return Ok(updater::check_error_status(
-            &current_version,
-            "UPDATER_SIGNATURE_KEY_MISSING",
-            "Tauri updater public key is not configured",
-            has_public_key,
-        ));
+pub fn updater_web_quiescence_acknowledge(
+    caller: tauri::WebviewWindow,
+    runtime: tauri::State<'_, ApplicationUpdateRuntime>,
+    acknowledgement: UpdateWebQuiescenceAcknowledgement,
+) -> bool {
+    if !is_main_update_caller(caller.label()) {
+        return false;
     }
+    runtime.acknowledge_web(acknowledgement)
+}
 
-    match app.updater() {
-        Ok(updater_client) => match updater_client.check().await {
-            Ok(Some(update)) => {
-                let status = updater::update_to_status(&update, has_public_key);
-                match update.download_and_install(|_, _| {}, || {}).await {
-                    Ok(()) => Ok(status),
-                    Err(e) => Ok(updater::check_error_status(
-                        &current_version,
-                        "UPDATER_INSTALL_FAILED",
-                        &e.to_string(),
-                        has_public_key,
-                    )),
-                }
-            }
-            Ok(None) => Ok(updater::unavailable_status(
-                &current_version,
-                has_public_key,
-            )),
-            Err(e) => Ok(updater::check_error_status(
-                &current_version,
-                "UPDATER_CHECK_FAILED",
-                &e.to_string(),
-                has_public_key,
-            )),
-        },
-        Err(e) => Ok(updater::check_error_status(
-            &current_version,
-            "UPDATER_NOT_CONFIGURED",
-            &e.to_string(),
-            has_public_key,
-        )),
+/// Web Adapter 只有在四个 listener 全部安装完成后才调用这个启动 barrier。
+#[tauri::command]
+pub fn updater_web_quiescence_reconcile(
+    caller: tauri::WebviewWindow,
+    runtime: tauri::State<'_, ApplicationUpdateRuntime>,
+) {
+    if !is_main_update_caller(caller.label()) {
+        return;
+    }
+    runtime.reconcile_web();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_main_update_caller;
+
+    #[test]
+    fn update_authority_is_available_only_to_the_main_window() {
+        assert!(is_main_update_caller("main"));
+        for secondary in ["desktop-lyrics", "login-netease", "login-qq", "main-copy"] {
+            assert!(!is_main_update_caller(secondary));
+        }
     }
 }

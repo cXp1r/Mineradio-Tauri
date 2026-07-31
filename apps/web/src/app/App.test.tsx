@@ -32,6 +32,28 @@ import type { ApplicationRuntimePort } from "../ports/application-runtime-port";
 import type { VisualEngineHostProps } from "../visual/VisualEngineHost";
 import { cloneFxState } from "@mineradio/visual-engine";
 import type { DiscoverHomeResponse, LyricPayload, Track } from "@mineradio/shared";
+import type { UpdateRuntimePort, UpdateSnapshot } from "../ports/update-runtime-port";
+import { createUpdateExperienceController } from "../features/updater/update-experience-controller";
+
+const APP_UPDATE_SNAPSHOT: UpdateSnapshot = Object.freeze({
+	revision: 0,
+	phase: "disabled",
+	currentVersion: "0.0.0-test",
+	candidate: null,
+	operation: null,
+	fault: null,
+	checkedAt: null,
+	remindAfter: null,
+	skippedVersion: null,
+});
+
+const APP_UPDATE_RUNTIME: UpdateRuntimePort = {
+	getSnapshot: () => APP_UPDATE_SNAPSHOT,
+	subscribe: () => () => {},
+	dispatch: async () => "runtime-unavailable",
+};
+
+const APP_UPDATE_CONTROLLER = createUpdateExperienceController(APP_UPDATE_RUNTIME);
 
 test("web index preloads the baseline simple or DIY mode class before React mounts", async () => {
 	const html = await fetch(new URL("../../index.html", import.meta.url)).then((response) => response.text());
@@ -173,7 +195,9 @@ function legacyRuntimeForTest(
 }
 
 test("App keeps the empty-home music page mounted behind the splash gate", () => {
-	const html = renderToStaticMarkup(React.createElement(App));
+	const html = renderToStaticMarkup(React.createElement(App, {
+		updateController: APP_UPDATE_CONTROLLER,
+	}));
 	const visualGuideButtonCount = html.match(/id="visual-guide-btn"/g)?.length ?? 0;
 	expect(html).toContain('id="desktop-window-shell"');
 	expect(html).toContain('id="desktop-titlebar"');
@@ -202,7 +226,9 @@ test("App keeps the empty-home music page mounted behind the splash gate", () =>
 });
 
 test("App keeps hidden wallpaper capability placeholder copy out of the product shell", () => {
-	const html = renderToStaticMarkup(React.createElement(App));
+	const html = renderToStaticMarkup(React.createElement(App, {
+		updateController: APP_UPDATE_CONTROLLER,
+	}));
 	expect(html).not.toContain("壁纸模式开发中");
 	expect(html).not.toContain('id="t-wallpaperMode"');
 });
@@ -315,7 +341,7 @@ test("legacy application runtime default client factory stays stable and does no
 	document.body.appendChild(host);
 	const root = createRoot(host);
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig)} />));
 		for (let i = 0; i < 8; i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -358,7 +384,7 @@ test("DIY desktop lyrics toggle drives the desktop lyrics window lifecycle", asy
 	try {
 		resetVisualStore();
 		flushSync(() => root.render(
-			<App
+			<App updateController={APP_UPDATE_CONTROLLER}
 				SplashComponent={() => null}
 				VisualComponent={() => <div id="visual-host" />}
 				applicationRuntime={legacyRuntimeForTest(runtimeConfig)}
@@ -512,7 +538,7 @@ test("App opens Search detail from the compact search Enter action", async () =>
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const input = host.querySelector<HTMLInputElement>("#search-input");
 		expect(input).not.toBeNull();
@@ -583,7 +609,7 @@ test("App Search detail append action queues a song without starting playback", 
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const input = host.querySelector<HTMLInputElement>("#search-input");
 		expect(input).not.toBeNull();
@@ -616,7 +642,7 @@ test("App unmounts SplashHost after splash dismissed instead of leaving hidden s
 		return <div className="visual-splash-root" data-testid="splash" />;
 	}
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={MockSplash} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={MockSplash} />));
 	expect(host.querySelector(".visual-splash-root")).not.toBeNull();
 	flushSync(() => dismissed?.());
 	expect(host.querySelector(".visual-splash-root")).toBeNull();
@@ -634,7 +660,7 @@ test("App mirrors baseline top account capsule auto-hide preference and peek hot
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} />));
 		const toggle = host.querySelector("#user-capsule-hide-btn") as HTMLButtonElement;
 		expect(toggle.textContent).toBe("‹");
 
@@ -755,7 +781,7 @@ test("App restores persisted Netease login state on startup", async () => {
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		for (let i = 0; i < 16 && !host.querySelector("#user-avatar"); i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -844,7 +870,7 @@ test("App shows Netease avatar and VIP badge in the top account capsule", async 
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		(host.querySelector("#user-btn") as HTMLButtonElement).click();
 		for (let i = 0; i < 12 && !host.querySelector("#user-avatar"); i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
@@ -909,7 +935,7 @@ test("Home console chip follows baseline openHomePlayerConsole unlock and reveal
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={MockSplash} VisualComponent={() => <div id="visual-host" />} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={MockSplash} VisualComponent={() => <div id="visual-host" />} />));
 		flushSync(() => dismissSplash?.());
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -983,7 +1009,7 @@ test("App suppresses baseline Home while shelf is pinned and the Home button res
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={MockSplash} VisualComponent={() => <div id="visual-host" />} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={MockSplash} VisualComponent={() => <div id="visual-host" />} />));
 		flushSync(() => dismissSplash?.());
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1034,7 +1060,7 @@ test("App suppresses baseline Home while visual shelf detail content is open", a
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={MockSplash} VisualComponent={MockVisual} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={MockSplash} VisualComponent={MockVisual} />));
 		flushSync(() => dismissSplash?.());
 		await new Promise((resolve) => setTimeout(resolve, 0));
 
@@ -1315,7 +1341,7 @@ test("App custom lyric modal saves text and applies custom lyrics to current tra
 		return <div id="visual-host" />;
 	}
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={MockSplash} VisualComponent={MockVisual} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={MockSplash} VisualComponent={MockVisual} />));
 	flushSync(() => dismissSplash?.());
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	const customSourceButton = host.querySelector("#lyric-source-custom") as HTMLButtonElement;
@@ -1384,7 +1410,7 @@ test("App applies baseline lyric fallback when provider lyric fetch rejects", as
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 12 && useLyricsStore.getState().error !== "lyric api failed"; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1455,7 +1481,7 @@ test("App replaces stale lyrics with current track fallback while provider lyric
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 8 && useLyricsStore.getState().payload?.trackId === "old-track"; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1532,7 +1558,7 @@ test("App loads sidecar audio-proxy URL into the audio element for raw provider 
 		};
 		document.body.appendChild(host);
 		root = createRoot(host);
-		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root?.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== proxiedUrl; i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1613,7 +1639,7 @@ test("App resolves proxied Soda URLs against the sidecar base when reloading aft
 		};
 		document.body.appendChild(host);
 		root = createRoot(host);
-		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root?.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 		const firstExpected = `${baseUrl}${relativeUrls[0]}`;
 		for (let i = 0; i < 12 && appStubAudioInstances[0]?.src !== firstExpected; i += 1) {
@@ -1718,7 +1744,7 @@ test("App retries playback after applying an automatic quality fallback", async 
 		};
 		document.body.appendChild(host);
 		root = createRoot(host);
-		flushSync(() => root?.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root?.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 		const audio = appStubAudioInstances[0];
 		for (let i = 0; i < 16 && !audio?.src.includes("fallback-flac"); i += 1) {
@@ -1797,7 +1823,7 @@ test("App shows the baseline trial banner when provider returns a trial-only URL
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 12 && !host.querySelector("#trial-banner.show"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -1858,7 +1884,7 @@ test("App renders upstream-style Netease QR login inside the login modal", async
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#user-btn") as HTMLButtonElement).click();
@@ -1919,7 +1945,7 @@ test("App renders direct QQ QR login inside the login modal", async () => {
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#user-btn") as HTMLButtonElement).click();
@@ -1983,7 +2009,7 @@ test("App renders Soda QR login as a first-class provider in the login modal", a
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#user-btn") as HTMLButtonElement).click();
@@ -2107,7 +2133,7 @@ test("App opens account dropdown from a single logged-in account and launches on
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	for (let i = 0; i < 16 && !host.querySelector("#user-avatar"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
@@ -2227,7 +2253,7 @@ test("App uses Soda's own login status for the add-account hint", async () => {
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	for (let i = 0; i < 16 && !host.querySelector("#user-avatar"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
@@ -2353,7 +2379,7 @@ test("App opens account dropdown instead of QR login when both providers are alr
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	for (let i = 0; i < 16 && !host.querySelector("#user-avatar"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
 	}
@@ -2451,7 +2477,7 @@ test("App syncs QQ account status after direct QR login succeeds", async () => {
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#user-btn") as HTMLButtonElement).click();
@@ -2544,7 +2570,7 @@ test("App clears the trial banner when the audio element reports a playback erro
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 12 && !host.querySelector("#trial-banner.show"); i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2624,7 +2650,7 @@ test("App resolves playback beatmap and forwards it to visual host", async () =>
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 12 && beatmapCalls.length === 0; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2699,7 +2725,7 @@ test("App does not run the podcast DJ beatmap analyzer for ordinary songs", asyn
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 8; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2782,7 +2808,7 @@ test("App starts baseline Home private radar from discover songs", async () => {
 	document.body.appendChild(host);
 	const root = createRoot(host);
 
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 	(host.querySelector('[data-home-card="private"]') as HTMLButtonElement).click();
@@ -2860,7 +2886,7 @@ test("App derives Home Continue and Next Up from the live queue before recent hi
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		usePlaybackStore.getState().setQueue(tracks);
 		usePlaybackStore.getState().playAt(0);
@@ -3028,7 +3054,7 @@ test("App starts baseline Home weather radio from a weather rail song", async ()
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const weatherTile = Array.from(host.querySelectorAll(".home-tile"))
@@ -3100,7 +3126,7 @@ test("App opens Home playlist tiles as a full-screen detail page before playback
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		for (let i = 0; i < 16 && !host.textContent?.includes("QQ 深夜歌单"); i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -3173,7 +3199,7 @@ test("App imports a local audio file from the baseline Home import tile", async 
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const tile = Array.from(host.querySelectorAll(".home-tile"))
@@ -3264,7 +3290,7 @@ test("App applies and clears a custom cover image from the baseline import contr
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		const input = host.querySelector("#file-input") as HTMLInputElement;
 		const imageFile = new File(["cover"], "Cover.png", { type: "image/png", lastModified: 456 });
@@ -3362,7 +3388,7 @@ test("App plays centered shelf playlist hotspots by loading the playlist into th
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		flushSync(() => triggerShelfPlaylist?.());
 		for (let i = 0; i < 12 && usePlaybackStore.getState().queue.length === 0; i += 1) {
@@ -3414,7 +3440,7 @@ test("App routes the logged-out Home library card to local audio import", async 
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		await new Promise((resolve) => setTimeout(resolve, 0));
 		let fileDialogClicks = 0;
 		host.querySelector("#file-input")?.addEventListener("click", () => {
@@ -3478,7 +3504,7 @@ test("App routes the logged-in Home library card to the baseline left playlist p
 	const root = createRoot(host);
 
 	try {
-		flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+		flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 		for (let i = 0; i < 16 && !host.querySelector("#home-weather-card-sub")?.textContent?.includes("2 首"); i += 1) {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		}
@@ -3560,7 +3586,7 @@ test("App opens the baseline collect picker for shelf detail collect and adds on
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	flushSync(() => triggerCollect?.());
@@ -3642,7 +3668,7 @@ test("App opens the collect picker for QQ detail rows and filters to writable QQ
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={MockVisual} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	flushSync(() => triggerCollect?.());
@@ -3717,7 +3743,7 @@ test("App checks current Netease like state and wires bottom heart mutations thr
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 8 && checked.length === 0; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3798,7 +3824,7 @@ test("App shows QQ unsupported notice for bottom heart without calling like muta
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#heart-btn") as HTMLButtonElement).click();
@@ -3868,7 +3894,7 @@ test("App checks current Soda like state and wires bottom heart mutations throug
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 
 	for (let i = 0; i < 8 && checked.length === 0; i += 1) {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -3944,7 +3970,7 @@ test("App rolls back bottom heart state and shows baseline failure copy when Net
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#heart-btn") as HTMLButtonElement).click();
@@ -4018,7 +4044,7 @@ test("App opens login modal when Netease heart mutation requires login", async (
 	const host = document.createElement("div");
 	document.body.appendChild(host);
 	const root = createRoot(host);
-	flushSync(() => root.render(<App SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
+	flushSync(() => root.render(<App updateController={APP_UPDATE_CONTROLLER} SplashComponent={() => null} VisualComponent={() => <div id="visual-host" />} applicationRuntime={legacyRuntimeForTest(rootConfig, fakeClient)} />));
 	await new Promise((resolve) => setTimeout(resolve, 0));
 
 	(host.querySelector("#heart-btn") as HTMLButtonElement).click();

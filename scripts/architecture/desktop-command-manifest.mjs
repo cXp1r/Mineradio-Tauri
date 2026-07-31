@@ -3,9 +3,6 @@ export const FROZEN_DESKTOP_COMMANDS = [
 	"get_sidecar_status",
 	"get_database_status",
 	"configure_global_hotkeys",
-	"get_updater_status",
-	"check_for_update",
-	"install_update",
 	"window_minimize",
 	"window_toggle_maximize",
 	"window_toggle_fullscreen",
@@ -73,6 +70,21 @@ export const M8_ADDITIVE_DESKTOP_COMMANDS = Object.freeze([
 	"migrate_legacy_preferences",
 ]);
 
+// D2 用唯一 Rust Runtime Port 原子替换旧 plugin updater 三命令。
+export const D2_UPDATE_RUNTIME_COMMANDS = Object.freeze([
+	"get_update_runtime_snapshot",
+	"dispatch_update_runtime_intent",
+	"updater_web_quiescence_acknowledge",
+	"updater_web_quiescence_reconcile",
+]);
+
+export const D2_UPDATE_RUNTIME_INTERFACES = Object.freeze({
+	get_update_runtime_snapshot: "fn get_update_runtime_snapshot(caller: tauri::WebviewWindow, runtime: tauri::State<'_, ApplicationUpdateRuntime>) -> UpdateSnapshot",
+	dispatch_update_runtime_intent: "fn dispatch_update_runtime_intent(caller: tauri::WebviewWindow, runtime: tauri::State<'_, ApplicationUpdateRuntime>, request: UpdateDispatchRequest) -> UpdateReceipt",
+	updater_web_quiescence_acknowledge: "fn updater_web_quiescence_acknowledge(caller: tauri::WebviewWindow, runtime: tauri::State<'_, ApplicationUpdateRuntime>, acknowledgement: UpdateWebQuiescenceAcknowledgement) -> bool",
+	updater_web_quiescence_reconcile: "fn updater_web_quiescence_reconcile(caller: tauri::WebviewWindow, runtime: tauri::State<'_, ApplicationUpdateRuntime>) -> ()",
+});
+
 export const M8_DESKTOP_COMMAND_INTERFACES = Object.freeze({
 	get_preferences_snapshot: "fn get_preferences_snapshot(state: tauri::State<'_, AppState>) -> Result<db::PreferencesSnapshot, String>",
 	commit_preferences_transaction: "fn commit_preferences_transaction(state: tauri::State<'_, AppState>, request: db::PreferenceTransactionRequest) -> Result<db::PreferencesSnapshot, String>",
@@ -95,9 +107,10 @@ export const DESKTOP_COMMAND_REGISTRATION_ORDER = Object.freeze([
 	"set_cache_root",
 	"clear_cache_category",
 	"configure_global_hotkeys",
-	"get_updater_status",
-	"check_for_update",
-	"install_update",
+	"get_update_runtime_snapshot",
+	"dispatch_update_runtime_intent",
+	"updater_web_quiescence_acknowledge",
+	"updater_web_quiescence_reconcile",
 	"window_minimize",
 	"window_toggle_maximize",
 	"window_toggle_fullscreen",
@@ -144,9 +157,6 @@ export const FROZEN_DESKTOP_COMMAND_INTERFACES = Object.freeze({
 	get_sidecar_status: "fn get_sidecar_status(state: tauri::State<'_, AppState>) -> Result<sidecar::SidecarRuntimeSnapshot, String>",
 	get_database_status: "fn get_database_status(state: tauri::State<'_, AppState>) -> Result<db::DatabaseStatus, String>",
 	configure_global_hotkeys: "fn configure_global_hotkeys(app: tauri::AppHandle, bindings: Vec<GlobalHotkeyBinding>) -> ConfigureGlobalHotkeysResult",
-	get_updater_status: "async fn get_updater_status(state: tauri::State<'_, AppState>) -> Result<updater::UpdaterStatus, String>",
-	check_for_update: "async fn check_for_update(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<updater::UpdaterStatus, String>",
-	install_update: "async fn install_update(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<updater::UpdaterStatus, String>",
 	window_minimize: "fn window_minimize(app: tauri::AppHandle) -> Result<(), String>",
 	window_toggle_maximize: "fn window_toggle_maximize(app: tauri::AppHandle) -> Result<(), String>",
 	window_toggle_fullscreen: "fn window_toggle_fullscreen(app: tauri::AppHandle) -> Result<(), String>",
@@ -158,7 +168,7 @@ export const FROZEN_DESKTOP_COMMAND_INTERFACES = Object.freeze({
 	desktop_lyrics_show_window: "fn desktop_lyrics_show_window(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String>",
 	desktop_lyrics_close_window: "fn desktop_lyrics_close_window(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String>",
 	desktop_lyrics_set_click_through: "fn desktop_lyrics_set_click_through(app: tauri::AppHandle, state: tauri::State<'_, AppState>, click_through: bool) -> Result<(), String>",
-	desktop_lyrics_move_by: "fn desktop_lyrics_move_by(app: tauri::AppHandle, dx: f64, dy: f64) -> Result<(), String>",
+	desktop_lyrics_move_by: "fn desktop_lyrics_move_by(app: tauri::AppHandle, state: tauri::State<'_, AppState>, dx: f64, dy: f64) -> Result<(), String>",
 	desktop_lyrics_set_hot_bounds: "fn desktop_lyrics_set_hot_bounds(_app: tauri::AppHandle, state: tauri::State<'_, AppState>, bounds: DesktopLyricsHotBounds) -> Result<(), String>",
 	desktop_lyrics_update_payload: "fn desktop_lyrics_update_payload(app: tauri::AppHandle, state: tauri::State<'_, AppState>, payload: serde_json::Value) -> Result<(), String>",
 	desktop_lyrics_overlay_ready: "fn desktop_lyrics_overlay_ready(app: tauri::AppHandle, state: tauri::State<'_, AppState>) -> Result<(), String>",
@@ -235,22 +245,6 @@ export const FROZEN_DESKTOP_SERIALIZATION_CONTRACTS = Object.freeze({
 		kind: "struct",
 		serde: ['rename_all = "camelCase"'],
 		fields: ["action: String"],
-	},
-	UpdaterStatus: {
-		kind: "struct",
-		serde: [],
-		fields: [
-			"available: bool",
-			"version: Option<String>",
-			"current_version: String",
-			"body: Option<String>",
-			"message: Option<String>",
-			"date: Option<String>",
-			"error: Option<String>",
-			"requires_signature: bool",
-			"signature_gate: bool",
-			"install_state: String",
-		],
 	},
 	WindowDisplayBounds: {
 		kind: "struct",
@@ -391,6 +385,7 @@ export const M7_DESKTOP_SERIALIZATION_CONTRACTS = Object.freeze({
 export const FROZEN_DESKTOP_ERROR_STRINGS = Object.freeze([
 	"DESKTOP_LYRICS_INVALID_MOVE_DELTA",
 	"DESKTOP_LYRICS_MOVE_DELTA_OUT_OF_RANGE",
+	"DESKTOP_LYRICS_POLLER_JOIN_PANICKED",
 	"DESKTOP_LYRICS_POLLER_UNSUPPORTED",
 	"DESKTOP_LYRICS_POSITION_OVERFLOW",
 	"EXPORT_JSON_DIALOG_CLOSED",
@@ -415,11 +410,6 @@ export const FROZEN_DESKTOP_ERROR_STRINGS = Object.freeze([
 	"LOGIN_SIDECAR_REJECTED_COOKIE",
 	"LOGIN_SIDECAR_UNAVAILABLE",
 	"LOGIN_SIDECAR_WRITE_FAILED",
-	"Tauri updater public key is not configured",
-	"UPDATER_CHECK_FAILED",
-	"UPDATER_INSTALL_FAILED",
-	"UPDATER_NOT_CONFIGURED",
-	"UPDATER_SIGNATURE_KEY_MISSING",
 	"main window not found",
 ]);
 

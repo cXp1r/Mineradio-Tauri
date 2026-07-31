@@ -1,4 +1,5 @@
 use std::{
+    collections::VecDeque,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -208,6 +209,40 @@ fn runtime_with_recovery_policy_and_downloader(
 
 struct OrderedStartupRecovery {
     events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+struct ScriptedStartupRecovery {
+    outcomes: Mutex<VecDeque<CacheRecoveryOutcome>>,
+    calls: AtomicUsize,
+}
+
+impl ScriptedStartupRecovery {
+    fn new(outcomes: impl IntoIterator<Item = CacheRecoveryOutcome>) -> Self {
+        Self {
+            outcomes: Mutex::new(outcomes.into_iter().collect()),
+            calls: AtomicUsize::new(0),
+        }
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::Acquire)
+    }
+}
+
+impl UpdateStartupRecovery for ScriptedStartupRecovery {
+    fn recover<'a>(
+        &'a self,
+        _current_version: &'a str,
+    ) -> Pin<Box<dyn Future<Output = CacheRecoveryOutcome> + Send + 'a>> {
+        self.calls.fetch_add(1, Ordering::AcqRel);
+        let outcome = self
+            .outcomes
+            .lock()
+            .expect("scripted startup recovery poisoned")
+            .pop_front()
+            .expect("scripted startup recovery outcome exhausted");
+        Box::pin(async move { outcome })
+    }
 }
 
 struct RecoveryWithStableFault {
@@ -1615,6 +1650,91 @@ fn startup_recovery_projects_a_stable_install_fault_without_losing_ready_candida
 }
 
 #[test]
+fn web_reconciliation_fault_can_rearm_exact_cache_recovery_after_listener_reconnect() {
+    tauri::async_runtime::block_on(async {
+        let recovery = Arc::new(ScriptedStartupRecovery::new([
+            CacheRecoveryOutcome::Blocked(CacheRecoveryFault {
+                code: "UPDATE_WEB_QUIESCENCE_RECONCILIATION_REQUIRED",
+                message: "Web 播放静默证据尚未协调，已保留更新缓存",
+            }),
+            CacheRecoveryOutcome::Empty {
+                fault: None,
+                quarantine: None,
+            },
+        ]));
+        let sink = Arc::new(MemorySnapshotSink::default());
+        let runtime = UpdateRuntime::with_recovery(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            sink,
+            recovery.clone(),
+        );
+
+        assert!(runtime.run_pending_cache_recovery().await);
+        let blocked = runtime.snapshot();
+        assert_eq!(blocked.phase, UpdatePhase::Idle);
+        assert_eq!(
+            blocked.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_WEB_QUIESCENCE_RECONCILIATION_REQUIRED")
+        );
+
+        assert!(runtime.rearm_web_reconciliation_recovery());
+        let rearmed = runtime.snapshot();
+        assert_eq!(rearmed.revision, blocked.revision + 1);
+        assert_eq!(rearmed.phase, UpdatePhase::RecoveringCache);
+        assert_eq!(
+            rearmed.operation.as_ref().map(|operation| operation.kind),
+            Some(UpdateOperationKind::CacheRevalidation)
+        );
+        assert!(rearmed.fault.is_none());
+        assert!(!runtime.rearm_web_reconciliation_recovery());
+
+        assert!(runtime.run_pending_cache_recovery().await);
+        let recovered = runtime.snapshot();
+        assert_eq!(recovered.phase, UpdatePhase::Idle);
+        assert!(recovered.fault.is_none());
+        assert_eq!(recovery.calls(), 2);
+    });
+}
+
+#[test]
+fn authenticity_policy_and_other_reconciliation_blocks_cannot_rearm_on_web_reconnect() {
+    tauri::async_runtime::block_on(async {
+        for (code, message) in [
+            (
+                "UPDATE_CACHE_AUTHENTICITY_REJECTED",
+                "已验证更新缓存无法重新通过来源与签名验证",
+            ),
+            ("UPDATE_POLICY_WRITE_FAILED", "无法持久化本机更新策略"),
+            (
+                "UPDATE_INSTALL_RECONCILIATION_REQUIRED",
+                "安装尝试证据尚未协调，已保留更新缓存",
+            ),
+            (
+                "UPDATE_WEB_QUIESCENCE_STALE_IDENTITY",
+                "Web 播放静默 identity 不匹配",
+            ),
+        ] {
+            let recovery = Arc::new(ScriptedStartupRecovery::new([
+                CacheRecoveryOutcome::Blocked(CacheRecoveryFault { code, message }),
+            ]));
+            let runtime = UpdateRuntime::with_recovery(
+                "0.1.0",
+                Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+                Arc::new(NoopSnapshotSink),
+                recovery.clone(),
+            );
+
+            assert!(runtime.run_pending_cache_recovery().await);
+            let blocked = runtime.snapshot();
+            assert!(!runtime.rearm_web_reconciliation_recovery());
+            assert_eq!(runtime.snapshot(), blocked);
+            assert_eq!(recovery.calls(), 1);
+        }
+    });
+}
+
+#[test]
 fn accepted_check_commits_checking_then_available() {
     tauri::async_runtime::block_on(async {
         let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
@@ -2145,6 +2265,82 @@ enum ScriptedDownloadOutcome {
     AuthenticityAfterRelease(Arc<tokio::sync::Notify>),
 }
 
+enum ScriptedInstallStep {
+    Complete(Result<UpdateInstallOutcome, UpdateInstallFault>),
+    Pending(Arc<tokio::sync::Notify>),
+}
+
+struct ScriptedInstaller {
+    install_steps: Mutex<VecDeque<ScriptedInstallStep>>,
+    recovery_steps: Mutex<VecDeque<Result<UpdateInstallOutcome, UpdateInstallFault>>>,
+    calls: Mutex<Vec<(&'static str, String)>>,
+}
+
+impl ScriptedInstaller {
+    fn new(
+        install_steps: impl IntoIterator<Item = ScriptedInstallStep>,
+        recovery_steps: impl IntoIterator<Item = Result<UpdateInstallOutcome, UpdateInstallFault>>,
+    ) -> Self {
+        Self {
+            install_steps: Mutex::new(install_steps.into_iter().collect()),
+            recovery_steps: Mutex::new(recovery_steps.into_iter().collect()),
+            calls: Mutex::new(Vec::new()),
+        }
+    }
+
+    fn calls(&self) -> Vec<(&'static str, String)> {
+        self.calls.lock().expect("install calls poisoned").clone()
+    }
+}
+
+impl UpdateInstaller for ScriptedInstaller {
+    fn install_exact<'a>(
+        &'a self,
+        candidate_id: String,
+        _artifact: VerifiedInstallerArtifact,
+        _started_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + 'a>>
+    {
+        self.calls
+            .lock()
+            .expect("install calls poisoned")
+            .push(("install", candidate_id));
+        let step = self
+            .install_steps
+            .lock()
+            .expect("install steps poisoned")
+            .pop_front()
+            .expect("测试必须提供 install step");
+        Box::pin(async move {
+            match step {
+                ScriptedInstallStep::Complete(result) => result,
+                ScriptedInstallStep::Pending(entered) => {
+                    entered.notify_one();
+                    std::future::pending().await
+                }
+            }
+        })
+    }
+
+    fn retry_recovery(
+        &self,
+        _updated_at: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<UpdateInstallOutcome, UpdateInstallFault>> + Send + '_>>
+    {
+        self.calls
+            .lock()
+            .expect("install calls poisoned")
+            .push(("retry", String::new()));
+        let result = self
+            .recovery_steps
+            .lock()
+            .expect("recovery steps poisoned")
+            .pop_front()
+            .expect("测试必须提供 recovery step");
+        Box::pin(async move { result })
+    }
+}
+
 struct RuntimeTestDirectory(PathBuf);
 
 impl RuntimeTestDirectory {
@@ -2402,6 +2598,32 @@ async fn runtime_with_verified_candidate(
         UpdateReceipt::Accepted
     );
     assert!(runtime.run_pending_check().await);
+    runtime
+}
+
+async fn runtime_ready_to_install(installer: Arc<dyn UpdateInstaller>) -> UpdateRuntime {
+    let sink = Arc::new(MemorySnapshotSink::default());
+    let downloader = Arc::new(ScriptedDownloader {
+        events: vec![InstallerDownloadEvent::Verifying {
+            received_bytes: 9,
+            total_bytes: Some(9),
+        }],
+        outcome: ScriptedDownloadOutcome::Success,
+        events_emitted: None,
+    });
+    let mut runtime = runtime_with_verified_candidate(downloader, sink).await;
+    let available = runtime.snapshot();
+    let candidate_id = available.candidate.expect("应有可信候选").id;
+    assert_eq!(
+        runtime.dispatch(UpdateDispatchRequest {
+            expected_revision: available.revision,
+            intent: UpdateIntent::Download { candidate_id },
+        }),
+        UpdateReceipt::Accepted
+    );
+    assert!(runtime.run_pending_download().await);
+    assert_eq!(runtime.snapshot().phase, UpdatePhase::ReadyToInstall);
+    runtime.installer = Some(installer);
     runtime
 }
 
@@ -3130,4 +3352,231 @@ fn higher_candidate_cleanup_failure_revokes_old_install_authority_and_blocks_run
             UpdateReceipt::PolicyBlocked
         );
     });
+}
+
+#[test]
+fn exact_ready_candidate_is_the_only_install_authority() {
+    tauri::async_runtime::block_on(async {
+        let installer = Arc::new(ScriptedInstaller::new(
+            [ScriptedInstallStep::Complete(Ok(
+                UpdateInstallOutcome::InstallerSpawned,
+            ))],
+            [],
+        ));
+        let runtime = runtime_ready_to_install(installer.clone()).await;
+        let ready = runtime.snapshot();
+        let candidate_id = ready
+            .candidate
+            .as_ref()
+            .expect("应有 ready candidate")
+            .id
+            .clone();
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: "0".repeat(64),
+                },
+            }),
+            UpdateReceipt::StaleCandidate
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        let preparing = runtime.snapshot();
+        assert_eq!(preparing.phase, UpdatePhase::PreparingInstall);
+        assert_eq!(
+            preparing.operation.as_ref().map(|value| value.kind),
+            Some(UpdateOperationKind::Install)
+        );
+        assert!(runtime.run_pending_install().await);
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::Installing);
+        assert_eq!(installer.calls(), vec![("install", candidate_id)]);
+    });
+}
+
+#[test]
+fn completed_pre_spawn_failure_returns_to_ready_and_preserves_verified_authority() {
+    tauri::async_runtime::block_on(async {
+        let installer = Arc::new(ScriptedInstaller::new(
+            [ScriptedInstallStep::Complete(Err(UpdateInstallFault::new(
+                UpdateFaultStage::Install,
+                "UPDATE_INSTALL_SPAWN_FAILED",
+                true,
+                "无法启动已验证的更新安装包",
+                false,
+            )))],
+            [],
+        ));
+        let runtime = runtime_ready_to_install(installer).await;
+        let ready = runtime.snapshot();
+        let candidate_id = ready.candidate.as_ref().unwrap().id.clone();
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_install().await);
+
+        let failed = runtime.snapshot();
+        assert_eq!(failed.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(
+            failed.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_INSTALL_SPAWN_FAILED")
+        );
+        assert_eq!(
+            failed.candidate.as_ref().map(|value| value.id.as_str()),
+            Some(candidate_id.as_str())
+        );
+        assert!(runtime
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .verified_artifact
+            .is_some());
+    });
+}
+
+#[test]
+fn recovery_required_install_is_retried_without_replaying_install() {
+    tauri::async_runtime::block_on(async {
+        let installer = Arc::new(ScriptedInstaller::new(
+            [ScriptedInstallStep::Complete(Err(UpdateInstallFault::new(
+                UpdateFaultStage::Quiesce,
+                "UPDATE_WEB_QUIESCENCE_ACK_TIMEOUT",
+                true,
+                "等待 Web rollback acknowledgement 超时",
+                true,
+            )))],
+            [Ok(UpdateInstallOutcome::RecoveryCompleted)],
+        ));
+        let runtime = runtime_ready_to_install(installer.clone()).await;
+        let ready = runtime.snapshot();
+        let candidate_id = ready.candidate.as_ref().unwrap().id.clone();
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_install().await);
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::PreparingInstall);
+        assert!(runtime.run_pending_install().await);
+        let recovered = runtime.snapshot();
+        assert_eq!(recovered.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(
+            recovered.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_WEB_QUIESCENCE_ACK_TIMEOUT")
+        );
+        assert_eq!(
+            installer.calls(),
+            vec![("install", candidate_id), ("retry", String::new())]
+        );
+    });
+}
+
+#[test]
+fn install_transaction_performs_one_exact_recovery_before_returning() {
+    tauri::async_runtime::block_on(async {
+        let installer = Arc::new(ScriptedInstaller::new(
+            [ScriptedInstallStep::Complete(Err(UpdateInstallFault::new(
+                UpdateFaultStage::Quiesce,
+                "UPDATE_WEB_QUIESCENCE_ACK_TIMEOUT",
+                true,
+                "等待 Web rollback acknowledgement 超时",
+                true,
+            )))],
+            [Ok(UpdateInstallOutcome::RecoveryCompleted)],
+        ));
+        let runtime = runtime_ready_to_install(installer.clone()).await;
+        let ready = runtime.snapshot();
+        let candidate_id = ready.candidate.as_ref().unwrap().id.clone();
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+
+        assert!(runtime.run_pending_install_transaction().await);
+
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(
+            installer.calls(),
+            vec![("install", candidate_id), ("retry", String::new())]
+        );
+    });
+}
+
+#[test]
+fn cancelled_install_runner_retains_recovery_authority_for_reconnect() {
+    tauri::async_runtime::block_on(async {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let installer = Arc::new(ScriptedInstaller::new(
+            [ScriptedInstallStep::Pending(entered.clone())],
+            [Ok(UpdateInstallOutcome::RecoveryCompleted)],
+        ));
+        let runtime = Arc::new(runtime_ready_to_install(installer.clone()).await);
+        let ready = runtime.snapshot();
+        let candidate_id = ready.candidate.as_ref().unwrap().id.clone();
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: ready.revision,
+                intent: UpdateIntent::InstallAndRestart {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        let running_runtime = runtime.clone();
+        let running =
+            tauri::async_runtime::spawn(async move { running_runtime.run_pending_install().await });
+        entered.notified().await;
+        running.abort();
+        let _ = running.await;
+
+        let interrupted = runtime.snapshot();
+        assert_eq!(interrupted.phase, UpdatePhase::PreparingInstall);
+        assert_eq!(
+            interrupted.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_INSTALL_INTERRUPTED")
+        );
+        assert!(runtime.run_pending_install().await);
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(
+            installer.calls(),
+            vec![("install", candidate_id), ("retry", String::new())]
+        );
+    });
+}
+
+#[test]
+fn disabled_runtime_without_network_rejects_every_update_mutation() {
+    let runtime =
+        UpdateRuntime::disabled_without_network("1.0.0", Arc::new(MemorySnapshotSink::default()));
+    assert_eq!(runtime.snapshot().phase, UpdatePhase::Disabled);
+    assert_eq!(
+        runtime.dispatch(UpdateDispatchRequest {
+            expected_revision: 0,
+            intent: UpdateIntent::CheckNow,
+        }),
+        UpdateReceipt::RuntimeUnavailable
+    );
 }

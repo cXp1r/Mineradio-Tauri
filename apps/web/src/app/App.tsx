@@ -23,7 +23,6 @@ import { useProviderStore } from "../stores/provider-store";
 import { useSearchStore } from "../stores/search-store";
 import { useShelfStore } from "../stores/shelf-store";
 import { useUiStore } from "../stores/ui-store";
-import { useUpdateStore } from "../stores/update-store";
 import { useVisualStore } from "../stores/visual-store";
 import type {
   DesktopJsonValue,
@@ -68,7 +67,10 @@ import {
 } from "../features/wallpaper-engine/WallpaperEngineControls";
 import { setFullDesktopModeWithWallpaperFallback } from "../features/wallpaper-engine/full-desktop-wallpaper-coordinator";
 import { useWallpaperEngineRuntime } from "../features/wallpaper-engine/useWallpaperEngineRuntime";
-import { useUpdaterController } from "../features/updater/useUpdaterController";
+import { useUpdateExperience } from "../features/updater/useUpdateExperience";
+import type { UpdateExperienceController } from "../features/updater/update-experience-controller";
+import { resolveUpdatePresentationMode } from "../features/updater/update-view-model";
+import type { TauriPlaybackQuiescenceAdapter } from "../adapters/tauri/tauri-playback-quiescence-adapter";
 import { useLikesController } from "../features/likes/useLikesController";
 export { isNeteaseLikeSupported } from "../features/likes/likes-policy";
 import {
@@ -251,6 +253,8 @@ export function shouldUseSecondaryLeftDisplaySeamGuard(
 }
 
 export type AppProps = {
+  updateController: UpdateExperienceController;
+  playbackQuiescenceAdapter?: TauriPlaybackQuiescenceAdapter | null;
   SplashComponent?: (props: SplashHostProps) => ReactElement | null;
   VisualComponent?: typeof VisualEngineHost;
   applicationRuntime?: ApplicationRuntimePort;
@@ -270,6 +274,8 @@ export type DesktopLyricsRuntime = {
 };
 
 export function App({
+  updateController,
+  playbackQuiescenceAdapter = null,
   SplashComponent = SplashHost,
   VisualComponent = VisualEngineHost,
   applicationRuntime = defaultApplicationRuntime,
@@ -280,7 +286,7 @@ export function App({
   homeListenRepository,
   preferences,
   hydratedPreferences,
-}: AppProps = {}): ReactElement {
+}: AppProps): ReactElement {
   const [applicationPorts, setApplicationPorts] = useState<ApplicationPorts | null>(null);
   const resolvedDesktopRuntime = useMemo<DesktopRuntimePort>(() => {
     if (!desktopLyricsRuntime) return desktopRuntime;
@@ -440,12 +446,6 @@ export function App({
     [showToast, updateShelfMergeCollections],
   );
   const {
-    modalOpen: updateModalOpen,
-    setModalOpen: setUpdateModalOpen,
-    refresh: refreshUpdateStatus,
-    install: installAvailableUpdate,
-  } = useUpdaterController({ showToast });
-  const {
     isLiked: isTrackLiked,
     isBusy: isTrackLikeBusy,
     toggle: toggleLikeTrack,
@@ -455,8 +455,6 @@ export function App({
     showToast,
     openProviderLogin: () => setLoginModalOpen(true),
   });
-  const updateState = useUpdateStore();
-
   const lyricsPayload = useLyricsStore((s) => s.payload);
   const setLyricsPayload = useLyricsStore((s) => s.setPayload);
   const setLyricsLoading = useLyricsStore((s) => s.setLoading);
@@ -594,6 +592,13 @@ export function App({
     controllerRef,
     preferences,
   });
+  const handlePlaybackControllerReady = useCallback(
+    (controller: PlaybackControllerRef["current"]) => {
+      playbackQuiescenceAdapter?.setPlayerController(controller);
+      return playbackAudioSettings.handleControllerReady(controller);
+    },
+    [playbackAudioSettings.handleControllerReady, playbackQuiescenceAdapter],
+  );
   const neteaseCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const qqCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
   const sodaCookieInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1433,6 +1438,13 @@ export function App({
     getVisualPerformanceSnapshot: readVisualPerformanceSnapshot,
   });
   const fullDesktopManagement = useFullDesktopRuntime(fullDesktopRuntime);
+  const updateExperience = useUpdateExperience(
+    updateController,
+    resolveUpdatePresentationMode(
+      desktopWindowState,
+      fullDesktopManagement.state,
+    ),
+  );
   const persistWallpaperSelection = useCallback(
     (projectId: string | null) => {
       if (!preferences) return;
@@ -1517,12 +1529,13 @@ export function App({
       onToggleMaximize: () => void toggleWindowMaximize(),
       onClose: () => void closeWindow(),
       updateProps: {
-        state: updateState,
-        open: updateModalOpen,
-        onOpen: () => setUpdateModalOpen(true),
-        onClose: () => setUpdateModalOpen(false),
-        onCheck: () => void refreshUpdateStatus(true),
-        onInstall: () => void installAvailableUpdate(),
+        viewModel: updateExperience.viewModel,
+        onOpen: updateExperience.openModal,
+        onClose: updateExperience.closeModal,
+        onPrimary: () => void updateExperience.invokePrimary(),
+        onRemindLater: () => void updateExperience.remindLater(),
+        onSkipVersion: () => void updateExperience.skipVersion(),
+        onOpenRelease: () => void updateExperience.openRelease(),
       },
     },
     SplashComponent,
@@ -1889,7 +1902,7 @@ export function App({
         onEnded: handleRuntimeEnded,
         onError: handleRuntimeError,
         onStalled: handleRuntimeStalled,
-        onControllerReady: playbackAudioSettings.handleControllerReady,
+        onControllerReady: handlePlaybackControllerReady,
       },
     },
   };

@@ -5,7 +5,6 @@ mod paths;
 mod platform;
 mod runtime;
 mod sidecar;
-mod updater;
 
 use std::{
     path::PathBuf,
@@ -139,16 +138,24 @@ fn start_sidecar_supervisor(
     });
 }
 
+#[cfg(test)]
 fn updater_public_key_configured_from_plugin_config(
     plugins: &tauri::utils::config::PluginConfig,
 ) -> bool {
+    updater_public_key_from_plugin_config(plugins).is_some()
+}
+
+fn updater_public_key_from_plugin_config(
+    plugins: &tauri::utils::config::PluginConfig,
+) -> Option<String> {
     plugins
         .0
         .get("updater")
         .and_then(|config| config.get("pubkey"))
         .and_then(|value| value.as_str())
-        .map(updater::has_updater_public_key)
-        .unwrap_or(false)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
 }
 
 pub fn run() {
@@ -157,8 +164,8 @@ pub fn run() {
     let app_version = env!("CARGO_PKG_VERSION").to_string();
     let schema_version = "0.1.0".to_string();
     let context = tauri::generate_context!();
-    let updater_public_key_configured =
-        updater_public_key_configured_from_plugin_config(&context.config().plugins);
+    let updater_public_key = updater_public_key_from_plugin_config(&context.config().plugins);
+    let updater_public_key_configured = updater_public_key.is_some();
 
     let port = sidecar::allocate_port();
     let base_url = format!("http://127.0.0.1:{}", port);
@@ -210,13 +217,13 @@ pub fn run() {
     let setup_app_version = app_version.clone();
     let setup_app_data = app_data_dir.clone();
     let setup_log_dir = log_dir.clone();
+    let setup_updater_public_key = updater_public_key.clone();
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             app::desktop_runtime::reactivate_main_window_for_single_instance(app);
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .on_page_load(app::wallpaper_engine_runtime::handle_main_webview_page_load)
         .register_asynchronous_uri_scheme_protocol(
             "mineradio-wallpaper",
@@ -257,9 +264,10 @@ pub fn run() {
             commands::set_cache_root,
             commands::clear_cache_category,
             commands::configure_global_hotkeys,
-            commands::get_updater_status,
-            commands::check_for_update,
-            commands::install_update,
+            commands::get_update_runtime_snapshot,
+            commands::dispatch_update_runtime_intent,
+            commands::updater_web_quiescence_acknowledge,
+            commands::updater_web_quiescence_reconcile,
             commands::window_minimize,
             commands::window_toggle_maximize,
             commands::window_toggle_fullscreen,
@@ -304,6 +312,28 @@ pub fn run() {
             // NOTE: spawn + health-wait are best-effort. This setup closure only
             // runs under a real `tauri::Builder` app (`tauri dev`), never from
             // cargo tests (tests call only the pure module functions).
+            let update_runtime = match app::updater_runtime::ApplicationUpdateRuntime::build(
+                app.handle().clone(),
+                &setup_app_data,
+                &setup_app_version,
+                setup_updater_public_key.as_deref(),
+                app::update_distribution::compiled_official_distribution(),
+            ) {
+                Ok(runtime) => runtime,
+                Err(error) => {
+                    // 更新初始化故障只关闭更新能力，不能阻止播放器和 frozen Sidecar 启动。
+                    eprintln!(
+                        "updater bootstrap failed; continuing with updates disabled: {error}"
+                    );
+                    app::updater_runtime::ApplicationUpdateRuntime::disabled_after_bootstrap_failure(
+                        app.handle().clone(),
+                        &setup_app_version,
+                    )
+                }
+            };
+            if !app.manage(update_runtime) {
+                return Err(std::io::Error::other("UPDATE_RUNTIME_ALREADY_MANAGED").into());
+            }
             app::full_desktop_runtime::recover_before_main_window(app.handle())?;
             app::main_window::create_main_window(app.handle())?;
             app::wallpaper_engine_runtime::initialize_after_main_window(app.handle());
