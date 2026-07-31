@@ -13,7 +13,12 @@ pub(crate) mod auto_check;
 pub(crate) mod cache;
 pub(crate) mod download;
 pub(crate) mod github_source;
+// #54 production cutover 前保持 install transaction deep modules dormant。
+#[allow(dead_code)]
+pub(crate) mod install_attempt;
 pub(crate) mod managed_fs;
+#[allow(dead_code)]
+pub(crate) mod nsis_install;
 pub(crate) mod policy;
 pub(crate) mod provenance;
 pub(crate) mod quiescence;
