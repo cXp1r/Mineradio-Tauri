@@ -120,6 +120,15 @@ pub(crate) struct VerifiedReleaseEvidence {
     provenance_sha256: String,
     installer_signature_sha256: String,
     provenance_signature_sha256: String,
+    public_key: PublicKey,
+}
+
+#[derive(Clone)]
+pub(crate) struct InstallerVerificationMaterial {
+    pub(crate) public_key: PublicKey,
+    pub(crate) signature: Signature,
+    pub(crate) expected_size: u64,
+    pub(crate) expected_sha256: String,
 }
 
 impl VerifiedReleaseEvidence {
@@ -149,6 +158,30 @@ impl VerifiedReleaseEvidence {
 
     pub(crate) fn installer_name(&self) -> &str {
         &self.installer.name
+    }
+
+    pub(crate) fn installer_verification_material(
+        &self,
+    ) -> Result<InstallerVerificationMaterial, ProvenanceError> {
+        let decoded = decode_tauri_signature(
+            &self.installer_signature,
+            "安装包",
+            "invalid-installer-signature",
+        )?;
+        self.public_key
+            .verify_stream(&decoded.signature)
+            .map_err(|error| {
+                ProvenanceError::new(
+                    "invalid-installer-signature",
+                    format!("安装包签名不属于固定 updater 公钥或不是预哈希签名: {error}"),
+                )
+            })?;
+        Ok(InstallerVerificationMaterial {
+            public_key: self.public_key.clone(),
+            signature: decoded.signature,
+            expected_size: self.installer.size,
+            expected_sha256: self.installer.sha256.clone(),
+        })
     }
 
     pub(crate) fn verify_installer_measurement(
@@ -266,6 +299,7 @@ impl ProvenanceVerifier {
             provenance_sha256,
             installer_signature_sha256,
             provenance_signature_sha256,
+            public_key: self.public_key.clone(),
         })
     }
 }

@@ -1,0 +1,1818 @@
+use std::{
+    future::Future,
+    io,
+    path::{Path, PathBuf},
+    pin::Pin,
+    sync::Arc,
+    time::{Duration, Instant},
+};
+
+use reqwest::header;
+use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
+use tokio_util::sync::CancellationToken;
+
+use super::{
+    github_source::{
+        build_hardened_github_client, is_retryable_reqwest_error, validate_installer_request_url,
+        validate_release_redirect_url, MAX_REDIRECTS,
+    },
+    provenance::{InstallerVerificationMaterial, ReleaseCandidateId, VerifiedReleaseEvidence},
+};
+
+pub(crate) const MAX_INSTALLER_BYTES: u64 = 512 * 1024 * 1024;
+pub(crate) const PUBLIC_PROGRESS_INTERVAL_MS: u64 = 100;
+const MAX_AUTOMATIC_RETRIES: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallerDownloadFailureStage {
+    Download,
+    Verify,
+    Cache,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallerDownloadError {
+    stage: InstallerDownloadFailureStage,
+    code: &'static str,
+    retryable: bool,
+    authenticity_failure: bool,
+    cancelled: bool,
+    message: &'static str,
+}
+
+impl InstallerDownloadError {
+    fn new(
+        stage: InstallerDownloadFailureStage,
+        code: &'static str,
+        retryable: bool,
+        message: &'static str,
+    ) -> Self {
+        Self {
+            stage,
+            code,
+            retryable,
+            authenticity_failure: false,
+            cancelled: false,
+            message,
+        }
+    }
+
+    fn authenticity(code: &'static str, message: &'static str) -> Self {
+        Self {
+            stage: InstallerDownloadFailureStage::Verify,
+            code,
+            retryable: false,
+            authenticity_failure: true,
+            cancelled: false,
+            message,
+        }
+    }
+
+    pub(crate) fn cancelled() -> Self {
+        Self {
+            stage: InstallerDownloadFailureStage::Download,
+            code: "UPDATE_DOWNLOAD_CANCELLED",
+            retryable: false,
+            authenticity_failure: false,
+            cancelled: true,
+            message: "更新下载已取消",
+        }
+    }
+
+    pub(crate) fn stale() -> Self {
+        Self::new(
+            InstallerDownloadFailureStage::Download,
+            "UPDATE_DOWNLOAD_STALE_OPERATION",
+            false,
+            "更新下载 operation 已失去 authority",
+        )
+    }
+
+    pub(crate) fn stage(&self) -> InstallerDownloadFailureStage {
+        self.stage
+    }
+
+    pub(crate) fn code(&self) -> &'static str {
+        self.code
+    }
+
+    pub(crate) fn retryable(&self) -> bool {
+        self.retryable
+    }
+
+    pub(crate) fn is_authenticity_failure(&self) -> bool {
+        self.authenticity_failure
+    }
+
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.cancelled
+    }
+
+    pub(crate) fn message(&self) -> &'static str {
+        self.message
+    }
+
+    fn with_cleanup_failure(mut self) -> Self {
+        self.retryable = false;
+        self.message = "更新安装包验证失败，且未完成文件无法清理";
+        self
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake_authenticity_failure() -> Self {
+        Self::authenticity("UPDATE_INSTALLER_SIGNATURE_REJECTED", "测试安装包验签失败")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake_network_failure() -> Self {
+        Self::new(
+            InstallerDownloadFailureStage::Download,
+            "UPDATE_DOWNLOAD_NETWORK",
+            true,
+            "测试网络失败",
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct VerifiedInstallerPlan {
+    candidate_id: ReleaseCandidateId,
+    asset_url: String,
+    evidence: VerifiedReleaseEvidence,
+}
+
+impl VerifiedInstallerPlan {
+    pub(super) fn new(
+        candidate_id: ReleaseCandidateId,
+        asset_url: String,
+        evidence: VerifiedReleaseEvidence,
+    ) -> Self {
+        Self {
+            candidate_id,
+            asset_url,
+            evidence,
+        }
+    }
+
+    pub(crate) fn candidate_id(&self) -> &ReleaseCandidateId {
+        &self.candidate_id
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedInstallerArtifact {
+    candidate_id: ReleaseCandidateId,
+    path: PathBuf,
+    size: u64,
+    sha256: String,
+}
+
+impl VerifiedInstallerArtifact {
+    pub(crate) fn candidate_id(&self) -> &ReleaseCandidateId {
+        &self.candidate_id
+    }
+
+    pub(crate) fn discard(&self) -> Result<(), InstallerDownloadError> {
+        cleanup_regular_file_sync(&self.path).map_err(|_| {
+            InstallerDownloadError::new(
+                InstallerDownloadFailureStage::Cache,
+                "UPDATE_VERIFIED_ARTIFACT_CLEANUP_FAILED",
+                false,
+                "无法清理已验证的旧更新安装包",
+            )
+        })
+    }
+
+    #[cfg(test)]
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake(candidate_id: ReleaseCandidateId) -> Self {
+        Self::fake_at(candidate_id, PathBuf::from("verified-installer.exe"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn fake_at(candidate_id: ReleaseCandidateId, path: PathBuf) -> Self {
+        Self {
+            candidate_id,
+            path,
+            size: 9,
+            sha256: "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c".into(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum InstallerDownloadEvent {
+    Opened {
+        total_bytes: Option<u64>,
+        elapsed_ms: u64,
+    },
+    Progress {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+        elapsed_ms: u64,
+    },
+    Retrying {
+        attempt: usize,
+        elapsed_ms: u64,
+    },
+    Verifying {
+        received_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+}
+
+pub(crate) trait InstallerDownloadEvents: Send + Sync {
+    fn emit(&self, event: InstallerDownloadEvent) -> bool;
+}
+
+pub(crate) trait InstallerDownloader: Send + Sync {
+    fn run<'a>(
+        &'a self,
+        plan: VerifiedInstallerPlan,
+        cancellation: CancellationToken,
+        events: &'a dyn InstallerDownloadEvents,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VerifiedInstallerArtifact, InstallerDownloadError>>
+                + Send
+                + 'a,
+        >,
+    >;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallerTransportError {
+    retryable: bool,
+}
+
+impl InstallerTransportError {
+    #[cfg(test)]
+    fn retryable() -> Self {
+        Self { retryable: true }
+    }
+}
+
+pub(crate) trait InstallerBody: Send {
+    fn next_chunk(&mut self) -> InstallerChunkFuture<'_>;
+}
+
+type InstallerChunkFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Option<Vec<u8>>, InstallerTransportError>> + Send + 'a>>;
+
+pub(crate) struct InstallerHttpResponse {
+    status: u16,
+    location: Option<String>,
+    content_length: Option<u64>,
+    body: Box<dyn InstallerBody>,
+}
+
+pub(crate) trait InstallerHttpTransport: Send + Sync {
+    fn get(
+        &self,
+        url: &str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<InstallerHttpResponse, InstallerTransportError>> + Send + '_,
+        >,
+    >;
+}
+
+pub(crate) trait DiskSpaceProbe: Send + Sync {
+    fn available_bytes(&self, directory: &Path) -> io::Result<u64>;
+}
+
+#[derive(Default)]
+pub(crate) struct SystemDiskSpaceProbe;
+
+impl DiskSpaceProbe for SystemDiskSpaceProbe {
+    fn available_bytes(&self, directory: &Path) -> io::Result<u64> {
+        available_disk_space(directory)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct UpdateArtifactStore {
+    updater_directory: PathBuf,
+    cache_directory: PathBuf,
+    part_path: PathBuf,
+    installer_path: PathBuf,
+}
+
+impl UpdateArtifactStore {
+    pub(crate) fn new(updater_directory: impl Into<PathBuf>) -> Self {
+        let updater_directory = updater_directory.into();
+        let cache_directory = updater_directory.join("cache-v1");
+        Self {
+            updater_directory,
+            part_path: cache_directory.join("installer.part"),
+            installer_path: cache_directory.join("installer.exe"),
+            cache_directory,
+        }
+    }
+
+    async fn prepare(&self) -> Result<(), InstallerDownloadError> {
+        tokio::fs::create_dir_all(&self.updater_directory)
+            .await
+            .map_err(map_cache_io_error)?;
+        validate_managed_directory(&self.updater_directory).map_err(map_cache_io_error)?;
+        tokio::fs::create_dir_all(&self.cache_directory)
+            .await
+            .map_err(map_cache_io_error)?;
+        validate_managed_directory(&self.cache_directory).map_err(map_cache_io_error)?;
+        reject_existing_leaf(&self.installer_path, "UPDATE_VERIFIED_ARTIFACT_EXISTS")?;
+        Ok(())
+    }
+
+    fn create_part(
+        &self,
+    ) -> Result<(tokio::fs::File, std::fs::File, PathBuf), InstallerDownloadError> {
+        let cleanup_path = self.new_cleanup_path()?;
+        reject_existing_leaf(&self.part_path, "UPDATE_DOWNLOAD_PART_EXISTS")?;
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            use windows_sys::Win32::Storage::FileSystem::{
+                DELETE, FILE_GENERIC_WRITE, FILE_SHARE_DELETE,
+            };
+
+            options
+                .access_mode(FILE_GENERIC_WRITE | DELETE)
+                .share_mode(FILE_SHARE_DELETE);
+        }
+        let file = options
+            .open(&self.part_path)
+            .map_err(|error| map_download_io_error(error, "UPDATE_DOWNLOAD_PART_CREATE_FAILED"))?;
+        let cleanup_handle = match file.try_clone() {
+            Ok(handle) => handle,
+            Err(error) => {
+                let handle_error =
+                    map_download_io_error(error, "UPDATE_DOWNLOAD_PART_HANDLE_FAILED");
+                if cleanup_owned_part_file(&file, &self.part_path, &cleanup_path).is_err() {
+                    return Err(InstallerDownloadError::new(
+                        InstallerDownloadFailureStage::Cache,
+                        "UPDATE_DOWNLOAD_CLEANUP_FAILED",
+                        false,
+                        "无法清理未完成的更新安装包",
+                    ));
+                }
+                return Err(handle_error);
+            }
+        };
+        Ok((
+            tokio::fs::File::from_std(file),
+            cleanup_handle,
+            cleanup_path,
+        ))
+    }
+
+    fn new_cleanup_path(&self) -> Result<PathBuf, InstallerDownloadError> {
+        for _ in 0..4 {
+            let mut random = [0u8; 16];
+            getrandom::fill(&mut random).map_err(|_| {
+                InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Cache,
+                    "UPDATE_DOWNLOAD_CLEANUP_ID_FAILED",
+                    false,
+                    "无法创建更新下载清理标识",
+                )
+            })?;
+            let suffix = random
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let path = self
+                .cache_directory
+                .join(format!(".installer.part.delete-{suffix}"));
+            match std::fs::symlink_metadata(&path) {
+                Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(path),
+                Ok(_) => continue,
+                Err(error) => return Err(map_cache_io_error(error)),
+            }
+        }
+        Err(InstallerDownloadError::new(
+            InstallerDownloadFailureStage::Cache,
+            "UPDATE_DOWNLOAD_CLEANUP_ID_COLLISION",
+            false,
+            "无法分配更新下载清理标识",
+        ))
+    }
+
+    fn publish_verified(&self, file: &tokio::fs::File) -> Result<(), InstallerDownloadError> {
+        if self.part_path.parent() != self.installer_path.parent() {
+            return Err(InstallerDownloadError::new(
+                InstallerDownloadFailureStage::Cache,
+                "UPDATE_DOWNLOAD_PUBLISH_REJECTED",
+                false,
+                "更新安装包不在同一缓存目录",
+            ));
+        }
+        reject_existing_leaf(&self.installer_path, "UPDATE_VERIFIED_ARTIFACT_EXISTS")?;
+        publish_without_replace(file, &self.part_path, &self.installer_path).map_err(|_| {
+            InstallerDownloadError::new(
+                InstallerDownloadFailureStage::Cache,
+                "UPDATE_DOWNLOAD_PUBLISH_FAILED",
+                false,
+                "无法原子发布已验证的更新安装包",
+            )
+        })
+    }
+}
+
+pub(crate) struct StreamingInstallerDownloader {
+    transport: Arc<dyn InstallerHttpTransport>,
+    artifact_store: UpdateArtifactStore,
+    disk_space: Arc<dyn DiskSpaceProbe>,
+    maximum_bytes: u64,
+    maximum_automatic_retries: usize,
+}
+
+struct VerificationStreamContext<'a> {
+    material: &'a InstallerVerificationMaterial,
+    cancellation: CancellationToken,
+    events: &'a dyn InstallerDownloadEvents,
+    total_bytes: Option<u64>,
+    operation_started_at: Instant,
+}
+
+impl StreamingInstallerDownloader {
+    pub(crate) fn new(
+        updater_directory: impl Into<PathBuf>,
+    ) -> Result<Self, InstallerDownloadError> {
+        Ok(Self {
+            transport: Arc::new(ReqwestInstallerHttpTransport::new()?),
+            artifact_store: UpdateArtifactStore::new(updater_directory),
+            disk_space: Arc::new(SystemDiskSpaceProbe),
+            maximum_bytes: MAX_INSTALLER_BYTES,
+            maximum_automatic_retries: MAX_AUTOMATIC_RETRIES,
+        })
+    }
+
+    #[cfg(test)]
+    fn with_dependencies(
+        transport: Arc<dyn InstallerHttpTransport>,
+        artifact_store: UpdateArtifactStore,
+        disk_space: Arc<dyn DiskSpaceProbe>,
+    ) -> Self {
+        Self {
+            transport,
+            artifact_store,
+            disk_space,
+            maximum_bytes: MAX_INSTALLER_BYTES,
+            maximum_automatic_retries: MAX_AUTOMATIC_RETRIES,
+        }
+    }
+
+    async fn download(
+        &self,
+        plan: VerifiedInstallerPlan,
+        cancellation: CancellationToken,
+        events: &dyn InstallerDownloadEvents,
+    ) -> Result<VerifiedInstallerArtifact, InstallerDownloadError> {
+        let material = plan
+            .evidence
+            .installer_verification_material()
+            .map_err(|_| {
+                InstallerDownloadError::authenticity(
+                    "UPDATE_INSTALLER_SIGNATURE_REJECTED",
+                    "更新安装包签名材料无效",
+                )
+            })?;
+        if material.expected_size == 0 || material.expected_size > self.maximum_bytes {
+            return Err(InstallerDownloadError::authenticity(
+                "UPDATE_INSTALLER_SIZE_REJECTED",
+                "更新安装包声明大小超过安全上限",
+            ));
+        }
+        self.artifact_store.prepare().await?;
+        let available = self
+            .disk_space
+            .available_bytes(&self.artifact_store.cache_directory)
+            .map_err(map_cache_io_error)?;
+        if available < material.expected_size {
+            return Err(InstallerDownloadError::new(
+                InstallerDownloadFailureStage::Cache,
+                "UPDATE_DOWNLOAD_DISK_FULL",
+                false,
+                "磁盘空间不足，无法下载更新",
+            ));
+        }
+
+        let operation_started_at = Instant::now();
+        for attempt in 0..=self.maximum_automatic_retries {
+            if cancellation.is_cancelled() {
+                return Err(InstallerDownloadError::cancelled());
+            }
+            if attempt > 0
+                && !events.emit(InstallerDownloadEvent::Retrying {
+                    attempt: attempt + 1,
+                    elapsed_ms: elapsed_millis(operation_started_at),
+                })
+            {
+                return Err(InstallerDownloadError::stale());
+            }
+            match self
+                .download_once(
+                    &plan,
+                    &material,
+                    cancellation.clone(),
+                    events,
+                    operation_started_at,
+                )
+                .await
+            {
+                Err(error) if error.retryable && attempt < self.maximum_automatic_retries => {
+                    continue;
+                }
+                result => return result,
+            }
+        }
+        unreachable!("有界重试循环必须返回结果")
+    }
+
+    async fn download_once(
+        &self,
+        plan: &VerifiedInstallerPlan,
+        material: &InstallerVerificationMaterial,
+        cancellation: CancellationToken,
+        events: &dyn InstallerDownloadEvents,
+        operation_started_at: Instant,
+    ) -> Result<VerifiedInstallerArtifact, InstallerDownloadError> {
+        let response = self
+            .open_response(&plan.asset_url, cancellation.clone())
+            .await?;
+        if let Some(length) = response.content_length {
+            if length > self.maximum_bytes {
+                return Err(InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Download,
+                    "UPDATE_DOWNLOAD_TOO_LARGE",
+                    false,
+                    "更新安装包超过 512 MiB 安全上限",
+                ));
+            }
+            if length != material.expected_size {
+                return Err(InstallerDownloadError::authenticity(
+                    "UPDATE_INSTALLER_SIZE_MISMATCH",
+                    "更新安装包大小与签名 provenance 不一致",
+                ));
+            }
+        }
+        if !events.emit(InstallerDownloadEvent::Opened {
+            total_bytes: response.content_length,
+            elapsed_ms: elapsed_millis(operation_started_at),
+        }) {
+            return Err(InstallerDownloadError::stale());
+        }
+
+        let (mut file, cleanup_handle, cleanup_path) = self.artifact_store.create_part()?;
+        let guard = PartFileGuard::armed(self.artifact_store.clone(), cleanup_handle, cleanup_path);
+        let result = self
+            .stream_and_verify(
+                response.body,
+                &mut file,
+                VerificationStreamContext {
+                    material,
+                    cancellation,
+                    events,
+                    total_bytes: response.content_length,
+                    operation_started_at,
+                },
+            )
+            .await;
+
+        let measurement = match result {
+            Ok(measurement) => measurement,
+            Err(error) => {
+                close_download_file(file).await;
+                return match guard.cleanup() {
+                    Ok(()) => Err(error),
+                    Err(_cleanup_error) if error.is_authenticity_failure() => {
+                        Err(error.with_cleanup_failure())
+                    }
+                    Err(cleanup_error) => Err(cleanup_error),
+                };
+            }
+        };
+        if let Err(error) = self.artifact_store.publish_verified(&file) {
+            close_download_file(file).await;
+            guard.cleanup()?;
+            return Err(error);
+        }
+        close_download_file(file).await;
+        guard.disarm();
+
+        Ok(VerifiedInstallerArtifact {
+            candidate_id: plan.candidate_id.clone(),
+            path: self.artifact_store.installer_path.clone(),
+            size: measurement.size,
+            sha256: measurement.sha256,
+        })
+    }
+
+    async fn stream_and_verify(
+        &self,
+        mut body: Box<dyn InstallerBody>,
+        file: &mut tokio::fs::File,
+        context: VerificationStreamContext<'_>,
+    ) -> Result<InstallerMeasurement, InstallerDownloadError> {
+        let VerificationStreamContext {
+            material,
+            cancellation,
+            events,
+            total_bytes,
+            operation_started_at,
+        } = context;
+        let mut sha256 = Sha256::new();
+        let mut minisign = material
+            .public_key
+            .verify_stream(&material.signature)
+            .map_err(|_| {
+                InstallerDownloadError::authenticity(
+                    "UPDATE_INSTALLER_SIGNATURE_REJECTED",
+                    "更新安装包签名材料无效",
+                )
+            })?;
+        let mut received = 0u64;
+        let mut progress_deadline = next_progress_deadline(operation_started_at);
+
+        loop {
+            let chunk = tokio::select! {
+                biased;
+                _ = cancellation.cancelled() => return Err(InstallerDownloadError::cancelled()),
+                _ = tokio::time::sleep_until(progress_deadline) => {
+                    if !events.emit(InstallerDownloadEvent::Progress {
+                        received_bytes: received,
+                        total_bytes,
+                        elapsed_ms: elapsed_millis(operation_started_at),
+                    }) {
+                        return Err(InstallerDownloadError::stale());
+                    }
+                    progress_deadline = next_progress_deadline(operation_started_at);
+                    continue;
+                }
+                chunk = body.next_chunk() => chunk.map_err(map_transport_error)?,
+            };
+            let Some(chunk) = chunk else {
+                break;
+            };
+            if chunk.is_empty() {
+                continue;
+            }
+            let next_received = received.checked_add(chunk.len() as u64).ok_or_else(|| {
+                InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Download,
+                    "UPDATE_DOWNLOAD_TOO_LARGE",
+                    false,
+                    "更新安装包超过 512 MiB 安全上限",
+                )
+            })?;
+            if next_received > self.maximum_bytes {
+                return Err(InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Download,
+                    "UPDATE_DOWNLOAD_TOO_LARGE",
+                    false,
+                    "更新安装包超过 512 MiB 安全上限",
+                ));
+            }
+            if next_received > material.expected_size {
+                return Err(InstallerDownloadError::authenticity(
+                    "UPDATE_INSTALLER_SIZE_MISMATCH",
+                    "更新安装包大小与签名 provenance 不一致",
+                ));
+            }
+            file.write_all(&chunk)
+                .await
+                .map_err(|error| map_download_io_error(error, "UPDATE_DOWNLOAD_WRITE_FAILED"))?;
+            sha256.update(&chunk);
+            minisign.update(&chunk);
+            received = next_received;
+            progress_deadline = next_progress_deadline(operation_started_at);
+        }
+
+        file.flush()
+            .await
+            .map_err(|error| map_download_io_error(error, "UPDATE_DOWNLOAD_FLUSH_FAILED"))?;
+        if cancellation.is_cancelled() {
+            return Err(InstallerDownloadError::cancelled());
+        }
+        file.sync_all()
+            .await
+            .map_err(|error| map_download_io_error(error, "UPDATE_DOWNLOAD_SYNC_FAILED"))?;
+        if cancellation.is_cancelled() {
+            return Err(InstallerDownloadError::cancelled());
+        }
+        if !events.emit(InstallerDownloadEvent::Verifying {
+            received_bytes: received,
+            total_bytes,
+        }) {
+            return Err(InstallerDownloadError::stale());
+        }
+        if cancellation.is_cancelled() {
+            return Err(InstallerDownloadError::cancelled());
+        }
+
+        let sha256 = format!("{:x}", sha256.finalize());
+        if received != material.expected_size || sha256 != material.expected_sha256 {
+            return Err(InstallerDownloadError::authenticity(
+                "UPDATE_INSTALLER_MEASUREMENT_REJECTED",
+                "更新安装包与签名 provenance 不一致",
+            ));
+        }
+        minisign.finalize().map_err(|_| {
+            InstallerDownloadError::authenticity(
+                "UPDATE_INSTALLER_SIGNATURE_REJECTED",
+                "更新安装包 Minisign 验证失败",
+            )
+        })?;
+        if cancellation.is_cancelled() {
+            return Err(InstallerDownloadError::cancelled());
+        }
+
+        Ok(InstallerMeasurement {
+            size: received,
+            sha256,
+        })
+    }
+
+    async fn open_response(
+        &self,
+        initial_url: &str,
+        cancellation: CancellationToken,
+    ) -> Result<InstallerHttpResponse, InstallerDownloadError> {
+        let mut current_url = validate_installer_request_url(initial_url)
+            .map_err(|_| policy_error("UPDATE_DOWNLOAD_URL_REJECTED"))?;
+        let mut redirect_count = 0usize;
+
+        loop {
+            let response = tokio::select! {
+                _ = cancellation.cancelled() => return Err(InstallerDownloadError::cancelled()),
+                response = self.transport.get(current_url.as_str()) => response.map_err(map_transport_error)?,
+            };
+            if (300..400).contains(&response.status) {
+                if redirect_count >= MAX_REDIRECTS {
+                    return Err(policy_error("UPDATE_DOWNLOAD_REDIRECT_REJECTED"));
+                }
+                let location = response
+                    .location
+                    .ok_or_else(|| policy_error("UPDATE_DOWNLOAD_REDIRECT_REJECTED"))?;
+                let next_url = current_url
+                    .join(&location)
+                    .map_err(|_| policy_error("UPDATE_DOWNLOAD_REDIRECT_REJECTED"))?;
+                current_url = validate_release_redirect_url(next_url.as_str())
+                    .map_err(|_| policy_error("UPDATE_DOWNLOAD_REDIRECT_REJECTED"))?;
+                redirect_count += 1;
+                continue;
+            }
+            if response.status != 200 {
+                return Err(InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Download,
+                    "UPDATE_DOWNLOAD_HTTP_STATUS",
+                    matches!(response.status, 500..=599),
+                    "GitHub 更新安装包请求失败",
+                ));
+            }
+            return Ok(response);
+        }
+    }
+}
+
+impl InstallerDownloader for StreamingInstallerDownloader {
+    fn run<'a>(
+        &'a self,
+        plan: VerifiedInstallerPlan,
+        cancellation: CancellationToken,
+        events: &'a dyn InstallerDownloadEvents,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<VerifiedInstallerArtifact, InstallerDownloadError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(async move { self.download(plan, cancellation, events).await })
+    }
+}
+
+struct InstallerMeasurement {
+    size: u64,
+    sha256: String,
+}
+
+struct PartFileGuard {
+    store: UpdateArtifactStore,
+    cleanup_handle: Option<std::fs::File>,
+    cleanup_path: PathBuf,
+    active: bool,
+}
+
+impl PartFileGuard {
+    fn armed(
+        store: UpdateArtifactStore,
+        cleanup_handle: std::fs::File,
+        cleanup_path: PathBuf,
+    ) -> Self {
+        Self {
+            store,
+            cleanup_handle: Some(cleanup_handle),
+            cleanup_path,
+            active: true,
+        }
+    }
+
+    fn cleanup(mut self) -> Result<(), InstallerDownloadError> {
+        let result = cleanup_owned_part(
+            self.cleanup_handle
+                .as_ref()
+                .expect("active part guard must own a cleanup handle"),
+            &self.store,
+            &self.cleanup_path,
+        );
+        if result.is_ok() {
+            self.active = false;
+            self.cleanup_handle = None;
+        }
+        result
+    }
+
+    fn disarm(mut self) {
+        self.active = false;
+        self.cleanup_handle = None;
+    }
+}
+
+impl Drop for PartFileGuard {
+    fn drop(&mut self) {
+        if self.active {
+            if let Some(handle) = self.cleanup_handle.as_ref() {
+                let _ = cleanup_owned_part(handle, &self.store, &self.cleanup_path);
+            }
+        }
+    }
+}
+
+async fn close_download_file(file: tokio::fs::File) {
+    drop(file.into_std().await);
+}
+
+struct ReqwestInstallerHttpTransport {
+    client: reqwest::Client,
+}
+
+impl ReqwestInstallerHttpTransport {
+    fn new() -> Result<Self, InstallerDownloadError> {
+        let client = build_hardened_github_client(None, Duration::from_secs(30)).map_err(|_| {
+            InstallerDownloadError::new(
+                InstallerDownloadFailureStage::Download,
+                "UPDATE_DOWNLOAD_INIT_FAILED",
+                false,
+                "更新下载器初始化失败",
+            )
+        })?;
+        Ok(Self { client })
+    }
+}
+
+impl InstallerHttpTransport for ReqwestInstallerHttpTransport {
+    fn get(
+        &self,
+        url: &str,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<InstallerHttpResponse, InstallerTransportError>> + Send + '_,
+        >,
+    > {
+        let validated = validate_installer_request_url(url);
+        Box::pin(async move {
+            let url = validated.map_err(|_| InstallerTransportError { retryable: false })?;
+            let response = self
+                .client
+                .get(url)
+                .header(header::ACCEPT, "application/octet-stream")
+                .header(header::ACCEPT_ENCODING, "identity")
+                .send()
+                .await
+                .map_err(|error| InstallerTransportError {
+                    retryable: is_retryable_reqwest_error(&error),
+                })?;
+            let status = response.status().as_u16();
+            let location = if response.status().is_redirection() {
+                Some(
+                    response
+                        .headers()
+                        .get(header::LOCATION)
+                        .and_then(|value| value.to_str().ok())
+                        .ok_or(InstallerTransportError { retryable: false })?
+                        .to_owned(),
+                )
+            } else {
+                None
+            };
+            let content_length = response.content_length();
+            Ok(InstallerHttpResponse {
+                status,
+                location,
+                content_length,
+                body: Box::new(ReqwestInstallerBody { response }),
+            })
+        })
+    }
+}
+
+struct ReqwestInstallerBody {
+    response: reqwest::Response,
+}
+
+impl InstallerBody for ReqwestInstallerBody {
+    fn next_chunk(&mut self) -> InstallerChunkFuture<'_> {
+        Box::pin(async move {
+            self.response
+                .chunk()
+                .await
+                .map(|chunk| chunk.map(|bytes| bytes.to_vec()))
+                .map_err(|error| InstallerTransportError {
+                    retryable: is_retryable_reqwest_error(&error),
+                })
+        })
+    }
+}
+
+fn map_transport_error(error: InstallerTransportError) -> InstallerDownloadError {
+    InstallerDownloadError::new(
+        InstallerDownloadFailureStage::Download,
+        "UPDATE_DOWNLOAD_NETWORK",
+        error.retryable,
+        "读取 GitHub 更新安装包失败",
+    )
+}
+
+fn elapsed_millis(started_at: Instant) -> u64 {
+    started_at.elapsed().as_millis().min(u64::MAX as u128) as u64
+}
+
+fn next_progress_deadline(operation_started_at: Instant) -> tokio::time::Instant {
+    let elapsed = elapsed_millis(operation_started_at);
+    let next_boundary = elapsed
+        .saturating_div(PUBLIC_PROGRESS_INTERVAL_MS)
+        .saturating_add(1)
+        .saturating_mul(PUBLIC_PROGRESS_INTERVAL_MS);
+    tokio::time::Instant::now()
+        + Duration::from_millis(next_boundary.saturating_sub(elapsed).max(1))
+}
+
+fn policy_error(code: &'static str) -> InstallerDownloadError {
+    InstallerDownloadError::new(
+        InstallerDownloadFailureStage::Download,
+        code,
+        false,
+        "GitHub 更新安装包请求不符合安全策略",
+    )
+}
+
+fn map_cache_io_error(error: io::Error) -> InstallerDownloadError {
+    map_download_io_error(error, "UPDATE_DOWNLOAD_CACHE_IO_FAILED")
+}
+
+fn map_download_io_error(error: io::Error, code: &'static str) -> InstallerDownloadError {
+    let is_disk_full = error.kind() == io::ErrorKind::StorageFull
+        || matches!(error.raw_os_error(), Some(39 | 112));
+    InstallerDownloadError::new(
+        InstallerDownloadFailureStage::Cache,
+        if is_disk_full {
+            "UPDATE_DOWNLOAD_DISK_FULL"
+        } else {
+            code
+        },
+        false,
+        if is_disk_full {
+            "磁盘空间不足，无法保存更新安装包"
+        } else {
+            "无法安全写入更新安装包缓存"
+        },
+    )
+}
+
+fn reject_existing_leaf(path: &Path, code: &'static str) -> Result<(), InstallerDownloadError> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Err(InstallerDownloadError::new(
+            InstallerDownloadFailureStage::Cache,
+            code,
+            false,
+            "更新缓存中已存在冲突文件",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(map_cache_io_error(error)),
+    }
+}
+
+fn validate_managed_directory(path: &Path) -> io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || is_reparse_point(&metadata) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "updater cache directory is not a regular directory",
+        ));
+    }
+    Ok(())
+}
+
+fn cleanup_regular_file_sync(path: &Path) -> io::Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !is_reparse_point(&metadata) => {
+            std::fs::remove_file(path)
+        }
+        Ok(_) => Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "refusing to remove non-regular updater file",
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
+fn cleanup_owned_part(
+    handle: &std::fs::File,
+    store: &UpdateArtifactStore,
+    cleanup_path: &Path,
+) -> Result<(), InstallerDownloadError> {
+    cleanup_owned_part_file(handle, &store.part_path, cleanup_path).map_err(|_| {
+        InstallerDownloadError::new(
+            InstallerDownloadFailureStage::Cache,
+            "UPDATE_DOWNLOAD_CLEANUP_FAILED",
+            false,
+            "无法清理未完成的更新安装包",
+        )
+    })
+}
+
+#[cfg(windows)]
+fn cleanup_owned_part_file(
+    handle: &std::fs::File,
+    _path: &Path,
+    cleanup_path: &Path,
+) -> io::Result<()> {
+    use std::{mem, os::windows::io::AsRawHandle};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfo, FileDispositionInfoEx, SetFileInformationByHandle,
+        FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO,
+        FILE_DISPOSITION_INFO_EX,
+    };
+
+    let rename_result = rename_file_handle_without_replace(handle.as_raw_handle(), cleanup_path);
+    let extended = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+    };
+    let extended_result = unsafe {
+        SetFileInformationByHandle(
+            handle.as_raw_handle(),
+            FileDispositionInfoEx,
+            (&raw const extended).cast(),
+            mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if extended_result != 0 {
+        return rename_result;
+    }
+
+    let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
+    let legacy_result = unsafe {
+        SetFileInformationByHandle(
+            handle.as_raw_handle(),
+            FileDispositionInfo,
+            (&raw const legacy).cast(),
+            mem::size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if legacy_result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        rename_result
+    }
+}
+
+#[cfg(not(windows))]
+fn cleanup_owned_part_file(
+    _handle: &std::fs::File,
+    path: &Path,
+    _cleanup_path: &Path,
+) -> io::Result<()> {
+    cleanup_regular_file_sync(path)
+}
+
+#[cfg(windows)]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+fn available_disk_space(directory: &Path) -> io::Result<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let wide = directory
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let mut available = 0u64;
+    let result = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut available,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(available)
+    }
+}
+
+#[cfg(not(windows))]
+fn available_disk_space(_directory: &Path) -> io::Result<u64> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "only the Windows NSIS updater is supported",
+    ))
+}
+
+#[cfg(windows)]
+fn publish_without_replace(
+    file: &tokio::fs::File,
+    _source: &Path,
+    destination: &Path,
+) -> io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+
+    rename_file_handle_without_replace(file.as_raw_handle(), destination)
+}
+
+#[cfg(windows)]
+fn rename_file_handle_without_replace(
+    handle: std::os::windows::io::RawHandle,
+    destination: &Path,
+) -> io::Result<()> {
+    use std::{mem, os::windows::ffi::OsStrExt};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    let destination = destination.as_os_str().encode_wide().collect::<Vec<_>>();
+    let name_bytes = destination
+        .len()
+        .checked_mul(mem::size_of::<u16>())
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "installer path too long"))?;
+    let buffer_bytes = mem::offset_of!(FILE_RENAME_INFO, FileName)
+        .checked_add(name_bytes)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "installer path too long"))?;
+    let word_count = buffer_bytes.div_ceil(mem::size_of::<usize>());
+    let mut buffer = vec![0usize; word_count];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = false;
+        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).FileNameLength = u32::try_from(name_bytes)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "installer path too long"))?;
+        std::ptr::copy_nonoverlapping(
+            destination.as_ptr(),
+            buffer
+                .as_mut_ptr()
+                .cast::<u8>()
+                .add(mem::offset_of!(FILE_RENAME_INFO, FileName))
+                .cast::<u16>(),
+            destination.len(),
+        );
+    }
+    let result = unsafe {
+        SetFileInformationByHandle(
+            handle,
+            FileRenameInfo,
+            buffer.as_ptr().cast(),
+            u32::try_from(buffer_bytes).map_err(|_| {
+                io::Error::new(io::ErrorKind::InvalidInput, "installer path too long")
+            })?,
+        )
+    };
+    if result == 0 {
+        Err(io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn publish_without_replace(
+    _file: &tokio::fs::File,
+    source: &Path,
+    destination: &Path,
+) -> io::Result<()> {
+    if destination.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "verified installer already exists",
+        ));
+    }
+    std::fs::rename(source, destination)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        collections::VecDeque,
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            Mutex,
+        },
+    };
+
+    use serde::Deserialize;
+
+    use super::*;
+    use crate::runtime::updater::provenance::{ProvenanceVerificationInput, ProvenanceVerifier};
+
+    const RAW_PROVENANCE: &[u8] = include_bytes!("fixtures/provenance-v2.json");
+    const CONTRACT_JSON: &str = include_str!("fixtures/provenance-v2-contract.json");
+
+    #[derive(Deserialize)]
+    struct ContractFixture {
+        encoded_public_key: String,
+        provenance_signature: String,
+        installer_signature: String,
+    }
+
+    fn verified_plan() -> VerifiedInstallerPlan {
+        let contract: ContractFixture =
+            serde_json::from_str(CONTRACT_JSON).expect("共享 provenance contract 应有效");
+        let verifier = ProvenanceVerifier::from_tauri_pubkey(&contract.encoded_public_key)
+            .expect("fixture 公钥应有效");
+        let evidence = verifier
+            .verify(ProvenanceVerificationInput {
+                raw_provenance: RAW_PROVENANCE,
+                provenance_signature: &contract.provenance_signature,
+                installer_signature: &contract.installer_signature,
+                expected_repository: "zzstar101/Mineradio-Tauri",
+                expected_tag: "v1.2.3",
+                expected_version: "1.2.3",
+                expected_commit_sha: "0123456789abcdef0123456789abcdef01234567",
+                expected_target: "windows-x86_64-nsis",
+            })
+            .expect("fixture provenance 应有效");
+        VerifiedInstallerPlan::new(
+            evidence.candidate_id().clone(),
+            "https://github.com/zzstar101/Mineradio-Tauri/releases/download/v1.2.3/MineRadio-Tauri_1.2.3_x64-setup.exe".into(),
+            evidence,
+        )
+    }
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let mut nonce = [0u8; 16];
+            getrandom::fill(&mut nonce).expect("测试目录应取得系统随机标识");
+            let suffix = nonce
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            let path = std::env::temp_dir().join(format!("mineradio-updater-download-{suffix}"));
+            std::fs::create_dir(&path).expect("测试目录应以跨进程唯一身份创建");
+            Self(path)
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    struct FixedDiskSpace(u64);
+
+    impl DiskSpaceProbe for FixedDiskSpace {
+        fn available_bytes(&self, _directory: &Path) -> io::Result<u64> {
+            Ok(self.0)
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingEvents {
+        values: Mutex<Vec<InstallerDownloadEvent>>,
+    }
+
+    impl InstallerDownloadEvents for RecordingEvents {
+        fn emit(&self, event: InstallerDownloadEvent) -> bool {
+            self.values
+                .lock()
+                .expect("event recorder poisoned")
+                .push(event);
+            true
+        }
+    }
+
+    struct MemoryBody {
+        chunks: VecDeque<Result<Vec<u8>, InstallerTransportError>>,
+    }
+
+    impl InstallerBody for MemoryBody {
+        fn next_chunk(&mut self) -> InstallerChunkFuture<'_> {
+            let value = self.chunks.pop_front().transpose();
+            Box::pin(async move { value })
+        }
+    }
+
+    struct PendingBody;
+
+    impl InstallerBody for PendingBody {
+        fn next_chunk(&mut self) -> InstallerChunkFuture<'_> {
+            Box::pin(std::future::pending())
+        }
+    }
+
+    struct NotifyingPendingBody {
+        entered: Arc<tokio::sync::Notify>,
+    }
+
+    impl InstallerBody for NotifyingPendingBody {
+        fn next_chunk(&mut self) -> InstallerChunkFuture<'_> {
+            let entered = self.entered.clone();
+            Box::pin(async move {
+                entered.notify_one();
+                std::future::pending().await
+            })
+        }
+    }
+
+    struct MemoryTransport {
+        responses: Mutex<VecDeque<Result<InstallerHttpResponse, InstallerTransportError>>>,
+        calls: AtomicUsize,
+    }
+
+    impl MemoryTransport {
+        fn new(responses: Vec<InstallerHttpResponse>) -> Self {
+            Self::with_results(responses.into_iter().map(Ok))
+        }
+
+        fn with_results(
+            responses: impl IntoIterator<Item = Result<InstallerHttpResponse, InstallerTransportError>>,
+        ) -> Self {
+            Self {
+                responses: Mutex::new(responses.into_iter().collect()),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::Acquire)
+        }
+    }
+
+    impl InstallerHttpTransport for MemoryTransport {
+        fn get(
+            &self,
+            _url: &str,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<InstallerHttpResponse, InstallerTransportError>>
+                    + Send
+                    + '_,
+            >,
+        > {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            let response = self
+                .responses
+                .lock()
+                .expect("memory transport poisoned")
+                .pop_front()
+                .unwrap_or(Err(InstallerTransportError { retryable: false }));
+            Box::pin(async move { response })
+        }
+    }
+
+    fn response(
+        content_length: Option<u64>,
+        chunks: impl IntoIterator<Item = Result<Vec<u8>, InstallerTransportError>>,
+    ) -> InstallerHttpResponse {
+        InstallerHttpResponse {
+            status: 200,
+            location: None,
+            content_length,
+            body: Box::new(MemoryBody {
+                chunks: chunks.into_iter().collect(),
+            }),
+        }
+    }
+
+    fn status_response(status: u16) -> InstallerHttpResponse {
+        InstallerHttpResponse {
+            status,
+            location: None,
+            content_length: None,
+            body: Box::new(MemoryBody {
+                chunks: VecDeque::new(),
+            }),
+        }
+    }
+
+    fn downloader(
+        root: &TestDirectory,
+        transport: Arc<dyn InstallerHttpTransport>,
+        available: u64,
+    ) -> StreamingInstallerDownloader {
+        StreamingInstallerDownloader::with_dependencies(
+            transport,
+            UpdateArtifactStore::new(&root.0),
+            Arc::new(FixedDiskSpace(available)),
+        )
+    }
+
+    #[test]
+    fn signed_fixture_is_streamed_to_a_verified_artifact() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let transport = Arc::new(MemoryTransport::new(vec![response(
+                Some(9),
+                [
+                    Ok(b"ins".to_vec()),
+                    Ok(b"tall".to_vec()),
+                    Ok(b"er".to_vec()),
+                ],
+            )]));
+            let events = RecordingEvents::default();
+            let artifact = downloader(&root, transport.clone(), 9)
+                .run(verified_plan(), CancellationToken::new(), &events)
+                .await
+                .expect("真实共享签名 fixture 应通过流式验签");
+
+            assert_eq!(std::fs::read(artifact.path()).unwrap(), b"installer");
+            assert!(!root.0.join("cache-v1/installer.part").exists());
+            assert_eq!(transport.calls(), 1);
+            assert!(events
+                .values
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|event| matches!(event, InstallerDownloadEvent::Verifying { .. })));
+        });
+    }
+
+    #[test]
+    fn missing_content_length_is_bounded_by_signed_size_and_runtime_counter() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let transport = Arc::new(MemoryTransport::new(vec![response(
+                None,
+                [Ok(b"installer".to_vec())],
+            )]));
+            downloader(&root, transport, 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect("缺失 Content-Length 时仍应受签名大小约束并成功");
+
+            let overflow_root = TestDirectory::new();
+            let overflow_transport = Arc::new(MemoryTransport::new(vec![response(
+                None,
+                [Ok(b"installer!".to_vec())],
+            )]));
+            let error = downloader(&overflow_root, overflow_transport, 10)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("运行时超过签名大小必须失败");
+            assert_eq!(error.code(), "UPDATE_INSTALLER_SIZE_MISMATCH");
+            assert!(error.is_authenticity_failure());
+            assert!(!overflow_root.0.join("cache-v1/installer.part").exists());
+            assert!(!overflow_root.0.join("cache-v1/installer.exe").exists());
+        });
+    }
+
+    #[test]
+    fn retryable_stream_failure_restarts_from_zero_but_authenticity_failure_does_not_retry() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let transport = Arc::new(MemoryTransport::new(vec![
+                response(
+                    Some(9),
+                    [
+                        Ok(b"ins".to_vec()),
+                        Err(InstallerTransportError::retryable()),
+                    ],
+                ),
+                response(Some(9), [Ok(b"installer".to_vec())]),
+            ]));
+            downloader(&root, transport.clone(), 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect("瞬态读取错误应从零重试");
+            assert_eq!(transport.calls(), 2);
+            assert_eq!(
+                std::fs::read(root.0.join("cache-v1/installer.exe")).unwrap(),
+                b"installer"
+            );
+
+            let tampered_root = TestDirectory::new();
+            let tampered_transport = Arc::new(MemoryTransport::new(vec![response(
+                Some(9),
+                [Ok(b"installeX".to_vec())],
+            )]));
+            let error = downloader(&tampered_root, tampered_transport.clone(), 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("篡改安装包必须失败");
+            assert!(error.is_authenticity_failure());
+            assert_eq!(tampered_transport.calls(), 1);
+            assert!(!tampered_root.0.join("cache-v1/installer.part").exists());
+        });
+    }
+
+    #[test]
+    fn insufficient_disk_space_fails_before_network() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let transport = Arc::new(MemoryTransport::new(vec![response(
+                Some(9),
+                [Ok(b"installer".to_vec())],
+            )]));
+            let error = downloader(&root, transport.clone(), 8)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("磁盘空间不足必须在网络请求前失败");
+            assert_eq!(error.code(), "UPDATE_DOWNLOAD_DISK_FULL");
+            assert_eq!(transport.calls(), 0);
+        });
+    }
+
+    #[test]
+    fn cancellation_interrupts_a_waiting_chunk_and_removes_the_part_file() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let transport = Arc::new(MemoryTransport::new(vec![InstallerHttpResponse {
+                status: 200,
+                location: None,
+                content_length: Some(9),
+                body: Box::new(NotifyingPendingBody {
+                    entered: entered.clone(),
+                }),
+            }]));
+            let downloader = Arc::new(downloader(&root, transport, 9));
+            let cancellation = CancellationToken::new();
+            let task_cancellation = cancellation.clone();
+            let events = Arc::new(RecordingEvents::default());
+            let task_events = events.clone();
+            let task_downloader = downloader.clone();
+            let task = tauri::async_runtime::spawn(async move {
+                task_downloader
+                    .run(verified_plan(), task_cancellation, task_events.as_ref())
+                    .await
+            });
+
+            tokio::time::timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .expect("下载 body 应在时限内开始读取");
+            cancellation.cancel();
+            let error = task
+                .await
+                .unwrap()
+                .expect_err("取消必须终止等待中的 stream");
+            assert!(error.is_cancelled());
+            assert!(!root.0.join("cache-v1/installer.part").exists());
+            assert!(!root.0.join("cache-v1/installer.exe").exists());
+        });
+    }
+
+    #[test]
+    fn stalled_stream_flushes_the_latest_progress_within_the_public_interval() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let transport = Arc::new(MemoryTransport::new(vec![InstallerHttpResponse {
+                status: 200,
+                location: None,
+                content_length: Some(9),
+                body: Box::new(PendingBody),
+            }]));
+            let downloader = Arc::new(downloader(&root, transport, 9));
+            let cancellation = CancellationToken::new();
+            let task_cancellation = cancellation.clone();
+            let events = Arc::new(RecordingEvents::default());
+            let task_events = events.clone();
+            let task_downloader = downloader.clone();
+            let task = tauri::async_runtime::spawn(async move {
+                task_downloader
+                    .run(verified_plan(), task_cancellation, task_events.as_ref())
+                    .await
+            });
+
+            tokio::time::sleep(Duration::from_millis(PUBLIC_PROGRESS_INTERVAL_MS + 30)).await;
+            assert!(events.values.lock().unwrap().iter().any(|event| matches!(
+                event,
+                InstallerDownloadEvent::Progress {
+                    received_bytes: 0,
+                    total_bytes: Some(9),
+                    ..
+                }
+            )));
+
+            cancellation.cancel();
+            assert!(task.await.unwrap().unwrap_err().is_cancelled());
+            assert!(!root.0.join("cache-v1/installer.part").exists());
+        });
+    }
+
+    #[test]
+    fn aborting_the_download_future_releases_the_file_and_removes_the_part() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let entered = Arc::new(tokio::sync::Notify::new());
+            let transport = Arc::new(MemoryTransport::new(vec![InstallerHttpResponse {
+                status: 200,
+                location: None,
+                content_length: Some(9),
+                body: Box::new(NotifyingPendingBody {
+                    entered: entered.clone(),
+                }),
+            }]));
+            let downloader = Arc::new(downloader(&root, transport, 9));
+            let events = Arc::new(RecordingEvents::default());
+            let task_downloader = downloader.clone();
+            let task_events = events.clone();
+            let task = tauri::async_runtime::spawn(async move {
+                task_downloader
+                    .run(
+                        verified_plan(),
+                        CancellationToken::new(),
+                        task_events.as_ref(),
+                    )
+                    .await
+            });
+
+            tokio::time::timeout(Duration::from_secs(1), entered.notified())
+                .await
+                .expect("下载 body 应在时限内开始读取");
+            assert!(root.0.join("cache-v1/installer.part").exists());
+            task.abort();
+            let _ = task.await;
+
+            assert!(!root.0.join("cache-v1/installer.part").exists());
+            assert!(!root.0.join("cache-v1/installer.exe").exists());
+        });
+    }
+
+    #[test]
+    fn existing_part_file_is_never_claimed_or_deleted() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let cache = root.0.join("cache-v1");
+            std::fs::create_dir_all(&cache).unwrap();
+            let part = cache.join("installer.part");
+            std::fs::write(&part, b"foreign-part").unwrap();
+            let transport = Arc::new(MemoryTransport::new(vec![response(
+                Some(9),
+                [Ok(b"installer".to_vec())],
+            )]));
+
+            let error = downloader(&root, transport, 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("既有 part 文件不得被当前 operation 接管");
+
+            assert_eq!(error.code(), "UPDATE_DOWNLOAD_PART_EXISTS");
+            assert_eq!(std::fs::read(part).unwrap(), b"foreign-part");
+        });
+    }
+
+    #[test]
+    fn accepted_background_write_cannot_block_identity_cleanup_or_a_fresh_part() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let store = UpdateArtifactStore::new(&root.0);
+            store.prepare().await.unwrap();
+            let (mut writer, cleanup_handle, cleanup_path) = store.create_part().unwrap();
+            let part = root.0.join("cache-v1/installer.part");
+            assert!(part.exists());
+            writer.write_all(b"installer").await.unwrap();
+
+            PartFileGuard::armed(store.clone(), cleanup_handle, cleanup_path)
+                .cleanup()
+                .expect("owned part 应能按句柄标记删除");
+            assert!(!part.exists());
+
+            let (second_writer, second_cleanup_handle, second_cleanup_path) = store
+                .create_part()
+                .expect("下一次下载应能立即取得 fresh part");
+            PartFileGuard::armed(store, second_cleanup_handle, second_cleanup_path)
+                .cleanup()
+                .expect("fresh part 也应能按句柄清理");
+            assert!(!part.exists());
+
+            close_download_file(writer).await;
+            close_download_file(second_writer).await;
+            assert!(std::fs::read_dir(root.0.join("cache-v1"))
+                .unwrap()
+                .next()
+                .is_none());
+        });
+    }
+
+    #[test]
+    fn declared_size_is_rejected_before_creating_a_part_file() {
+        tauri::async_runtime::block_on(async {
+            for (length, expected_code, authenticity) in [
+                (MAX_INSTALLER_BYTES + 1, "UPDATE_DOWNLOAD_TOO_LARGE", false),
+                (10, "UPDATE_INSTALLER_SIZE_MISMATCH", true),
+            ] {
+                let root = TestDirectory::new();
+                let transport = Arc::new(MemoryTransport::new(vec![response(
+                    Some(length),
+                    [Ok(b"installer".to_vec())],
+                )]));
+                let error = downloader(&root, transport, 9)
+                    .run(
+                        verified_plan(),
+                        CancellationToken::new(),
+                        &RecordingEvents::default(),
+                    )
+                    .await
+                    .expect_err("不可信 Content-Length 必须在写文件前失败");
+
+                assert_eq!(error.code(), expected_code);
+                assert_eq!(error.is_authenticity_failure(), authenticity);
+                assert!(!root.0.join("cache-v1/installer.part").exists());
+            }
+        });
+    }
+
+    #[test]
+    fn only_server_failures_retry_and_the_budget_is_bounded() {
+        tauri::async_runtime::block_on(async {
+            let retry_root = TestDirectory::new();
+            let retry_transport = Arc::new(MemoryTransport::new(vec![
+                status_response(503),
+                status_response(503),
+                status_response(503),
+            ]));
+            let retry_error = downloader(&retry_root, retry_transport.clone(), 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("5xx 超过重试预算后必须失败");
+            assert_eq!(retry_error.code(), "UPDATE_DOWNLOAD_HTTP_STATUS");
+            assert!(retry_error.retryable());
+            assert_eq!(retry_transport.calls(), 3);
+
+            let client_root = TestDirectory::new();
+            let client_transport = Arc::new(MemoryTransport::new(vec![status_response(404)]));
+            let client_error = downloader(&client_root, client_transport.clone(), 9)
+                .run(
+                    verified_plan(),
+                    CancellationToken::new(),
+                    &RecordingEvents::default(),
+                )
+                .await
+                .expect_err("4xx 不得自动重试");
+            assert_eq!(client_error.code(), "UPDATE_DOWNLOAD_HTTP_STATUS");
+            assert!(!client_error.retryable());
+            assert_eq!(client_transport.calls(), 1);
+        });
+    }
+}

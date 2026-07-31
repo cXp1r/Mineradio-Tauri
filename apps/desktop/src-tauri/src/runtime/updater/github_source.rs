@@ -25,7 +25,7 @@ pub(crate) const OFFICIAL_REPOSITORY: &str = "zzstar101/Mineradio-Tauri";
 pub(crate) const LATEST_MANIFEST_URL: &str =
     "https://github.com/zzstar101/Mineradio-Tauri/releases/latest/download/latest.json";
 const RELEASE_TARGET: &str = "windows-x86_64-nsis";
-const MAX_REDIRECTS: usize = 4;
+pub(super) const MAX_REDIRECTS: usize = 4;
 const MAX_MANIFEST_BYTES: usize = 256 * 1024;
 const MAX_COMMIT_BYTES: usize = 256 * 1024;
 const MAX_PROVENANCE_BYTES: usize = 16 * 1024;
@@ -288,7 +288,7 @@ fn is_retryable_http_status(status: u16) -> bool {
     matches!(status, 500..=599)
 }
 
-fn is_retryable_reqwest_error(error: &reqwest::Error) -> bool {
+pub(super) fn is_retryable_reqwest_error(error: &reqwest::Error) -> bool {
     if error.is_timeout() {
         return true;
     }
@@ -503,7 +503,7 @@ fn validate_initial_request_url(
     Ok(url)
 }
 
-fn validate_release_redirect_url(raw: &str) -> Result<Url, UpdateSourceError> {
+pub(super) fn validate_release_redirect_url(raw: &str) -> Result<Url, UpdateSourceError> {
     let url = parse_secure_url(raw, "UPDATE_REDIRECT_REJECTED")?;
     if url.fragment().is_some()
         || !url
@@ -558,29 +558,28 @@ fn validate_transport_request_url(
     Ok(url)
 }
 
+pub(super) fn validate_installer_request_url(raw: &str) -> Result<Url, UpdateSourceError> {
+    let url = parse_secure_url(raw, "UPDATE_ASSET_POLICY_REJECTED")?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| rejected("UPDATE_ASSET_POLICY_REJECTED", "URL 缺少 host"))?;
+    if !RELEASE_ASSET_REDIRECT_HOSTS.contains(&host) {
+        return Err(rejected(
+            "UPDATE_ASSET_POLICY_REJECTED",
+            "GitHub 安装包请求 host 不在固定 allowlist",
+        ));
+    }
+    Ok(url)
+}
+
 struct ReqwestReleaseHttpTransport {
     client: reqwest::Client,
 }
 
 impl ReqwestReleaseHttpTransport {
     fn new() -> Result<Self, UpdateSourceError> {
-        install_tls_crypto_provider();
-        let client = reqwest::Client::builder()
-            .https_only(true)
-            .redirect(redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .referer(false)
-            .no_proxy()
-            .dns_resolver(PublicGitHubDnsResolver)
-            .connect_timeout(Duration::from_secs(10))
-            .timeout(Duration::from_secs(20))
-            .user_agent("MineRadio-Tauri updater")
-            .build()
-            .map_err(|_| UpdateSourceError {
-                code: "UPDATE_SOURCE_INIT_FAILED".into(),
-                retryable: false,
-                message: "GitHub Update Source 初始化失败".into(),
-            })?;
+        let client =
+            build_hardened_github_client(Some(Duration::from_secs(20)), Duration::from_secs(20))?;
         Ok(Self { client })
     }
 
@@ -662,6 +661,31 @@ impl ReqwestReleaseHttpTransport {
             body,
         })
     }
+}
+
+pub(super) fn build_hardened_github_client(
+    total_timeout: Option<Duration>,
+    read_timeout: Duration,
+) -> Result<reqwest::Client, UpdateSourceError> {
+    install_tls_crypto_provider();
+    let mut builder = reqwest::Client::builder()
+        .https_only(true)
+        .redirect(redirect::Policy::none())
+        .retry(reqwest::retry::never())
+        .referer(false)
+        .no_proxy()
+        .dns_resolver(PublicGitHubDnsResolver)
+        .connect_timeout(Duration::from_secs(10))
+        .read_timeout(read_timeout)
+        .user_agent("MineRadio-Tauri updater");
+    if let Some(timeout) = total_timeout {
+        builder = builder.timeout(timeout);
+    }
+    builder.build().map_err(|_| UpdateSourceError {
+        code: "UPDATE_SOURCE_INIT_FAILED".into(),
+        retryable: false,
+        message: "GitHub Update Source 初始化失败".into(),
+    })
 }
 
 fn install_tls_crypto_provider() {
