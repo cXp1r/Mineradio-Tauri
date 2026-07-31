@@ -199,19 +199,88 @@ struct VerifiedInstallerAuthority {
     _file: std::fs::File,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedInstallerIdentity {
+    candidate_id: ReleaseCandidateId,
+    version: String,
+    provenance_sha256: String,
+    metadata_digest: String,
+    installer_sha256: String,
+    installer_size: u64,
+}
+
+impl VerifiedInstallerIdentity {
+    fn from_verified_measurement(
+        evidence: &VerifiedReleaseEvidence,
+        metadata_digest: String,
+        installer_size: u64,
+        installer_sha256: String,
+    ) -> Self {
+        Self {
+            candidate_id: evidence.candidate_id().clone(),
+            version: evidence.version().to_owned(),
+            provenance_sha256: evidence.provenance_sha256().to_owned(),
+            metadata_digest,
+            installer_sha256,
+            installer_size,
+        }
+    }
+
+    #[cfg(test)]
+    fn fake(candidate_id: ReleaseCandidateId) -> Self {
+        Self {
+            candidate_id,
+            version: "1.2.3".into(),
+            provenance_sha256: "9e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                .into(),
+            metadata_digest: "8e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                .into(),
+            installer_sha256: "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                .into(),
+            installer_size: 9,
+        }
+    }
+
+    pub(crate) fn candidate_id(&self) -> &ReleaseCandidateId {
+        &self.candidate_id
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub(crate) fn provenance_sha256(&self) -> &str {
+        &self.provenance_sha256
+    }
+
+    pub(crate) fn metadata_digest(&self) -> &str {
+        &self.metadata_digest
+    }
+
+    pub(crate) fn installer_sha256(&self) -> &str {
+        &self.installer_sha256
+    }
+
+    pub(crate) fn installer_size(&self) -> u64 {
+        self.installer_size
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct VerifiedInstallerArtifact {
-    candidate_id: ReleaseCandidateId,
+    identity: VerifiedInstallerIdentity,
     path: PathBuf,
     updater_directory: Option<PathBuf>,
     authority: Option<Arc<Mutex<Option<VerifiedInstallerAuthority>>>>,
-    size: u64,
-    sha256: String,
 }
 
 impl VerifiedInstallerArtifact {
+    pub(crate) fn identity(&self) -> &VerifiedInstallerIdentity {
+        &self.identity
+    }
+
     pub(crate) fn candidate_id(&self) -> &ReleaseCandidateId {
-        &self.candidate_id
+        self.identity.candidate_id()
     }
 
     pub(crate) fn discard(&self) -> Result<(), InstallerDownloadError> {
@@ -241,32 +310,36 @@ impl VerifiedInstallerArtifact {
     }
 
     pub(crate) fn size(&self) -> u64 {
-        self.size
+        self.identity.installer_size()
     }
 
     pub(crate) fn sha256(&self) -> &str {
-        &self.sha256
+        self.identity.installer_sha256()
     }
 
     pub(crate) fn from_recovered(
-        candidate_id: ReleaseCandidateId,
+        evidence: &VerifiedReleaseEvidence,
+        metadata_digest: String,
         path: PathBuf,
-        size: u64,
-        sha256: String,
+        installer_size: u64,
+        installer_sha256: String,
         directory: Arc<StableDirectory>,
         file: std::fs::File,
     ) -> Self {
         let updater_directory = path.parent().and_then(Path::parent).map(Path::to_path_buf);
         Self {
-            candidate_id,
+            identity: VerifiedInstallerIdentity::from_verified_measurement(
+                evidence,
+                metadata_digest,
+                installer_size,
+                installer_sha256,
+            ),
             path,
             updater_directory,
             authority: Some(Arc::new(Mutex::new(Some(VerifiedInstallerAuthority {
                 _directory: directory,
                 _file: file,
             })))),
-            size,
-            sha256,
         }
     }
 
@@ -278,12 +351,10 @@ impl VerifiedInstallerArtifact {
     #[cfg(test)]
     pub(crate) fn fake_at(candidate_id: ReleaseCandidateId, path: PathBuf) -> Self {
         Self {
-            candidate_id,
+            identity: VerifiedInstallerIdentity::fake(candidate_id),
             path,
             updater_directory: None,
             authority: None,
-            size: 9,
-            sha256: "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c".into(),
         }
     }
 
@@ -971,43 +1042,50 @@ impl StreamingInstallerDownloader {
             };
         }
 
+        let verified_at = unix_timestamp_millis()?;
+        let metadata_digest = match commit_downloaded_candidate(
+            &self.artifact_store.updater_directory,
+            &plan.evidence,
+            published_measurement.size,
+            &published_measurement.sha256,
+            verified_at,
+            verified_at,
+        )
+        .await
+        {
+            Ok(metadata_digest) => metadata_digest,
+            Err(error) => {
+                drop(verified_file);
+                discard_verified_cache(&self.artifact_store.updater_directory).map_err(|_| {
+                    InstallerDownloadError::new(
+                        InstallerDownloadFailureStage::Cache,
+                        "UPDATE_CACHE_COMMIT_CLEANUP_FAILED",
+                        false,
+                        "更新缓存 metadata 提交失败，且安装包无法清理",
+                    )
+                })?;
+                return Err(InstallerDownloadError::new(
+                    InstallerDownloadFailureStage::Cache,
+                    error.code,
+                    false,
+                    error.message,
+                ));
+            }
+        };
         let artifact = VerifiedInstallerArtifact {
-            candidate_id: plan.candidate_id.clone(),
+            identity: VerifiedInstallerIdentity::from_verified_measurement(
+                &plan.evidence,
+                metadata_digest,
+                published_measurement.size,
+                published_measurement.sha256,
+            ),
             path: self.artifact_store.installer_path.clone(),
             updater_directory: Some(self.artifact_store.updater_directory.clone()),
             authority: Some(Arc::new(Mutex::new(Some(VerifiedInstallerAuthority {
                 _directory: artifact_lease.cache.clone(),
                 _file: verified_file,
             })))),
-            size: published_measurement.size,
-            sha256: published_measurement.sha256,
         };
-        let verified_at = unix_timestamp_millis()?;
-        if let Err(error) = commit_downloaded_candidate(
-            &self.artifact_store.updater_directory,
-            &plan.evidence,
-            artifact.size,
-            &artifact.sha256,
-            verified_at,
-            verified_at,
-        )
-        .await
-        {
-            artifact.discard().map_err(|_| {
-                InstallerDownloadError::new(
-                    InstallerDownloadFailureStage::Cache,
-                    "UPDATE_CACHE_COMMIT_CLEANUP_FAILED",
-                    false,
-                    "更新缓存 metadata 提交失败，且安装包无法清理",
-                )
-            })?;
-            return Err(InstallerDownloadError::new(
-                InstallerDownloadFailureStage::Cache,
-                error.code,
-                false,
-                error.message,
-            ));
-        }
 
         Ok(artifact)
     }
@@ -2024,11 +2102,15 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|event| matches!(event, InstallerDownloadEvent::Verifying { .. })));
+            let fresh_identity = artifact.identity().clone();
             let recovered = VerifiedCacheStore::new(&root.0, encoded_public_key())
                 .unwrap()
                 .recover("0.1.0")
                 .await;
-            assert!(matches!(recovered, CacheRecoveryOutcome::Recovered(_)));
+            let CacheRecoveryOutcome::Recovered(recovered) = recovered else {
+                panic!("fresh cache 应恢复为同一个已验证 artifact identity: {recovered:?}");
+            };
+            assert_eq!(recovered.artifact.identity(), &fresh_identity);
             drop(recovered);
             artifact
                 .discard()

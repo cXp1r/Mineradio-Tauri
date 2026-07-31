@@ -727,17 +727,17 @@ impl VerifiedCacheStore {
         let (actual_size, actual_sha256, installer_file) = self
             .verify_installer(&cache, &evidence, &document.candidate)
             .await?;
-        let candidate_id = evidence.candidate_id().clone();
-        let release =
-            NormalizedRelease::from_verified(evidence, std::iter::empty::<String>(), None);
         let artifact = VerifiedInstallerArtifact::from_recovered(
-            candidate_id,
+            &evidence,
+            document.metadata_digest.clone(),
             self.installer_path(),
             actual_size,
             actual_sha256,
             cache,
             installer_file,
         );
+        let release =
+            NormalizedRelease::from_verified(evidence, std::iter::empty::<String>(), None);
         Ok(Some(RecoveredVerifiedCache {
             release,
             artifact,
