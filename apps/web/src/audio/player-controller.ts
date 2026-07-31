@@ -2,6 +2,7 @@ import type { AudioFrameSource } from "@mineradio/visual-engine";
 import {
 	PlaybackAudioRuntime,
 	type AudioOutputDevice,
+	type CommittedPlaybackOwnerLease,
 	type OutputRoutingConfig,
 	type OutputRoutingSnapshot,
 	type PlaybackAudioDiagnostics,
@@ -66,6 +67,7 @@ export type HandlerForEvent<E extends PlayerEventName> =
 
 export type {
 	AudioOutputDevice,
+	CommittedPlaybackOwnerLease,
 	OutputRoutingConfig,
 	OutputRoutingSnapshot,
 	PlaybackAudioDiagnostics,
@@ -117,6 +119,26 @@ export class PlayerController {
 
 	pause(): void {
 		this.runtime.pause();
+	}
+
+	stageCommittedOwnerLease(): CommittedPlaybackOwnerLease | null {
+		return this.runtime.stageCommittedOwnerLease();
+	}
+
+	pauseCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		return this.runtime.pauseCommittedOwnerLease(lease);
+	}
+
+	rollbackCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): Promise<boolean> {
+		return this.runtime.rollbackCommittedOwnerLease(lease);
+	}
+
+	releaseCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		return this.runtime.releaseCommittedOwnerLease(lease);
+	}
+
+	cancelCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		return this.runtime.cancelCommittedOwnerLease(lease);
 	}
 
 	stop(): void {

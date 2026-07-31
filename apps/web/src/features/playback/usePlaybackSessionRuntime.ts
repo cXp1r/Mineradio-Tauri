@@ -24,6 +24,10 @@ import type {
 } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
 import { resolveLyricsForTrack } from "../../lyrics/custom-lyrics";
+import type {
+	ConsumePlaybackCheckpointAutoplayRequest,
+	PlaybackCheckpointRestoreAuthority,
+} from "../../stores/playback-store";
 import type { JsonValue } from "../../tauri/runtime";
 import {
 	PlaybackSessionCoordinator,
@@ -62,6 +66,10 @@ export interface PlaybackSessionRuntimeOptions {
 	currentTrack: Track | null;
 	playbackIntentId: number;
 	positionMs: number;
+	checkpointRestore?: PlaybackCheckpointRestoreAuthority | null;
+	consumeCheckpointAutoplay?(
+		request: ConsumePlaybackCheckpointAutoplayRequest,
+	): boolean;
 	queue?: readonly Track[];
 	playbackMode?: string;
 	gaplessEnabled?: boolean;
@@ -158,6 +166,41 @@ function isPodcastTrack(track: Track | null | undefined): boolean {
 	return record?.type === "podcast" || record?.source === "podcast";
 }
 
+export function shouldAutoplayPlaybackLoad(
+	checkpointRestore: PlaybackCheckpointRestoreAuthority | null | undefined,
+	track: Track | null | undefined,
+	playbackIntentId: number,
+	consumedLocally = false,
+	currentIsPlaying = true,
+): boolean {
+	if (!checkpointRestore) return true;
+	const exact = checkpointRestore.playbackIntentId === playbackIntentId
+		&& checkpointRestore.currentTrackRef === playbackKeyForTrack(track);
+	if (!exact) return true;
+	if (checkpointRestore.autoplayDispositionConsumed || consumedLocally) {
+		return currentIsPlaying;
+	}
+	return checkpointRestore.wasPlaying;
+}
+
+function exactCheckpointAutoplayKey(
+	checkpointRestore: PlaybackCheckpointRestoreAuthority | null | undefined,
+	track: Track | null | undefined,
+	playbackIntentId: number,
+): string | null {
+	if (
+		!checkpointRestore
+		|| checkpointRestore.playbackIntentId !== playbackIntentId
+		|| checkpointRestore.currentTrackRef !== playbackKeyForTrack(track)
+	) return null;
+	return [
+		checkpointRestore.operationId,
+		checkpointRestore.receipt,
+		String(playbackIntentId),
+		checkpointRestore.currentTrackRef,
+	].join("\u0000");
+}
+
 interface GaplessCapablePlayerController {
 	prepareNext(url: string, loadContext?: object): GaplessPreparedHandle;
 	prerollPrepared?(
@@ -198,6 +241,8 @@ export function usePlaybackSessionRuntime({
 	currentTrack,
 	playbackIntentId,
 	positionMs,
+	checkpointRestore = null,
+	consumeCheckpointAutoplay: consumeCheckpointAutoplayAuthority,
 	queue = [],
 	playbackMode = "queue",
 	gaplessEnabled = false,
@@ -230,6 +275,7 @@ export function usePlaybackSessionRuntime({
 	const [playbackQuality, setPlaybackQualityState] = useState(initialPlaybackQuality);
 	const [playbackQualityReloadHandle, setPlaybackQualityReloadHandle] =
 		useState<PlaybackLoadHandle | null>(null);
+	const playbackQualityReloadAutoplayRef = useRef<boolean | null>(null);
 	const [trackQualityOptions, setTrackQualityOptions] = useState<TrackQualityOption[]>([]);
 	const [trialBanner, setTrialBanner] = useState<TrialBannerState | null>(null);
 	const [currentBeatMapState, setCurrentBeatMapState] =
@@ -526,6 +572,7 @@ export function usePlaybackSessionRuntime({
 		onPlaybackReady,
 		onPlaybackFailed,
 	});
+	const consumedCheckpointAutoplayRef = useRef(new Set<string>());
 	runtimeLifecycleCallbacksRef.current = {
 		onRuntimeTimeUpdate,
 		onRuntimeDurationChange,
@@ -719,6 +766,7 @@ export function usePlaybackSessionRuntime({
 			if (resumeAt > 0) controllerRef.current?.pause();
 			const qualityReload = coordinator.invalidateCurrentTrackLoad();
 			if (qualityReload) {
+				playbackQualityReloadAutoplayRef.current = snapshot.isPlaying;
 				setPlaybackQualityReloadHandle(qualityReload);
 			}
 			setPositionMs(resumeAt);
@@ -802,6 +850,46 @@ export function usePlaybackSessionRuntime({
 		}
 
 		const key = playbackKeyForTrack(currentTrack);
+		const checkpointAutoplayKey = exactCheckpointAutoplayKey(
+			checkpointRestore,
+			currentTrack,
+			playbackIntentId,
+		);
+		const checkpointAutoplayConsumedLocally = !!(
+			checkpointAutoplayKey
+			&& consumedCheckpointAutoplayRef.current.has(checkpointAutoplayKey)
+		);
+		const currentPlaybackIntentIsPlaying = playbackQualityReloadHandle
+			? (playbackQualityReloadAutoplayRef.current
+				?? getPlaybackSnapshot().isPlaying)
+			: getPlaybackSnapshot().isPlaying;
+		const shouldAutoplay = shouldAutoplayPlaybackLoad(
+			checkpointRestore,
+			currentTrack,
+			playbackIntentId,
+			checkpointAutoplayConsumedLocally,
+			currentPlaybackIntentIsPlaying,
+		);
+		const consumeQualityReloadAutoplayIntent = () => {
+			if (playbackQualityReloadHandle) {
+				playbackQualityReloadAutoplayRef.current = null;
+			}
+		};
+		const consumeCheckpointAutoplayDisposition = () => {
+			if (
+				!checkpointRestore
+				|| !checkpointAutoplayKey
+				|| checkpointRestore.autoplayDispositionConsumed
+				|| checkpointAutoplayConsumedLocally
+			) return;
+			consumedCheckpointAutoplayRef.current.add(checkpointAutoplayKey);
+			consumeCheckpointAutoplayAuthority?.({
+				operationId: checkpointRestore.operationId,
+				receipt: checkpointRestore.receipt,
+				playbackIntentId,
+				currentTrackRef: checkpointRestore.currentTrackRef,
+			});
+		};
 		const localAudioUrl = localAudioUrlsRef.current.get(key);
 		if (!adopted) {
 			const diagnostics = gaplessRuntime?.diagnostics();
@@ -851,7 +939,7 @@ export function usePlaybackSessionRuntime({
 				(adopted.source.audioUrl === localAudioUrl ||
 					adopted.source.rawUrl === localAudioUrl)
 			);
-			const sourceAccepted = coordinator.markLoaded(session, {
+			const adoptedSource = {
 				trackKey: key,
 				quality: playbackQuality,
 				resolvedAtMs: now(),
@@ -859,7 +947,10 @@ export function usePlaybackSessionRuntime({
 				rawUrl: adopted.source.rawUrl,
 				local: adoptedIsLocal,
 				trial: false,
-			});
+			};
+			const sourceAccepted = shouldAutoplay
+				? coordinator.markLoaded(session, adoptedSource)
+				: coordinator.markLoadedPaused(session, adoptedSource, now());
 			const mediaAdopted = !!(
 				sourceAccepted &&
 				capableController?.adoptPrepared(adopted.handle, session)
@@ -881,6 +972,9 @@ export function usePlaybackSessionRuntime({
 				);
 				return;
 			}
+			if (!shouldAutoplay) controller.pause();
+			consumeQualityReloadAutoplayIntent();
+			consumeCheckpointAutoplayDisposition();
 
 			setTrialBanner(null);
 			if (adoptedIsLocal) {
@@ -927,7 +1021,7 @@ export function usePlaybackSessionRuntime({
 			void (async () => {
 				let sourceAccepted = false;
 				try {
-					if (!coordinator.markLoaded(session, {
+					const source = {
 						trackKey: key,
 						quality: playbackQuality,
 						resolvedAtMs: now(),
@@ -935,11 +1029,17 @@ export function usePlaybackSessionRuntime({
 						rawUrl: localAudioUrl,
 						local: true,
 						trial: false,
-					})) return;
+					};
+					const sourceAcceptedByCoordinator = shouldAutoplay
+						? coordinator.markLoaded(session, source)
+						: coordinator.markLoadedPaused(session, source, now());
+					if (!sourceAcceptedByCoordinator) return;
 					sourceAccepted = true;
+					consumeQualityReloadAutoplayIntent();
 					controller.load(localAudioUrl, session);
 					if (positionRef.current > 0) controller.seek(positionRef.current);
-					await controller.play();
+					consumeCheckpointAutoplayDisposition();
+					if (shouldAutoplay) await controller.play();
 					if (!coordinator.isPlaybackCurrent(session)) return;
 					setLyricsLoading(false);
 				} catch (error) {
@@ -978,7 +1078,7 @@ export function usePlaybackSessionRuntime({
 					provider: currentTrack.provider,
 					showLogin: !result.loggedIn,
 				} : null);
-				if (!coordinator.markLoaded(session, {
+				const source = {
 					trackKey: key,
 					quality: playbackQuality,
 					resolvedAtMs: now(),
@@ -986,13 +1086,19 @@ export function usePlaybackSessionRuntime({
 					rawUrl: result.url,
 					local: false,
 					trial: result.trial === true,
-			})) return;
-			sourceAccepted = true;
-			controller.load(audioUrl, session);
+				};
+				const sourceAcceptedByCoordinator = shouldAutoplay
+					? coordinator.markLoaded(session, source)
+					: coordinator.markLoadedPaused(session, source, now());
+				if (!sourceAcceptedByCoordinator) return;
+				sourceAccepted = true;
+				consumeQualityReloadAutoplayIntent();
+				controller.load(audioUrl, session);
 				loadBeatMap(services, currentTrack, result.url, session);
 				if (positionRef.current > 0) controller.seek(positionRef.current);
-			await controller.play();
-			if (!coordinator.isPlaybackCurrent(session)) return;
+				consumeCheckpointAutoplayDisposition();
+				if (shouldAutoplay) await controller.play();
+				if (!coordinator.isPlaybackCurrent(session)) return;
 			} catch (error) {
 				if (!coordinator.isPlaybackCurrent(session)) return;
 				const message = error instanceof Error ? error.message : "playback error";
@@ -1042,6 +1148,8 @@ export function usePlaybackSessionRuntime({
 	}, [
 		appServices,
 		controllerRef,
+		checkpointRestore,
+		consumeCheckpointAutoplayAuthority,
 		coordinator,
 		currentTrack,
 		getPlaybackSnapshot,

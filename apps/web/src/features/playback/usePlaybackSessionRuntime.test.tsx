@@ -12,6 +12,7 @@ import {
 } from "../../audio/player-controller";
 import type { AppServices } from "../../app/app-services";
 import { usePlaybackStore } from "../../stores/playback-store";
+import type { PlaybackCheckpointRestoreAuthority } from "../../stores/playback-store";
 import { PlaybackSessionCoordinator } from "./playback-session-coordinator";
 import {
 	usePlaybackSessionRuntime,
@@ -31,6 +32,495 @@ const TRACK: Track = {
 	qualityHints: [],
 	playableState: "unknown",
 };
+
+for (const source of ["remote", "blob"] as const) {
+	test(`paused ${source} checkpoint loads without autoplay and keeps paused intent stable`, async () => {
+		await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+		const loaded: string[] = [];
+		const seeks: number[] = [];
+		let playCount = 0;
+		let checkpointConsumeCount = 0;
+		let snapshotPlaying = false;
+		const playingWrites: boolean[] = [];
+		const coordinator = new PlaybackSessionCoordinator();
+		const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+			current: null,
+		};
+		const controller = {
+			load(url: string) {
+				loaded.push(url);
+			},
+			seek(positionMs: number) {
+				seeks.push(positionMs);
+			},
+			async play() {
+				playCount += 1;
+				snapshotPlaying = true;
+			},
+			pause() {
+				snapshotPlaying = false;
+			},
+			stop() {},
+		} as unknown as PlayerController;
+		const remoteUrl = "https://media.example/restored-paused.mp3";
+		const localUrl = "blob:https://app.example/restored-local";
+		const services = source === "remote" ? {
+			music: {
+				playback: {
+					async resolveSongUrl() {
+						return {
+							url: remoteUrl,
+							quality: "standard",
+							proxied: false,
+						};
+					},
+				},
+				lyrics: {
+					async lyric() {
+						return await new Promise<LyricPayload>(() => undefined);
+					},
+				},
+				discover: {},
+			},
+			mediaUrl: {
+				audioProxyUrl: (url: string) => url,
+				playableUrl: (url: string) => url,
+			},
+		} as unknown as AppServices : null;
+		const checkpointRestore: PlaybackCheckpointRestoreAuthority = {
+			operationId: source === "remote"
+				? "00000000000000000000000000000001"
+				: "00000000000000000000000000000002",
+			receipt: source === "remote"
+				? "10000000000000000000000000000001"
+				: "10000000000000000000000000000002",
+			playbackIntentId: 7,
+			currentTrackRef: `${TRACK.provider}:${TRACK.id}`,
+			wasPlaying: false,
+			sourceKind: source,
+			restartRestorable: source === "remote",
+			autoplayDispositionConsumed: false,
+		};
+
+		function Harness() {
+			runtimeRef.current = usePlaybackSessionRuntime({
+				appServices: services,
+				coordinator,
+				controllerRef: { current: controller },
+				localAudioUrlsRef: {
+					current: source === "blob"
+						? new Map([[`${TRACK.provider}:${TRACK.id}`, localUrl]])
+						: new Map(),
+				},
+				currentTrack: TRACK,
+				playbackIntentId: 7,
+				positionMs: 24_000,
+				checkpointRestore,
+				consumeCheckpointAutoplay: () => {
+					checkpointConsumeCount += 1;
+					return true;
+				},
+				getPlaybackSnapshot: () => ({
+					currentTrack: TRACK,
+					positionMs: 24_000,
+					durationMs: 60_000,
+					isPlaying: snapshotPlaying,
+				}),
+				setPlaying: (playing) => playingWrites.push(playing),
+				setPositionMs: () => undefined,
+				togglePlayFallback: () => undefined,
+				setSearchError: () => undefined,
+				showToast: () => undefined,
+				setHomeForcedOpen: () => undefined,
+				setHomeSuppressed: () => undefined,
+				setLyricsPayload: () => undefined,
+				setLyricsLoading: () => undefined,
+				setLyricsError: () => undefined,
+				resetLyrics: () => undefined,
+				beatMapKeyForMap: () => "dj:test",
+				initialLyricsPayload: null,
+				initialPlaybackQuality: "standard",
+				persistPlaybackQuality: () => undefined,
+			});
+			return null;
+		}
+
+		const host = document.createElement("div");
+		document.body.appendChild(host);
+		const root = createRoot(host);
+		flushSync(() => root.render(<Harness />));
+		for (let index = 0; index < 8 && loaded.length === 0; index += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(loaded).toEqual([source === "blob" ? localUrl : remoteUrl]);
+		expect(seeks).toEqual([24_000]);
+		expect(playCount).toBe(0);
+		expect(checkpointConsumeCount).toBe(1);
+		expect(playingWrites).toEqual([]);
+		expect(coordinator.snapshot().phase).toBe("paused");
+		flushSync(() => runtimeRef.current?.togglePlayback());
+		await Promise.resolve();
+		expect(playCount).toBe(1);
+		flushSync(() => runtimeRef.current?.setPlaybackQuality("high"));
+		for (let index = 0; index < 8 && loaded.length < 2; index += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		expect(loaded.length).toBe(2);
+		expect(playCount).toBe(2);
+
+		root.unmount();
+		host.remove();
+	});
+}
+
+test("playing checkpoint is consumed once and a later paused reload stays paused", async () => {
+	await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const loaded: string[] = [];
+	let playCount = 0;
+	let pauseCount = 0;
+	let checkpointConsumeCount = 0;
+	let snapshotPlaying = true;
+	const coordinator = new PlaybackSessionCoordinator();
+	const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+		current: null,
+	};
+	const controller = {
+		load(url: string) {
+			loaded.push(url);
+		},
+		seek() {},
+		async play() {
+			playCount += 1;
+			snapshotPlaying = true;
+		},
+		pause() {
+			pauseCount += 1;
+			snapshotPlaying = false;
+		},
+		stop() {},
+	} as unknown as PlayerController;
+	const services = {
+		music: {
+			playback: {
+				async resolveSongUrl() {
+					return {
+						url: "https://media.example/restored-playing.mp3",
+						quality: "standard",
+						proxied: false,
+					};
+				},
+			},
+			lyrics: {
+				async lyric() {
+					return await new Promise<LyricPayload>(() => undefined);
+				},
+			},
+			discover: {},
+		},
+		mediaUrl: {
+			audioProxyUrl: (url: string) => url,
+			playableUrl: (url: string) => url,
+		},
+	} as unknown as AppServices;
+	const checkpointRestore: PlaybackCheckpointRestoreAuthority = {
+		operationId: "00000000000000000000000000000003",
+		receipt: "10000000000000000000000000000003",
+		playbackIntentId: 8,
+		currentTrackRef: `${TRACK.provider}:${TRACK.id}`,
+		wasPlaying: true,
+		sourceKind: "remote",
+		restartRestorable: true,
+		autoplayDispositionConsumed: false,
+	};
+
+	function Harness() {
+		runtimeRef.current = usePlaybackSessionRuntime({
+			appServices: services,
+			coordinator,
+			controllerRef: { current: controller },
+			localAudioUrlsRef: { current: new Map() },
+			currentTrack: TRACK,
+			playbackIntentId: 8,
+			positionMs: 10_000,
+			checkpointRestore,
+			consumeCheckpointAutoplay: () => {
+				checkpointConsumeCount += 1;
+				return true;
+			},
+			getPlaybackSnapshot: () => ({
+				currentTrack: TRACK,
+				positionMs: 10_000,
+				durationMs: 60_000,
+				isPlaying: snapshotPlaying,
+			}),
+			setPlaying: (playing) => {
+				snapshotPlaying = playing;
+			},
+			setPositionMs: () => undefined,
+			togglePlayFallback: () => undefined,
+			setSearchError: () => undefined,
+			showToast: () => undefined,
+			setHomeForcedOpen: () => undefined,
+			setHomeSuppressed: () => undefined,
+			setLyricsPayload: () => undefined,
+			setLyricsLoading: () => undefined,
+			setLyricsError: () => undefined,
+			resetLyrics: () => undefined,
+			beatMapKeyForMap: () => "dj:test",
+			initialLyricsPayload: null,
+			initialPlaybackQuality: "standard",
+			persistPlaybackQuality: () => undefined,
+		});
+		return null;
+	}
+
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+	flushSync(() => root.render(<Harness />));
+	for (let index = 0; index < 8 && playCount === 0; index += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	expect(loaded.length).toBe(1);
+	expect(playCount).toBe(1);
+	expect(checkpointConsumeCount).toBe(1);
+
+	flushSync(() => runtimeRef.current?.togglePlayback());
+	expect(pauseCount).toBe(1);
+	expect(snapshotPlaying).toBe(false);
+	flushSync(() => runtimeRef.current?.setPlaybackQuality("high"));
+	for (let index = 0; index < 8 && loaded.length < 2; index += 1) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+	expect(loaded.length).toBe(2);
+	expect(playCount).toBe(1);
+	expect(checkpointConsumeCount).toBe(1);
+
+	root.unmount();
+	host.remove();
+});
+
+for (const restoredPlayback of [
+	{ label: "paused", wasPlaying: false },
+	{ label: "playing", wasPlaying: true },
+] as const) {
+	test(`gapless adopted owner restores an exact ${restoredPlayback.label} checkpoint disposition`, async () => {
+		await import("../../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+		resetPlaybackStore();
+		const first: Track = {
+			...TRACK,
+			id: `checkpoint-${restoredPlayback.label}-first`,
+			sourceId: `checkpoint-${restoredPlayback.label}-first`,
+			album: "连续专辑",
+			coverUrl: "https://img.example/checkpoint-adopt.jpg",
+		};
+		const second: Track = {
+			...TRACK,
+			id: `checkpoint-${restoredPlayback.label}-second`,
+			sourceId: `checkpoint-${restoredPlayback.label}-second`,
+			album: "连续专辑",
+			coverUrl: "https://img.example/checkpoint-adopt.jpg",
+		};
+		usePlaybackStore.getState().setMode("queue");
+		usePlaybackStore.getState().setQueue([first, second]);
+		usePlaybackStore.getState().playAt(0);
+
+		const runtimeRef: { current: PlaybackSessionRuntimeResult | null } = {
+			current: null,
+		};
+		const loads: Array<{ url: string; context: object | null }> = [];
+		let adoptedContext: object | null = null;
+		let adoptedUrl = "";
+		let ordinaryPlayCount = 0;
+		let preparedPlayCount = 0;
+		let pauseCount = 0;
+		let prepareCount = 0;
+		let checkpointConsumeCount = 0;
+		const preparedHandle = { abort() {} };
+		const controller = {
+			load(url: string, context?: object) {
+				loads.push({ url, context: context ?? null });
+			},
+			seek() {},
+			async play() {
+				ordinaryPlayCount += 1;
+			},
+			pause() {
+				pauseCount += 1;
+				if (adoptedContext) {
+					runtimeRef.current?.handleRuntimePause(
+						mediaEventPayload(adoptedContext, adoptedUrl),
+					);
+				}
+			},
+			stop() {},
+			prepareNext(url: string) {
+				prepareCount += 1;
+				adoptedUrl = url;
+				return preparedHandle;
+			},
+			async playPrepared() {
+				preparedPlayCount += 1;
+			},
+			adoptPrepared(handle: object, context: object) {
+				expect(handle).toBe(preparedHandle);
+				adoptedContext = context;
+				runtimeRef.current?.handleRuntimeOwnerChange(
+					ownerChangePayload(context, adoptedUrl, "adopted"),
+				);
+				return true;
+			},
+		} as unknown as PlayerController;
+		const services = {
+			music: {
+				playback: {
+					async resolveSongUrl(track: Track) {
+						return {
+							url: `https://media.example/${track.id}.mp3`,
+							quality: "standard",
+							proxied: false,
+							trial: false,
+						};
+					},
+				},
+				lyrics: {
+					async lyric() {
+						return await new Promise<LyricPayload>(() => undefined);
+					},
+				},
+				discover: {},
+			},
+			mediaUrl: {
+				audioProxyUrl: (url: string) => url,
+				playableUrl: (url: string) => url,
+			},
+		} as unknown as AppServices;
+		const checkpointRestore: PlaybackCheckpointRestoreAuthority = {
+			operationId: restoredPlayback.wasPlaying
+				? "00000000000000000000000000000004"
+				: "00000000000000000000000000000005",
+			receipt: restoredPlayback.wasPlaying
+				? "10000000000000000000000000000004"
+				: "10000000000000000000000000000005",
+			playbackIntentId: 2,
+			currentTrackRef: `${second.provider}:${second.id}`,
+			wasPlaying: restoredPlayback.wasPlaying,
+			sourceKind: "remote",
+			restartRestorable: true,
+			autoplayDispositionConsumed: false,
+		};
+		const controllerRef = { current: controller };
+		const localAudioUrlsRef = { current: new Map<string, string>() };
+		const noop = () => undefined;
+
+		function Harness() {
+			const currentTrack = usePlaybackStore((state) => state.currentTrack);
+			const playbackIntentId = usePlaybackStore((state) => state.playbackIntentId);
+			const positionMs = usePlaybackStore((state) => state.positionMs);
+			const queue = usePlaybackStore((state) => state.queue);
+			const mode = usePlaybackStore((state) => state.mode);
+			const setPlaying = usePlaybackStore((state) => state.setPlaying);
+			const setPositionMs = usePlaybackStore((state) => state.setPosition);
+			const commitPreparedHandoff = usePlaybackStore(
+				(state) => state.commitPreparedHandoff,
+			);
+			runtimeRef.current = usePlaybackSessionRuntime({
+				appServices: services,
+				controllerRef,
+				localAudioUrlsRef,
+				currentTrack,
+				playbackIntentId,
+				positionMs,
+				checkpointRestore,
+				consumeCheckpointAutoplay: () => {
+					checkpointConsumeCount += 1;
+					return true;
+				},
+				queue,
+				playbackMode: mode,
+				gaplessEnabled: true,
+				crossfadeEnabled: true,
+				commitPreparedHandoff,
+				getPlaybackSnapshot: () => {
+					const snapshot = usePlaybackStore.getState();
+					return {
+						currentTrack: snapshot.currentTrack,
+						positionMs: snapshot.positionMs,
+						durationMs: snapshot.durationMs,
+						isPlaying: snapshot.isPlaying,
+					};
+				},
+				setPlaying,
+				setPositionMs,
+				togglePlayFallback: noop,
+				setSearchError: noop,
+				showToast: noop,
+				setHomeForcedOpen: noop,
+				setHomeSuppressed: noop,
+				setLyricsPayload: noop,
+				setLyricsLoading: noop,
+				setLyricsError: noop,
+				resetLyrics: noop,
+				beatMapKeyForMap: () => "dj:test",
+				initialLyricsPayload: null,
+				initialPlaybackQuality: "standard",
+				persistPlaybackQuality: noop,
+			});
+			return null;
+		}
+
+		const host = document.createElement("div");
+		document.body.appendChild(host);
+		const root = createRoot(host);
+		flushSync(() => root.render(<Harness />));
+		for (let index = 0; index < 12 && loads.length < 1; index += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		const outgoing = loads[0]!;
+		runtimeRef.current!.handleRuntimeOwnerChange(
+			ownerChangePayload(outgoing.context, outgoing.url),
+		);
+		runtimeRef.current!.handleRuntimeTimeUpdate({
+			loadContext: outgoing.context,
+			sourceUrl: outgoing.url,
+			positionMs: 52_000,
+			durationMs: 60_000,
+		});
+		for (let index = 0; index < 12 && prepareCount < 1; index += 1) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+		runtimeRef.current!.handleRuntimeTimeUpdate({
+			loadContext: outgoing.context,
+			sourceUrl: outgoing.url,
+			positionMs: 59_200,
+			durationMs: 60_000,
+		});
+		runtimeRef.current!.handleRuntimeEnded({
+			loadContext: outgoing.context,
+			sourceUrl: outgoing.url,
+		});
+		for (
+			let index = 0;
+			index < 16 && (!adoptedContext || checkpointConsumeCount < 1);
+			index += 1
+		) {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		}
+
+		expect(usePlaybackStore.getState().currentTrack?.id).toBe(second.id);
+		expect(loads.length).toBe(1);
+		expect(ordinaryPlayCount).toBe(1);
+		expect(preparedPlayCount).toBe(1);
+		expect(checkpointConsumeCount).toBe(1);
+		expect(pauseCount).toBe(restoredPlayback.wasPlaying ? 0 : 1);
+		expect(usePlaybackStore.getState().isPlaying).toBe(restoredPlayback.wasPlaying);
+
+		root.unmount();
+		host.remove();
+		resetPlaybackStore();
+	});
+}
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -127,6 +617,7 @@ function resetPlaybackStore(): void {
 		muted: false,
 		mode: "loop",
 		queue: [],
+		checkpointRestore: null,
 	});
 }
 

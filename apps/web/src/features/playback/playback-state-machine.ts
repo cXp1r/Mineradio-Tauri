@@ -48,6 +48,11 @@ export type PlaybackMachineEvent =
 			loadRequestId: number;
 	  }
 	| {
+			type: "SOURCE_READY_PAUSED";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
 			type: "MEDIA_PLAYING";
 			playbackSessionId: number;
 			loadRequestId: number;
@@ -156,6 +161,7 @@ export function reducePlaybackState(
 			};
 
 		case "SOURCE_READY":
+		case "SOURCE_READY_PAUSED":
 			if (
 				!isCurrentLoad(
 					state,
@@ -166,7 +172,10 @@ export function reducePlaybackState(
 			) {
 				return state;
 			}
-			return { ...state, phase: "loading" };
+			return {
+				...state,
+				phase: event.type === "SOURCE_READY_PAUSED" ? "paused" : "loading",
+			};
 
 		case "MEDIA_PLAYING":
 			if (

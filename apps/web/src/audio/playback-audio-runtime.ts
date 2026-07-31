@@ -35,6 +35,21 @@ export interface ErrorPayload extends MediaEventPayload {
 
 export interface PlaybackOwnerSnapshot extends MediaEventPayload {}
 
+export type PlaybackOwnerSourceKind = "remote" | "blob" | "local" | "opaque";
+
+/**
+ * 安装前静默阶段持有的 Committed Owner 证据。该对象只描述捕获时状态；
+ * 真正的暂停和回滚仍必须回到创建它的 runtime 做 exact owner 校验。
+ */
+export interface CommittedPlaybackOwnerLease {
+	readonly deckId: PlaybackDeckId;
+	readonly generation: number;
+	readonly originallyPlaying: boolean;
+	readonly sourceKind: PlaybackOwnerSourceKind;
+	readonly trackRef: string | null;
+	readonly playbackIntentId: number | null;
+}
+
 export interface OwnerChangePayload extends MediaEventPayload {
 	readonly previous: PlaybackOwnerSnapshot | null;
 	readonly current: PlaybackOwnerSnapshot;
@@ -217,7 +232,7 @@ interface Deck {
 	probeStartedMediaTime: number;
 	probeStartedBufferedEnd: number;
 	readonly readinessPublished: Set<"waiting" | "stalled" | "canplay">;
-	cancelPlayAttempt: (() => void) | null;
+	cancelPlayAttempt: ((latePlayGuard?: () => boolean) => void) | null;
 	cancelReadyWait: (() => void) | null;
 	readyRetryGeneration: number;
 	fadeGain: number;
@@ -262,6 +277,15 @@ interface PreparedRecord {
 
 interface PendingPlaybackCommit {
 	readonly transition: Promise<boolean> | null;
+}
+
+interface CommittedOwnerLeaseRecord {
+	readonly deck: Deck;
+	readonly generation: number;
+	readonly sourceUrl: string;
+	readonly originallyPlaying: boolean;
+	phase: "staged" | "paused" | "sealed-for-exit" | "stale" | "rolled-back";
+	rollbackResult: boolean | null;
 }
 
 type GraphFailureCode = "graph-create-failed" | "graph-attach-failed" | "graph-frame-read-failed";
@@ -325,6 +349,39 @@ function redactedSourceUrl(value: string): string {
 	}
 }
 
+function playbackOwnerSourceKind(value: string): PlaybackOwnerSourceKind {
+	try {
+		const protocol = new URL(value).protocol.toLowerCase();
+		if (protocol === "http:" || protocol === "https:") return "remote";
+		if (protocol === "blob:") return "blob";
+		if (protocol === "file:" || protocol === "data:") return "local";
+		return "opaque";
+	} catch {
+		return "opaque";
+	}
+}
+
+function playbackOwnerApplicationIdentity(loadContext: object | null): {
+	readonly trackRef: string;
+	readonly playbackIntentId: number;
+} | null {
+	if (!loadContext || typeof loadContext !== "object") return null;
+	const candidate = loadContext as {
+		readonly trackKey?: unknown;
+		readonly playbackIntentId?: unknown;
+	};
+	if (
+		typeof candidate.trackKey !== "string"
+		|| candidate.trackKey.length === 0
+		|| !Number.isSafeInteger(candidate.playbackIntentId)
+		|| Number(candidate.playbackIntentId) < 0
+	) return null;
+	return {
+		trackRef: candidate.trackKey,
+		playbackIntentId: Number(candidate.playbackIntentId),
+	};
+}
+
 function immutableRoutingSnapshot(
 	value: OutputRoutingSnapshot,
 ): OutputRoutingSnapshot {
@@ -359,6 +416,12 @@ export class PlaybackAudioRuntime {
 	private authorityRevoked = false;
 	private readonly frameSource: AudioFrameSource;
 	private readonly preparedRecords = new WeakMap<PreparedPlaybackHandle, PreparedRecord>();
+	private readonly committedOwnerLeases = new WeakMap<
+		CommittedPlaybackOwnerLease,
+		CommittedOwnerLeaseRecord
+	>();
+	private activeCommittedOwnerLease: CommittedOwnerLeaseRecord | null = null;
+	private playbackQuiescenceEpoch = 0;
 	private currentPrepared: PreparedPlaybackHandle | null = null;
 	private readonly scheduleTimeout: (callback: () => void, delayMs: number) => unknown;
 	private readonly cancelTimeout: (handle: unknown) => void;
@@ -473,10 +536,12 @@ export class PlaybackAudioRuntime {
 	}
 
 	load(url: string, loadContext?: object): void {
+		this.assertPlaybackMutationAllowed();
 		this.prepareSource(url, loadContext);
 	}
 
 	prepareNext(url: string, loadContext?: object): PreparedPlaybackHandle {
+		this.assertPlaybackMutationAllowed();
 		const record = this.prepareSource(url, loadContext);
 		let handle!: PreparedPlaybackHandle;
 		handle = {
@@ -508,6 +573,7 @@ export class PlaybackAudioRuntime {
 
 	async playPrepared(handle: PreparedPlaybackHandle, options: PlayPreparedOptions = {}): Promise<void> {
 		this.assertUsable();
+		this.assertPlaybackMutationAllowed();
 		const record = this.preparedRecords.get(handle);
 		if (!record) throw new Error("unknown prepared playback handle");
 		if (record.status === "aborted") throw new Error("aborted prepared playback handle");
@@ -548,6 +614,8 @@ export class PlaybackAudioRuntime {
 		options: PrerollPreparedOptions = {},
 	): Promise<void> {
 		this.assertUsable();
+		this.assertPlaybackMutationAllowed();
+		const mutationEpoch = this.playbackQuiescenceEpoch;
 		const record = this.preparedRecords.get(handle);
 		if (!record) throw new Error("unknown prepared playback handle");
 		if (record.prerolled) return;
@@ -566,7 +634,9 @@ export class PlaybackAudioRuntime {
 		try {
 			await this.playDeck(deck, true);
 			if (
-				this.currentPrepared !== handle
+				mutationEpoch !== this.playbackQuiescenceEpoch
+				|| this.activeCommittedOwnerLease
+				|| this.currentPrepared !== handle
 				|| this.pending !== deck
 				|| deck.binding?.generation !== record.generation
 				|| !(options.isCurrent?.() ?? true)
@@ -583,6 +653,7 @@ export class PlaybackAudioRuntime {
 	}
 
 	adoptPrepared(handle: PreparedPlaybackHandle, loadContext: object): boolean {
+		if (this.activeCommittedOwnerLease) return false;
 		const record = this.preparedRecords.get(handle);
 		const binding = record?.deck.binding;
 		if (
@@ -693,6 +764,8 @@ export class PlaybackAudioRuntime {
 
 	async play(): Promise<void> {
 		this.assertUsable();
+		this.assertPlaybackMutationAllowed();
+		const mutationEpoch = this.playbackQuiescenceEpoch;
 		this.authorityRevoked = false;
 		if (this.pending) {
 			await this.playPending("play", { crossfade: false, isCurrent: () => true });
@@ -706,7 +779,15 @@ export class PlaybackAudioRuntime {
 			this.committed = legacyDeck;
 			return;
 		}
-		await this.playDeck(this.committed, true);
+		const committed = this.committed;
+		await this.playDeck(committed, true);
+		if (
+			mutationEpoch !== this.playbackQuiescenceEpoch
+			|| this.activeCommittedOwnerLease
+		) {
+			try { committed.audio.pause(); } catch { /* quiescence 必须保持静默 */ }
+			throw new Error("playback quiescence is active");
+		}
 	}
 
 	private async playPending(
@@ -719,10 +800,19 @@ export class PlaybackAudioRuntime {
 	): Promise<PendingPlaybackCommit> {
 		const incoming = this.pending;
 		if (!incoming) throw new Error("PlaybackAudioRuntime has no prepared source");
+		this.assertPlaybackMutationAllowed();
+		const mutationEpoch = this.playbackQuiescenceEpoch;
 		const previous = this.committed;
 		if (!transition.isCurrent()) throw new Error("playback authority expired");
 		if (previous && previous !== incoming) this.setDeckFadeGain(incoming, 0);
 		await this.playDeck(incoming, true);
+		if (
+			mutationEpoch !== this.playbackQuiescenceEpoch
+			|| this.activeCommittedOwnerLease
+		) {
+			this.rejectIncomingDeck(incoming);
+			throw new Error("playback quiescence is active");
+		}
 		if (!transition.isCurrent()) {
 			this.rejectIncomingDeck(incoming);
 			throw new Error("playback authority expired");
@@ -786,11 +876,15 @@ export class PlaybackAudioRuntime {
 		return new Promise<void>((resolve, reject) => {
 			let settled = false;
 			let timeout: unknown;
+			let latePlayGuard: (() => boolean) | null = null;
+			let cancelAttempt: Deck["cancelPlayAttempt"] = null;
 			const finish = (error?: unknown) => {
 				if (settled) return;
 				settled = true;
 				this.cancelTimeout(timeout);
-				deck.cancelPlayAttempt = null;
+				if (deck.cancelPlayAttempt === cancelAttempt) {
+					deck.cancelPlayAttempt = null;
+				}
 				if (error === undefined) resolve();
 				else {
 					if (error instanceof PlaybackPlayTimeoutError) this.lastErrorCode = "play-timeout";
@@ -801,9 +895,18 @@ export class PlaybackAudioRuntime {
 			timeout = this.scheduleTimeout(() => {
 				finish(new PlaybackPlayTimeoutError());
 			}, PLAYBACK_PLAY_TIMEOUT_MS);
-			deck.cancelPlayAttempt = () => finish(new PlaybackPlayCancelledError());
+			cancelAttempt = (guard) => {
+				latePlayGuard = guard ?? null;
+				finish(new PlaybackPlayCancelledError());
+			};
+			deck.cancelPlayAttempt = cancelAttempt;
 			Promise.resolve(deck.audio.play()).then(
-				() => finish(),
+				() => {
+					if (latePlayGuard?.()) {
+						try { deck.audio.pause(); } catch { /* 迟到的 native play 不得突破静默门禁 */ }
+					}
+					finish();
+				},
 				(error) => finish(error),
 			);
 		});
@@ -835,12 +938,194 @@ export class PlaybackAudioRuntime {
 	}
 
 	pause(): void {
+		if (this.activeCommittedOwnerLease) return;
 		this.cancelActiveFade(true);
 		this.requireActiveDeck().audio.pause();
 		this.syncMirrors();
 	}
 
+	/**
+	 * 只捕获 owner，不产生暂停副作用。调用方可先持久化 checkpoint，随后再显式
+	 * 调用 pauseCommittedOwnerLease()，从而固定 prepare-before-pause 顺序。
+	 */
+	stageCommittedOwnerLease(): CommittedPlaybackOwnerLease | null {
+		this.assertUsable();
+		if (this.activeCommittedOwnerLease) return null;
+		const deck = this.committed;
+		const binding = deck?.binding;
+		if (!deck || !binding) return null;
+		const applicationIdentity = playbackOwnerApplicationIdentity(binding.loadContext);
+		const lease = Object.freeze({
+			deckId: deck.id,
+			generation: binding.generation,
+			originallyPlaying: !deck.audio.paused && !deck.audio.ended,
+			sourceKind: playbackOwnerSourceKind(binding.sourceUrl),
+			trackRef: applicationIdentity?.trackRef ?? null,
+			playbackIntentId: applicationIdentity?.playbackIntentId ?? null,
+		}) satisfies CommittedPlaybackOwnerLease;
+		const record: CommittedOwnerLeaseRecord = {
+			deck,
+			generation: binding.generation,
+			sourceUrl: binding.sourceUrl,
+			originallyPlaying: lease.originallyPlaying,
+			phase: "staged",
+			rollbackResult: null,
+		};
+		this.playbackQuiescenceEpoch += 1;
+		this.cancelActiveFade(true);
+		if (this.pending && this.pending !== deck) this.setDeckFadeGain(this.pending, 0);
+		this.committedOwnerLeases.set(lease, record);
+		this.activeCommittedOwnerLease = record;
+		return lease;
+	}
+
+	pauseCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		const record = this.committedOwnerLeases.get(lease);
+		if (!record) return false;
+		if (record.phase === "paused") return true;
+		if (record.phase !== "staged") return false;
+		if (!this.committedOwnerLeaseIsCurrent(record)) {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		this.cancelActiveFade(true);
+		this.cancelDeckPlaybackWaits(record.deck, () => (
+			this.disposed
+			|| this.activeCommittedOwnerLease === record
+			|| !record.originallyPlaying
+			|| !this.committedOwnerLeaseIsCurrent(record)
+		));
+		if (!this.committedOwnerLeaseIsCurrent(record)) {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		try {
+			record.deck.audio.pause();
+		} catch {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		this.syncMirrors();
+		record.phase = "paused";
+		return true;
+	}
+
+	async rollbackCommittedOwnerLease(
+		lease: CommittedPlaybackOwnerLease,
+	): Promise<boolean> {
+		const record = this.committedOwnerLeases.get(lease);
+		if (!record) return false;
+		if (record.phase === "rolled-back") return true;
+		if (record.phase === "stale") return false;
+		if (record.phase === "staged") {
+			record.phase = "rolled-back";
+			record.rollbackResult = true;
+			this.clearCommittedOwnerLeaseGate(record);
+			return true;
+		}
+		if (!this.committedOwnerLeaseIsCurrent(record)) {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		if (record.originallyPlaying) {
+			try {
+				await this.playDeck(record.deck, true);
+			} catch {
+				record.phase = "stale";
+				record.rollbackResult = false;
+				this.clearCommittedOwnerLeaseGate(record);
+				return false;
+			}
+			if (!this.committedOwnerLeaseIsCurrent(record)) {
+				try { record.deck.audio.pause(); } catch { /* 旧 deck 不得在 handoff 后继续发声 */ }
+				record.phase = "stale";
+				record.rollbackResult = false;
+				this.clearCommittedOwnerLeaseGate(record);
+				return false;
+			}
+		} else if (!record.deck.audio.paused) {
+			try {
+				record.deck.audio.pause();
+			} catch {
+				record.phase = "stale";
+				record.rollbackResult = false;
+				this.clearCommittedOwnerLeaseGate(record);
+				return false;
+			}
+		}
+		this.syncMirrors();
+		record.phase = "rolled-back";
+		record.rollbackResult = true;
+		this.clearCommittedOwnerLeaseGate(record);
+		return true;
+	}
+
+	releaseCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		const record = this.committedOwnerLeases.get(lease);
+		if (!record || record.phase === "stale" || record.phase === "rolled-back") return false;
+		if (!this.committedOwnerLeaseIsCurrent(record)) {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		if (record.phase === "sealed-for-exit") return true;
+		record.phase = "sealed-for-exit";
+		record.rollbackResult = true;
+		return true;
+	}
+
+	cancelCommittedOwnerLease(lease: CommittedPlaybackOwnerLease): boolean {
+		const record = this.committedOwnerLeases.get(lease);
+		if (!record || record.phase !== "staged") return false;
+		if (!this.committedOwnerLeaseIsCurrent(record)) {
+			record.phase = "stale";
+			record.rollbackResult = false;
+			this.clearCommittedOwnerLeaseGate(record);
+			return false;
+		}
+		record.phase = "rolled-back";
+		record.rollbackResult = true;
+		this.clearCommittedOwnerLeaseGate(record);
+		return true;
+	}
+
+	private clearCommittedOwnerLeaseGate(record: CommittedOwnerLeaseRecord): void {
+		if (this.activeCommittedOwnerLease === record) this.activeCommittedOwnerLease = null;
+	}
+
+	private invalidateActiveCommittedOwnerLease(): void {
+		const record = this.activeCommittedOwnerLease;
+		if (!record) return;
+		record.phase = "stale";
+		record.rollbackResult = false;
+		this.activeCommittedOwnerLease = null;
+	}
+
+	private assertPlaybackMutationAllowed(): void {
+		if (this.activeCommittedOwnerLease) {
+			throw new Error("playback quiescence is active");
+		}
+	}
+
+	private committedOwnerLeaseIsCurrent(record: CommittedOwnerLeaseRecord): boolean {
+		const binding = record.deck.binding;
+		return !this.disposed
+			&& this.committed === record.deck
+			&& binding?.generation === record.generation
+			&& binding.sourceUrl === record.sourceUrl;
+	}
+
 	seek(timeMs: number): void {
+		if (this.activeCommittedOwnerLease) return;
 		this.cancelActiveFade(true);
 		this.requireActiveDeck().audio.currentTime = timeMs / 1000;
 		this.seekSuppressedUntil = this.now() + PLAYBACK_SEEK_PROBE_SUPPRESSION_MS;
@@ -1076,6 +1361,7 @@ export class PlaybackAudioRuntime {
 
 	stop(): void {
 		if (this.disposed) return;
+		if (this.activeCommittedOwnerLease) return;
 		this.routingGeneration += 1;
 		this.cancelActiveFade(false);
 		this.authorityRevoked = true;
@@ -1097,6 +1383,7 @@ export class PlaybackAudioRuntime {
 
 	dispose(): void {
 		if (this.disposed) return;
+		this.invalidateActiveCommittedOwnerLease();
 		this.disposed = true;
 		this.routingGeneration += 1;
 		this.cancelActiveFade(false);
@@ -1122,10 +1409,13 @@ export class PlaybackAudioRuntime {
 		return this.decks.find((deck) => deck !== this.committed) ?? this.decks[0]!;
 	}
 
-	private cancelDeckPlaybackWaits(deck: Deck): void {
+	private cancelDeckPlaybackWaits(
+		deck: Deck,
+		latePlayGuard?: () => boolean,
+	): void {
 		const cancelPlayAttempt = deck.cancelPlayAttempt;
 		deck.cancelPlayAttempt = null;
-		cancelPlayAttempt?.();
+		cancelPlayAttempt?.(latePlayGuard);
 		const cancelReadyWait = deck.cancelReadyWait;
 		deck.cancelReadyWait = null;
 		cancelReadyWait?.();

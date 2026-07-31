@@ -1,6 +1,19 @@
 import { beforeEach, expect, test } from "bun:test";
-import { moveTrackToFront, usePlaybackStore } from "./playback-store";
+import sharedCheckpointFixture from "../../../desktop/src-tauri/src/runtime/updater/fixtures/playback-exit-checkpoint-v1.json";
+import {
+	MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE,
+	moveTrackToFront,
+	usePlaybackStore,
+} from "./playback-store";
 import type { Track } from "@mineradio/shared";
+
+const RECEIPT_A = "00000000000000000000000000000001";
+const RECEIPT_B = "00000000000000000000000000000002";
+const RECEIPT_C = "00000000000000000000000000000003";
+
+function operationId(value: number): string {
+	return value.toString(16).padStart(32, "0");
+}
 
 function makeTrack(id: string): Track {
 	return {
@@ -27,6 +40,7 @@ function resetStore() {
 		muted: false,
 		mode: "loop",
 		queue: [],
+		checkpointRestore: null,
 	});
 }
 
@@ -470,4 +484,320 @@ test("prepared handoff 拒绝非相邻候选并保留当前 owner", () => {
 	})).toBe(false);
 	expect(usePlaybackStore.getState().currentTrack).toBe(outgoing);
 	expect(usePlaybackStore.getState().playbackIntentId).toBe(before.playbackIntentId);
+});
+
+test("update-exit checkpoint captures exact queue identity and restart source capability", () => {
+	const tracks = [makeTrack("a"), makeTrack("b")];
+	const store = usePlaybackStore.getState();
+	store.setQueue(tracks);
+	store.playAt(1);
+	store.setPlaying(false);
+	store.setPosition(12_345);
+
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(1),
+		receipt: RECEIPT_A,
+		sourceKind: "blob",
+	});
+
+	expect(checkpoint).not.toBeNull();
+	expect(checkpoint?.schema).toBe("playback-exit-checkpoint-v1");
+	expect(checkpoint?.currentTrackIndex).toBe(1);
+	expect(checkpoint?.currentTrackRef).toBe("netease:b");
+	expect(checkpoint?.wasPlaying).toBe(false);
+	expect(checkpoint?.sourceKind).toBe("blob");
+	expect(checkpoint?.restartRestorable).toBe(false);
+	expect(checkpoint?.queue.map((track) => track.id)).toEqual(["a", "b"]);
+	expect(checkpoint?.volume).toBe(0.84);
+	expect(checkpoint?.muted).toBe(false);
+});
+
+test("checkpoint captures a deep immutable bounded track DTO without persisted URLs", () => {
+	const track = {
+		...makeTrack("safe"),
+		title: "before",
+		artists: ["artist"],
+		coverUrl: "https://covers.example/image.jpg?token=secret-value",
+		qualityHints: ["standard"],
+	};
+	const store = usePlaybackStore.getState();
+	store.setQueue([track]);
+	store.playAt(0);
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(2),
+		receipt: "0123456789abcdef0123456789abcdef",
+		sourceKind: "remote",
+	});
+	expect(checkpoint).not.toBeNull();
+	track.title = "after";
+	track.artists[0] = "mutated";
+	track.qualityHints[0] = "lossless";
+
+	const captured = checkpoint?.queue[0] as unknown as Record<string, unknown>;
+	expect(captured.title).toBe("before");
+	expect(captured.artists).toEqual(["artist"]);
+	expect(captured.qualityHints).toEqual(["standard"]);
+	expect(captured.coverUrl).toBe(undefined);
+	expect(JSON.stringify(checkpoint)).not.toContain("secret-value");
+	expect(Object.isFrozen(captured)).toBe(true);
+	expect(Object.isFrozen(captured.artists)).toBe(true);
+});
+
+test("update-exit checkpoint fails closed above the bounded queue limit", () => {
+	const queue = Array.from(
+		{ length: MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE + 1 },
+		(_, index) => makeTrack(String(index)),
+	);
+	const store = usePlaybackStore.getState();
+	store.setQueue(queue);
+	store.playAt(0);
+
+	expect(store.capturePlaybackExitCheckpoint({
+		operationId: operationId(3),
+		receipt: RECEIPT_B,
+		sourceKind: "remote",
+	})).toBeNull();
+});
+
+test("checkpoint fails closed when bounded fields exceed the total serialized byte limit", () => {
+	const queue = Array.from({ length: MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE }, (_, index) => ({
+		...makeTrack(String(index)),
+		title: "题".repeat(512),
+		album: "专".repeat(512),
+		artists: Array.from({ length: 16 }, () => "艺".repeat(256)),
+		qualityHints: Array.from({ length: 16 }, () => "q".repeat(64)),
+	}));
+	const store = usePlaybackStore.getState();
+	store.setQueue(queue);
+	store.playAt(0);
+	expect(store.capturePlaybackExitCheckpoint({
+		operationId: operationId(4),
+		receipt: RECEIPT_C,
+		sourceKind: "remote",
+	})).toBeNull();
+});
+
+test("checkpoint playback intent follows the exact committed owner lease", () => {
+	const track = makeTrack("owner");
+	const store = usePlaybackStore.getState();
+	store.setQueue([track]);
+	store.playAt(0);
+	store.setPlaying(false);
+
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(5),
+		receipt: RECEIPT_C,
+		sourceKind: "remote",
+		ownerOriginallyPlaying: true,
+	});
+
+	expect(checkpoint?.wasPlaying).toBe(true);
+});
+
+test("checkpoint restore is one atomic paused transition bound to operation and receipt", () => {
+	const queue = [makeTrack("a"), makeTrack("b")];
+	const sourceStore = usePlaybackStore.getState();
+	sourceStore.setQueue(queue);
+	sourceStore.playAt(1);
+	sourceStore.setPlaying(false);
+	sourceStore.setPosition(22_000);
+	const checkpoint = sourceStore.capturePlaybackExitCheckpoint({
+		operationId: operationId(6),
+		receipt: RECEIPT_A,
+		sourceKind: "remote",
+	})!;
+
+	resetStore();
+	let notifications = 0;
+	const unsubscribe = usePlaybackStore.subscribe(() => {
+		notifications += 1;
+	});
+	try {
+		expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+			operationId: operationId(6),
+			receipt: RECEIPT_A,
+			mode: "restart-reconciliation",
+			checkpoint,
+		})).toBe("restored");
+	} finally {
+		unsubscribe();
+	}
+
+	const restored = usePlaybackStore.getState();
+	expect(notifications).toBe(1);
+	expect(restored.queue.map((track) => track.id)).toEqual(["a", "b"]);
+	expect(restored.currentTrack?.id).toBe("b");
+	expect(restored.positionMs).toBe(22_000);
+	expect(restored.isPlaying).toBe(false);
+	expect(restored.checkpointRestore).toEqual({
+		operationId: operationId(6),
+		receipt: RECEIPT_A,
+		playbackIntentId: restored.playbackIntentId,
+		currentTrackRef: "netease:b",
+		wasPlaying: false,
+		sourceKind: "remote",
+		restartRestorable: true,
+		autoplayDispositionConsumed: false,
+	});
+});
+
+test("Web restore accepts the shared Rust checkpoint fixture without persisted controller generation or URLs", () => {
+	const raw = JSON.stringify(sharedCheckpointFixture);
+	expect(raw).not.toContain("operationGeneration");
+	expect(raw).not.toContain("coverUrl");
+	expect(raw).not.toContain("http://");
+	expect(raw).not.toContain("https://");
+	const checkpoint = JSON.parse(raw);
+
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+		operationId: "11111111111111111111111111111111",
+		receipt: "22222222222222222222222222222222",
+		mode: "restart-reconciliation",
+		checkpoint,
+	})).toBe("restored");
+	const restored = usePlaybackStore.getState();
+	expect(restored.queue.map((track) => track.id)).toEqual(["song-1", "song-2"]);
+	expect(restored.currentTrack?.id).toBe("song-1");
+	expect(restored.positionMs).toBe(12_345.5);
+	expect(restored.isPlaying).toBe(true);
+});
+
+test("checkpoint restore is idempotent and rejects conflicting or forged identity", () => {
+	const store = usePlaybackStore.getState();
+	const queue = [makeTrack("a")];
+	store.setQueue(queue);
+	store.playAt(0);
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(7),
+		receipt: RECEIPT_B,
+		sourceKind: "remote",
+	})!;
+	resetStore();
+	const request = {
+		operationId: operationId(7),
+		receipt: RECEIPT_B,
+		mode: "restart-reconciliation",
+		checkpoint,
+	} as const;
+
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint(request)).toBe("restored");
+	const first = usePlaybackStore.getState();
+	let notifications = 0;
+	const unsubscribe = usePlaybackStore.subscribe(() => {
+		notifications += 1;
+	});
+	try {
+		expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint(request)).toBe("already-restored");
+		expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+			...request,
+			receipt: RECEIPT_C,
+		})).toBe("rejected");
+		const forged = {
+			...checkpoint,
+			currentTrackRef: "netease:forged",
+		};
+		expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+			operationId: operationId(8),
+			receipt: checkpoint.receipt,
+			mode: "restart-reconciliation",
+			checkpoint: forged,
+		})).toBe("rejected");
+	} finally {
+		unsubscribe();
+	}
+	expect(notifications).toBe(0);
+	expect(usePlaybackStore.getState().playbackIntentId).toBe(first.playbackIntentId);
+});
+
+test("restart reconciliation rejects non-restorable sources while same-process rollback remains exact", () => {
+	const store = usePlaybackStore.getState();
+	store.setQueue([makeTrack("local")]);
+	store.playAt(0);
+	store.setPlaying(false);
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(9),
+		receipt: RECEIPT_A,
+		sourceKind: "blob",
+	})!;
+	resetStore();
+	const request = {
+		operationId: checkpoint.operationId,
+		receipt: checkpoint.receipt,
+		checkpoint,
+	} as const;
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+		...request,
+		mode: "restart-reconciliation",
+	})).toBe("rejected");
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+		...request,
+		mode: "same-process-rollback",
+	})).toBe("restored");
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("local");
+	expect(usePlaybackStore.getState().isPlaying).toBe(false);
+});
+
+test("strict checkpoint restore rejects malformed booleans, receipts, and track payloads", () => {
+	const store = usePlaybackStore.getState();
+	store.setQueue([makeTrack("strict")]);
+	store.playAt(0);
+	expect(store.capturePlaybackExitCheckpoint({
+		operationId: operationId(10),
+		receipt: "not-random",
+		sourceKind: "remote",
+	})).toBeNull();
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(11),
+		receipt: RECEIPT_B,
+		sourceKind: "remote",
+	})!;
+	resetStore();
+	for (const malformed of [
+		{ ...checkpoint, wasPlaying: "false" },
+		{ ...checkpoint, muted: "false" },
+		{ ...checkpoint, queue: [{ ...checkpoint.queue[0], artists: "artist" }] },
+	] as unknown as typeof checkpoint[]) {
+		expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+			operationId: checkpoint.operationId,
+			receipt: checkpoint.receipt,
+			mode: "restart-reconciliation",
+			checkpoint: malformed,
+		})).toBe("rejected");
+	}
+	expect(usePlaybackStore.getState().currentTrack).toBeNull();
+});
+
+test("paused checkpoint autoplay disposition is consumed once by exact identity", () => {
+	const store = usePlaybackStore.getState();
+	store.setQueue([makeTrack("paused")]);
+	store.playAt(0);
+	store.setPlaying(false);
+	const checkpoint = store.capturePlaybackExitCheckpoint({
+		operationId: operationId(12),
+		receipt: RECEIPT_C,
+		sourceKind: "remote",
+	})!;
+	resetStore();
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+		operationId: checkpoint.operationId,
+		receipt: checkpoint.receipt,
+		mode: "restart-reconciliation",
+		checkpoint,
+	})).toBe("restored");
+	const authority = usePlaybackStore.getState().checkpointRestore!;
+	const consume = {
+		operationId: authority.operationId,
+		receipt: authority.receipt,
+		playbackIntentId: authority.playbackIntentId,
+		currentTrackRef: authority.currentTrackRef,
+	};
+	expect(usePlaybackStore.getState().consumePlaybackCheckpointAutoplay(consume)).toBe(true);
+	expect(usePlaybackStore.getState().checkpointRestore?.autoplayDispositionConsumed)
+		.toBe(true);
+	expect(usePlaybackStore.getState().consumePlaybackCheckpointAutoplay(consume)).toBe(true);
+	expect(usePlaybackStore.getState().consumePlaybackCheckpointAutoplay({
+		...consume,
+		playbackIntentId: consume.playbackIntentId + 1,
+	})).toBe(false);
 });

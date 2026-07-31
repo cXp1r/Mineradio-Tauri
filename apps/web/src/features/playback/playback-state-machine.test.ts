@@ -78,6 +78,23 @@ test("a resolved source advances through loading to playing", () => {
 	expect(playing.phase).toBe("playing");
 });
 
+test("a restored paused source remains paused until exact owner resume", () => {
+	const resolving = resolvingState();
+	const paused = reducePlaybackState(resolving, {
+		type: "SOURCE_READY_PAUSED",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+	const resumed = reducePlaybackState(paused, {
+		type: "RESUME",
+		playbackSessionId: 1,
+		loadRequestId: 1,
+	});
+
+	expect(paused.phase).toBe("paused");
+	expect(resumed.phase).toBe("playing");
+});
+
 test("playing media can pause and resume", () => {
 	const playing = playingState();
 	const paused = reducePlaybackState(playing, {

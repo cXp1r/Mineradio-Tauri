@@ -1,7 +1,95 @@
 import { create } from "zustand";
-import type { Track } from "@mineradio/shared";
+import type { PlayableState, Track } from "@mineradio/shared";
 
 export type PlaybackMode = "single" | "loop" | "queue" | "shuffle";
+
+export const MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE = 240;
+export const MAX_PLAYBACK_EXIT_CHECKPOINT_BYTES = 256 * 1024;
+export const PLAYBACK_EXIT_CHECKPOINT_SCHEMA = "playback-exit-checkpoint-v1" as const;
+
+const MAX_CHECKPOINT_TRACK_ID = 512;
+const MAX_CHECKPOINT_TRACK_TEXT = 512;
+const MAX_CHECKPOINT_TRACK_ARTISTS = 16;
+const MAX_CHECKPOINT_TRACK_ARTIST = 256;
+const MAX_CHECKPOINT_QUALITY_HINTS = 16;
+const MAX_CHECKPOINT_QUALITY_HINT = 64;
+const MAX_CHECKPOINT_MEDIA_DURATION_MS = 7 * 24 * 60 * 60 * 1_000;
+const CHECKPOINT_RECEIPT_PATTERN = /^[0-9a-f]{32}$/u;
+
+export type PlaybackCheckpointSourceKind =
+	| "remote"
+	| "blob"
+	| "local"
+	| "opaque"
+	| "none";
+
+export interface PlaybackCheckpointTrackV1 {
+	readonly provider: Track["provider"];
+	readonly id: string;
+	readonly sourceId: string;
+	readonly mediaMid?: string;
+	readonly title: string;
+	readonly artists: readonly string[];
+	readonly album: string;
+	readonly durationMs?: number;
+	readonly qualityHints: readonly string[];
+	readonly playableState: PlayableState;
+}
+
+export interface PlaybackExitCheckpointV1 {
+	readonly schema: typeof PLAYBACK_EXIT_CHECKPOINT_SCHEMA;
+	readonly operationId: string;
+	readonly receipt: string;
+	readonly queue: readonly PlaybackCheckpointTrackV1[];
+	readonly currentTrackIndex: number | null;
+	readonly currentTrackRef: string;
+	readonly capturedPlaybackIntentId: number;
+	readonly positionMs: number;
+	readonly durationMs: number | null;
+	readonly wasPlaying: boolean;
+	readonly mode: PlaybackMode;
+	readonly volume: number;
+	readonly muted: boolean;
+	readonly sourceKind: PlaybackCheckpointSourceKind;
+	readonly restartRestorable: boolean;
+}
+
+export interface PlaybackCheckpointRestoreAuthority {
+	readonly operationId: string;
+	readonly receipt: string;
+	readonly playbackIntentId: number;
+	readonly currentTrackRef: string;
+	readonly wasPlaying: boolean;
+	readonly sourceKind: PlaybackCheckpointSourceKind;
+	readonly restartRestorable: boolean;
+	readonly autoplayDispositionConsumed: boolean;
+}
+
+export interface CapturePlaybackExitCheckpointRequest {
+	readonly operationId: string;
+	readonly receipt: string;
+	readonly sourceKind: Exclude<PlaybackCheckpointSourceKind, "none">;
+	readonly ownerOriginallyPlaying?: boolean;
+}
+
+export interface RestorePlaybackExitCheckpointRequest {
+	readonly operationId: string;
+	readonly receipt: string;
+	readonly mode: "same-process-rollback" | "restart-reconciliation";
+	readonly checkpoint: PlaybackExitCheckpointV1;
+}
+
+export interface ConsumePlaybackCheckpointAutoplayRequest {
+	readonly operationId: string;
+	readonly receipt: string;
+	readonly playbackIntentId: number;
+	readonly currentTrackRef: string;
+}
+
+export type PlaybackCheckpointRestoreResult =
+	| "restored"
+	| "already-restored"
+	| "rejected";
 
 export interface ReplaceCurrentSourceRequest {
 	candidate: Track;
@@ -25,6 +113,7 @@ export interface PlaybackState {
 	muted: boolean;
 	mode: PlaybackMode;
 	queue: Track[];
+	checkpointRestore: PlaybackCheckpointRestoreAuthority | null;
 	setCurrentTrack: (track: Track | null) => void;
 	setPlaying: (playing: boolean) => void;
 	togglePlay: () => void;
@@ -46,6 +135,15 @@ export interface PlaybackState {
 	previous: () => void;
 	ended: () => void;
 	clearQueue: () => void;
+	capturePlaybackExitCheckpoint(
+		request: CapturePlaybackExitCheckpointRequest,
+	): PlaybackExitCheckpointV1 | null;
+	restorePlaybackExitCheckpoint(
+		request: RestorePlaybackExitCheckpointRequest,
+	): PlaybackCheckpointRestoreResult;
+	consumePlaybackCheckpointAutoplay(
+		request: ConsumePlaybackCheckpointAutoplayRequest,
+	): boolean;
 }
 
 function nextPlaybackIntent(state: Pick<PlaybackState, "playbackIntentId">): number {
@@ -82,6 +180,170 @@ function findTrackIndex(queue: Track[], track: Track | null): number {
 	return ref ? queue.findIndex((item) => trackRef(item) === ref) : -1;
 }
 
+function validCheckpointIdentity(value: unknown, maxLength: number): value is string {
+	return typeof value === "string"
+		&& value.length > 0
+		&& value.length <= maxLength
+		&& !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function checkpointSourceIsRestartRestorable(
+	sourceKind: PlaybackCheckpointSourceKind,
+): boolean {
+	return sourceKind === "remote" || sourceKind === "none";
+}
+
+function validCheckpointReceipt(value: unknown): value is string {
+	return typeof value === "string" && CHECKPOINT_RECEIPT_PATTERN.test(value);
+}
+
+function validCheckpointOperationId(value: unknown): value is string {
+	return typeof value === "string" && CHECKPOINT_RECEIPT_PATTERN.test(value);
+}
+
+function boundedCheckpointText(
+	value: unknown,
+	maxLength: number,
+	allowEmpty = true,
+): value is string {
+	return typeof value === "string"
+		&& (allowEmpty || value.length > 0)
+		&& value.length <= maxLength
+		&& !/[\u0000-\u001f\u007f]/u.test(value);
+}
+
+function validCheckpointTrackValue(value: unknown): value is PlaybackCheckpointTrackV1 {
+	if (!value || typeof value !== "object") return false;
+	const track = value as Partial<PlaybackCheckpointTrackV1>;
+	return (track.provider === "netease" || track.provider === "qq" || track.provider === "soda")
+		&& boundedCheckpointText(track.id, MAX_CHECKPOINT_TRACK_ID, false)
+		&& boundedCheckpointText(track.sourceId, MAX_CHECKPOINT_TRACK_ID, false)
+		&& (track.mediaMid === undefined
+			|| boundedCheckpointText(track.mediaMid, MAX_CHECKPOINT_TRACK_ID, false))
+		&& boundedCheckpointText(track.title, MAX_CHECKPOINT_TRACK_TEXT)
+		&& Array.isArray(track.artists)
+		&& track.artists.length <= MAX_CHECKPOINT_TRACK_ARTISTS
+		&& track.artists.every((artist) =>
+			boundedCheckpointText(artist, MAX_CHECKPOINT_TRACK_ARTIST))
+		&& boundedCheckpointText(track.album, MAX_CHECKPOINT_TRACK_TEXT)
+		&& (track.durationMs === undefined
+			|| (Number.isSafeInteger(track.durationMs)
+				&& track.durationMs >= 0
+				&& track.durationMs <= MAX_CHECKPOINT_MEDIA_DURATION_MS))
+		&& Array.isArray(track.qualityHints)
+		&& track.qualityHints.length <= MAX_CHECKPOINT_QUALITY_HINTS
+		&& track.qualityHints.every((hint) =>
+			boundedCheckpointText(hint, MAX_CHECKPOINT_QUALITY_HINT))
+		&& [
+			"unknown",
+			"playable",
+			"login_required",
+			"vip_required",
+			"paid_required",
+			"copyright_unavailable",
+			"trial_only",
+			"unavailable",
+		].includes(String(track.playableState));
+}
+
+function checkpointTrackFromTrack(track: Track): PlaybackCheckpointTrackV1 | null {
+	const candidate: PlaybackCheckpointTrackV1 = {
+		provider: track.provider,
+		id: track.id,
+		sourceId: track.sourceId,
+		...(track.mediaMid === undefined ? {} : { mediaMid: track.mediaMid }),
+		title: track.title,
+		artists: Object.freeze([...track.artists]),
+		album: track.album,
+		...(track.durationMs === undefined ? {} : { durationMs: track.durationMs }),
+		qualityHints: Object.freeze([...track.qualityHints]),
+		playableState: track.playableState,
+	};
+	return validCheckpointTrackValue(candidate) ? Object.freeze(candidate) : null;
+}
+
+function trackFromCheckpoint(track: PlaybackCheckpointTrackV1): Track {
+	return {
+		provider: track.provider,
+		id: track.id,
+		sourceId: track.sourceId,
+		...(track.mediaMid === undefined ? {} : { mediaMid: track.mediaMid }),
+		title: track.title,
+		artists: [...track.artists],
+		album: track.album,
+		coverUrl: "",
+		...(track.durationMs === undefined ? {} : { durationMs: track.durationMs }),
+		qualityHints: [...track.qualityHints],
+		playableState: track.playableState,
+	};
+}
+
+function checkpointEncodedSize(value: unknown): number | null {
+	try {
+		return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+	} catch {
+		return null;
+	}
+}
+
+function validCheckpointNumber(value: unknown): value is number {
+	return typeof value === "number"
+		&& Number.isFinite(value)
+		&& value >= 0
+		&& value <= MAX_CHECKPOINT_MEDIA_DURATION_MS;
+}
+
+function validatedCheckpointCurrentTrack(
+	checkpoint: PlaybackExitCheckpointV1,
+): PlaybackCheckpointTrackV1 | null | undefined {
+	const encodedSize = checkpointEncodedSize(checkpoint);
+	if (
+		checkpoint.schema !== PLAYBACK_EXIT_CHECKPOINT_SCHEMA
+		|| !validCheckpointOperationId(checkpoint.operationId)
+		|| !validCheckpointReceipt(checkpoint.receipt)
+		|| !Array.isArray(checkpoint.queue)
+		|| checkpoint.queue.length > MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE
+		|| !checkpoint.queue.every(validCheckpointTrackValue)
+		|| encodedSize === null
+		|| encodedSize > MAX_PLAYBACK_EXIT_CHECKPOINT_BYTES
+		|| !validCheckpointNumber(checkpoint.capturedPlaybackIntentId)
+		|| !Number.isInteger(checkpoint.capturedPlaybackIntentId)
+		|| !validCheckpointNumber(checkpoint.positionMs)
+		|| (checkpoint.durationMs !== null && !validCheckpointNumber(checkpoint.durationMs))
+		|| typeof checkpoint.wasPlaying !== "boolean"
+		|| !(["single", "loop", "queue", "shuffle"] as const).includes(checkpoint.mode)
+		|| typeof checkpoint.volume !== "number"
+		|| !Number.isFinite(checkpoint.volume)
+		|| checkpoint.volume < 0
+		|| checkpoint.volume > 1
+		|| typeof checkpoint.muted !== "boolean"
+		|| !(["remote", "blob", "local", "opaque", "none"] as const).includes(
+			checkpoint.sourceKind,
+		)
+		|| checkpoint.restartRestorable !== checkpointSourceIsRestartRestorable(
+			checkpoint.sourceKind,
+		)
+		|| !boundedCheckpointText(checkpoint.currentTrackRef, 640)
+	) return undefined;
+
+	if (checkpoint.currentTrackIndex === null) {
+		return checkpoint.currentTrackRef === ""
+			&& checkpoint.sourceKind === "none"
+			? null
+			: undefined;
+	}
+	if (
+		!Number.isInteger(checkpoint.currentTrackIndex)
+		|| checkpoint.currentTrackIndex < 0
+		|| checkpoint.currentTrackIndex >= checkpoint.queue.length
+		|| checkpoint.sourceKind === "none"
+	) return undefined;
+	const current = checkpoint.queue[checkpoint.currentTrackIndex];
+	return current && `${current.provider}:${current.id}` === checkpoint.currentTrackRef
+		? current
+		: undefined;
+}
+
 export function moveTrackToFront(queue: Track[], track: Track): Track[] {
 	const ref = trackRef(track);
 	if (!ref) return [track, ...queue];
@@ -99,6 +361,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 	muted: false,
 	mode: "loop",
 	queue: [],
+	checkpointRestore: null,
 	setCurrentTrack: (track) =>
 		set((s) => ({
 			...playbackPatchForTrack(track),
@@ -303,5 +566,127 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 			return;
 		}
 		get().next();
+	},
+	capturePlaybackExitCheckpoint: (request) => {
+		if (
+			!validCheckpointOperationId(request.operationId)
+			|| !validCheckpointReceipt(request.receipt)
+		) return null;
+		const state = get();
+		const checkpointQueue = state.queue.map(checkpointTrackFromTrack);
+		if (
+			state.queue.length > MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE
+			|| checkpointQueue.some((track) => track === null)
+			|| !validCheckpointNumber(state.positionMs)
+			|| (state.durationMs !== null && !validCheckpointNumber(state.durationMs))
+			|| (request.ownerOriginallyPlaying !== undefined
+				&& typeof request.ownerOriginallyPlaying !== "boolean")
+			|| !(request.sourceKind === "remote"
+				|| request.sourceKind === "blob"
+				|| request.sourceKind === "local"
+				|| request.sourceKind === "opaque")
+		) return null;
+		const currentTrackIndex = findTrackIndex(state.queue, state.currentTrack);
+		if (state.currentTrack && currentTrackIndex < 0) return null;
+		const sourceKind = state.currentTrack ? request.sourceKind : "none";
+		const checkpoint = Object.freeze({
+			schema: PLAYBACK_EXIT_CHECKPOINT_SCHEMA,
+			operationId: request.operationId,
+			receipt: request.receipt,
+			queue: Object.freeze(checkpointQueue as PlaybackCheckpointTrackV1[]),
+			currentTrackIndex: state.currentTrack ? currentTrackIndex : null,
+			currentTrackRef: trackRef(state.currentTrack),
+			capturedPlaybackIntentId: state.playbackIntentId,
+			positionMs: state.positionMs,
+			durationMs: state.durationMs,
+			wasPlaying: state.currentTrack
+				? (request.ownerOriginallyPlaying ?? state.isPlaying)
+				: false,
+			mode: state.mode,
+			volume: state.volume,
+			muted: state.muted,
+			sourceKind,
+			restartRestorable: checkpointSourceIsRestartRestorable(sourceKind),
+		} satisfies PlaybackExitCheckpointV1);
+		const encodedSize = checkpointEncodedSize(checkpoint);
+		return encodedSize !== null && encodedSize <= MAX_PLAYBACK_EXIT_CHECKPOINT_BYTES
+			? checkpoint
+			: null;
+	},
+	restorePlaybackExitCheckpoint: (request) => {
+		const before = get();
+		const prior = before.checkpointRestore;
+		if (
+			prior?.operationId === request.operationId
+			&& prior.receipt === request.receipt
+		) return "already-restored";
+		if (
+			prior?.operationId === request.operationId
+		) return "rejected";
+		const checkpoint = request.checkpoint;
+		if (
+			!checkpoint
+			|| typeof checkpoint !== "object"
+			|| checkpoint.operationId !== request.operationId
+			|| checkpoint.receipt !== request.receipt
+			|| (request.mode !== "same-process-rollback"
+				&& request.mode !== "restart-reconciliation")
+		) return "rejected";
+		const currentTrack = validatedCheckpointCurrentTrack(checkpoint);
+		if (currentTrack === undefined) return "rejected";
+		if (request.mode === "restart-reconciliation" && !checkpoint.restartRestorable) {
+			return "rejected";
+		}
+		const restoredQueue = checkpoint.queue.map(trackFromCheckpoint);
+		const restoredCurrentTrack = checkpoint.currentTrackIndex === null
+			? null
+			: restoredQueue[checkpoint.currentTrackIndex] ?? null;
+		set((state) => {
+			const playbackIntentId = nextPlaybackIntent(state);
+			return {
+				queue: restoredQueue,
+				currentTrack: restoredCurrentTrack,
+				playbackIntentId,
+				isPlaying: restoredCurrentTrack ? checkpoint.wasPlaying : false,
+				positionMs: restoredCurrentTrack ? checkpoint.positionMs : 0,
+				durationMs: restoredCurrentTrack ? checkpoint.durationMs : null,
+				mode: checkpoint.mode,
+				volume: checkpoint.volume,
+				muted: checkpoint.muted,
+				checkpointRestore: {
+					operationId: request.operationId,
+					receipt: request.receipt,
+					playbackIntentId,
+					currentTrackRef: checkpoint.currentTrackRef,
+					wasPlaying: checkpoint.wasPlaying,
+					sourceKind: checkpoint.sourceKind,
+					restartRestorable: checkpoint.restartRestorable,
+					autoplayDispositionConsumed: false,
+				},
+			};
+		});
+		return "restored";
+	},
+	consumePlaybackCheckpointAutoplay: (request) => {
+		let consumed = false;
+		set((state) => {
+			const authority = state.checkpointRestore;
+			if (
+				!authority
+				|| authority.operationId !== request.operationId
+				|| authority.receipt !== request.receipt
+				|| authority.playbackIntentId !== request.playbackIntentId
+				|| authority.currentTrackRef !== request.currentTrackRef
+			) return {};
+			consumed = true;
+			if (authority.autoplayDispositionConsumed) return {};
+			return {
+				checkpointRestore: {
+					...authority,
+					autoplayDispositionConsumed: true,
+				},
+			};
+		});
+		return consumed;
 	},
 }));

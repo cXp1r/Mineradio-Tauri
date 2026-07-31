@@ -314,6 +314,10 @@ export function App({
   const durationMs = usePlaybackStore((s) => s.durationMs);
   const volume = usePlaybackStore((s) => s.volume);
   const muted = usePlaybackStore((s) => s.muted);
+  const checkpointRestore = usePlaybackStore((s) => s.checkpointRestore);
+  const consumeCheckpointAutoplay = usePlaybackStore(
+    (s) => s.consumePlaybackCheckpointAutoplay,
+  );
   const commitPreparedHandoff = usePlaybackStore(
     (s) => s.commitPreparedHandoff,
   );
@@ -699,6 +703,8 @@ export function App({
     currentTrack,
     playbackIntentId,
     positionMs,
+    checkpointRestore,
+    consumeCheckpointAutoplay,
     queue,
     playbackMode,
     gaplessEnabled: playbackAudioSettings.preference.gaplessEnabled,

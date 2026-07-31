@@ -424,6 +424,195 @@ test("a committed owner resume receives at most one readiness retry", async () =
 	expect(runtime.getActiveElement()).toBe(asAudio(deckA));
 });
 
+test("committed owner lease stages without pausing and rollback restores playing", async () => {
+	const deckA = new TestAudioElement();
+	const deckB = new TestAudioElement();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA), {
+		createAudioElement: () => asAudio(deckB),
+	});
+	runtime.load("https://media.example/playing.flac");
+	await runtime.play();
+
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(lease).not.toBeNull();
+	expect(lease?.originallyPlaying).toBe(true);
+	expect(lease?.sourceKind).toBe("remote");
+	expect(deckA.paused).toBe(false);
+	expect(deckA.pauseCalls).toBe(0);
+
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(true);
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(false);
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+});
+
+test("committed owner lease rollback preserves an originally paused owner", async () => {
+	const deckA = new TestAudioElement();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA));
+	runtime.load("blob:https://app.example/local-file");
+	await runtime.play();
+	runtime.pause();
+
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(lease?.originallyPlaying).toBe(false);
+	expect(lease?.sourceKind).toBe("blob");
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(true);
+});
+
+test("a cancelled owner lease cannot pause or resume the new committed owner", async () => {
+	const deckA = new TestAudioElement();
+	const deckB = new TestAudioElement();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA), {
+		createAudioElement: () => asAudio(deckB),
+	});
+	runtime.load("https://media.example/outgoing.flac");
+	await runtime.play();
+	const staleLease = runtime.stageCommittedOwnerLease();
+
+	expect(runtime.cancelCommittedOwnerLease(staleLease!)).toBe(true);
+	runtime.stop();
+	runtime.load("https://media.example/incoming.flac");
+	await runtime.play();
+	const incomingDeck = runtime.diagnostics().committed?.id === "a" ? deckA : deckB;
+	const incomingPlayCalls = incomingDeck.playCalls;
+
+	expect(runtime.pauseCommittedOwnerLease(staleLease!)).toBe(false);
+	expect(incomingDeck.paused).toBe(false);
+	expect(await runtime.rollbackCommittedOwnerLease(staleLease!)).toBe(true);
+	expect(incomingDeck.paused).toBe(false);
+	expect(incomingDeck.playCalls).toBe(incomingPlayCalls);
+});
+
+test("a staged quiescence lease prevents an in-flight pending owner from committing", async () => {
+	const deckA = new TestAudioElement();
+	const deckB = new TestAudioElement();
+	const incomingGate = deferred();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA), {
+		createAudioElement: () => asAudio(deckB),
+	});
+	runtime.load("https://media.example/outgoing.flac");
+	await runtime.play();
+	runtime.load("https://media.example/incoming.flac");
+	deckB.playGate = incomingGate.promise;
+	const incomingPlay = runtime.play();
+	await flushMicrotasks();
+
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(lease).not.toBeNull();
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+	incomingGate.resolve();
+	await expectPromiseToRejectWith(incomingPlay, "quiescence");
+
+	expect(runtime.diagnostics().committed?.id).toBe("a");
+	expect(runtime.diagnostics().pending).toBeNull();
+	expect(deckA.paused).toBe(true);
+	expect(deckB.paused).toBe(true);
+	expect(runtime.releaseCommittedOwnerLease(lease!)).toBe(true);
+});
+
+test("a paused quiescence lease rejects manual resume until exact rollback", async () => {
+	const deckA = new TestAudioElement();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA));
+	runtime.load("https://media.example/playing.flac");
+	await runtime.play();
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+
+	await expectPromiseToRejectWith(runtime.play(), "quiescence");
+	expect(deckA.paused).toBe(true);
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(false);
+});
+
+test("staging quiescence invalidates an already in-flight committed resume", async () => {
+	const deckA = new TestAudioElement();
+	const resumeGate = deferred();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA));
+	runtime.load("https://media.example/paused.flac");
+	await runtime.play();
+	runtime.pause();
+	deckA.playGate = resumeGate.promise;
+	const resume = runtime.play();
+	await flushMicrotasks();
+
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(lease?.originallyPlaying).toBe(false);
+	resumeGate.resolve();
+	await expectPromiseToRejectWith(resume, "quiescence");
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(true);
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+	expect(deckA.paused).toBe(true);
+});
+
+test("confirmed quiescence settles owner waits and stop cannot reopen the gate", async () => {
+	const deckA = new TestAudioElement();
+	const resumeGate = deferred();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA));
+	runtime.load("https://media.example/paused-for-exit.flac");
+	await runtime.play();
+	runtime.pause();
+	deckA.playGate = resumeGate.promise;
+	let rejection = "";
+	void runtime.play().catch((error) => {
+		rejection = error instanceof Error ? error.message : String(error);
+	});
+	await flushMicrotasks();
+	expect(runtime.diagnostics().timers.playDeadlineCount).toBe(1);
+
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+	expect(runtime.diagnostics().timers.playDeadlineCount).toBe(0);
+	expect(runtime.diagnostics().timers.readyWaitCount).toBe(0);
+	runtime.stop();
+	let blockedLoad = "";
+	try {
+		runtime.load("https://media.example/must-stay-blocked.flac");
+	} catch (error) {
+		blockedLoad = error instanceof Error ? error.message : String(error);
+	}
+	expect(blockedLoad).toContain("quiescence");
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+
+	resumeGate.resolve();
+	await flushMicrotasks();
+	expect(rejection).toContain("cancelled");
+	expect(deckA.paused).toBe(true);
+});
+
+test("a staged quiescence lease blocks prepared handoff and exact release rejects owner replacement", async () => {
+	const deckA = new TestAudioElement();
+	const deckB = new TestAudioElement();
+	const runtime = new PlaybackAudioRuntime(asAudio(deckA), {
+		createAudioElement: () => asAudio(deckB),
+	});
+	runtime.load("https://media.example/outgoing.flac");
+	await runtime.play();
+	const prepared = runtime.prepareNext("https://media.example/incoming.flac");
+	const lease = runtime.stageCommittedOwnerLease();
+	expect(runtime.pauseCommittedOwnerLease(lease!)).toBe(true);
+
+	await expectPromiseToRejectWith(runtime.playPrepared(prepared), "quiescence");
+	expect(runtime.adoptPrepared(prepared, { id: "new-owner" })).toBe(false);
+	expect(runtime.diagnostics().committed?.id).toBe("a");
+	expect(runtime.releaseCommittedOwnerLease(lease!)).toBe(true);
+	let blockedLoad = "";
+	try {
+		runtime.load("https://media.example/replacement.flac");
+	} catch (error) {
+		blockedLoad = error instanceof Error ? error.message : String(error);
+	}
+	expect(blockedLoad).toContain("quiescence");
+	await expectPromiseToRejectWith(runtime.play(), "quiescence");
+	expect(await runtime.rollbackCommittedOwnerLease(lease!)).toBe(true);
+	runtime.load("https://media.example/replacement.flac");
+	await runtime.play();
+	expect(runtime.releaseCommittedOwnerLease(lease!)).toBe(false);
+});
+
 test("one owner generation cannot spend the readiness retry budget twice", async () => {
 	const deckA = new TestAudioElement();
 	const runtime = new PlaybackAudioRuntime(asAudio(deckA));

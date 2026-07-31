@@ -21,6 +21,8 @@ export interface PlaybackLoadHandle {
 	readonly playbackToken: number;
 	readonly lyricToken: number;
 	readonly reloadReason?: PlaybackLoadReason;
+	readonly trackKey?: string;
+	readonly playbackIntentId?: number;
 }
 
 export type PlaybackTrackSession = PlaybackLoadHandle;
@@ -81,7 +83,7 @@ export class PlaybackSessionCoordinator {
 					);
 				}
 			}
-			const session = this.startTrackSession(trackKey);
+			const session = this.startTrackSession(trackKey, playbackIntentId);
 			if (!session) return null;
 			this.hasExplicitPlaybackIntent = true;
 			this.lastExplicitPlaybackIntentId = playbackIntentId;
@@ -94,7 +96,10 @@ export class PlaybackSessionCoordinator {
 		);
 		if (invalidatedHandle) return invalidatedHandle;
 		if (trackKey === this.trackKey) return null;
-		return this.startTrackSession(trackKey);
+		return this.startTrackSession(
+			trackKey,
+			this.hasExplicitPlaybackIntent ? this.lastExplicitPlaybackIntentId : 0,
+		);
 	}
 
 	clear(): void {
@@ -142,6 +147,10 @@ export class PlaybackSessionCoordinator {
 			playbackToken,
 			lyricToken: this.lyricToken,
 			reloadReason: reason,
+			trackKey: this.trackKey,
+			playbackIntentId: this.hasExplicitPlaybackIntent
+				? this.lastExplicitPlaybackIntentId
+				: 0,
 		});
 		this.machineState = freezeMachineState(transition.next);
 		this.playbackToken = playbackToken;
@@ -167,6 +176,10 @@ export class PlaybackSessionCoordinator {
 			playbackToken,
 			lyricToken,
 			reloadReason: "quality",
+			trackKey: this.trackKey,
+			playbackIntentId: this.hasExplicitPlaybackIntent
+				? this.lastExplicitPlaybackIntentId
+				: 0,
 		});
 		this.machineState = freezeMachineState(transition.next);
 		this.playbackToken = playbackToken;
@@ -181,9 +194,26 @@ export class PlaybackSessionCoordinator {
 	}
 
 	markLoaded(handle: PlaybackLoadHandle, source: LoadedPlaybackSource): boolean {
+		return this.markLoadedWithDisposition(handle, source, false, null);
+	}
+
+	markLoadedPaused(
+		handle: PlaybackLoadHandle,
+		source: LoadedPlaybackSource,
+		nowMs: number,
+	): boolean {
+		return this.markLoadedWithDisposition(handle, source, true, nowMs);
+	}
+
+	private markLoadedWithDisposition(
+		handle: PlaybackLoadHandle,
+		source: LoadedPlaybackSource,
+		paused: boolean,
+		pausedAtMs: number | null,
+	): boolean {
 		if (!this.isPlaybackCurrent(handle)) return false;
 		const transition = this.reduce({
-			type: "SOURCE_READY",
+			type: paused ? "SOURCE_READY_PAUSED" : "SOURCE_READY",
 			playbackSessionId: handle.playbackSessionId,
 			loadRequestId: handle.playbackToken,
 		});
@@ -191,6 +221,7 @@ export class PlaybackSessionCoordinator {
 
 		this.machineState = freezeMachineState(transition.next);
 		this.loadedSource = Object.freeze({ ...source });
+		this.pausedAtMs = paused ? pausedAtMs : null;
 		if (this.pendingInvalidatedLoad === handle) {
 			this.pendingInvalidatedLoad = null;
 		}
@@ -412,7 +443,10 @@ export class PlaybackSessionCoordinator {
 		);
 	}
 
-	private startTrackSession(trackKey: string): PlaybackTrackSession | null {
+	private startTrackSession(
+		trackKey: string,
+		playbackIntentId: number,
+	): PlaybackTrackSession | null {
 		const eventType = this.machineState.phase === "idle"
 			? "PLAY_TRACK"
 			: "SWITCH_TRACK";
@@ -431,6 +465,8 @@ export class PlaybackSessionCoordinator {
 			playbackSessionId,
 			playbackToken,
 			lyricToken,
+			trackKey,
+			playbackIntentId,
 		});
 		this.machineState = freezeMachineState(transition.next);
 		this.nextPlaybackSessionId = playbackSessionId;
