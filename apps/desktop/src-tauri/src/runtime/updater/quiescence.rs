@@ -59,6 +59,7 @@ pub(crate) struct WebQuiescenceRecordV1 {
 enum WebQuiescenceCompletionKind {
     Restored,
     NoOpNotPrepared,
+    ConsumedByAppliedInstall,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -226,6 +227,12 @@ pub(crate) enum RollbackAcknowledgement {
 pub(crate) enum RollbackAcknowledgementOutcome {
     Completed,
     AlreadyCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AppliedCheckpointConsumeOutcome {
+    Consumed,
+    AlreadyConsumed,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -757,6 +764,72 @@ impl NativeWebQuiescenceStore {
         mark_rollback_required_locked(&directory, &mut record, updated_at)?;
         reconciliation_for_rollback(&directory, &record)
     }
+
+    /// 新版本已启动后的本地提交点。先持久化 exact completion，再移除 checkpoint 与
+    /// active record；任何一步崩溃都可凭 completion 幂等续做，且不会把 checkpoint
+    /// 误当成需要恢复的播放状态。
+    pub(crate) fn consume_applied_install(
+        &self,
+        identity: &WebQuiescenceIdentity,
+        evidence: &CheckpointEvidence,
+        completed_at: u64,
+    ) -> Result<AppliedCheckpointConsumeOutcome, WebQuiescenceError> {
+        validate_identity(identity)?;
+        validate_evidence(evidence)?;
+        let _guard = self.io_lock.lock().expect("web quiescence store poisoned");
+        let directory = existing_directory(&self.updater_directory)?;
+        let existing_completion = load_completion(&directory)?;
+        let completion_already_persisted = existing_completion
+            .as_ref()
+            .is_some_and(|completion| applied_completion_matches(completion, identity, evidence));
+
+        let record = match load_record(&directory)? {
+            Some(record) => record,
+            None if load_checkpoint(&directory)?.is_none() && completion_already_persisted => {
+                return Ok(AppliedCheckpointConsumeOutcome::AlreadyConsumed)
+            }
+            None => return Err(stale_identity()),
+        };
+        ensure_record_identity(&record, identity)?;
+        if record.phase != WebQuiescencePhase::Prepared
+            || record.native_rollback_completed
+            || record.rollback_acknowledged
+            || record_evidence(&record).as_ref() != Some(evidence)
+        {
+            return Err(invalid_order(
+                "只有 exact prepared checkpoint 可以由已应用安装消费",
+            ));
+        }
+        ensure_record_checkpoint_matches(&directory, &record)?;
+
+        if !completion_already_persisted {
+            if existing_completion
+                .as_ref()
+                .is_some_and(|completion| completion.operation_id == identity.operation_id)
+            {
+                return Err(WebQuiescenceError::new(
+                    "UPDATE_WEB_QUIESCENCE_COMPLETION_CONFLICT",
+                    "同一安装事务存在冲突的 completion tombstone",
+                ));
+            }
+            let completion = completion_from_applied_install(identity, evidence, completed_at);
+            validate_completion(&completion)?;
+            save_document(
+                &directory,
+                WEB_QUIESCENCE_COMPLETION_FILE_NAME,
+                &completion,
+                MAX_WEB_QUIESCENCE_BYTES,
+            )?;
+        }
+
+        remove_document(&directory, PLAYBACK_EXIT_CHECKPOINT_FILE_NAME)?;
+        remove_document(&directory, WEB_QUIESCENCE_FILE_NAME)?;
+        Ok(if completion_already_persisted {
+            AppliedCheckpointConsumeOutcome::AlreadyConsumed
+        } else {
+            AppliedCheckpointConsumeOutcome::Consumed
+        })
+    }
 }
 
 fn mark_rollback_required_locked(
@@ -960,6 +1033,23 @@ fn completion_from_acknowledgement(
     }
 }
 
+fn completion_from_applied_install(
+    identity: &WebQuiescenceIdentity,
+    evidence: &CheckpointEvidence,
+    completed_at: u64,
+) -> WebQuiescenceCompletionV1 {
+    WebQuiescenceCompletionV1 {
+        schema: WEB_QUIESCENCE_COMPLETION_SCHEMA.into(),
+        operation_id: identity.operation_id.clone(),
+        operation_generation: identity.operation_generation,
+        candidate_id: identity.candidate_id.clone(),
+        kind: WebQuiescenceCompletionKind::ConsumedByAppliedInstall,
+        checkpoint_receipt: Some(evidence.receipt.clone()),
+        checkpoint_digest: Some(evidence.digest.clone()),
+        completed_at,
+    }
+}
+
 fn acknowledgement_from_completion(
     completion: &WebQuiescenceCompletionV1,
 ) -> Result<RollbackAcknowledgement, WebQuiescenceError> {
@@ -978,6 +1068,11 @@ fn acknowledgement_from_completion(
             })
         }
         WebQuiescenceCompletionKind::NoOpNotPrepared => RollbackAcknowledgement::NoOpNotPrepared,
+        WebQuiescenceCompletionKind::ConsumedByAppliedInstall => {
+            return Err(invalid_order(
+                "已应用安装消费的 checkpoint 不能转换为 rollback acknowledgement",
+            ))
+        }
     })
 }
 
@@ -1001,6 +1096,17 @@ fn completion_matches(
     identity_from_completion(completion) == *identity
         && acknowledgement_from_completion(completion)
             .is_ok_and(|completed| completed == *acknowledgement)
+}
+
+fn applied_completion_matches(
+    completion: &WebQuiescenceCompletionV1,
+    identity: &WebQuiescenceIdentity,
+    evidence: &CheckpointEvidence,
+) -> bool {
+    identity_from_completion(completion) == *identity
+        && completion.kind == WebQuiescenceCompletionKind::ConsumedByAppliedInstall
+        && completion.checkpoint_receipt.as_deref() == Some(evidence.receipt.as_str())
+        && completion.checkpoint_digest.as_deref() == Some(evidence.digest.as_str())
 }
 
 fn identity_from_completion(completion: &WebQuiescenceCompletionV1) -> WebQuiescenceIdentity {
@@ -1468,6 +1574,19 @@ fn validate_completion(completion: &WebQuiescenceCompletionV1) -> Result<(), Web
             Ok(())
         }
         WebQuiescenceCompletionKind::NoOpNotPrepared => Err(completion_invalid()),
+        WebQuiescenceCompletionKind::ConsumedByAppliedInstall => {
+            let evidence = CheckpointEvidence {
+                receipt: completion
+                    .checkpoint_receipt
+                    .clone()
+                    .ok_or_else(completion_invalid)?,
+                digest: completion
+                    .checkpoint_digest
+                    .clone()
+                    .ok_or_else(completion_invalid)?,
+            };
+            validate_evidence(&evidence)
+        }
     }
 }
 
@@ -2406,6 +2525,77 @@ mod tests {
             store.reconcile_startup(false, 301).unwrap(),
             WebQuiescenceReconciliation::NativeRollbackRequired(identity)
         );
+    }
+
+    #[test]
+    fn applied_install_consumes_exact_checkpoint_once_and_keeps_completion_identity() {
+        let root = TestDirectory::new("applied-consume");
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        let (identity, evidence) = prepared(&store);
+
+        assert_eq!(
+            store
+                .consume_applied_install(&identity, &evidence, 400)
+                .unwrap(),
+            AppliedCheckpointConsumeOutcome::Consumed
+        );
+        assert!(!root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
+        assert!(!root.0.join(PLAYBACK_EXIT_CHECKPOINT_FILE_NAME).exists());
+        assert!(root.0.join(WEB_QUIESCENCE_COMPLETION_FILE_NAME).exists());
+
+        assert_eq!(
+            store
+                .consume_applied_install(&identity, &evidence, 401)
+                .unwrap(),
+            AppliedCheckpointConsumeOutcome::AlreadyConsumed
+        );
+        assert_eq!(
+            store.reconcile_startup(false, 402).unwrap(),
+            WebQuiescenceReconciliation::CompletedRecovered(identity)
+        );
+    }
+
+    #[test]
+    fn applied_install_rejects_mismatched_checkpoint_without_deleting_evidence() {
+        let root = TestDirectory::new("applied-mismatch");
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        let (identity, mut evidence) = prepared(&store);
+        evidence.digest = "a".repeat(64);
+
+        assert_eq!(
+            store
+                .consume_applied_install(&identity, &evidence, 400)
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_INVALID_ORDER"
+        );
+        assert!(root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
+        assert!(root.0.join(PLAYBACK_EXIT_CHECKPOINT_FILE_NAME).exists());
+        assert!(!root.0.join(WEB_QUIESCENCE_COMPLETION_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn applied_install_resumes_cleanup_after_completion_was_persisted() {
+        let root = TestDirectory::new("applied-completion-crash");
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        let (identity, evidence) = prepared(&store);
+        let directory = StableDirectory::open_existing(&root.0).unwrap().unwrap();
+        save_document(
+            &directory,
+            WEB_QUIESCENCE_COMPLETION_FILE_NAME,
+            &completion_from_applied_install(&identity, &evidence, 400),
+            MAX_WEB_QUIESCENCE_BYTES,
+        )
+        .unwrap();
+
+        assert_eq!(
+            store
+                .consume_applied_install(&identity, &evidence, 401)
+                .unwrap(),
+            AppliedCheckpointConsumeOutcome::AlreadyConsumed
+        );
+        assert!(!root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
+        assert!(!root.0.join(PLAYBACK_EXIT_CHECKPOINT_FILE_NAME).exists());
     }
 
     #[test]
