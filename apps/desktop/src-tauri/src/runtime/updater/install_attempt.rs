@@ -466,7 +466,13 @@ impl InstallAttemptStore {
         let tombstone = load_tombstone_from(self.file_system.as_ref())?;
 
         let outcome = match tombstone {
-            Some(existing) if existing == expected => ReconciliationCommitOutcome::AlreadyCommitted,
+            Some(existing)
+                if existing.attempt == *attempt && existing.disposition == disposition =>
+            {
+                // reconciledAt 由首次 durable commit 冻结。跨重启重试只需证明同一
+                // attempt + disposition；caller 不需要、也不应该复现旧进程的 now。
+                ReconciliationCommitOutcome::AlreadyCommitted
+            }
             Some(_) => {
                 return Err(identity_conflict(
                     "已有 reconciliation tombstone 与本次决定不一致",
@@ -1424,6 +1430,39 @@ mod tests {
         );
         assert!(!file_system.contains(INSTALL_ATTEMPT_FILE_NAME));
         assert!(file_system.contains(RECONCILIATION_TOMBSTONE_FILE_NAME));
+    }
+
+    #[test]
+    fn reconciliation_retry_reuses_persisted_timestamp_after_cleanup_crash() {
+        let (file_system, store) = store();
+        let marker = store.publish(valid_input()).unwrap();
+        let first_reconciled_at = marker.created_at() + 1;
+        file_system.arm(FaultPoint::Remove, 1);
+        assert!(store
+            .complete_reconciliation(
+                &marker,
+                ReconciliationDisposition::Applied,
+                first_reconciled_at,
+            )
+            .is_err());
+
+        // 模拟新进程无法复现旧 now，只能提交同一 attempt + disposition。
+        file_system.clear_fault();
+        let restarted = InstallAttemptStore::with_file_system(file_system.clone());
+        assert_eq!(
+            restarted
+                .complete_reconciliation(
+                    &marker,
+                    ReconciliationDisposition::Applied,
+                    first_reconciled_at + 60_000,
+                )
+                .unwrap(),
+            ReconciliationCommitOutcome::AlreadyCommitted
+        );
+        let InstallAttemptRecovery::Reconciled(persisted) = restarted.recover().unwrap() else {
+            panic!("重试必须保留首次持久化的 reconciliation");
+        };
+        assert_eq!(persisted.reconciled_at(), first_reconciled_at);
     }
 
     #[test]
