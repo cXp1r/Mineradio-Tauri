@@ -1,6 +1,8 @@
 //! 普通桌面窗口的几何、托盘和事件调度核心。
 
-use crate::app::lifecycle::{CloseBehavior, CloseDecision, LifecycleSnapshot, ShutdownCoordinator};
+use crate::app::lifecycle::{
+    CloseBehavior, CloseDecision, LifecycleSnapshot, ShutdownCoordinator, UpdateExitStatus,
+};
 use serde::{Deserialize, Serialize};
 
 pub const WINDOW_STATE_DEBOUNCE_MS: u64 = 80;
@@ -190,6 +192,50 @@ impl WindowRuntimeState {
 
     pub fn claim_cleanup(&mut self) -> bool {
         self.lifecycle.claim_cleanup()
+    }
+
+    pub(crate) fn prepare_update_exit(
+        &mut self,
+        operation_id: &str,
+        operation_generation: u64,
+        receipt: &str,
+    ) -> bool {
+        self.lifecycle
+            .prepare_update_exit(operation_id, operation_generation, receipt)
+    }
+
+    pub(crate) fn seal_update_exit(
+        &mut self,
+        operation_id: &str,
+        operation_generation: u64,
+        receipt: &str,
+    ) -> bool {
+        self.lifecycle
+            .seal_update_exit(operation_id, operation_generation, receipt)
+    }
+
+    pub(crate) fn release_update_exit(
+        &mut self,
+        operation_id: &str,
+        operation_generation: u64,
+        receipt: &str,
+    ) -> bool {
+        self.lifecycle
+            .release_update_exit(operation_id, operation_generation, receipt)
+    }
+
+    pub(crate) fn retain_update_exit_recovery(
+        &mut self,
+        operation_id: &str,
+        operation_generation: u64,
+        receipt: &str,
+    ) -> bool {
+        self.lifecycle
+            .retain_update_exit_recovery(operation_id, operation_generation, receipt)
+    }
+
+    pub(crate) fn update_exit_status(&self) -> Option<UpdateExitStatus> {
+        self.lifecycle.update_exit_status()
     }
 
     pub fn schedule_state_emit(&mut self) -> DebounceSchedule {

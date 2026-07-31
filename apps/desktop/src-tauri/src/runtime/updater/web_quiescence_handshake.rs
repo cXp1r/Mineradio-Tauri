@@ -45,6 +45,15 @@ pub(crate) trait WebPlaybackQuiescencePort: Send + Sync {
         timeout: Duration,
     ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement>;
 
+    /// marker 已 durable 后释放 exact committed audio owner，并返回同一 identity/evidence。
+    /// 该 bounded acknowledgement 必须发生在 native exit seal 与 installer spawn 之前。
+    fn seal_for_exit<'a>(
+        &'a self,
+        identity: &'a WebQuiescenceIdentity,
+        evidence: &'a CheckpointEvidence,
+        timeout: Duration,
+    ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement>;
+
     fn rollback<'a>(
         &'a self,
         request: &'a RollbackWebQuiescenceRequest,
@@ -186,6 +195,28 @@ impl<P: WebPlaybackQuiescencePort> WebQuiescenceHandshake<P> {
         updated_at: u64,
     ) -> Result<(), WebQuiescenceHandshakeError> {
         self.store.fail_prepare(identity, updated_at)?;
+        Ok(())
+    }
+
+    pub(crate) async fn seal_for_exit(
+        &self,
+        prepared: &PreparedWebQuiescence,
+    ) -> Result<(), WebQuiescenceHandshakeError> {
+        let acknowledgement = bounded_port_call(
+            self.acknowledgement_timeout,
+            self.port.seal_for_exit(
+                &prepared.identity,
+                &prepared.evidence,
+                self.acknowledgement_timeout,
+            ),
+        )
+        .await
+        .map_err(WebQuiescenceHandshakeError::port)?;
+        if acknowledgement.identity != prepared.identity
+            || acknowledgement.evidence != prepared.evidence
+        {
+            return Err(WebQuiescenceHandshakeError::stale_acknowledgement());
+        }
         Ok(())
     }
 
@@ -358,6 +389,20 @@ mod tests {
                     })
             })
         }
+
+        fn seal_for_exit<'a>(
+            &'a self,
+            identity: &'a WebQuiescenceIdentity,
+            evidence: &'a CheckpointEvidence,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement> {
+            Box::pin(async move {
+                Ok(PreparedWebAcknowledgement {
+                    identity: identity.clone(),
+                    evidence: evidence.clone(),
+                })
+            })
+        }
     }
 
     struct PendingStagePort;
@@ -386,6 +431,15 @@ mod tests {
             _timeout: Duration,
         ) -> WebQuiescencePortFuture<'a, RollbackAcknowledgement> {
             Box::pin(async { unreachable!("pending stage 不会进入 rollback") })
+        }
+
+        fn seal_for_exit<'a>(
+            &'a self,
+            _identity: &'a WebQuiescenceIdentity,
+            _evidence: &'a CheckpointEvidence,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement> {
+            Box::pin(async { unreachable!("pending stage 不会进入 seal") })
         }
     }
 
@@ -435,6 +489,15 @@ mod tests {
                         .clone(),
                 ))
             })
+        }
+
+        fn seal_for_exit<'a>(
+            &'a self,
+            _identity: &'a WebQuiescenceIdentity,
+            _evidence: &'a CheckpointEvidence,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement> {
+            Box::pin(async { unreachable!("install-attempt restore 不会进入 seal") })
         }
     }
 

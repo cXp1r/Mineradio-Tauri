@@ -5,6 +5,7 @@ use std::{
 };
 
 use super::download::{VerifiedInstallerArtifact, VerifiedInstallerIdentity};
+use crate::app::update_install_exit::SealedInstallExit;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum NsisInstallFailureStage {
@@ -136,6 +137,31 @@ pub(crate) trait NsisInstallerSpawnPort: Send + Sync {
     fn spawn(&self, request: NsisSpawnRequest<'_>) -> Result<(), NsisSpawnPortError>;
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct CurrentUserNsisSpawnPort;
+
+#[cfg(windows)]
+impl NsisInstallerSpawnPort for CurrentUserNsisSpawnPort {
+    fn spawn(&self, request: NsisSpawnRequest<'_>) -> Result<(), NsisSpawnPortError> {
+        use std::{os::windows::process::CommandExt, process::Command};
+
+        // raw_parameters 已由 NsisInstallPlan 冻结；使用普通 CreateProcess/current-user
+        // token，不经过 ShellExecute、runas 或 caller 提供的参数拼接。
+        Command::new(request.installer_path())
+            .raw_arg(request.raw_parameters())
+            .spawn()
+            .map(|_| ())
+            .map_err(|_| NsisSpawnPortError::new())
+    }
+}
+
+#[cfg(not(windows))]
+impl NsisInstallerSpawnPort for CurrentUserNsisSpawnPort {
+    fn spawn(&self, _request: NsisSpawnRequest<'_>) -> Result<(), NsisSpawnPortError> {
+        Err(NsisSpawnPortError::new())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LocalRelaunchArguments {
     arguments: Vec<OsString>,
@@ -179,13 +205,29 @@ pub(crate) struct NsisInstallPlan {
 
 #[must_use = "spawn token 必须交给 sealed install exit 事务消费"]
 #[derive(Debug)]
-pub(crate) struct SpawnedInstaller {
-    identity: VerifiedInstallerIdentity,
+pub(crate) struct SealedSpawnedInstaller {
+    sealed_exit: Box<SealedInstallExit>,
 }
 
-impl SpawnedInstaller {
-    pub(crate) fn identity(&self) -> &VerifiedInstallerIdentity {
-        &self.identity
+impl SealedSpawnedInstaller {
+    /// spawn 成功后的唯一动作；不返回错误、不等待、不取得新锁。
+    pub(crate) fn commit_after_spawn(self) {
+        self.sealed_exit.commit_after_spawn();
+    }
+}
+
+pub(crate) struct SealedNsisSpawnFailure {
+    error: NsisInstallError,
+    sealed_exit: Box<SealedInstallExit>,
+}
+
+impl SealedNsisSpawnFailure {
+    pub(crate) fn error(&self) -> &NsisInstallError {
+        &self.error
+    }
+
+    pub(crate) fn into_sealed_exit(self) -> Box<SealedInstallExit> {
+        self.sealed_exit
     }
 }
 
@@ -274,18 +316,39 @@ impl NsisInstallPlan {
         &self.raw_parameters
     }
 
-    pub(crate) fn spawn(
+    /// 生产 spawn 必须同时消费 sealed exit capability。失败时 capability 原样返回，
+    /// 供 coordinator 在 installer 尚未启动的边界内执行完整补偿。
+    pub(crate) fn spawn_with_sealed_exit(
+        self,
+        sealed_exit: Box<SealedInstallExit>,
+        port: &dyn NsisInstallerSpawnPort,
+    ) -> Result<SealedSpawnedInstaller, SealedNsisSpawnFailure> {
+        if port
+            .spawn(NsisSpawnRequest {
+                installer_path: self.artifact.path(),
+                raw_parameters: &self.raw_parameters,
+            })
+            .is_err()
+        {
+            return Err(SealedNsisSpawnFailure {
+                error: NsisInstallError::spawn_failed(),
+                sealed_exit,
+            });
+        }
+        Ok(SealedSpawnedInstaller { sealed_exit })
+    }
+
+    #[cfg(test)]
+    fn spawn_for_test(
         self,
         port: &dyn NsisInstallerSpawnPort,
-    ) -> Result<SpawnedInstaller, NsisInstallError> {
+    ) -> Result<VerifiedInstallerIdentity, NsisInstallError> {
         port.spawn(NsisSpawnRequest {
             installer_path: self.artifact.path(),
             raw_parameters: &self.raw_parameters,
         })
         .map_err(|_| NsisInstallError::spawn_failed())?;
-        Ok(SpawnedInstaller {
-            identity: self.artifact.identity().clone(),
-        })
+        Ok(self.artifact.identity().clone())
     }
 }
 
@@ -533,9 +596,11 @@ mod tests {
         .unwrap();
         let port = FakeSpawnPort::default();
 
-        let spawned = plan.spawn(&port).expect("spawn success 应返回一次性 token");
+        let spawned = plan
+            .spawn_for_test(&port)
+            .expect("spawn success 应返回一次性 token");
 
-        assert_eq!(spawned.identity(), &expected_identity);
+        assert_eq!(&spawned, &expected_identity);
         assert_eq!(
             *port.requests.lock().unwrap(),
             vec![RecordedSpawn {
@@ -565,7 +630,7 @@ mod tests {
         };
 
         let error = plan
-            .spawn(&port)
+            .spawn_for_test(&port)
             .expect_err("spawn failure 必须返回 caller 触发 rollback");
         let process_is_still_running = true;
 

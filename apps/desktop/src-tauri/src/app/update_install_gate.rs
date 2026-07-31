@@ -4,6 +4,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+const MAX_WEB_SAFE_GENERATION: u64 = 9_007_199_254_740_991;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UpdateInstallGateClaim {
     operation_id: String,
@@ -33,6 +35,7 @@ pub enum UpdateInstallGateError {
     MutationFrozen(UpdateInstallGateClaim),
     ClaimActive(UpdateInstallGateClaim),
     DrainTimedOut(UpdateInstallGateClaim),
+    GenerationConflict,
     StaleClaim,
     InFlightAfterClaim,
 }
@@ -44,6 +47,7 @@ impl UpdateInstallGateError {
             Self::MutationFrozen(_) => "UPDATE_INSTALL_MUTATION_FROZEN",
             Self::ClaimActive(_) => "UPDATE_INSTALL_CLAIM_ACTIVE",
             Self::DrainTimedOut(_) => "UPDATE_INSTALL_DRAIN_TIMEOUT",
+            Self::GenerationConflict => "UPDATE_INSTALL_GENERATION_CONFLICT",
             Self::StaleClaim => "UPDATE_INSTALL_CLAIM_STALE",
             Self::InFlightAfterClaim => "UPDATE_INSTALL_DRAIN_INCOMPLETE",
         }
@@ -130,6 +134,32 @@ impl UpdateInstallGate {
         if !valid_operation_id(operation_id) {
             return Err(UpdateInstallGateError::InvalidOperation);
         }
+        self.claim_inner(operation_id, None, drain_timeout)
+    }
+
+    /// Web prepare record 是 operation generation 的 durable authority。生产安装事务必须
+    /// 使用该入口，确保 native lease、checkpoint 与 install-attempt 共用同一 identity。
+    pub fn claim_exact(
+        &self,
+        operation_id: &str,
+        generation: u64,
+        drain_timeout: Duration,
+    ) -> Result<UpdateInstallGateClaim, UpdateInstallGateError> {
+        if !valid_exact_operation_id(operation_id)
+            || generation == 0
+            || generation > MAX_WEB_SAFE_GENERATION
+        {
+            return Err(UpdateInstallGateError::InvalidOperation);
+        }
+        self.claim_inner(operation_id, Some(generation), drain_timeout)
+    }
+
+    fn claim_inner(
+        &self,
+        operation_id: &str,
+        requested_generation: Option<u64>,
+        drain_timeout: Duration,
+    ) -> Result<UpdateInstallGateClaim, UpdateInstallGateError> {
         let mut state = self
             .inner
             .state
@@ -138,10 +168,19 @@ impl UpdateInstallGate {
         if let Some(holder) = state.holder.clone() {
             return Err(UpdateInstallGateError::ClaimActive(holder));
         }
-        state.generation = state.generation.wrapping_add(1).max(1);
+        let generation = match requested_generation {
+            Some(generation) if generation > state.generation => generation,
+            Some(_) => return Err(UpdateInstallGateError::GenerationConflict),
+            None => state
+                .generation
+                .checked_add(1)
+                .filter(|generation| *generation <= MAX_WEB_SAFE_GENERATION)
+                .ok_or(UpdateInstallGateError::InvalidOperation)?,
+        };
+        state.generation = generation;
         let claim = UpdateInstallGateClaim {
             operation_id: operation_id.to_owned(),
-            generation: state.generation,
+            generation,
         };
         // 先发布 holder，后等待既有 permit drain。Condvar 等待会释放 gate mutex，
         // permit Drop 与只读 snapshot 都不会被 install claim 阻塞。
@@ -206,6 +245,13 @@ fn valid_operation_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && !value.chars().any(|character| character.is_control())
+}
+
+fn valid_exact_operation_id(value: &str) -> bool {
+    value.len() == 32
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 #[cfg(test)]
@@ -309,5 +355,40 @@ mod tests {
         gate.reopen_after_verified_rollback(&timed_out_claim)
             .expect("drain 后 exact verified rollback 应重开 gate");
         assert!(gate.enter_mutation().is_ok());
+    }
+
+    #[test]
+    fn exact_claim_uses_the_durable_web_generation_and_rejects_replay() {
+        let gate = UpdateInstallGate::default();
+        let first = gate
+            .claim_exact(&"a".repeat(32), 41, Duration::ZERO)
+            .expect("durable Web generation 应成为 native claim identity");
+        assert_eq!(first.generation(), 41);
+        gate.reopen_after_verified_rollback(&first).unwrap();
+
+        assert_eq!(
+            gate.claim_exact(&"b".repeat(32), 41, Duration::ZERO),
+            Err(UpdateInstallGateError::GenerationConflict)
+        );
+        let second = gate
+            .claim_exact(&"b".repeat(32), 42, Duration::ZERO)
+            .expect("严格递增的 Web generation 应成功");
+        assert_eq!(second.generation(), 42);
+    }
+
+    #[test]
+    fn exact_claim_accepts_only_web_safe_identity() {
+        let gate = UpdateInstallGate::default();
+        for (operation_id, generation) in [
+            ("not-hex".to_owned(), 1),
+            ("a".repeat(31), 1),
+            ("a".repeat(32), 0),
+            ("a".repeat(32), 9_007_199_254_740_992),
+        ] {
+            assert_eq!(
+                gate.claim_exact(&operation_id, generation, Duration::ZERO),
+                Err(UpdateInstallGateError::InvalidOperation)
+            );
+        }
     }
 }

@@ -8,9 +8,36 @@ use crate::{
 };
 
 use super::{
-    lifecycle::{CloseDecision, LifecyclePhase},
+    lifecycle::{CloseDecision, LifecyclePhase, UpdateExitStatus},
     window_labels,
 };
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UpdateExitRunDecision {
+    Normal,
+    PreventExit,
+    AllowExitWithoutCleanup,
+}
+
+fn update_exit_run_decision(status: Option<UpdateExitStatus>) -> UpdateExitRunDecision {
+    match status {
+        None => UpdateExitRunDecision::Normal,
+        Some(UpdateExitStatus::Sealed) => UpdateExitRunDecision::AllowExitWithoutCleanup,
+        Some(UpdateExitStatus::Prepared | UpdateExitStatus::RecoveryRequired) => {
+            UpdateExitRunDecision::PreventExit
+        }
+    }
+}
+
+fn app_update_exit_run_decision(app: &tauri::AppHandle) -> UpdateExitRunDecision {
+    let status = app
+        .state::<AppState>()
+        .window_runtime
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.update_exit_status());
+    update_exit_run_decision(status)
+}
 
 fn single_instance_window_reactivation_steps() -> [&'static str; 3] {
     ["show", "unminimize", "set_focus"]
@@ -115,6 +142,14 @@ fn cancel_runtime_exit(app: &tauri::AppHandle) -> bool {
 pub fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
         tauri::RunEvent::ExitRequested { api, .. } => {
+            match app_update_exit_run_decision(app) {
+                UpdateExitRunDecision::AllowExitWithoutCleanup => return,
+                UpdateExitRunDecision::PreventExit => {
+                    api.prevent_exit();
+                    return;
+                }
+                UpdateExitRunDecision::Normal => {}
+            }
             if !super::full_desktop_runtime::recover_before_exit(app) {
                 api.prevent_exit();
                 return;
@@ -130,6 +165,11 @@ pub fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             );
         }
         tauri::RunEvent::Exit => {
+            if app_update_exit_run_decision(app) != UpdateExitRunDecision::Normal {
+                // sealed install 已由 reversible native lease 完成所有退出前工作；这里
+                // 禁止重新进入普通 cleanup。不可取消的异常退出则保留 recovery 证据。
+                return;
+            }
             // Exit 已不可取消；仍执行同一 rollback，失败时 journal 留给下次启动恢复。
             let _ = super::full_desktop_runtime::recover_before_exit(app);
             let _ = request_runtime_exit(app);
@@ -392,6 +432,18 @@ pub fn handle_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
         return;
     }
     let state = window.state::<AppState>();
+    if state
+        .window_runtime
+        .lock()
+        .ok()
+        .and_then(|runtime| runtime.update_exit_status())
+        .is_some()
+    {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+        }
+        return;
+    }
     let close_will_exit = state
         .window_runtime
         .lock()
@@ -509,5 +561,25 @@ mod tests {
         let result = claim_cleanup_after_exact_scene(Ok(()), || Ok(false));
 
         assert_eq!(result, Ok(false));
+    }
+
+    #[test]
+    fn only_a_sealed_update_exit_bypasses_normal_cleanup() {
+        assert_eq!(
+            update_exit_run_decision(None),
+            UpdateExitRunDecision::Normal
+        );
+        assert_eq!(
+            update_exit_run_decision(Some(UpdateExitStatus::Prepared)),
+            UpdateExitRunDecision::PreventExit
+        );
+        assert_eq!(
+            update_exit_run_decision(Some(UpdateExitStatus::RecoveryRequired)),
+            UpdateExitRunDecision::PreventExit
+        );
+        assert_eq!(
+            update_exit_run_decision(Some(UpdateExitStatus::Sealed)),
+            UpdateExitRunDecision::AllowExitWithoutCleanup
+        );
     }
 }

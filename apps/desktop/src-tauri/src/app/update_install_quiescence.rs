@@ -1,5 +1,8 @@
 use std::{fmt, sync::Arc, time::Duration};
 
+use super::update_install_exit::{
+    seal_native_install, InstallExitOwnershipPort, InstallExitSealFailure, SealedInstallExit,
+};
 use super::update_install_gate::{
     UpdateInstallGate, UpdateInstallGateClaim, UpdateInstallGateError,
 };
@@ -194,10 +197,52 @@ impl NativeInstallQuiescence {
         operation_id: &str,
         drain_timeout: Duration,
     ) -> Result<NativeInstallLease, NativePrepareFailure> {
+        self.prepare_on_worker(operation_id, None, drain_timeout)
+            .await
+    }
+
+    /// 生产安装事务从 durable Web prepare record 继承 generation，禁止 native gate
+    /// 自行生成第二套 identity。
+    pub async fn prepare_exact(
+        &self,
+        operation_id: &str,
+        operation_generation: u64,
+        drain_timeout: Duration,
+    ) -> Result<NativeInstallLease, NativePrepareFailure> {
+        self.prepare_on_worker(operation_id, Some(operation_generation), drain_timeout)
+            .await
+    }
+
+    /// Coordinator 的 cancellation-safe worker 使用该同步入口，并把结果写入自身持有的
+    /// completion cell。这样 command future 被取消时，prepared lease 也不会随 detached
+    /// blocking task 的返回值一起丢失。
+    pub(crate) fn prepare_exact_blocking(
+        &self,
+        operation_id: &str,
+        operation_generation: u64,
+        drain_timeout: Duration,
+    ) -> Result<NativeInstallLease, NativePrepareFailure> {
+        self.prepare_blocking_with_generation(
+            operation_id,
+            Some(operation_generation),
+            drain_timeout,
+        )
+    }
+
+    async fn prepare_on_worker(
+        &self,
+        operation_id: &str,
+        operation_generation: Option<u64>,
+        drain_timeout: Duration,
+    ) -> Result<NativeInstallLease, NativePrepareFailure> {
         let coordinator = self.clone();
         let operation_id = operation_id.to_owned();
         match tauri::async_runtime::spawn_blocking(move || {
-            coordinator.prepare_blocking(&operation_id, drain_timeout)
+            coordinator.prepare_blocking_with_generation(
+                &operation_id,
+                operation_generation,
+                drain_timeout,
+            )
         })
         .await
         {
@@ -218,7 +263,22 @@ impl NativeInstallQuiescence {
         operation_id: &str,
         drain_timeout: Duration,
     ) -> Result<NativeInstallLease, NativePrepareFailure> {
-        let claim = match self.gate.claim(operation_id, drain_timeout) {
+        self.prepare_blocking_with_generation(operation_id, None, drain_timeout)
+    }
+
+    fn prepare_blocking_with_generation(
+        &self,
+        operation_id: &str,
+        operation_generation: Option<u64>,
+        drain_timeout: Duration,
+    ) -> Result<NativeInstallLease, NativePrepareFailure> {
+        let claim_result = match operation_generation {
+            Some(generation) => self
+                .gate
+                .claim_exact(operation_id, generation, drain_timeout),
+            None => self.gate.claim(operation_id, drain_timeout),
+        };
+        let claim = match claim_result {
             Ok(claim) => claim,
             Err(UpdateInstallGateError::DrainTimedOut(claim)) => {
                 let error = NativeInstallError::stable(
@@ -389,6 +449,43 @@ impl NativeInstallLease {
             .iter()
             .map(NativeOwnerReceipt::stage)
             .collect()
+    }
+
+    pub fn seal(
+        self,
+        expected_operation: &UpdateInstallGateClaim,
+        exit_owners: Arc<dyn InstallExitOwnershipPort>,
+    ) -> Result<SealedInstallExit, InstallExitSealFailure> {
+        seal_native_install(self, expected_operation, exit_owners)
+    }
+
+    pub(crate) fn validate_prepared_exact(
+        &self,
+        operation: &UpdateInstallGateClaim,
+    ) -> Result<(), NativeInstallError> {
+        if operation != &self.claim {
+            return Err(NativeInstallError::stable(
+                NativeInstallStage::Gate,
+                "UPDATE_INSTALL_CLAIM_STALE",
+            ));
+        }
+        if self.phase != NativeLeasePhase::Prepared {
+            return Err(NativeInstallError::stable(
+                NativeInstallStage::Recheck,
+                "NATIVE_INSTALL_LEASE_NOT_PREPARED",
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn recheck_prepared_exact(
+        &self,
+        operation: &UpdateInstallGateClaim,
+    ) -> Result<(), NativeInstallError> {
+        self.validate_prepared_exact(operation)?;
+        self.owners
+            .verify_prepared(&self.claim, &self.receipts)
+            .map_err(|error| NativeInstallError::owner(NativeInstallStage::Recheck, error))
     }
 
     pub fn rollback_exact(
@@ -632,6 +729,27 @@ mod tests {
         lease
             .rollback_exact(&operation)
             .expect("async prepare 的 lease 应可精确回滚");
+    }
+
+    #[test]
+    fn exact_prepare_preserves_the_web_operation_generation() {
+        let gate = UpdateInstallGate::default();
+        let owners = Arc::new(RecordingOwners::new(None, None, None));
+        let coordinator = NativeInstallQuiescence::new(gate, owners);
+
+        let mut lease = match tauri::async_runtime::block_on(coordinator.prepare_exact(
+            &"a".repeat(32),
+            23,
+            Duration::from_millis(50),
+        )) {
+            Ok(lease) => lease,
+            Err(_) => panic!("exact Web identity 应驱动 native prepare"),
+        };
+
+        assert_eq!(lease.operation().operation_id(), "a".repeat(32));
+        assert_eq!(lease.operation().generation(), 23);
+        let operation = lease.operation().clone();
+        lease.rollback_exact(&operation).unwrap();
     }
 
     #[test]

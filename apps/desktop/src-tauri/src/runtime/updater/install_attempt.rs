@@ -518,6 +518,28 @@ impl InstallAttemptStore {
         Ok(outcome)
     }
 
+    /// seal/spawn 前失败时，不得直接遗忘 marker。先把 exact attempt durable 冻结为
+    /// NotApplied reconciliation；当前进程完成 Web/native rollback 后才能消费它，
+    /// 中途崩溃则由下次启动沿同一 tombstone 重放恢复。
+    pub(crate) fn tombstone_pre_spawn_abort(
+        &self,
+        attempt: &InstallAttemptMarkerV1,
+        aborted_at: u64,
+    ) -> Result<InstallAttemptReconciliationV1, InstallAttemptError> {
+        self.complete_reconciliation(attempt, ReconciliationDisposition::NotApplied, aborted_at)?;
+        match self.recover()? {
+            InstallAttemptRecovery::Reconciled(reconciliation)
+                if reconciliation.attempt == *attempt
+                    && reconciliation.disposition == ReconciliationDisposition::NotApplied =>
+            {
+                Ok(reconciliation)
+            }
+            _ => Err(identity_conflict(
+                "pre-spawn abort 未恢复到 exact NotApplied reconciliation",
+            )),
+        }
+    }
+
     /// Web checkpoint 与 cache resolution 都成功后，消费 exact reconciliation。
     ///
     /// consumed receipt 会先于 marker/tombstone 删除落盘，因此删除任一 crash point
@@ -1789,6 +1811,26 @@ mod tests {
             store.publish(valid_input()).unwrap_err().code(),
             "UPDATE_INSTALL_ATTEMPT_IDENTITY_CONFLICT"
         );
+    }
+
+    #[test]
+    fn pre_spawn_abort_freezes_an_exact_not_applied_reconciliation() {
+        let (_file_system, store) = store();
+        let marker = store.publish(valid_input()).unwrap();
+
+        let reconciliation = store
+            .tombstone_pre_spawn_abort(&marker, marker.created_at() + 1)
+            .expect("pre-spawn abort 必须先 durable 冻结为 NotApplied");
+
+        assert_eq!(
+            reconciliation.disposition(),
+            ReconciliationDisposition::NotApplied
+        );
+        assert_eq!(reconciliation.attempt(), &marker);
+        assert!(matches!(
+            store.recover().unwrap(),
+            InstallAttemptRecovery::Reconciled(existing) if existing == reconciliation
+        ));
     }
 
     #[cfg(windows)]
