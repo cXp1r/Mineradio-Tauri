@@ -235,6 +235,12 @@ pub(crate) enum AppliedCheckpointConsumeOutcome {
     AlreadyConsumed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InstallAttemptRestorePlan {
+    RestoreRequired,
+    AlreadyRestored,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum WebQuiescenceReconciliation {
     Idle,
@@ -830,6 +836,77 @@ impl NativeWebQuiescenceStore {
             AppliedCheckpointConsumeOutcome::Consumed
         })
     }
+
+    /// 将 NotApplied/AuthenticityRejected 的 exact install-attempt 绑定转换成可重试恢复事务。
+    ///
+    /// 首次调用只接受完整 Prepared checkpoint；崩溃重试可继续同一 RollbackRequired
+    /// 事务。active record 已清理时，只有 `Restored` 且 evidence 完全相同的 completion
+    /// 才能作为成功重放，Consumed/NoOp 或不同 evidence 均 fail closed。
+    pub(crate) fn begin_install_attempt_restore(
+        &self,
+        identity: &WebQuiescenceIdentity,
+        expected_evidence: &CheckpointEvidence,
+        updated_at: u64,
+    ) -> Result<InstallAttemptRestorePlan, WebQuiescenceError> {
+        validate_identity(identity)?;
+        validate_evidence(expected_evidence)?;
+        let _guard = self.io_lock.lock().expect("web quiescence store poisoned");
+        let directory = existing_directory(&self.updater_directory)?;
+        let Some(mut record) = load_record(&directory)? else {
+            if load_checkpoint(&directory)?.is_some() {
+                return Err(WebQuiescenceError::new(
+                    "UPDATE_PLAYBACK_CHECKPOINT_ORPHANED",
+                    "播放退出 checkpoint 缺少对应的 Web 静默事务",
+                ));
+            }
+            return exact_restored_completion(&directory, identity, expected_evidence);
+        };
+
+        ensure_record_identity(&record, identity)?;
+        if !matches!(
+            record.phase,
+            WebQuiescencePhase::Prepared | WebQuiescencePhase::RollbackRequired
+        ) || record_evidence(&record).as_ref() != Some(expected_evidence)
+        {
+            return Err(install_attempt_restore_rejected());
+        }
+        ensure_record_checkpoint_matches(&directory, &record)?;
+
+        if record.rollback_acknowledged {
+            reconcile_acknowledged_rollback(&directory, &record)?;
+            return exact_restored_completion(&directory, identity, expected_evidence);
+        }
+        if record.phase == WebQuiescencePhase::Prepared {
+            mark_rollback_required_locked(&directory, &mut record, updated_at)?;
+        }
+        Ok(InstallAttemptRestorePlan::RestoreRequired)
+    }
+}
+
+fn exact_restored_completion(
+    directory: &StableDirectory,
+    identity: &WebQuiescenceIdentity,
+    expected_evidence: &CheckpointEvidence,
+) -> Result<InstallAttemptRestorePlan, WebQuiescenceError> {
+    let Some(completion) = load_completion(directory)? else {
+        return Err(stale_identity());
+    };
+    if identity_from_completion(&completion) == *identity
+        && completion.kind == WebQuiescenceCompletionKind::Restored
+        && completion.checkpoint_receipt.as_deref() == Some(expected_evidence.receipt.as_str())
+        && completion.checkpoint_digest.as_deref() == Some(expected_evidence.digest.as_str())
+    {
+        Ok(InstallAttemptRestorePlan::AlreadyRestored)
+    } else {
+        Err(install_attempt_restore_rejected())
+    }
+}
+
+fn install_attempt_restore_rejected() -> WebQuiescenceError {
+    WebQuiescenceError::new(
+        "UPDATE_INSTALL_ATTEMPT_WEB_STATE_REJECTED",
+        "install-attempt 与 exact prepared/restored Web checkpoint 不一致",
+    )
 }
 
 fn mark_rollback_required_locked(
@@ -2596,6 +2673,77 @@ mod tests {
         );
         assert!(!root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
         assert!(!root.0.join(PLAYBACK_EXIT_CHECKPOINT_FILE_NAME).exists());
+    }
+
+    #[test]
+    fn install_attempt_restore_accepts_only_exact_restored_completion() {
+        let consumed_root = TestDirectory::new("restore-rejects-consumed");
+        let consumed_store = NativeWebQuiescenceStore::with_updater_directory(&consumed_root.0);
+        let (consumed_identity, consumed_evidence) = prepared(&consumed_store);
+        consumed_store
+            .consume_applied_install(&consumed_identity, &consumed_evidence, 300)
+            .unwrap();
+        assert_eq!(
+            consumed_store
+                .begin_install_attempt_restore(&consumed_identity, &consumed_evidence, 301)
+                .unwrap_err()
+                .code(),
+            "UPDATE_INSTALL_ATTEMPT_WEB_STATE_REJECTED"
+        );
+
+        let no_op_root = TestDirectory::new("restore-rejects-no-op");
+        let no_op_store = NativeWebQuiescenceStore::with_updater_directory(&no_op_root.0);
+        let (_, no_op_identity) = begin(&no_op_store);
+        no_op_store
+            .mark_rollback_required(&no_op_identity, 400)
+            .unwrap();
+        no_op_store
+            .confirm_native_rollback(&no_op_identity, 401)
+            .unwrap();
+        no_op_store
+            .acknowledge_rollback(
+                &no_op_identity,
+                &RollbackAcknowledgement::NoOpNotPrepared,
+                402,
+            )
+            .unwrap();
+        let never_prepared_evidence = CheckpointEvidence {
+            receipt: receipt(),
+            digest: "d".repeat(64),
+        };
+        assert_eq!(
+            no_op_store
+                .begin_install_attempt_restore(&no_op_identity, &never_prepared_evidence, 403,)
+                .unwrap_err()
+                .code(),
+            "UPDATE_INSTALL_ATTEMPT_WEB_STATE_REJECTED"
+        );
+
+        let restored_root = TestDirectory::new("restore-rejects-other-evidence");
+        let restored_store = NativeWebQuiescenceStore::with_updater_directory(&restored_root.0);
+        let (restored_identity, restored_evidence) = prepared(&restored_store);
+        restored_store
+            .mark_rollback_required(&restored_identity, 500)
+            .unwrap();
+        restored_store
+            .confirm_native_rollback(&restored_identity, 501)
+            .unwrap();
+        restored_store
+            .acknowledge_rollback(
+                &restored_identity,
+                &RollbackAcknowledgement::Restored(restored_evidence.clone()),
+                502,
+            )
+            .unwrap();
+        let mut different_evidence = restored_evidence;
+        different_evidence.digest = "e".repeat(64);
+        assert_eq!(
+            restored_store
+                .begin_install_attempt_restore(&restored_identity, &different_evidence, 503)
+                .unwrap_err()
+                .code(),
+            "UPDATE_INSTALL_ATTEMPT_WEB_STATE_REJECTED"
+        );
     }
 
     #[test]

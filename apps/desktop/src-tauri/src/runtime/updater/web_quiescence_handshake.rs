@@ -1,10 +1,10 @@
 use std::{fmt, future::Future, pin::Pin, time::Duration};
 
 use super::quiescence::{
-    CheckpointEvidence, NativeWebQuiescenceStore, PlaybackExitCheckpointV1,
-    PrepareWebQuiescenceRequest, RollbackAcknowledgement, RollbackAcknowledgementOutcome,
-    RollbackWebQuiescencePlan, RollbackWebQuiescenceRequest, WebQuiescenceError,
-    WebQuiescenceIdentity,
+    CheckpointEvidence, InstallAttemptRestorePlan, NativeWebQuiescenceStore,
+    PlaybackExitCheckpointV1, PrepareWebQuiescenceRequest, RollbackAcknowledgement,
+    RollbackAcknowledgementOutcome, RollbackWebQuiescencePlan, RollbackWebQuiescenceRequest,
+    WebQuiescenceError, WebQuiescenceIdentity,
 };
 
 type WebQuiescencePortFuture<'a, T> =
@@ -216,6 +216,44 @@ impl<P: WebPlaybackQuiescencePort> WebQuiescenceHandshake<P> {
             .acknowledge_rollback(identity, &acknowledgement, updated_at)?)
     }
 
+    /// 恢复由 install-attempt marker 精确绑定的播放 checkpoint。
+    ///
+    /// 新进程不持有旧 native owner，因此先将 exact Prepared 状态持久化为
+    /// RollbackRequired，再持久化 native rollback confirmation，最后才允许 Web 恢复。
+    pub(crate) async fn restore_install_attempt(
+        &self,
+        identity: &WebQuiescenceIdentity,
+        expected_evidence: &CheckpointEvidence,
+        updated_at: u64,
+    ) -> Result<RollbackAcknowledgementOutcome, WebQuiescenceHandshakeError> {
+        match self
+            .store
+            .begin_install_attempt_restore(identity, expected_evidence, updated_at)?
+        {
+            InstallAttemptRestorePlan::AlreadyRestored => {
+                return Ok(RollbackAcknowledgementOutcome::AlreadyCompleted);
+            }
+            InstallAttemptRestorePlan::RestoreRequired => {}
+        }
+
+        let request = self.store.confirm_native_rollback(identity, updated_at)?;
+        if request.checkpoint.as_ref().map(|value| &value.evidence) != Some(expected_evidence) {
+            return Err(WebQuiescenceHandshakeError::stale_acknowledgement());
+        }
+        let acknowledgement = bounded_port_call(
+            self.acknowledgement_timeout,
+            self.port.rollback(&request, self.acknowledgement_timeout),
+        )
+        .await
+        .map_err(WebQuiescenceHandshakeError::port)?;
+        if acknowledgement != RollbackAcknowledgement::Restored(expected_evidence.clone()) {
+            return Err(WebQuiescenceHandshakeError::stale_acknowledgement());
+        }
+        Ok(self
+            .store
+            .acknowledge_rollback(identity, &acknowledgement, updated_at)?)
+    }
+
     pub(crate) fn store(&self) -> &NativeWebQuiescenceStore {
         &self.store
     }
@@ -265,6 +303,7 @@ mod tests {
         stage: Mutex<VecDeque<Result<PlaybackExitCheckpointV1, WebQuiescencePortFailure>>>,
         confirm: Mutex<VecDeque<Result<PreparedWebAcknowledgement, WebQuiescencePortFailure>>>,
         rollback: Mutex<VecDeque<Result<RollbackAcknowledgement, WebQuiescencePortFailure>>>,
+        rollback_calls: Mutex<usize>,
     }
 
     impl WebPlaybackQuiescencePort for FakePort {
@@ -304,6 +343,7 @@ mod tests {
             _timeout: Duration,
         ) -> WebQuiescencePortFuture<'a, RollbackAcknowledgement> {
             Box::pin(async move {
+                *self.rollback_calls.lock().unwrap() += 1;
                 self.rollback
                     .lock()
                     .unwrap()
@@ -349,6 +389,55 @@ mod tests {
         }
     }
 
+    struct NativeFirstRestorePort {
+        updater_directory: PathBuf,
+    }
+
+    impl WebPlaybackQuiescencePort for NativeFirstRestorePort {
+        fn stage_checkpoint<'a>(
+            &'a self,
+            _request: &'a PrepareWebQuiescenceRequest,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, PlaybackExitCheckpointV1> {
+            Box::pin(async { unreachable!("install-attempt 恢复不会重新 stage checkpoint") })
+        }
+
+        fn confirm_checkpoint_persisted<'a>(
+            &'a self,
+            _identity: &'a WebQuiescenceIdentity,
+            _evidence: &'a CheckpointEvidence,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, PreparedWebAcknowledgement> {
+            Box::pin(async {
+                unreachable!("install-attempt 恢复不会重新 confirm checkpoint")
+            })
+        }
+
+        fn rollback<'a>(
+            &'a self,
+            request: &'a RollbackWebQuiescenceRequest,
+            _timeout: Duration,
+        ) -> WebQuiescencePortFuture<'a, RollbackAcknowledgement> {
+            Box::pin(async move {
+                let state: serde_json::Value = serde_json::from_slice(
+                    &fs::read(self.updater_directory.join(WEB_QUIESCENCE_FILE_NAME))
+                        .expect("Web rollback 前 durable record 应存在"),
+                )
+                .unwrap();
+                assert_eq!(state["phase"], "rollback-required");
+                assert_eq!(state["nativeRollbackCompleted"], true);
+                Ok(RollbackAcknowledgement::Restored(
+                    request
+                        .checkpoint
+                        .as_ref()
+                        .expect("install-attempt 必须绑定 checkpoint")
+                        .evidence
+                        .clone(),
+                ))
+            })
+        }
+    }
+
     fn checkpoint(operation_id: &str) -> PlaybackExitCheckpointV1 {
         PlaybackExitCheckpointV1 {
             schema: "playback-exit-checkpoint-v1".into(),
@@ -382,6 +471,203 @@ mod tests {
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
         tauri::async_runtime::block_on(future)
+    }
+
+    #[test]
+    fn install_attempt_restore_persists_native_confirmation_before_web_and_cleans_exact_state() {
+        let root = TestDirectory::new("install-attempt-native-first");
+        let prepare = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        let prepared = block_on(prepare.prepare(&candidate_id(), 100)).unwrap();
+        drop(prepare);
+
+        let restore = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            NativeFirstRestorePort {
+                updater_directory: root.0.clone(),
+            },
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(restore.restore_install_attempt(&prepared.identity, &prepared.evidence, 200,))
+                .unwrap(),
+            RollbackAcknowledgementOutcome::Completed
+        );
+        assert!(!root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
+        assert!(!root
+            .0
+            .join(super::super::quiescence::PLAYBACK_EXIT_CHECKPOINT_FILE_NAME)
+            .exists());
+    }
+
+    #[test]
+    fn install_attempt_restore_rejects_marker_evidence_mismatch_before_native_or_web_mutation() {
+        let root = TestDirectory::new("install-attempt-evidence-mismatch");
+        let prepare = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        let prepared = block_on(prepare.prepare(&candidate_id(), 100)).unwrap();
+        drop(prepare);
+
+        let port = FakePort::default();
+        let mut wrong = prepared.evidence.clone();
+        wrong.digest = "f".repeat(64);
+        let restore = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            port,
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(restore.restore_install_attempt(&prepared.identity, &wrong, 200))
+                .unwrap_err()
+                .code(),
+            "UPDATE_INSTALL_ATTEMPT_WEB_STATE_REJECTED"
+        );
+        assert_eq!(record(&root)["phase"], "prepared");
+        assert_eq!(record(&root)["nativeRollbackCompleted"], false);
+        assert_eq!(*restore.port.rollback_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn install_attempt_restore_timeout_stays_retryable_and_completed_retry_skips_web() {
+        let root = TestDirectory::new("install-attempt-timeout-retry");
+        let prepare = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        let prepared = block_on(prepare.prepare(&candidate_id(), 100)).unwrap();
+        drop(prepare);
+
+        let timeout_port = FakePort::default();
+        timeout_port
+            .rollback
+            .lock()
+            .unwrap()
+            .push_back(Err(WebQuiescencePortFailure::TimedOut));
+        let first = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            timeout_port,
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(first.restore_install_attempt(&prepared.identity, &prepared.evidence, 200,))
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_ACK_TIMEOUT"
+        );
+        assert_eq!(record(&root)["phase"], "rollback-required");
+        assert_eq!(record(&root)["nativeRollbackCompleted"], true);
+        assert_eq!(record(&root)["rollbackAcknowledged"], false);
+        drop(first);
+
+        let retry = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(retry.restore_install_attempt(&prepared.identity, &prepared.evidence, 300,))
+                .unwrap(),
+            RollbackAcknowledgementOutcome::Completed
+        );
+        drop(retry);
+
+        // 模拟 Web 已恢复、Rust completion 已落盘，但调用方没有收到成功 reply。
+        let completed_retry = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(completed_retry.restore_install_attempt(
+                &prepared.identity,
+                &prepared.evidence,
+                400,
+            ))
+            .unwrap(),
+            RollbackAcknowledgementOutcome::AlreadyCompleted
+        );
+        assert_eq!(*completed_retry.port.rollback_calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn install_attempt_restore_port_failure_preserves_durable_rollback_state() {
+        let root = TestDirectory::new("install-attempt-port-failure");
+        let prepare = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        let prepared = block_on(prepare.prepare(&candidate_id(), 100)).unwrap();
+        drop(prepare);
+
+        let failed_port = FakePort::default();
+        failed_port
+            .rollback
+            .lock()
+            .unwrap()
+            .push_back(Err(WebQuiescencePortFailure::Failed));
+        let restore = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            failed_port,
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(restore.restore_install_attempt(&prepared.identity, &prepared.evidence, 200,))
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_ACK_FAILED"
+        );
+        assert_eq!(record(&root)["phase"], "rollback-required");
+        assert_eq!(record(&root)["nativeRollbackCompleted"], true);
+        assert_eq!(record(&root)["rollbackAcknowledged"], false);
+        assert!(root
+            .0
+            .join(super::super::quiescence::PLAYBACK_EXIT_CHECKPOINT_FILE_NAME)
+            .exists());
+    }
+
+    #[test]
+    fn install_attempt_restore_rejects_non_restored_ack_without_clearing_checkpoint() {
+        let root = TestDirectory::new("install-attempt-stale-ack");
+        let prepare = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            FakePort::default(),
+            Duration::from_secs(2),
+        );
+        let prepared = block_on(prepare.prepare(&candidate_id(), 100)).unwrap();
+        drop(prepare);
+
+        let stale_port = FakePort::default();
+        stale_port
+            .rollback
+            .lock()
+            .unwrap()
+            .push_back(Ok(RollbackAcknowledgement::NoOpNotPrepared));
+        let restore = WebQuiescenceHandshake::new(
+            NativeWebQuiescenceStore::with_updater_directory(&root.0),
+            stale_port,
+            Duration::from_secs(2),
+        );
+        assert_eq!(
+            block_on(restore.restore_install_attempt(&prepared.identity, &prepared.evidence, 200,))
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_STALE_ACKNOWLEDGEMENT"
+        );
+        assert_eq!(record(&root)["phase"], "rollback-required");
+        assert_eq!(record(&root)["nativeRollbackCompleted"], true);
+        assert_eq!(record(&root)["rollbackAcknowledged"], false);
+        assert!(root
+            .0
+            .join(super::super::quiescence::PLAYBACK_EXIT_CHECKPOINT_FILE_NAME)
+            .exists());
     }
 
     #[test]
