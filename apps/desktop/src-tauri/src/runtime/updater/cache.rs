@@ -83,6 +83,92 @@ pub(crate) struct CacheRecoveryFault {
     pub(crate) message: &'static str,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CacheRecoveryFaultKind {
+    Blocked,
+    IdentityConflict,
+    AuthenticityRejected,
+}
+
+impl CacheRecoveryFault {
+    pub(crate) fn kind(&self) -> CacheRecoveryFaultKind {
+        match self.code {
+            "UPDATE_CACHE_IDENTITY_CONFLICT" => CacheRecoveryFaultKind::IdentityConflict,
+            "UPDATE_CACHE_AUTHENTICITY_REJECTED" => CacheRecoveryFaultKind::AuthenticityRejected,
+            _ => CacheRecoveryFaultKind::Blocked,
+        }
+    }
+}
+
+/// 从 durable install-attempt marker 提取的六轴安装包身份。
+///
+/// 仓库、tag、target 与 NSIS 包名不由调用方自由传入，而是由版本和固定发布策略派生，
+/// 避免启动协调器把不受信任的 metadata 再包装成“期望值”。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InstallAttemptArtifactIdentity {
+    candidate_id: String,
+    version: String,
+    provenance_sha256: String,
+    metadata_digest: String,
+    installer_sha256: String,
+    installer_size: u64,
+}
+
+impl InstallAttemptArtifactIdentity {
+    pub(crate) fn new(
+        candidate_id: impl Into<String>,
+        version: impl Into<String>,
+        provenance_sha256: impl Into<String>,
+        metadata_digest: impl Into<String>,
+        installer_sha256: impl Into<String>,
+        installer_size: u64,
+    ) -> Result<Self, CacheRecoveryFault> {
+        let identity = Self {
+            candidate_id: candidate_id.into(),
+            version: version.into(),
+            provenance_sha256: provenance_sha256.into(),
+            metadata_digest: metadata_digest.into(),
+            installer_sha256: installer_sha256.into(),
+            installer_size,
+        };
+        if !is_lower_hex(&identity.candidate_id, 64)
+            || parse_stable_version(&identity.version).is_err()
+            || !is_lower_hex(&identity.provenance_sha256, 64)
+            || !is_lower_hex(&identity.metadata_digest, 64)
+            || !is_lower_hex(&identity.installer_sha256, 64)
+            || identity.installer_size == 0
+            || identity.installer_size > MAX_INSTALLER_BYTES
+        {
+            return Err(identity_conflict_fault());
+        }
+        Ok(identity)
+    }
+
+    pub(crate) fn candidate_id(&self) -> &str {
+        &self.candidate_id
+    }
+
+    pub(crate) fn version(&self) -> &str {
+        &self.version
+    }
+
+    pub(crate) fn provenance_sha256(&self) -> &str {
+        &self.provenance_sha256
+    }
+
+    pub(crate) fn metadata_digest(&self) -> &str {
+        &self.metadata_digest
+    }
+
+    pub(crate) fn installer_sha256(&self) -> &str {
+        &self.installer_sha256
+    }
+
+    pub(crate) fn installer_size(&self) -> u64 {
+        self.installer_size
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct RecoveredVerifiedCache {
     pub(crate) release: NormalizedRelease,
@@ -353,6 +439,42 @@ impl VerifiedCacheStore {
         Ok(metadata_digest)
     }
 
+    /// 对 install-attempt 指向的 exact cache pair 做只读完整复核。
+    ///
+    /// 该入口有意绕过普通启动恢复的版本清理、Web marker 与 install-attempt marker
+    /// 阻断，但不会清理、隔离或发布 ready candidate。任何失败都会保留现场证据。
+    pub(crate) async fn inspect_install_attempt_artifact(
+        &self,
+        expected: &InstallAttemptArtifactIdentity,
+    ) -> Result<RecoveredVerifiedCache, CacheRecoveryFault> {
+        let cache = match StableDirectory::open_existing(self.cache_directory()) {
+            Ok(Some(directory)) => std::sync::Arc::new(directory),
+            Ok(None) => return Err(install_attempt_cache_missing_fault()),
+            Err(_) => return Err(corrupt_fault()),
+        };
+        if !self.has_exact_cache_pair(&cache)? {
+            return Err(install_attempt_cache_missing_fault());
+        }
+
+        let raw_document = read_bounded_candidate_metadata(&cache)?;
+        let document: CandidateCacheDocumentV1 =
+            serde_json::from_slice(&raw_document).map_err(|_| corrupt_fault())?;
+        if document.schema_version != CACHE_SCHEMA_VERSION
+            || serde_json::to_vec(&document).map_err(|_| corrupt_fault())? != raw_document
+        {
+            return Err(corrupt_fault());
+        }
+        let actual_metadata_digest =
+            candidate_digest(&document.candidate).map_err(|_| corrupt_fault())?;
+        if actual_metadata_digest != document.metadata_digest
+            || !candidate_matches_install_attempt(&document, expected)
+        {
+            return Err(identity_conflict_fault());
+        }
+
+        self.revalidate_verified_document(cache, document).await
+    }
+
     pub(crate) async fn recover(&self, current_version: &str) -> CacheRecoveryOutcome {
         let updater = match StableDirectory::open_existing(&self.updater_directory) {
             Ok(Some(directory)) => directory,
@@ -365,6 +487,13 @@ impl VerifiedCacheStore {
             Err(_) => return CacheRecoveryOutcome::Blocked(cleanup_blocked_fault()),
         };
         match updater.open_regular_read(OsStr::new("install-attempt-v1.json")) {
+            Ok(Some(_)) => {
+                return CacheRecoveryOutcome::Blocked(reconciliation_required_fault());
+            }
+            Ok(None) => {}
+            Err(_) => return CacheRecoveryOutcome::Blocked(reconciliation_required_fault()),
+        }
+        match updater.open_regular_read(OsStr::new("install-attempt-reconciliation-v1.json")) {
             Ok(Some(_)) => {
                 return CacheRecoveryOutcome::Blocked(reconciliation_required_fault());
             }
@@ -705,6 +834,16 @@ impl VerifiedCacheStore {
             return Ok(None);
         }
 
+        self.revalidate_verified_document(cache, document)
+            .await
+            .map(Some)
+    }
+
+    async fn revalidate_verified_document(
+        &self,
+        cache: std::sync::Arc<StableDirectory>,
+        document: CandidateCacheDocumentV1,
+    ) -> Result<RecoveredVerifiedCache, CacheRecoveryFault> {
         let raw_provenance = STANDARD
             .decode(&document.candidate.provenance_payload_base64)
             .map_err(|_| authenticity_fault())?;
@@ -738,11 +877,11 @@ impl VerifiedCacheStore {
         );
         let release =
             NormalizedRelease::from_verified(evidence, std::iter::empty::<String>(), None);
-        Ok(Some(RecoveredVerifiedCache {
+        Ok(RecoveredVerifiedCache {
             release,
             artifact,
             metadata_digest: document.metadata_digest,
-        }))
+        })
     }
 
     fn has_exact_cache_pair(&self, cache: &StableDirectory) -> Result<bool, CacheRecoveryFault> {
@@ -964,6 +1103,33 @@ fn candidate_digest(candidate: &CachedCandidateV1) -> Result<String, VerifiedCac
     Ok(format!("{:x}", Sha256::digest(canonical)))
 }
 
+fn candidate_matches_install_attempt(
+    document: &CandidateCacheDocumentV1,
+    expected: &InstallAttemptArtifactIdentity,
+) -> bool {
+    let candidate = &document.candidate;
+    candidate.source_id == CACHE_SOURCE_ID
+        && candidate.candidate_id == expected.candidate_id
+        && candidate.version == expected.version
+        && candidate.provenance_sha256 == expected.provenance_sha256
+        && document.metadata_digest == expected.metadata_digest
+        && candidate.installer_sha256 == expected.installer_sha256
+        && candidate.expected_size == expected.installer_size
+        && candidate.actual_size == expected.installer_size
+        && candidate.repository == OFFICIAL_REPOSITORY
+        && candidate.tag == format!("v{}", expected.version)
+        && candidate.target == CACHE_TARGET
+        && candidate.asset_name == format!("MineRadio-Tauri_{}_x64-setup.exe", expected.version)
+        && candidate.downloaded_at <= candidate.verified_at
+}
+
+fn is_lower_hex(value: &str, expected_len: usize) -> bool {
+    value.len() == expected_len
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
 fn validate_fixed_candidate_fields(
     candidate: &CachedCandidateV1,
 ) -> Result<(), CacheRecoveryFault> {
@@ -1175,6 +1341,20 @@ fn authenticity_fault() -> CacheRecoveryFault {
     }
 }
 
+fn identity_conflict_fault() -> CacheRecoveryFault {
+    CacheRecoveryFault {
+        code: "UPDATE_CACHE_IDENTITY_CONFLICT",
+        message: "安装尝试与已验证更新缓存 identity 不一致",
+    }
+}
+
+fn install_attempt_cache_missing_fault() -> CacheRecoveryFault {
+    CacheRecoveryFault {
+        code: "UPDATE_CACHE_INSTALL_ATTEMPT_ARTIFACT_MISSING",
+        message: "安装尝试对应的完整 verified cache pair 不存在",
+    }
+}
+
 fn cleanup_blocked_fault() -> CacheRecoveryFault {
     CacheRecoveryFault {
         code: "UPDATE_CACHE_CLEANUP_BLOCKED",
@@ -1262,6 +1442,289 @@ mod tests {
             })
             .expect("fixture provenance 应有效");
         (encoded_public_key, evidence)
+    }
+
+    fn install_attempt_identity(metadata_digest: String) -> InstallAttemptArtifactIdentity {
+        InstallAttemptArtifactIdentity::new(
+            "1f524da9660c738e349f342d1e3f0bc9da3b28b9c4842636475ccdde59b9ee0e",
+            "1.2.3",
+            "8f0e1c18d801bde833d2aec15adca1bc6b49f19ad81b4c4300655fb0350f29a6",
+            metadata_digest,
+            "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+            9,
+        )
+        .expect("fixture install-attempt identity 应有效")
+    }
+
+    #[test]
+    fn install_attempt_inspection_bypasses_version_and_pending_marker_gates() {
+        tauri::async_runtime::block_on(async {
+            for current_version in ["1.2.3", "9.0.0"] {
+                let root = TestDirectory::new();
+                let (public_key, evidence) = fixture();
+                let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+                let cache = root.0.join("cache-v1");
+                std::fs::create_dir(&cache).unwrap();
+                std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+                let metadata_digest = store
+                    .commit_verified(
+                        &evidence,
+                        9,
+                        "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                        10,
+                        11,
+                    )
+                    .await
+                    .unwrap();
+                std::fs::write(root.0.join("install-attempt-v1.json"), b"pending").unwrap();
+                std::fs::write(
+                    root.0.join("install-attempt-reconciliation-v1.json"),
+                    b"reconciled",
+                )
+                .unwrap();
+                std::fs::write(root.0.join("web-quiescence-v1.json"), b"prepared").unwrap();
+
+                let recovered = store
+                    .inspect_install_attempt_artifact(&install_attempt_identity(metadata_digest))
+                    .await
+                    .expect("同版/低版缓存和 reconciliation marker 不得阻断 exact inspect");
+
+                assert_eq!(recovered.release.version, "1.2.3");
+                assert_eq!(recovered.artifact.size(), 9);
+                assert!(cache.join("candidate.json").is_file());
+                assert!(cache.join("installer.exe").is_file());
+                drop(recovered);
+
+                std::fs::remove_file(root.0.join("install-attempt-v1.json")).unwrap();
+                std::fs::remove_file(root.0.join("install-attempt-reconciliation-v1.json"))
+                    .unwrap();
+                std::fs::remove_file(root.0.join("web-quiescence-v1.json")).unwrap();
+                let ordinary = store.recover(current_version).await;
+                assert!(matches!(
+                    ordinary,
+                    CacheRecoveryOutcome::Empty {
+                        fault: None,
+                        quarantine: None
+                    }
+                ));
+            }
+        });
+    }
+
+    #[test]
+    fn install_attempt_identity_mismatch_fails_closed_without_mutating_evidence() {
+        tauri::async_runtime::block_on(async {
+            for axis in [
+                "candidate",
+                "version",
+                "provenance",
+                "metadata",
+                "installer-sha256",
+                "installer-size",
+            ] {
+                let root = TestDirectory::new();
+                let (public_key, evidence) = fixture();
+                let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+                let cache = root.0.join("cache-v1");
+                std::fs::create_dir(&cache).unwrap();
+                std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+                let metadata_digest = store
+                    .commit_verified(
+                        &evidence,
+                        9,
+                        "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                        10,
+                        11,
+                    )
+                    .await
+                    .unwrap();
+                let metadata_before = std::fs::read(cache.join("candidate.json")).unwrap();
+                let installer_before = std::fs::read(cache.join("installer.exe")).unwrap();
+                let mut expected = install_attempt_identity(metadata_digest);
+                match axis {
+                    "candidate" => {
+                        expected.candidate_id =
+                            "2f524da9660c738e349f342d1e3f0bc9da3b28b9c4842636475ccdde59b9ee0e"
+                                .into()
+                    }
+                    "version" => expected.version = "1.2.4".into(),
+                    "provenance" => {
+                        expected.provenance_sha256 =
+                            "7f0e1c18d801bde833d2aec15adca1bc6b49f19ad81b4c4300655fb0350f29a6"
+                                .into()
+                    }
+                    "metadata" => {
+                        expected.metadata_digest =
+                            "7e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                                .into()
+                    }
+                    "installer-sha256" => {
+                        expected.installer_sha256 =
+                            "8c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                                .into()
+                    }
+                    "installer-size" => expected.installer_size = 10,
+                    _ => unreachable!("identity axis 应穷尽"),
+                }
+
+                let fault = store
+                    .inspect_install_attempt_artifact(&expected)
+                    .await
+                    .expect_err("任一 install-attempt identity 轴不一致都必须 fail closed");
+
+                assert_eq!(fault.kind(), CacheRecoveryFaultKind::IdentityConflict);
+                assert_eq!(fault.code, "UPDATE_CACHE_IDENTITY_CONFLICT");
+                assert_eq!(
+                    std::fs::read(cache.join("candidate.json")).unwrap(),
+                    metadata_before
+                );
+                assert_eq!(
+                    std::fs::read(cache.join("installer.exe")).unwrap(),
+                    installer_before
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn install_attempt_metadata_digest_or_fixed_origin_mismatch_is_identity_conflict() {
+        tauri::async_runtime::block_on(async {
+            for mutation in ["stored-digest", "repository"] {
+                let root = TestDirectory::new();
+                let (public_key, evidence) = fixture();
+                let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+                let cache = root.0.join("cache-v1");
+                std::fs::create_dir(&cache).unwrap();
+                std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+                let metadata_digest = store
+                    .commit_verified(
+                        &evidence,
+                        9,
+                        "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                        10,
+                        11,
+                    )
+                    .await
+                    .unwrap();
+                let path = cache.join("candidate.json");
+                let mut document: CandidateCacheDocumentV1 =
+                    serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+                let mut expected = install_attempt_identity(metadata_digest);
+                match mutation {
+                    "stored-digest" => {
+                        document.metadata_digest =
+                            "7e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"
+                                .into();
+                    }
+                    "repository" => {
+                        document.candidate.repository = "attacker/example".into();
+                        document.metadata_digest = candidate_digest(&document.candidate).unwrap();
+                        expected.metadata_digest = document.metadata_digest.clone();
+                    }
+                    _ => unreachable!("metadata mutation 应穷尽"),
+                }
+                let mutated = serde_json::to_vec(&document).unwrap();
+                std::fs::write(&path, &mutated).unwrap();
+
+                let fault = store
+                    .inspect_install_attempt_artifact(&expected)
+                    .await
+                    .expect_err("metadata digest 或固定来源字段不一致必须是 identity conflict");
+
+                assert_eq!(fault.kind(), CacheRecoveryFaultKind::IdentityConflict);
+                assert_eq!(fault.code, "UPDATE_CACHE_IDENTITY_CONFLICT");
+                assert_eq!(std::fs::read(&path).unwrap(), mutated);
+                assert_eq!(
+                    std::fs::read(cache.join("installer.exe")).unwrap(),
+                    b"installer"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn install_attempt_missing_or_malformed_cache_is_blocked_without_cleanup() {
+        tauri::async_runtime::block_on(async {
+            let (public_key, _) = fixture();
+            let missing_root = TestDirectory::new();
+            let missing_store = VerifiedCacheStore::new(&missing_root.0, public_key).unwrap();
+            let fault = missing_store
+                .inspect_install_attempt_artifact(&install_attempt_identity(
+                    "8e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c".into(),
+                ))
+                .await
+                .expect_err("缺失 exact cache pair 必须 fail closed");
+            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Blocked);
+            assert_eq!(fault.code, "UPDATE_CACHE_INSTALL_ATTEMPT_ARTIFACT_MISSING");
+
+            let malformed_root = TestDirectory::new();
+            let (public_key, _) = fixture();
+            let malformed_store = VerifiedCacheStore::new(&malformed_root.0, public_key).unwrap();
+            let cache = malformed_root.0.join("cache-v1");
+            std::fs::create_dir(&cache).unwrap();
+            std::fs::write(cache.join("candidate.json"), b"{not-json}").unwrap();
+            std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+
+            let fault = malformed_store
+                .inspect_install_attempt_artifact(&install_attempt_identity(
+                    "8e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c".into(),
+                ))
+                .await
+                .expect_err("损坏 metadata 必须 fail closed");
+
+            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Blocked);
+            assert_eq!(fault.code, "UPDATE_CACHE_CORRUPT");
+            assert_eq!(
+                std::fs::read(cache.join("candidate.json")).unwrap(),
+                b"{not-json}"
+            );
+            assert_eq!(
+                std::fs::read(cache.join("installer.exe")).unwrap(),
+                b"installer"
+            );
+        });
+    }
+
+    #[test]
+    fn install_attempt_authenticity_failure_preserves_exact_cache_evidence() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let (public_key, evidence) = fixture();
+            let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+            let cache = root.0.join("cache-v1");
+            std::fs::create_dir(&cache).unwrap();
+            std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+            let metadata_digest = store
+                .commit_verified(
+                    &evidence,
+                    9,
+                    "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                    10,
+                    11,
+                )
+                .await
+                .unwrap();
+            let metadata_before = std::fs::read(cache.join("candidate.json")).unwrap();
+            std::fs::write(cache.join("installer.exe"), b"tampered!").unwrap();
+
+            let fault = store
+                .inspect_install_attempt_artifact(&install_attempt_identity(metadata_digest))
+                .await
+                .expect_err("exact identity 后安装包 hash/Minisign 失败必须拒绝真实性");
+
+            assert_eq!(fault.kind(), CacheRecoveryFaultKind::AuthenticityRejected);
+            assert_eq!(fault.code, "UPDATE_CACHE_AUTHENTICITY_REJECTED");
+            assert_eq!(
+                std::fs::read(cache.join("candidate.json")).unwrap(),
+                metadata_before
+            );
+            assert_eq!(
+                std::fs::read(cache.join("installer.exe")).unwrap(),
+                b"tampered!"
+            );
+            assert!(!root.0.join(QUARANTINE_JOURNAL_FILE_NAME).exists());
+            assert!(!root.0.join("cache-delete-v1.json").exists());
+        });
     }
 
     #[test]
@@ -1679,6 +2142,41 @@ mod tests {
             let outcome = store.recover("1.2.3").await;
             let CacheRecoveryOutcome::Blocked(fault) = outcome else {
                 panic!("install-attempt 证据存在时必须先阻断普通 cache cleanup: {outcome:?}");
+            };
+            assert_eq!(fault.code, "UPDATE_INSTALL_RECONCILIATION_REQUIRED");
+            assert!(cache.join("candidate.json").exists());
+            assert!(cache.join("installer.exe").exists());
+        });
+    }
+
+    #[test]
+    fn install_reconciliation_tombstone_preserves_cache_and_blocks_ordinary_cleanup() {
+        tauri::async_runtime::block_on(async {
+            let root = TestDirectory::new();
+            let (public_key, evidence) = fixture();
+            let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+            let cache = root.0.join("cache-v1");
+            std::fs::create_dir(&cache).unwrap();
+            std::fs::write(cache.join("installer.exe"), b"installer").unwrap();
+            store
+                .commit_verified(
+                    &evidence,
+                    9,
+                    "9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c",
+                    10,
+                    11,
+                )
+                .await
+                .unwrap();
+            std::fs::write(
+                root.0.join("install-attempt-reconciliation-v1.json"),
+                b"pending",
+            )
+            .unwrap();
+
+            let outcome = store.recover("1.2.3").await;
+            let CacheRecoveryOutcome::Blocked(fault) = outcome else {
+                panic!("reconciliation tombstone 存在时必须阻断普通 cache cleanup: {outcome:?}");
             };
             assert_eq!(fault.code, "UPDATE_INSTALL_RECONCILIATION_REQUIRED");
             assert!(cache.join("candidate.json").exists());
