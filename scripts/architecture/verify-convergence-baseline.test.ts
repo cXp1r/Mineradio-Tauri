@@ -59,7 +59,7 @@ const d0InventoryCapabilities = [
 	["lyrics.stage-v2", "implemented", "P0", "parity", "none"],
 	["visual.cursor-activity", "implemented", "P0", "parity", "none"],
 	["visual.shelf-cursor-layer", "implemented", "P0", "parity", "none"],
-	["visual.sonic-workshop", "blocked", "P0", "parity", "provenance-decision"],
+	["visual.sonic-workshop", "missing", "P0", "parity", "none"],
 	["wallpaper.idle-dispose", "implemented", "P0", "parity", "none"],
 	["playback.startup-resume", "missing", "P0", "parity", "none"],
 	["queue.drag-sort", "missing", "P1", "parity", "none"],
@@ -111,7 +111,7 @@ const d0SourceMap = [
 	"| lyrics.nested-render-base | implemented | parity | D1 layer characterization |",
 	"| visual.cursor-shelf-layer | implemented | parity | D1 cursor and Shelf runtime |",
 	"| updater.github-release | partial | architecture-replacement | D2 signed GitHub Update Runtime |",
-	"| visual.sonic-workshop | blocked | parity | independent CmzYa / 3747222633 provenance decision |",
+	"| visual.sonic-workshop | missing | parity | independent CmzYa / 3747222633 migration-pending Module |",
 	"| wallpaper.idle-dispose | implemented | parity | Rust idle and repeated dispose tests |",
 ].join("\n");
 const withActiveUpstreamIdentity = (body: string) => `${activeUpstreamIdentity}\n\n${body}`;
@@ -244,7 +244,7 @@ test("D0 source map requires every reviewed v2.0.3 delta", () => {
 	const errors = validateConvergenceBaseline({
 		...validDocuments,
 		upstreamSourceMap: validDocuments.upstreamSourceMap.replace(
-			"| visual.sonic-workshop | blocked | parity | independent CmzYa / 3747222633 provenance decision |\n",
+			"| visual.sonic-workshop | missing | parity | independent CmzYa / 3747222633 migration-pending Module |\n",
 			"",
 		),
 	});

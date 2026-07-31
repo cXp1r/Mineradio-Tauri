@@ -26,7 +26,7 @@ const D0_INVENTORY_CAPABILITIES = new Map([
 	["lyrics.stage-v2", ["implemented", "P0", "parity", "none"]],
 	["visual.cursor-activity", ["implemented", "P0", "parity", "none"]],
 	["visual.shelf-cursor-layer", ["implemented", "P0", "parity", "none"]],
-	["visual.sonic-workshop", ["blocked", "P0", "parity", "provenance-decision"]],
+	["visual.sonic-workshop", ["missing", "P0", "parity", "none"]],
 	["wallpaper.idle-dispose", ["implemented", "P0", "parity", "none"]],
 	["playback.startup-resume", ["missing", "P0", "parity", "none"]],
 	["queue.drag-sort", ["missing", "P1", "parity", "none"]],
@@ -52,7 +52,7 @@ const D0_SOURCE_MAP_DELTAS = new Map([
 	["lyrics.nested-render-base", ["implemented", "parity"]],
 	["visual.cursor-shelf-layer", ["implemented", "parity"]],
 	["updater.github-release", ["partial", "architecture-replacement"]],
-	["visual.sonic-workshop", ["blocked", "parity"]],
+	["visual.sonic-workshop", ["missing", "parity"]],
 	["wallpaper.idle-dispose", ["implemented", "parity"]],
 ]);
 const D0_SOURCE_MAP_COLUMNS = [

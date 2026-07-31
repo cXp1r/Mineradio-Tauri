@@ -20,7 +20,7 @@
 | lyrics.nested-render-base | implemented | parity | 2.0.3 nested row/context/readability group 已由唯一 effective 38/24 base 驱动；current/outgoing/prewarm/async attach 与真实 Three.js render-list characterization 均有 D1 证据 |
 | visual.cursor-shelf-layer | implemented | parity | Web cursor runtime 实现 2500ms auto-hide、五类活动、visibility/dispose 与 `body.cursor-hidden`，并以 selection-preserving policy 驱动 passive Shelf lift/foreground gate |
 | updater.github-release | partial | architecture-replacement | 上游 2.0.3 使用外部 HTTPS 网盘页并交浏览器打开；Tauri 明确采用 GitHub Release + signed Update Runtime，不实现网盘/browser-only 模型 |
-| visual.sonic-workshop | blocked | parity | preset 8 作者 CmzYa、Steam Workshop project `3747222633` 与 vendor bundle 独立于 Sonic Topography；等待单独 provenance/再分发决定，不复用 Ajin 来源链 |
+| visual.sonic-workshop | missing | parity | 维护者已选择 migration-pending：未来以独立 visual Module 重实现 CmzYa / Workshop `3747222633` 的可观察行为；当前不复制 vendor bundle，legacy numeric `8` 继续迁为 Sonic Topography `7` |
 | wallpaper.idle-dispose | implemented | parity | Rust Wallpaper Runtime 的 idle dispose 与 repeated dispose 自动测试已覆盖；无需以 Windows 实机验证替代代码结论 |
 
 除 Sonic Topography 外，本文件只把上游当作行为、参数和恢复语义证据，不继承其全局脚本组织方式。Sonic 依据已确认的来源链、维护者审阅的公开合作证据与项目决策采用直接迁移；该证据不等于书面授权或许可放宽，实施仍须适配 visual-engine 的 scheduler、resource scope、typed settings 和生命周期 seam。
