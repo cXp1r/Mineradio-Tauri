@@ -86,6 +86,8 @@ pub(crate) struct CacheRecoveryFault {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheRecoveryFaultKind {
     Blocked,
+    Missing,
+    Corrupt,
     IdentityConflict,
     AuthenticityRejected,
 }
@@ -93,6 +95,8 @@ pub(crate) enum CacheRecoveryFaultKind {
 impl CacheRecoveryFault {
     pub(crate) fn kind(&self) -> CacheRecoveryFaultKind {
         match self.code {
+            "UPDATE_CACHE_INSTALL_ATTEMPT_ARTIFACT_MISSING" => CacheRecoveryFaultKind::Missing,
+            "UPDATE_CACHE_CORRUPT" => CacheRecoveryFaultKind::Corrupt,
             "UPDATE_CACHE_IDENTITY_CONFLICT" => CacheRecoveryFaultKind::IdentityConflict,
             "UPDATE_CACHE_AUTHENTICITY_REJECTED" => CacheRecoveryFaultKind::AuthenticityRejected,
             _ => CacheRecoveryFaultKind::Blocked,
@@ -174,6 +178,8 @@ pub(crate) struct RecoveredVerifiedCache {
     pub(crate) release: NormalizedRelease,
     pub(crate) artifact: VerifiedInstallerArtifact,
     pub(crate) metadata_digest: String,
+    /// 启动协调附加的稳定诊断；不改变 verified candidate 的身份与 authority。
+    pub(crate) recovery_fault: Option<CacheRecoveryFault>,
 }
 
 #[derive(Debug, Clone)]
@@ -266,6 +272,35 @@ pub(crate) fn persist_pending_quarantine(
         encoded_public_key: String::new(),
     };
     store.persist_pending_quarantine(candidate_id, version, reason)
+}
+
+/// 只恢复已经存在且 identity 完全一致的 quarantine journal；缺失时不得创建。
+/// 该入口供 install-attempt tombstone 重放半完成的 cache cleanup，避免把后来出现的
+/// 不同 cache 误当成旧 authenticity rejection 删除。
+pub(crate) fn resume_pending_quarantine(
+    updater_directory: impl Into<PathBuf>,
+    candidate_id: &str,
+    version: &str,
+    reason: &str,
+) -> Result<(), VerifiedCacheError> {
+    let store = VerifiedCacheStore {
+        updater_directory: updater_directory.into(),
+        encoded_public_key: String::new(),
+    };
+    let pending = store
+        .load_pending_quarantine()
+        .map_err(|_| quarantine_journal_error())?
+        .ok_or_else(quarantine_journal_error)?;
+    if pending.rejected.candidate_id != candidate_id
+        || pending.rejected.version != version
+        || pending.rejected.reason_code != reason
+    {
+        return Err(cache_error(
+            "UPDATE_QUARANTINE_JOURNAL_CONFLICT",
+            "已有 rejection journal 与 install-attempt identity 不一致",
+        ));
+    }
+    pending.finalize()
 }
 
 pub(crate) trait UpdateStartupRecovery: Send + Sync {
@@ -453,7 +488,13 @@ impl VerifiedCacheStore {
             Err(_) => return Err(corrupt_fault()),
         };
         if !self.has_exact_cache_pair(&cache)? {
-            return Err(install_attempt_cache_missing_fault());
+            // Applied reconciliation 只可把“整个 pair 已被上次重放删除”视为幂等成功。
+            // 单边缺失仍是损坏证据，不能被误分类成 AlreadyDiscarded。
+            return if cache.entry_names().map_err(|_| corrupt_fault())?.is_empty() {
+                Err(install_attempt_cache_missing_fault())
+            } else {
+                Err(corrupt_fault())
+            };
         }
 
         let raw_document = read_bounded_candidate_metadata(&cache)?;
@@ -473,6 +514,28 @@ impl VerifiedCacheStore {
         }
 
         self.revalidate_verified_document(cache, document).await
+    }
+
+    /// Applied tombstone 重放时，只在通用 cache-delete tombstone 已经 durable 的情况下
+    /// 续做半完成删除。caller 必须先持有 exact install reconciliation；本方法不会把
+    /// 一个普通损坏 cache 自行升级成“可删除”。
+    pub(crate) fn resume_install_attempt_cleanup(&self) -> Result<bool, CacheRecoveryFault> {
+        let updater = match StableDirectory::open_existing(&self.updater_directory) {
+            Ok(Some(directory)) => directory,
+            Ok(None) => return Ok(false),
+            Err(_) => return Err(cleanup_blocked_fault()),
+        };
+        let tombstone = match updater.open_regular_read(OsStr::new("cache-delete-v1.json")) {
+            Ok(Some(tombstone)) => tombstone,
+            Ok(None) => return Ok(false),
+            Err(_) => return Err(cleanup_blocked_fault()),
+        };
+        drop(tombstone);
+        self.cleanup_cache().map_err(|_| cleanup_blocked_fault())?;
+        match updater.remove_regular(OsStr::new("cache-delete-v1.json")) {
+            Ok(true) => Ok(true),
+            Ok(false) | Err(_) => Err(cleanup_blocked_fault()),
+        }
     }
 
     pub(crate) async fn recover(&self, current_version: &str) -> CacheRecoveryOutcome {
@@ -881,6 +944,7 @@ impl VerifiedCacheStore {
             release,
             artifact,
             metadata_digest: document.metadata_digest,
+            recovery_fault: None,
         })
     }
 
@@ -1654,8 +1718,23 @@ mod tests {
                 ))
                 .await
                 .expect_err("缺失 exact cache pair 必须 fail closed");
-            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Blocked);
+            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Missing);
             assert_eq!(fault.code, "UPDATE_CACHE_INSTALL_ATTEMPT_ARTIFACT_MISSING");
+
+            let partial_root = TestDirectory::new();
+            let (public_key, _) = fixture();
+            let partial_store = VerifiedCacheStore::new(&partial_root.0, public_key).unwrap();
+            let partial_cache = partial_root.0.join("cache-v1");
+            std::fs::create_dir(&partial_cache).unwrap();
+            std::fs::write(partial_cache.join("installer.exe"), b"orphaned").unwrap();
+            let fault = partial_store
+                .inspect_install_attempt_artifact(&install_attempt_identity(
+                    "8e0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c".into(),
+                ))
+                .await
+                .expect_err("单边 cache 不是已完成删除，必须按损坏证据阻断");
+            assert_eq!(fault.code, "UPDATE_CACHE_CORRUPT");
+            assert!(partial_cache.join("installer.exe").is_file());
 
             let malformed_root = TestDirectory::new();
             let (public_key, _) = fixture();
@@ -1672,7 +1751,7 @@ mod tests {
                 .await
                 .expect_err("损坏 metadata 必须 fail closed");
 
-            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Blocked);
+            assert_eq!(fault.kind(), CacheRecoveryFaultKind::Corrupt);
             assert_eq!(fault.code, "UPDATE_CACHE_CORRUPT");
             assert_eq!(
                 std::fs::read(cache.join("candidate.json")).unwrap(),
@@ -2277,5 +2356,27 @@ mod tests {
             ));
             assert!(!tombstone.exists());
         });
+    }
+
+    #[test]
+    fn install_attempt_cleanup_only_resumes_a_durable_cache_delete_tombstone() {
+        let root = TestDirectory::new();
+        let (public_key, _) = fixture();
+        let store = VerifiedCacheStore::new(&root.0, public_key).unwrap();
+        let cache = root.0.join("cache-v1");
+        std::fs::create_dir(&cache).unwrap();
+        std::fs::write(cache.join("installer.exe"), b"partially-deleted").unwrap();
+
+        assert!(!store.resume_install_attempt_cleanup().unwrap());
+        assert!(cache.join("installer.exe").is_file());
+
+        std::fs::write(
+            root.0.join("cache-delete-v1.json"),
+            br#"{"schemaVersion":1,"cache":"cache-v1","nonce":"00000000000000000000000000000000"}"#,
+        )
+        .unwrap();
+        assert!(store.resume_install_attempt_cleanup().unwrap());
+        assert!(std::fs::read_dir(&cache).unwrap().next().is_none());
+        assert!(!root.0.join("cache-delete-v1.json").exists());
     }
 }

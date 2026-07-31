@@ -210,6 +210,30 @@ struct OrderedStartupRecovery {
     events: Arc<Mutex<Vec<&'static str>>>,
 }
 
+struct RecoveryWithStableFault {
+    inner: Arc<cache::VerifiedCacheStore>,
+}
+
+impl UpdateStartupRecovery for RecoveryWithStableFault {
+    fn recover<'a>(
+        &'a self,
+        current_version: &'a str,
+    ) -> Pin<Box<dyn Future<Output = CacheRecoveryOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            match self.inner.recover(current_version).await {
+                CacheRecoveryOutcome::Recovered(mut recovered) => {
+                    recovered.recovery_fault = Some(CacheRecoveryFault {
+                        code: "UPDATE_INSTALL_NOT_APPLIED",
+                        message: "安装器未应用目标版本，已恢复播放状态与已验证更新",
+                    });
+                    CacheRecoveryOutcome::Recovered(recovered)
+                }
+                outcome => outcome,
+            }
+        })
+    }
+}
+
 impl UpdateStartupRecovery for OrderedStartupRecovery {
     fn recover<'a>(
         &'a self,
@@ -1556,6 +1580,37 @@ fn startup_recovery_restores_ready_to_install_without_calling_the_source() {
             "1f524da9660c738e349f342d1e3f0bc9da3b28b9c4842636475ccdde59b9ee0e"
         );
         assert_eq!(source.check_count(), 0);
+    });
+}
+
+#[test]
+fn startup_recovery_projects_a_stable_install_fault_without_losing_ready_candidate() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        write_fixture_verified_cache(&directory).await;
+        let recovery = Arc::new(RecoveryWithStableFault {
+            inner: fixture_cache_store(&directory),
+        });
+        let runtime = UpdateRuntime::with_recovery(
+            "0.1.0",
+            Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)])),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+        );
+
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::ReadyToInstall);
+        assert!(snapshot.candidate.is_some());
+        assert_eq!(
+            snapshot.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_INSTALL_NOT_APPLIED")
+        );
+        assert_eq!(
+            snapshot.fault.as_ref().map(|fault| fault.stage),
+            Some(UpdateFaultStage::Cache)
+        );
     });
 }
 

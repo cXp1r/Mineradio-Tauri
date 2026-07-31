@@ -22,6 +22,9 @@ pub(crate) mod nsis_install;
 pub(crate) mod policy;
 pub(crate) mod provenance;
 pub(crate) mod quiescence;
+// #54 production cutover 前保持启动协调器 dormant；核心顺序已由独立测试冻结。
+#[allow(dead_code)]
+pub(crate) mod startup_reconciliation;
 // #54 production cutover 前保持 transport-neutral dormant，只由契约测试消费。
 #[allow(dead_code)]
 pub(crate) mod web_quiescence_handshake;
@@ -781,10 +784,17 @@ impl UpdateState {
                     self.cache_cleanup_blocked = true;
                 } else {
                     let metadata_digest = recovered.metadata_digest;
+                    let recovery_fault = recovered.recovery_fault;
                     self.commit_candidate(recovered.release, UpdatePhase::ReadyToInstall);
                     self.verified_artifact = Some(recovered.artifact);
                     self.verified_metadata_digest = Some(metadata_digest);
                     self.cache_cleanup_blocked = false;
+                    self.snapshot.fault = recovery_fault.map(|fault| UpdateFaultView {
+                        stage: UpdateFaultStage::Cache,
+                        code: fault.code.into(),
+                        retryable: false,
+                        message: fault.message.into(),
+                    });
                 }
             }
             CacheRecoveryOutcome::PendingQuarantine(_) => {

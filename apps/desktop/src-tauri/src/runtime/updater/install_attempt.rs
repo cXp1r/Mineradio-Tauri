@@ -198,6 +198,9 @@ pub(crate) enum InstallAttemptRecovery {
     Pending(InstallAttemptMarkerV1),
     Reconciled(InstallAttemptReconciliationV1),
     ConsumedCleanupPending(InstallAttemptReconciliationV1),
+    /// marker 与 tombstone 已清理，仅保留 bounded consumed receipt。启动恢复可用它
+    /// 重放稳定诊断，但不得再次执行 Web/cache mutation。
+    ConsumedReceipt(InstallAttemptReconciliationV1),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -427,7 +430,12 @@ impl InstallAttemptStore {
         let tombstone = load_tombstone_from(self.file_system.as_ref())?;
         let consumption = load_consumption_from(self.file_system.as_ref())?;
         match (marker, tombstone) {
-            (None, None) => Ok(InstallAttemptRecovery::None),
+            (None, None) => match consumption {
+                Some(consumption) => Ok(InstallAttemptRecovery::ConsumedReceipt(
+                    consumption.reconciliation,
+                )),
+                None => Ok(InstallAttemptRecovery::None),
+            },
             (Some(marker), None) => match consumption {
                 Some(consumption) if consumption.reconciliation.attempt == marker => Ok(
                     InstallAttemptRecovery::ConsumedCleanupPending(consumption.reconciliation),
@@ -1640,7 +1648,7 @@ mod tests {
         assert!(file_system.contains(RECONCILIATION_CONSUMPTION_FILE_NAME));
         assert!(matches!(
             store.recover().unwrap(),
-            InstallAttemptRecovery::None
+            InstallAttemptRecovery::ConsumedReceipt(existing) if existing == reconciliation
         ));
         assert_eq!(
             store.consume_reconciliation(&reconciliation).unwrap(),
@@ -1715,7 +1723,11 @@ mod tests {
                         if existing == reconciliation
                 ));
             } else {
-                assert!(matches!(recovery, InstallAttemptRecovery::None));
+                assert!(matches!(
+                    recovery,
+                    InstallAttemptRecovery::ConsumedReceipt(existing)
+                        if existing == reconciliation
+                ));
             }
             file_system.clear_fault();
             assert_eq!(
