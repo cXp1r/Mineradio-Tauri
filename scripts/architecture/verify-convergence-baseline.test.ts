@@ -127,7 +127,6 @@ const d0InventoryRows = d0InventoryCapabilities.map(([
 const blockedApiCapabilities = [
 	["provider.kugou", "MineRadio-api"],
 	["provider.spotify", "MineRadio-api"],
-	["cuefield.automix", "MineRadio-api"],
 ] as const;
 const blockedApiRows = blockedApiCapabilities.map(([capabilityId, blockedBy]) =>
 	renderCapability({
@@ -137,6 +136,23 @@ const blockedApiRows = blockedApiCapabilities.map(([capabilityId, blockedBy]) =>
 		parity_level: "P2",
 		blocked_by: blockedBy,
 	}));
+const cuefieldCapability = {
+	...exampleCapability,
+	capability_id: "cuefield.automix",
+	domain: "playback",
+	upstream_source: "`05-playback/16-*` 至 `18-*`、`cuefield/**`、本机 `/api/cuefield/*` routes",
+	target_module: "`apps/web/src/features/playback/cuefield` + `apps/desktop/src-tauri/src/runtime/cuefield_feedback.rs` (future)",
+	current_tauri: "missing",
+	parity_level: "P2",
+	owner_layer: "local playback Module + Web controller；desktop persistence Adapter 仅实现 feedback repository",
+	api_dependency: "none（无 MineRadio-api；只复用现有 playback/lyrics/beatmap Ports 与本地 feedback repository Port）",
+	state_migration: "`mineradio-cuefield-automix-v1` preference + local feedback history migration",
+	verification: "本机 planner/timeline/feedback；依赖 beatmap.local-song 收敛；deterministic audio/beatmap fixtures + Web playback handoff tests",
+	feature_gate: "cuefield",
+	blocked_by: "none",
+	performance_budget: "disabled cost=0；planning 与 prepared audio/graph/timer ownership bounded",
+};
+const cuefieldCapabilityRow = renderCapability(cuefieldCapability);
 const d0InventoryCapabilityIds = new Set(d0InventoryCapabilities.map(([capabilityId]) => capabilityId));
 const additionalFieldValidationRows = [...positiveFieldValidationCapabilities]
 	.filter((capabilityId) => !d0InventoryCapabilityIds.has(capabilityId))
@@ -151,6 +167,7 @@ const completeCapabilityRows = [
 	updaterCapabilityRow,
 	...d0InventoryRows,
 	...blockedApiRows,
+	cuefieldCapabilityRow,
 	...additionalFieldValidationRows,
 ];
 const activeUpstreamIdentity = [
@@ -640,6 +657,33 @@ test("#59 guard freezes all 17 unresolved capability tuples", () => {
 	expect(errors).toContain(
 		"capability-matrix: missing unresolved capability provider.kugou",
 	);
+});
+
+test("Cuefield AutoMix remains a local playback gap instead of a MineRadio-api blocker", () => {
+	const legacyApiClassification = renderCapability({
+		...cuefieldCapability,
+		target_module: "future embedded API adapter",
+		current_tauri: "blocked",
+		owner_layer: "future API",
+		api_dependency: "future-rust-api",
+		blocked_by: "MineRadio-api",
+	});
+	const errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			cuefieldCapabilityRow,
+			legacyApiClassification,
+		),
+	});
+	expect(errors).toContain(
+		"capability-matrix: unresolved capability cuefield.automix tuple must be missing / P2 / parity / none; found blocked / P2 / parity / MineRadio-api",
+	);
+	expect(errors.some((error) =>
+		error.includes("cuefield.automix target_module")
+		&& error.includes("apps/desktop/src-tauri/src/runtime/cuefield_feedback.rs"))).toBe(true);
+	expect(errors.some((error) =>
+		error.includes("cuefield.automix api_dependency")
+		&& error.includes("none（无 MineRadio-api；只复用现有 playback/lyrics/beatmap Ports 与本地 feedback repository Port）"))).toBe(true);
 });
 
 test("#59 guard preserves the Sonic tuple and all 16 positive Field Validation Pending rows", () => {

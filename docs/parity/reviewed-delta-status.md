@@ -50,7 +50,7 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 | wallpaper.wgc | missing | P1 | parity | none |
 | provider.kugou | blocked | P2 | parity | MineRadio-api |
 | provider.spotify | blocked | P2 | parity | MineRadio-api |
-| cuefield.automix | blocked | P2 | parity | MineRadio-api |
+| cuefield.automix | missing | P2 | parity | none |
 
 ## 已实现但仍待实机验证
 
@@ -78,5 +78,7 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 ## 冻结边界
 
 生产网络适配器仍是 `legacy-frozen` Bun Sidecar。`SidecarClient`、`RuntimeConfig.sidecarBaseUrl`、`get_sidecar_status`、`SidecarRecoveryNotice`、`apps/desktop/scripts/build-sidecar-binary.mjs`、`externalBin` 与 `ApiError` 继续属于活动边界；开发中的 Rust `MineRadio-api` 尚未嵌入。
+
+`cuefield.automix` 不属于 Provider/API blocker。上游 `/api/cuefield/transition` 和 `/api/cuefield/feedback` 只承载同机 beat-map planner 与本地 JSONL 反馈；未来由 Web playback Module 拥有规划、时间线和播放交接，desktop persistence Adapter 只实现本地 feedback repository 与历史迁移，并复用现有 playback、lyrics、beatmap Ports。只有 `provider.kugou` 与 `provider.spotify` 继续由 `MineRadio-api` 阻塞。
 
 Sonic Workshop 只能迁入未来的 `packages/visual-engine/src/sonic-workshop`。不得导入或再分发现有 vendor bundle，legacy numeric preset `8` 继续迁移到 Sonic Topography `7`，新的 `visual.workshop.v1` preference schema 必须区分 Workshop preset 8；在独立实现完成前，`visual.sonic-workshop` 不得离开上述 unresolved tuple。

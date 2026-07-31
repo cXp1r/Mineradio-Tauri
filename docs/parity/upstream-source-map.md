@@ -51,7 +51,7 @@
 | 桌面歌词 | `desktop/main.js`、overlay preload | desktop lyrics Rust/React modules | desktop runtime | 保持锁定、穿透、拖动和显示器修正 |
 | 内存与资源 | `desktop/system-memory.js`、`00-state/08-desktop-render-power.js` | visual perf state、Rust diagnostics | resources runtime | 系统级释放默认关闭且不在前台播放运行 |
 | 缓存治理 | `desktop/main.js` cache handlers、`server.js` cache paths | `runtime/cache.rs`、`commands/cache.rs` | cache runtime | 只管理已验证分类，不接受任意删除路径，不跟随 reparse point |
-| Cuefield | `05-playback/16-cuefield-automix-core.js` 至 `18-cuefield-automix-integration.js` | 尚无完整服务 | future playback service | 等待未来 API capability，不进入本轮 |
+| Cuefield | `05-playback/16-cuefield-automix-core.js` 至 `18-cuefield-automix-integration.js`、`cuefield/**`、本机 `/api/cuefield/*` | 尚无本地 planner/timeline Module 与 desktop feedback repository | `apps/web/src/features/playback/cuefield` + `apps/desktop/src-tauri/src/runtime/cuefield_feedback.rs` (future) | Web 拥有规划、时间线和播放交接；desktop Adapter 只负责本地反馈迁移/持久化；不访问平台、凭据或远端 Cuefield 服务，不依赖 MineRadio-api；当前为 local `missing / P2 / parity / blocked_by=none` |
 
 ## 明确不迁移的上游实现
 

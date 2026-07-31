@@ -130,10 +130,10 @@ const SONIC_WORKSHOP_REQUIRED_POLICY_LINES = [
 ];
 // 这些文档共同定义当前收口事实，整篇锁定可避免用正则猜测自由文本的语义。
 const CONVERGENCE_POLICY_SNAPSHOT_DIGESTS = new Map([
-	["upstream-source-map", "1993549ad46a165fda2aa030407e978de0046ccc26cb95030ccddb43e19e8cf2"],
+	["upstream-source-map", "27d8cdae2f26d5b5b331b5f3909c00110fe6824088f99464915a92560b74f6c0"],
 	["sonic-workshop-provenance", "5a13a1cdbb845bbfa2b33494a68de150a2ef952c26a83e2a2422da0b3f451838"],
 	["sonic-workshop-module-design", "d83308c9816a9e5ca1d6c8cf60de5ce998b6ea4b1518480d644953772175db53"],
-	["reviewed-delta-status", "bc1d1ca7cf07ac4404aa29cc9a1205e483ce5e506c2a08e225ebd697059c7b59"],
+	["reviewed-delta-status", "390cfa67134c98473fc6e672e021251804791d014dbcffa094eb49d6d819755d"],
 ]);
 const SONIC_WORKSHOP_DECISION_COLUMNS = [
 	"decision_id",
@@ -168,6 +168,21 @@ const EXPECTED_SONIC_WORKSHOP_CAPABILITY = {
 	verification: "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐",
 	blocked_by: "none",
 	performance_budget: "disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
+};
+const EXPECTED_CUEFIELD_AUTOMIX_CAPABILITY = {
+	domain: "playback",
+	upstream_source: "`05-playback/16-*` 至 `18-*`、`cuefield/**`、本机 `/api/cuefield/*` routes",
+	target_module: "`apps/web/src/features/playback/cuefield` + `apps/desktop/src-tauri/src/runtime/cuefield_feedback.rs` (future)",
+	current_tauri: "missing",
+	parity_level: "P2",
+	convergence_mode: "parity",
+	owner_layer: "local playback Module + Web controller；desktop persistence Adapter 仅实现 feedback repository",
+	api_dependency: "none（无 MineRadio-api；只复用现有 playback/lyrics/beatmap Ports 与本地 feedback repository Port）",
+	state_migration: "`mineradio-cuefield-automix-v1` preference + local feedback history migration",
+	verification: "本机 planner/timeline/feedback；依赖 beatmap.local-song 收敛；deterministic audio/beatmap fixtures + Web playback handoff tests",
+	feature_gate: "cuefield",
+	blocked_by: "none",
+	performance_budget: "disabled cost=0；planning 与 prepared audio/graph/timer ownership bounded",
 };
 const SONIC_WORKSHOP_MODULE_DESIGN_COLUMNS = [
 	"design_id",
@@ -252,7 +267,7 @@ const EXPECTED_UNRESOLVED_CAPABILITIES = new Map([
 	["wallpaper.wgc", ["missing", "P1", "parity", "none"]],
 	["provider.kugou", ["blocked", "P2", "parity", "MineRadio-api"]],
 	["provider.spotify", ["blocked", "P2", "parity", "MineRadio-api"]],
-	["cuefield.automix", ["blocked", "P2", "parity", "MineRadio-api"]],
+	["cuefield.automix", ["missing", "P2", "parity", "none"]],
 ]);
 const FIELD_VALIDATION_COLUMNS = ["capability_id", "current_tauri", "validation_status"];
 const EXPECTED_POSITIVE_FIELD_VALIDATIONS = new Set([
@@ -287,6 +302,21 @@ function validatePolicySnapshot(documentName, source) {
 		: [`${documentName}: policy snapshot digest must be ${expected}; found ${actual}`];
 }
 
+function validateCapabilityContract(capabilityRows, capabilityId, expected) {
+	const entry = capabilityRows.get(capabilityId);
+	if (!entry) {
+		return [`capability-matrix: missing capability contract ${capabilityId}`];
+	}
+	const errors = [];
+	for (const [field, expectedValue] of Object.entries(expected)) {
+		const actual = entry.row[field];
+		if (actual !== expectedValue) {
+			errors.push(`capability-matrix: ${capabilityId} ${field} must be ${expectedValue}; found ${actual}`);
+		}
+	}
+	return errors;
+}
+
 export function validateConvergenceBaseline(documents) {
 	const errors = [];
 	for (const [documentName, source] of [
@@ -299,6 +329,11 @@ export function validateConvergenceBaseline(documents) {
 	}
 	const capabilityMatrix = inspectCapabilityMatrix(documents.capabilityMatrix);
 	errors.push(...capabilityMatrix.errors);
+	errors.push(...validateCapabilityContract(
+		capabilityMatrix.rows,
+		"cuefield.automix",
+		EXPECTED_CUEFIELD_AUTOMIX_CAPABILITY,
+	));
 	errors.push(...validateActiveUpstreamIdentity(
 		documents.capabilityMatrix,
 		"capability-matrix",
@@ -383,17 +418,11 @@ function validateSonicWorkshopDecision(source, capabilityRows) {
 		errors,
 	});
 
-	const sonicCapability = capabilityRows.get("visual.sonic-workshop");
-	if (!sonicCapability) {
-		errors.push("capability-matrix: missing Sonic Workshop capability visual.sonic-workshop");
-	} else {
-		for (const [field, expected] of Object.entries(EXPECTED_SONIC_WORKSHOP_CAPABILITY)) {
-			const actual = sonicCapability.row[field];
-			if (actual !== expected) {
-				errors.push(`capability-matrix: visual.sonic-workshop ${field} must be ${expected}; found ${actual}`);
-			}
-		}
-	}
+	errors.push(...validateCapabilityContract(
+		capabilityRows,
+		"visual.sonic-workshop",
+		EXPECTED_SONIC_WORKSHOP_CAPABILITY,
+	));
 	return errors;
 }
 
