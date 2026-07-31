@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
@@ -111,10 +112,193 @@ const API_FREEZE_MARKERS = [
 	"externalBin",
 	"ApiError",
 ];
+const SONIC_WORKSHOP_DECISION_MARKERS = [
+	"# Sonic Workshop preset 8 来源与处置",
+	"迁移该能力，但只允许独立重实现",
+	"`migration-pending`",
+	"`visual.sonic-workshop` 保持 `missing / P0 / parity`",
+	"`blocked_by=none`",
+	"CmzYa",
+	"`3747222633`",
+	"legacy numeric preset `8` 继续迁移到 Sonic Topography `7`",
+];
+const SONIC_WORKSHOP_REQUIRED_POLICY_LINES = [
+	"- 新实现必须使用新的 preference schema 明确区分 legacy `8 → 7` 与新的 Workshop preset 8。",
+	"因此禁止：",
+	"- 从 Electron 上游复制 `public/vendor/sonic-workshop/**` 到 Tauri 发布物；",
+	"- 在独立实现完成前声明全部视觉能力一致。",
+];
+// 这些文档共同定义当前收口事实，整篇锁定可避免用正则猜测自由文本的语义。
+const CONVERGENCE_POLICY_SNAPSHOT_DIGESTS = new Map([
+	["upstream-source-map", "1993549ad46a165fda2aa030407e978de0046ccc26cb95030ccddb43e19e8cf2"],
+	["sonic-workshop-provenance", "5a13a1cdbb845bbfa2b33494a68de150a2ef952c26a83e2a2422da0b3f451838"],
+	["sonic-workshop-module-design", "d83308c9816a9e5ca1d6c8cf60de5ce998b6ea4b1518480d644953772175db53"],
+	["reviewed-delta-status", "bc1d1ca7cf07ac4404aa29cc9a1205e483ce5e506c2a08e225ebd697059c7b59"],
+]);
+const SONIC_WORKSHOP_DECISION_COLUMNS = [
+	"decision_id",
+	"status",
+	"source_owner",
+	"implementation_target",
+	"bundle_policy",
+	"legacy_migration",
+	"preference_schema",
+	"parity_claim",
+	"authority_status",
+];
+const EXPECTED_SONIC_WORKSHOP_DECISIONS = new Map([
+	["sonic-workshop-preset-8", [
+		"migration-pending",
+		"CmzYa@3747222633",
+		"independent-visual-module",
+		"no-vendor-bundle-import-or-redistribution",
+		"legacy-8-to-sonic-topography-7",
+		"distinct-workshop-preset-8",
+		"prohibited-until-independent-implementation",
+		"active",
+	]],
+]);
+const EXPECTED_SONIC_WORKSHOP_CAPABILITY = {
+	target_module: "`packages/visual-engine/src/sonic-workshop` (future)",
+	current_tauri: "missing",
+	parity_level: "P0",
+	convergence_mode: "parity",
+	owner_layer: "visual-engine Module",
+	state_migration: "legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
+	verification: "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐",
+	blocked_by: "none",
+	performance_budget: "disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
+};
+const SONIC_WORKSHOP_MODULE_DESIGN_COLUMNS = [
+	"design_id",
+	"module_path",
+	"activation_id",
+	"input_boundary",
+	"vendor_dependency",
+	"preference_key",
+	"legacy_preset_8",
+	"disabled_cost",
+	"authority_status",
+];
+const EXPECTED_SONIC_WORKSHOP_MODULE_DESIGNS = new Map([
+	["sonic-workshop-v1", [
+		"packages/visual-engine/src/sonic-workshop",
+		"sonic-workshop-v1",
+		"shared-frame-audio-pointer-only",
+		"none",
+		"visual.workshop.v1",
+		"migrates-to-sonic-topography-7",
+		"zero",
+		"active",
+	]],
+]);
+const SONIC_WORKSHOP_BUDGET_COLUMNS = [
+	"profile",
+	"mesh_hard",
+	"draw_call_hard",
+	"geometry_hard_mib",
+	"texture_hard_mib",
+	"cache_hard_mib",
+	"queued_task_cost_hard",
+	"cpu_p95_ms",
+	"gpu_delta_p95_ms",
+	"frame_regression",
+];
+const EXPECTED_SONIC_WORKSHOP_BUDGETS = new Map([
+	["high", ["8", "8", "8", "16", "16", "32", "1.5", "5", "<=10%"]],
+]);
+const REVIEWED_DELTA_COLUMNS = ["delta_id", "status", "blocked_by", "evidence_state"];
+const EXPECTED_REVIEWED_DELTAS = new Map([
+	["D0", ["complete", "none", "recorded"]],
+	["D1", ["complete", "none", "joint-gate-recorded"]],
+	["D2", ["implementation-complete", "#56", "external-gate-pending"]],
+	["D3", ["migration-pending", "none", "decision-recorded"]],
+]);
+const REVIEWED_DELTA_SUMMARY_COLUMNS = ["status_key", "value"];
+const EXPECTED_REVIEWED_DELTA_SUMMARY = new Map([
+	["reviewed_delta", "open"],
+	["overall_status", "blocked"],
+	["overall_blocked_by", "#56"],
+	["full_parity", "false"],
+	["release_evidence", "absent"],
+	["sidecar_api", "legacy-frozen"],
+]);
+const REVIEWED_DELTA_REQUIRED_POLICY_LINES = [
+	"当前不得关闭 #59，也不得声称完整复现、完整对齐或 100% 覆盖 Mineradio 2.0.3。",
+];
+const CANONICAL_FIELD_VALIDATION_PENDING = "Field Validation Pending (non-blocking)";
+const FIELD_VALIDATION_RESERVED_CLEARANCE_LANGUAGE = /(?:已解除|已通过实机验证|resolved|cleared|Field Validated|Release Verified)/i;
+const UNRESOLVED_CAPABILITY_COLUMNS = [
+	"capability_id",
+	"current_tauri",
+	"parity_level",
+	"convergence_mode",
+	"blocked_by",
+];
+const EXPECTED_UNRESOLVED_CAPABILITIES = new Map([
+	["search.multi-provider-offset", ["partial", "P1", "parity", "none"]],
+	["playback.startup-resume", ["missing", "P0", "parity", "none"]],
+	["beatmap.local-song", ["partial", "P1", "parity", "none"]],
+	["queue.drag-sort", ["missing", "P1", "parity", "none"]],
+	["lyrics.track-offset", ["missing", "P1", "parity", "none"]],
+	["visual.sonic-workshop", ["missing", "P0", "parity", "none"]],
+	["visual.archive", ["missing", "P1", "parity", "none"]],
+	["visual.camera-gesture", ["missing", "P2", "parity", "none"]],
+	["accounts.provider-order", ["missing", "P1", "parity", "none"]],
+	["library.drag-sort", ["missing", "P1", "parity", "none"]],
+	["local-import.expanded", ["partial", "P1", "parity", "none"]],
+	["hotkeys.editor", ["missing", "P1", "parity", "none"]],
+	["wallpaper.library", ["partial", "P1", "parity", "none"]],
+	["wallpaper.wgc", ["missing", "P1", "parity", "none"]],
+	["provider.kugou", ["blocked", "P2", "parity", "MineRadio-api"]],
+	["provider.spotify", ["blocked", "P2", "parity", "MineRadio-api"]],
+	["cuefield.automix", ["blocked", "P2", "parity", "MineRadio-api"]],
+]);
+const FIELD_VALIDATION_COLUMNS = ["capability_id", "current_tauri", "validation_status"];
+const EXPECTED_POSITIVE_FIELD_VALIDATIONS = new Set([
+	"playback.gapless",
+	"playback.output-routing",
+	"lyrics.stage-v2",
+	"visual.cursor-activity",
+	"home.dashboard",
+	"desktop.tray-close",
+	"desktop.lyrics",
+	"desktop.window",
+	"desktop.cache",
+	"desktop.diagnostics",
+	"desktop.memory-governance",
+	"desktop.full-mode",
+	"desktop.native-icons",
+	"wallpaper.engine",
+	"persistence.preferences",
+	"performance.m8-gate",
+]);
+
+function validatePolicySnapshot(documentName, source) {
+	if (typeof source !== "string") return [];
+	const expected = CONVERGENCE_POLICY_SNAPSHOT_DIGESTS.get(documentName);
+	if (!expected) {
+		return [`${documentName}: policy snapshot digest is not configured`];
+	}
+	const normalized = source.replace(/\r\n?/g, "\n");
+	const actual = createHash("sha256").update(normalized, "utf8").digest("hex");
+	return actual === expected
+		? []
+		: [`${documentName}: policy snapshot digest must be ${expected}; found ${actual}`];
+}
 
 export function validateConvergenceBaseline(documents) {
 	const errors = [];
-	errors.push(...validateCapabilityMatrix(documents.capabilityMatrix));
+	for (const [documentName, source] of [
+		["upstream-source-map", documents.upstreamSourceMap],
+		["sonic-workshop-provenance", documents.sonicWorkshopProvenance],
+		["sonic-workshop-module-design", documents.sonicWorkshopModuleDesign],
+		["reviewed-delta-status", documents.reviewedDeltaStatus],
+	]) {
+		errors.push(...validatePolicySnapshot(documentName, source));
+	}
+	const capabilityMatrix = inspectCapabilityMatrix(documents.capabilityMatrix);
+	errors.push(...capabilityMatrix.errors);
 	errors.push(...validateActiveUpstreamIdentity(
 		documents.capabilityMatrix,
 		"capability-matrix",
@@ -125,6 +309,15 @@ export function validateConvergenceBaseline(documents) {
 	));
 	errors.push(...validateUpstreamReleaseProvenance(documents.upstreamSourceMap));
 	errors.push(...validateD0SourceMap(documents.upstreamSourceMap));
+	errors.push(...validateSonicWorkshopDecision(
+		documents.sonicWorkshopProvenance,
+		capabilityMatrix.rows,
+	));
+	errors.push(...validateSonicWorkshopModuleDesign(documents.sonicWorkshopModuleDesign));
+	errors.push(...validateReviewedDeltaStatus(
+		documents.reviewedDeltaStatus,
+		capabilityMatrix.rows,
+	));
 	for (const [documentName, source] of [
 		["capability-matrix", documents.capabilityMatrix],
 		["upstream-source-map", documents.upstreamSourceMap],
@@ -154,11 +347,318 @@ export function validateConvergenceBaseline(documents) {
 	return errors;
 }
 
+function validateSonicWorkshopDecision(source, capabilityRows) {
+	if (typeof source !== "string") {
+		return ["sonic-workshop-provenance: missing decision document"];
+	}
+	const errors = [];
+	for (const marker of SONIC_WORKSHOP_DECISION_MARKERS) {
+		if (!activeMarkdownContains(source, marker)) {
+			errors.push(`sonic-workshop-provenance: missing ${marker}`);
+		}
+	}
+	for (const line of SONIC_WORKSHOP_REQUIRED_POLICY_LINES) {
+		if (!activeMarkdownHasExactLine(source, line)) {
+			errors.push(`sonic-workshop-provenance: missing exact policy line ${line}`);
+		}
+	}
+	const decisionTable = parseExactMarkdownTable(source, {
+		columns: SONIC_WORKSHOP_DECISION_COLUMNS,
+		documentName: "sonic-workshop-provenance",
+		missingName: "structured decision table",
+		tableName: "structured decision table",
+	});
+	const decisionRows = collectUniqueRows(
+		decisionTable,
+		"sonic-workshop-provenance",
+		"decision",
+		errors,
+	);
+	validateExactTupleRows({
+		documentName: "sonic-workshop-provenance",
+		tableName: "decision",
+		rows: decisionRows,
+		expected: EXPECTED_SONIC_WORKSHOP_DECISIONS,
+		valueOffset: 1,
+		errors,
+	});
+
+	const sonicCapability = capabilityRows.get("visual.sonic-workshop");
+	if (!sonicCapability) {
+		errors.push("capability-matrix: missing Sonic Workshop capability visual.sonic-workshop");
+	} else {
+		for (const [field, expected] of Object.entries(EXPECTED_SONIC_WORKSHOP_CAPABILITY)) {
+			const actual = sonicCapability.row[field];
+			if (actual !== expected) {
+				errors.push(`capability-matrix: visual.sonic-workshop ${field} must be ${expected}; found ${actual}`);
+			}
+		}
+	}
+	return errors;
+}
+
+function validateSonicWorkshopModuleDesign(source) {
+	const documentName = "sonic-workshop-module-design";
+	if (typeof source !== "string") {
+		return [`${documentName}: missing design document`];
+	}
+	const errors = [];
+	const designTable = parseExactMarkdownTable(source, {
+		columns: SONIC_WORKSHOP_MODULE_DESIGN_COLUMNS,
+		documentName,
+		missingName: "module boundary table",
+		tableName: "module boundary table",
+	});
+	const designRows = collectUniqueRows(designTable, documentName, "module design", errors);
+	validateExactTupleRows({
+		documentName,
+		tableName: "module design",
+		rows: designRows,
+		expected: EXPECTED_SONIC_WORKSHOP_MODULE_DESIGNS,
+		valueOffset: 1,
+		errors,
+	});
+
+	const budgetTable = parseExactMarkdownTable(source, {
+		columns: SONIC_WORKSHOP_BUDGET_COLUMNS,
+		documentName,
+		missingName: "resource budget table",
+		tableName: "resource budget table",
+	});
+	const budgetRows = collectUniqueRows(budgetTable, documentName, "resource budget", errors);
+	validateExactTupleRows({
+		documentName,
+		tableName: "resource budget",
+		rows: budgetRows,
+		expected: EXPECTED_SONIC_WORKSHOP_BUDGETS,
+		valueOffset: 1,
+		errors,
+	});
+	return errors;
+}
+
+function validateReviewedDeltaStatus(source, capabilityRows) {
+	const documentName = "reviewed-delta-status";
+	if (typeof source !== "string") {
+		return [`${documentName}: missing status document`];
+	}
+	const errors = [];
+	for (const line of REVIEWED_DELTA_REQUIRED_POLICY_LINES) {
+		if (!activeMarkdownHasExactLine(source, line)) {
+			errors.push(`${documentName}: missing exact policy line ${line}`);
+		}
+	}
+	const deltaTable = parseExactMarkdownTable(source, {
+		columns: REVIEWED_DELTA_COLUMNS,
+		documentName,
+		missingName: "D0-D3 status table",
+		tableName: "D0-D3 status table",
+	});
+	const deltaRows = collectUniqueRows(deltaTable, documentName, "delta", errors);
+	validateExactTupleRows({
+		documentName,
+		tableName: "delta",
+		rows: deltaRows,
+		expected: EXPECTED_REVIEWED_DELTAS,
+		valueOffset: 1,
+		errors,
+	});
+
+	const summaryTable = parseExactMarkdownTable(source, {
+		columns: REVIEWED_DELTA_SUMMARY_COLUMNS,
+		documentName,
+		missingName: "closure summary",
+		tableName: "closure summary",
+	});
+	const summaryRows = collectUniqueRows(summaryTable, documentName, "summary key", errors);
+	const expectedSummary = new Map([...EXPECTED_REVIEWED_DELTA_SUMMARY]
+		.map(([key, value]) => [key, [value]]));
+	validateExactTupleRows({
+		documentName,
+		tableName: "summary",
+		rows: summaryRows,
+		expected: expectedSummary,
+		valueOffset: 1,
+		errors,
+	});
+
+	const unresolvedTable = parseExactMarkdownTable(source, {
+		columns: UNRESOLVED_CAPABILITY_COLUMNS,
+		documentName,
+		missingName: "unresolved capability table",
+		tableName: "unresolved capability table",
+	});
+	const unresolvedRows = collectUniqueRows(
+		unresolvedTable,
+		documentName,
+		"unresolved capability",
+		errors,
+	);
+	validateExactTupleRows({
+		documentName,
+		tableName: "unresolved capability",
+		rows: unresolvedRows,
+		expected: EXPECTED_UNRESOLVED_CAPABILITIES,
+		valueOffset: 1,
+		errors,
+	});
+
+	const fieldValidationTable = parseExactMarkdownTable(source, {
+		columns: FIELD_VALIDATION_COLUMNS,
+		documentName,
+		missingName: "positive Field Validation Pending table",
+		tableName: "positive Field Validation Pending table",
+	});
+	const fieldValidationRows = collectUniqueRows(
+		fieldValidationTable,
+		documentName,
+		"positive Field Validation Pending capability",
+		errors,
+	);
+	const expectedFieldValidations = new Map(
+		[...EXPECTED_POSITIVE_FIELD_VALIDATIONS]
+			.map((capabilityId) => [
+				capabilityId,
+				["implemented", "Field Validation Pending (non-blocking)"],
+			]),
+	);
+	validateExactTupleRows({
+		documentName,
+		tableName: "positive Field Validation Pending capability",
+		rows: fieldValidationRows,
+		expected: expectedFieldValidations,
+		valueOffset: 1,
+		errors,
+	});
+
+	const actualUnresolved = new Map();
+	const actualPositiveFieldValidations = new Set();
+	for (const [capabilityId, entry] of capabilityRows) {
+		const state = entry.row.current_tauri;
+		if (["missing", "partial", "blocked"].includes(state)) {
+			actualUnresolved.set(capabilityId, [
+				state,
+				entry.row.parity_level,
+				entry.row.convergence_mode,
+				entry.row.blocked_by,
+			]);
+		}
+		const verification = entry.row.verification;
+		if (state === "implemented"
+			&& verification.includes(CANONICAL_FIELD_VALIDATION_PENDING)) {
+			actualPositiveFieldValidations.add(capabilityId);
+			if (FIELD_VALIDATION_RESERVED_CLEARANCE_LANGUAGE.test(verification)) {
+				errors.push(`capability-matrix: capability ${capabilityId} uses non-canonical Field Validation clearance language`);
+			}
+		}
+	}
+	validateExpectedTupleMap(
+		"capability-matrix",
+		"unresolved capability",
+		actualUnresolved,
+		EXPECTED_UNRESOLVED_CAPABILITIES,
+		errors,
+	);
+	validateExpectedSet(
+		"capability-matrix",
+		"positive Field Validation Pending capability",
+		actualPositiveFieldValidations,
+		EXPECTED_POSITIVE_FIELD_VALIDATIONS,
+		errors,
+	);
+	return errors;
+}
+
+function collectUniqueRows(parsed, documentName, rowName, errors) {
+	errors.push(...parsed.errors);
+	const rows = new Map();
+	if (!parsed.found) return rows;
+	for (const row of parsed.rows) {
+		const key = row.cells[0];
+		if (rows.has(key)) {
+			errors.push(`${documentName}: ${rowName} line ${row.line} duplicates ${key} from line ${rows.get(key).line}`);
+			continue;
+		}
+		rows.set(key, row);
+	}
+	return rows;
+}
+
+function validateExactTupleRows(options) {
+	const {
+		documentName,
+		tableName,
+		rows,
+		expected,
+		valueOffset,
+		errors,
+	} = options;
+	if (rows.size !== expected.size) {
+		errors.push(`${documentName}: expected exactly ${expected.size} ${tableName} rows; found ${rows.size}`);
+	}
+	for (const [key, expectedValues] of expected) {
+		const row = rows.get(key);
+		if (!row) {
+			errors.push(`${documentName}: missing ${tableName} ${key}`);
+			continue;
+		}
+		const actualValues = row.cells.slice(valueOffset);
+		if (actualValues.length !== expectedValues.length
+			|| actualValues.some((value, index) => value !== expectedValues[index])) {
+			errors.push(`${documentName}: ${tableName} line ${row.line} ${key} tuple must be ${expectedValues.join(" / ")}; found ${actualValues.join(" / ")}`);
+		}
+	}
+	for (const key of rows.keys()) {
+		if (!expected.has(key)) {
+			errors.push(`${documentName}: unexpected ${tableName} ${key}`);
+		}
+	}
+}
+
+function validateExpectedTupleMap(documentName, rowName, actual, expected, errors) {
+	if (actual.size !== expected.size) {
+		errors.push(`${documentName}: expected exactly ${expected.size} ${rowName} rows; found ${actual.size}`);
+	}
+	for (const [key, expectedValues] of expected) {
+		const actualValues = actual.get(key);
+		if (!actualValues) {
+			errors.push(`${documentName}: missing ${rowName} ${key}`);
+			continue;
+		}
+		if (actualValues.some((value, index) => value !== expectedValues[index])) {
+			errors.push(`${documentName}: ${rowName} ${key} tuple must be ${expectedValues.join(" / ")}; found ${actualValues.join(" / ")}`);
+		}
+	}
+	for (const key of actual.keys()) {
+		if (!expected.has(key)) errors.push(`${documentName}: unexpected ${rowName} ${key}`);
+	}
+}
+
+function validateExpectedSet(documentName, rowName, actual, expected, errors) {
+	if (actual.size !== expected.size) {
+		errors.push(`${documentName}: expected exactly ${expected.size} ${rowName} rows; found ${actual.size}`);
+	}
+	for (const key of expected) {
+		if (!actual.has(key)) errors.push(`${documentName}: missing ${rowName} ${key}`);
+	}
+	for (const key of actual) {
+		if (!expected.has(key)) errors.push(`${documentName}: unexpected ${rowName} ${key}`);
+	}
+}
+
 function activeMarkdownContains(source, marker) {
 	if (typeof source !== "string") return false;
 	const lines = source.split(/\r?\n/);
 	const activeLines = identifyActiveMarkdownLines(lines);
 	return lines.some((line, index) => activeLines[index] && line.includes(marker));
+}
+
+function activeMarkdownHasExactLine(source, expectedLine) {
+	if (typeof source !== "string") return false;
+	const lines = source.split(/\r?\n/);
+	const activeLines = identifyActiveMarkdownLines(lines);
+	return lines.some((line, index) =>
+		activeLines[index] && line.trim() === expectedLine);
 }
 
 function validateD0SourceMap(source) {
@@ -326,9 +826,10 @@ function validateActiveUpstreamIdentity(source, documentName) {
 	return errors;
 }
 
-function validateCapabilityMatrix(source) {
+function inspectCapabilityMatrix(source) {
+	const emptyRows = () => new Map();
 	if (typeof source !== "string") {
-		return ["capability-matrix: missing required header"];
+		return { errors: ["capability-matrix: missing required header"], rows: emptyRows() };
 	}
 	const lines = source.split(/\r?\n/);
 	const activeLines = identifyActiveMarkdownLines(lines);
@@ -340,7 +841,7 @@ function validateCapabilityMatrix(source) {
 		}
 	}
 	if (headerIndexes.length === 0) {
-		return ["capability-matrix: missing required header"];
+		return { errors: ["capability-matrix: missing required header"], rows: emptyRows() };
 	}
 	const errors = [];
 	if (headerIndexes.length > 1) {
@@ -349,13 +850,19 @@ function validateCapabilityMatrix(source) {
 	const headerIndex = headerIndexes[0];
 	const columns = parseMarkdownTableRow(lines[headerIndex]);
 	if (columns.length !== 14) {
-		return [...errors, `capability-matrix: header line ${headerIndex + 1} has ${columns.length} columns; expected 14`];
+		return {
+			errors: [...errors, `capability-matrix: header line ${headerIndex + 1} has ${columns.length} columns; expected 14`],
+			rows: emptyRows(),
+		};
 	}
 	const expectedColumns = parseMarkdownTableRow(CAPABILITY_HEADER);
 	const supportedHeader = expectedColumns.every((column, index) =>
 		column === columns[index]);
 	if (!supportedHeader) {
-		return [...errors, `capability-matrix: header line ${headerIndex + 1} has unsupported columns`];
+		return {
+			errors: [...errors, `capability-matrix: header line ${headerIndex + 1} has unsupported columns`],
+			rows: emptyRows(),
+		};
 	}
 	const capabilityIndex = columns.indexOf("capability_id");
 	const delimiterIndex = headerIndex + 1;
@@ -440,7 +947,7 @@ function validateCapabilityMatrix(source) {
 			errors.push(`capability-matrix: line ${inventory.line} capability "${capabilityId}" D0 tuple must be ${expectedValues.join(" / ")}; found ${actualValues.join(" / ")}`);
 		}
 	}
-	return errors;
+	return { errors, rows: capabilityRows };
 }
 
 function identifyActiveMarkdownLines(lines) {
@@ -515,6 +1022,9 @@ export async function runConvergenceBaselineCli(repositoryRoot) {
 		upstreamSourceMap: "docs/parity/upstream-source-map.md",
 		appExtractionMap: "docs/parity/app-extraction-map.md",
 		apiFreeze: "docs/parity/api-freeze.md",
+		sonicWorkshopProvenance: "docs/parity/sonic-workshop-provenance.md",
+		sonicWorkshopModuleDesign: "docs/parity/sonic-workshop-module-design.md",
+		reviewedDeltaStatus: "docs/parity/reviewed-delta-status.md",
 	};
 	const documents = {};
 	for (const [key, relativePath] of Object.entries(paths)) {

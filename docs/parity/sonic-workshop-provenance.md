@@ -2,7 +2,9 @@
 
 ## 结论
 
-维护者决定：**迁移该能力，但只允许独立重实现；当前不复制或再分发 Electron 2.0.3 的 vendor bundle。**
+维护者决定：**迁移该能力，但只允许独立重实现。**
+
+当前不复制或再分发 Electron 2.0.3 的 vendor bundle。
 
 因此当前终态是 `migration-pending`：
 
@@ -11,8 +13,13 @@
 - 后续必须建立独立 visual Module，依据公开可观察行为和本项目自己的 Interface 重实现；
 - 在形成新实现前，legacy numeric preset `8` 继续迁移到 Sonic Topography `7`，避免旧偏好指向不存在的能力；
 - 新实现必须使用新的 preference schema 明确区分 legacy `8 → 7` 与新的 Workshop preset 8。
+- 独立 Module 的输入边界、生命周期和 hard budget 固定在 `sonic-workshop-module-design.md`。
 
 这是一项工程与维护决策，不是法律结论。
+
+| decision_id | status | source_owner | implementation_target | bundle_policy | legacy_migration | preference_schema | parity_claim | authority_status |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sonic-workshop-preset-8 | migration-pending | CmzYa@3747222633 | independent-visual-module | no-vendor-bundle-import-or-redistribution | legacy-8-to-sonic-topography-7 | distinct-workshop-preset-8 | prohibited-until-independent-implementation | active |
 
 ## 可核验来源
 

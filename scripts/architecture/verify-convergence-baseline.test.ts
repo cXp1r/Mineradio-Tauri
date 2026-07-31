@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import {
 	extractTopLevelSymbols,
 	validateConvergenceBaseline,
 } from "./convergence-baseline.mjs";
+
+const readRepositoryFile = (relativePath: string) =>
+	readFileSync(new URL(`../../${relativePath}`, import.meta.url), "utf8");
+const upstreamSourceMapDocument = readRepositoryFile("docs/parity/upstream-source-map.md");
 
 const legacyCapabilityHeader = "| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |";
 const expandedCapabilityHeader = "| capability_id | domain | upstream_source | target_module | current_tauri | parity_level | convergence_mode | owner_layer | api_dependency | state_migration | verification | feature_gate | blocked_by | performance_budget |";
@@ -75,6 +80,24 @@ const d0InventoryCapabilities = [
 	["accounts.provider-order", "missing", "P1", "parity", "none"],
 	["search.multi-provider-offset", "partial", "P1", "parity", "none"],
 ] as const;
+const positiveFieldValidationCapabilities = new Set([
+	"playback.gapless",
+	"playback.output-routing",
+	"lyrics.stage-v2",
+	"visual.cursor-activity",
+	"home.dashboard",
+	"desktop.tray-close",
+	"desktop.lyrics",
+	"desktop.window",
+	"desktop.cache",
+	"desktop.diagnostics",
+	"desktop.memory-governance",
+	"desktop.full-mode",
+	"desktop.native-icons",
+	"wallpaper.engine",
+	"persistence.preferences",
+	"performance.m8-gate",
+]);
 const d0InventoryRows = d0InventoryCapabilities.map(([
 	capabilityId,
 	currentTauri,
@@ -83,16 +106,52 @@ const d0InventoryRows = d0InventoryCapabilities.map(([
 	blockedBy,
 ]) => renderCapability({
 	...exampleCapability,
+	...(capabilityId === "visual.sonic-workshop" ? {
+		target_module: "`packages/visual-engine/src/sonic-workshop` (future)",
+		owner_layer: "visual-engine Module",
+		state_migration: "legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
+		verification: "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐",
+		performance_budget: "disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
+	} : {}),
 	capability_id: capabilityId,
 	current_tauri: currentTauri,
 	parity_level: parityLevel,
 	convergence_mode: convergenceMode,
 	blocked_by: blockedBy,
+	verification: capabilityId === "visual.sonic-workshop"
+		? "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐"
+		: positiveFieldValidationCapabilities.has(capabilityId)
+		? "automated evidence; Field Validation Pending (non-blocking)"
+		: "tests",
+}));
+const blockedApiCapabilities = [
+	["provider.kugou", "MineRadio-api"],
+	["provider.spotify", "MineRadio-api"],
+	["cuefield.automix", "MineRadio-api"],
+] as const;
+const blockedApiRows = blockedApiCapabilities.map(([capabilityId, blockedBy]) =>
+	renderCapability({
+		...exampleCapability,
+		capability_id: capabilityId,
+		current_tauri: "blocked",
+		parity_level: "P2",
+		blocked_by: blockedBy,
+	}));
+const d0InventoryCapabilityIds = new Set(d0InventoryCapabilities.map(([capabilityId]) => capabilityId));
+const additionalFieldValidationRows = [...positiveFieldValidationCapabilities]
+	.filter((capabilityId) => !d0InventoryCapabilityIds.has(capabilityId))
+	.map((capabilityId) => renderCapability({
+	...exampleCapability,
+	capability_id: capabilityId,
+	current_tauri: "implemented",
+	verification: "automated evidence; Field Validation Pending (non-blocking)",
 }));
 const completeCapabilityRows = [
 	expandedCapabilityRow,
 	updaterCapabilityRow,
 	...d0InventoryRows,
+	...blockedApiRows,
+	...additionalFieldValidationRows,
 ];
 const activeUpstreamIdentity = [
 	"| baseline_role | repository | tag | peeled_commit | tree | package_version |",
@@ -105,16 +164,10 @@ const upstreamReleaseProvenance = [
 	"| release_tag | refs/tags/v2.0.3 | 631813e4baaea1c2115182050be736b6491097e5 | 432c713061759e7724eb3e40e77a5e250ac1aa58 | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |",
 	"| release_branch | refs/heads/release/2.0.3 | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 7974c52270c628d7ddb7427eaa0269e024cc0d3f | 6c425be30784088169f761edbbf28f9c476f7d3a | 2.0.3 |",
 ].join("\n");
-const d0SourceMap = [
-	"| delta_id | current_tauri | convergence_mode | evidence |",
-	"| --- | --- | --- | --- |",
-	"| lyrics.nested-render-base | implemented | parity | D1 layer characterization |",
-	"| visual.cursor-shelf-layer | implemented | parity | D1 cursor and Shelf runtime |",
-	"| updater.github-release | implemented | architecture-replacement | D2 signed GitHub Update Runtime |",
-	"| visual.sonic-workshop | missing | parity | independent CmzYa / 3747222633 migration-pending Module |",
-	"| wallpaper.idle-dispose | implemented | parity | Rust idle and repeated dispose tests |",
-].join("\n");
 const withActiveUpstreamIdentity = (body: string) => `${activeUpstreamIdentity}\n\n${body}`;
+const sonicWorkshopDecision = readRepositoryFile("docs/parity/sonic-workshop-provenance.md");
+const sonicWorkshopModuleDesign = readRepositoryFile("docs/parity/sonic-workshop-module-design.md");
+const reviewedDeltaStatus = readRepositoryFile("docs/parity/reviewed-delta-status.md");
 
 const validDocuments = {
 	capabilityMatrix: withActiveUpstreamIdentity([
@@ -122,7 +175,7 @@ const validDocuments = {
 		expandedCapabilityDelimiter,
 		...completeCapabilityRows,
 	].join("\n")),
-	upstreamSourceMap: `${activeUpstreamIdentity}\n\n${upstreamReleaseProvenance}\n\n${d0SourceMap}`,
+	upstreamSourceMap: upstreamSourceMapDocument,
 	appExtractionMap: "| symbol | kind | purity | current_side_effects | target_module | evidence | migration_order |\n| --- | --- | --- | --- | --- | --- | --- | --- |",
 	apiFreeze: [
 		"SidecarClient",
@@ -134,10 +187,38 @@ const validDocuments = {
 		"externalBin",
 		"ApiError",
 	].join("\n"),
+	sonicWorkshopProvenance: sonicWorkshopDecision,
+	sonicWorkshopModuleDesign,
+	reviewedDeltaStatus,
 };
 
 test("M0 baseline accepts the active Mineradio v2.0.3 release identity", () => {
 	expect(validateConvergenceBaseline(validDocuments)).toEqual([]);
+});
+
+test("policy snapshot lock normalizes line endings and rejects every unreviewed prose mutation", () => {
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		upstreamSourceMap: validDocuments.upstreamSourceMap.replaceAll("\n", "\r\n"),
+		sonicWorkshopProvenance: sonicWorkshopDecision.replaceAll("\n", "\r\n"),
+		sonicWorkshopModuleDesign: sonicWorkshopModuleDesign.replaceAll("\n", "\r\n"),
+		reviewedDeltaStatus: reviewedDeltaStatus.replaceAll("\n", "\r\n"),
+	})).toEqual([]);
+
+	for (const [key, documentName, prose] of [
+		["sonicWorkshopProvenance", "sonic-workshop-provenance", "本设计只接受有效的 GPU timer-query samples。"],
+		["sonicWorkshopModuleDesign", "sonic-workshop-module-design", "本设计要求替代材质仍受相同资源预算约束。"],
+		["reviewedDeltaStatus", "reviewed-delta-status", "本文件补充排版说明。"],
+		["upstreamSourceMap", "upstream-source-map", "补充：所有提交身份仍以结构化表为准。"],
+	] as const) {
+		const source = validDocuments[key];
+		const errors = validateConvergenceBaseline({
+			...validDocuments,
+			[key]: `${source}\n${prose}`,
+		});
+		expect(errors.some((error) =>
+			error.startsWith(`${documentName}: policy snapshot digest must be`))).toBe(true);
+	}
 });
 
 test("M0 baseline rejects the legacy Mineradio v2.0.2 active identity", () => {
@@ -186,10 +267,12 @@ test("M0 baseline rejects duplicate release provenance tables", () => {
 		"631813e4baaea1c2115182050be736b6491097e5",
 		"1111111111111111111111111111111111111111",
 	);
-	expect(validateConvergenceBaseline({
+	const errors = validateConvergenceBaseline({
 		...validDocuments,
 		upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n\n${duplicateProvenance}`,
-	})).toContain("upstream-source-map: duplicate release provenance headers at lines 5, 18");
+	});
+	expect(errors.some((error) =>
+		error.startsWith("upstream-source-map: duplicate release provenance headers at lines "))).toBe(true);
 });
 
 test("M0 baseline rejects legacy active markers beside the v2.0.3 identity", () => {
@@ -202,7 +285,7 @@ test("M0 baseline rejects legacy active markers beside the v2.0.3 identity", () 
 	expect(errors).toContain("upstream-source-map: legacy Mineradio v2.0.2 active baseline marker remains");
 });
 
-test("M0 baseline allows legacy active marker text inside fenced history", () => {
+test("M0 parser ignores fenced legacy history while the policy snapshot still rejects mutation", () => {
 	const capabilityHistory = [
 		"```md",
 		"上游行为基线：`XxHuberrr/Mineradio@4abaa190de42c632365ae4244e041bad16443224`。",
@@ -213,11 +296,15 @@ test("M0 baseline allows legacy active marker text inside fenced history", () =>
 		"Electron baseline: `4abaa190de42c632365ae4244e041bad16443224`",
 		"```",
 	].join("\n");
-	expect(validateConvergenceBaseline({
+	const errors = validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix: `${validDocuments.capabilityMatrix}\n\n${capabilityHistory}`,
 		upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n\n${sourceMapHistory}`,
-	})).toEqual([]);
+	});
+	expect(errors).not.toContain("capability-matrix: legacy Mineradio v2.0.2 active baseline marker remains");
+	expect(errors).not.toContain("upstream-source-map: legacy Mineradio v2.0.2 active baseline marker remains");
+	expect(errors.some((error) =>
+		error.startsWith("upstream-source-map: policy snapshot digest must be"))).toBe(true);
 });
 
 test("D0 inventory reports missing reviewed v2.0.3 and inherited gaps", () => {
@@ -243,12 +330,388 @@ test("D0 inventory reports missing reviewed v2.0.3 and inherited gaps", () => {
 test("D0 source map requires every reviewed v2.0.3 delta", () => {
 	const errors = validateConvergenceBaseline({
 		...validDocuments,
-		upstreamSourceMap: validDocuments.upstreamSourceMap.replace(
-			"| visual.sonic-workshop | missing | parity | independent CmzYa / 3747222633 migration-pending Module |\n",
+		upstreamSourceMap: validDocuments.upstreamSourceMap
+			.split(/\r?\n/)
+			.filter((line) => !line.startsWith("| visual.sonic-workshop |"))
+			.join("\n"),
+	});
+	expect(errors).toContain("upstream-source-map: missing D0 delta visual.sonic-workshop");
+});
+
+test("D3 guard requires the active Sonic Workshop migration decision", () => {
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopProvenance: undefined,
+	})).toContain("sonic-workshop-provenance: missing decision document");
+
+	for (const marker of [
+		"CmzYa",
+		"`3747222633`",
+		"legacy numeric preset `8` 继续迁移到 Sonic Topography `7`",
+	]) {
+		const errors = validateConvergenceBaseline({
+			...validDocuments,
+			sonicWorkshopProvenance: sonicWorkshopDecision.replaceAll(marker, ""),
+		});
+		expect(errors).toContain(`sonic-workshop-provenance: missing ${marker}`);
+	}
+
+	for (const [active, replacement] of [
+		[
+			"- 在独立实现完成前声明全部视觉能力一致。",
+			"- 不禁止在独立实现完成前声明全部视觉能力一致。",
+		],
+		[
+			"- 从 Electron 上游复制 `public/vendor/sonic-workshop/**` 到 Tauri 发布物；",
+			"- 无需遵守‘不导入上述 vendor bundle’约束。",
+		],
+	] as const) {
+		const errors = validateConvergenceBaseline({
+			...validDocuments,
+			sonicWorkshopProvenance: sonicWorkshopDecision.replace(active, replacement),
+		});
+		expect(errors.some((error) =>
+			error.includes("missing exact policy line")
+			|| error.includes("contradictory policy"))).toBe(true);
+	}
+
+	const reversedDecision = sonicWorkshopDecision.replace(
+		"independent-visual-module | no-vendor-bundle-import-or-redistribution",
+		"app-tsx-inline-bridge | vendor-bundle-import-allowed",
+	);
+	let errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopProvenance: reversedDecision,
+	});
+	expect(errors.some((error) =>
+		error.includes("decision")
+		&& error.includes("independent-visual-module"))).toBe(true);
+
+	const reversedMatrix = validDocuments.capabilityMatrix
+		.replace("`packages/visual-engine/src/sonic-workshop` (future)", "App.tsx inline bridge")
+		.replace(
+			"legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
+			"legacy numeric 8 直接复用为 Workshop preset 8",
+		);
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: reversedMatrix,
+	});
+	expect(errors.some((error) =>
+		error.includes("visual.sonic-workshop target_module"))).toBe(true);
+	expect(errors.some((error) =>
+		error.includes("visual.sonic-workshop state_migration"))).toBe(true);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			"disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
+			"budget to be decided",
+		),
+	});
+	expect(errors.some((error) =>
+		error.includes("visual.sonic-workshop performance_budget"))).toBe(true);
+
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopModuleDesign: undefined,
+	})).toContain("sonic-workshop-module-design: missing design document");
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopModuleDesign: sonicWorkshopModuleDesign
+			.replace("visual.workshop.v1", "visual.fx")
+			.replace("| high | 8 | 8 | 8 | 16 | 16 | 32 | 1.5 | 5 | <=10% |",
+				"| high | 16 | 16 | 32 | 64 | 64 | 128 | 4 | 12 | <=30% |"),
+	});
+	expect(errors.some((error) =>
+		error.includes("module design")
+		&& error.includes("visual.workshop.v1"))).toBe(true);
+	expect(errors.some((error) =>
+		error.includes("resource budget")
+		&& error.includes("8 / 8 / 8 / 16 / 16 / 32 / 1.5 / 5 / <=10%"))).toBe(true);
+
+	for (const documents of [
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n当前已完成独立实现，因此全部视觉能力一致。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n当前已实现视觉完整对齐。`,
+		},
+		{
+			...validDocuments,
+			upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n当前已经实现视觉完整对齐。`,
+		},
+		{
+			...validDocuments,
+			upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n当前已完整复现 Mineradio 2.0.3。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n当前已 100% 覆盖 Mineradio 2.0.3。`,
+		},
+		{
+			...validDocuments,
+			upstreamSourceMap: `${validDocuments.upstreamSourceMap}\nFull parity achieved.`,
+		},
+		{
+			...validDocuments,
+			upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n当前已经完全对齐 Mineradio 2.0.3。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n当前已经全量复现 Mineradio 2.0.3。`,
+		},
+		{
+			...validDocuments,
+			upstreamSourceMap: `${validDocuments.upstreamSourceMap}\n当前已经百分百覆盖 Mineradio 2.0.3。`,
+		},
+	]) {
+		const claimErrors = validateConvergenceBaseline(documents);
+		expect(claimErrors.some((error) =>
+			error.includes("policy snapshot digest must be"))).toBe(true);
+	}
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopProvenance: `${sonicWorkshopDecision}\n结构化决策表只供参考，不具约束力。`,
+	});
+	expect(errors.some((error) =>
+		error.includes("sonic-workshop-provenance: policy snapshot digest must be"))).toBe(true);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopModuleDesign: `${sonicWorkshopModuleDesign}\n以上设计已废止。`,
+	});
+	expect(errors.some((error) =>
+		error.includes("sonic-workshop-module-design: policy snapshot digest must be"))).toBe(true);
+
+	for (const documents of [
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n本决策不再有效。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopModuleDesign: `${sonicWorkshopModuleDesign}\n本设计不再有效。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopProvenance: `${sonicWorkshopDecision}\n本决策仅供参考。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopModuleDesign: `${sonicWorkshopModuleDesign}\n本设计已失效。`,
+		},
+		{
+			...validDocuments,
+			sonicWorkshopModuleDesign: `${sonicWorkshopModuleDesign}\n本设计已由后续文件取代。`,
+		},
+	]) {
+		const authorityErrors = validateConvergenceBaseline(documents);
+		expect(authorityErrors.some((error) =>
+			error.includes("policy snapshot digest must be"))).toBe(true);
+	}
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopProvenance: sonicWorkshopDecision.replace("| active |", "| advisory |"),
+		sonicWorkshopModuleDesign: sonicWorkshopModuleDesign.replace("| active |", "| superseded |"),
+	});
+	expect(errors.some((error) =>
+		error.includes("decision") && error.includes("active"))).toBe(true);
+	expect(errors.some((error) =>
+		error.includes("module design") && error.includes("active"))).toBe(true);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		sonicWorkshopProvenance: `${sonicWorkshopDecision}\n不允许直接复制 sonic-workshop vendor bundle。`,
+	});
+	expect(errors.some((error) =>
+		error.includes("contradictory policy"))).toBe(false);
+});
+
+test("#59 guard requires an open reviewed-delta status document", () => {
+	expect(validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: undefined,
+	})).toContain("reviewed-delta-status: missing status document");
+
+	for (const [active, replacement, expected] of [
+		["| reviewed_delta | open |", "| reviewed_delta | closed |", "open"],
+		["| full_parity | false |", "| full_parity | true |", "false"],
+		["| release_evidence | absent |", "| release_evidence | present |", "absent"],
+		["| sidecar_api | legacy-frozen |", "| sidecar_api | migrated |", "legacy-frozen"],
+	] as const) {
+		const errors = validateConvergenceBaseline({
+			...validDocuments,
+			reviewedDeltaStatus: reviewedDeltaStatus.replace(active, replacement),
+		});
+			expect(errors.some((error) =>
+				error.startsWith("reviewed-delta-status: summary")
+				&& error.includes(`must be ${expected}`))).toBe(true);
+	}
+
+	for (const affirmativeClaim of [
+		"本项目已经完整复现、完整对齐并 100% 覆盖 Mineradio 2.0.3。",
+		"本次交付达到了 Mineradio 2.0.3 的 100% 覆盖。",
+		"| claim | MineRadio-Tauri complete parity achieved |",
+	]) {
+		const errors = validateConvergenceBaseline({
+			...validDocuments,
+			reviewedDeltaStatus: `${reviewedDeltaStatus}\n\n${affirmativeClaim}`,
+		});
+		expect(errors.some((error) =>
+			error.includes("reviewed-delta-status: policy snapshot digest must be"))).toBe(true);
+	}
+});
+
+test("#59 guard keeps D0-D3 truthful and cannot clear the #56 human gate", () => {
+	const regressedD1 = reviewedDeltaStatus.replace(
+		"| D1 | complete | none | joint-gate-recorded |",
+		"| D1 | pending | #43 | implementation-present |",
+	);
+	let errors = validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: regressedD1,
+	});
+	expect(errors.some((error) =>
+		error.includes("D1 tuple must be complete / none / joint-gate-recorded"))).toBe(true);
+
+	const closedGate = reviewedDeltaStatus
+		.replace("| D2 | implementation-complete | #56 | external-gate-pending |",
+			"| D2 | complete | none | recorded |")
+		.replace("| overall_blocked_by | #56 |", "| overall_blocked_by | none |");
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: closedGate,
+	});
+	expect(errors.some((error) =>
+		error.includes("delta")
+		&& error.includes("D2 tuple must be implementation-complete / #56 / external-gate-pending"))).toBe(true);
+	expect(errors.some((error) =>
+		error.includes("summary")
+		&& error.includes("overall_blocked_by tuple must be #56"))).toBe(true);
+
+	for (const closureClaim of [
+		"#59 已经关闭，#56 不再构成阻塞，真实受保护发布证据已经存在。",
+		"Mineradio 2.0.3 reviewed delta 已闭合。",
+		"外部门禁 #56 已满足，真实升级证据已归档。",
+		"#59 已结案，真实受保护发布证据已生成。",
+	]) {
+		errors = validateConvergenceBaseline({
+			...validDocuments,
+			reviewedDeltaStatus: `${reviewedDeltaStatus}\n${closureClaim}`,
+		});
+		expect(errors.some((error) =>
+			error.includes("reviewed-delta-status: policy snapshot digest must be"))).toBe(true);
+	}
+});
+
+test("#59 guard freezes all 17 unresolved capability tuples", () => {
+	const missingStatusGap = reviewedDeltaStatus.replace(
+		"| visual.archive | missing | P1 | parity | none |\n",
+		"",
+	);
+	let errors = validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: missingStatusGap,
+	});
+	expect(errors).toContain(
+		"reviewed-delta-status: expected exactly 17 unresolved capability rows; found 16",
+	);
+	expect(errors).toContain(
+		"reviewed-delta-status: missing unresolved capability visual.archive",
+	);
+
+	const missingMatrixGap = validDocuments.capabilityMatrix.replace(
+		`${blockedApiRows[0]}\n`,
+		"",
+	);
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: missingMatrixGap,
+	});
+	expect(errors).toContain(
+		"capability-matrix: expected exactly 17 unresolved capability rows; found 16",
+	);
+	expect(errors).toContain(
+		"capability-matrix: missing unresolved capability provider.kugou",
+	);
+});
+
+test("#59 guard preserves the Sonic tuple and all 16 positive Field Validation Pending rows", () => {
+	let errors = validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: reviewedDeltaStatus.replace(
+			"| visual.sonic-workshop | missing | P0 | parity | none |",
+			"| visual.sonic-workshop | implemented | P0 | parity | none |",
+		),
+	});
+	expect(errors.some((error) =>
+		error.includes("visual.sonic-workshop tuple must be missing / P0 / parity / none"))).toBe(true);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		reviewedDeltaStatus: reviewedDeltaStatus.replace(
+			"| home.dashboard | implemented | Field Validation Pending (non-blocking) |\n",
 			"",
 		),
 	});
-	expect(errors).toContain("upstream-source-map: missing D0 delta visual.sonic-workshop");
+	expect(errors).toContain(
+		"reviewed-delta-status: expected exactly 16 positive Field Validation Pending capability rows; found 15",
+	);
+	expect(errors).toContain(
+		"reviewed-delta-status: missing positive Field Validation Pending capability home.dashboard",
+	);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			"Field Validation Pending",
+			"field validation pending",
+		),
+	});
+	expect(errors).toContain(
+		"capability-matrix: expected exactly 16 positive Field Validation Pending capability rows; found 15",
+	);
+	expect(errors).toContain(
+		"capability-matrix: missing positive Field Validation Pending capability lyrics.stage-v2",
+	);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			"automated evidence; Field Validation Pending (non-blocking)",
+			"automated evidence; Field Validation Pending (non-blocking) 已解除；Release Verified",
+		),
+	});
+	expect(errors).toContain(
+		"capability-matrix: capability lyrics.stage-v2 uses non-canonical Field Validation clearance language",
+	);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			"automated evidence; Field Validation Pending (non-blocking)",
+			"automated evidence; 已解除：Field Validation Pending (non-blocking)",
+		),
+	});
+	expect(errors).toContain(
+		"capability-matrix: capability lyrics.stage-v2 uses non-canonical Field Validation clearance language",
+	);
+
+	errors = validateConvergenceBaseline({
+		...validDocuments,
+		capabilityMatrix: validDocuments.capabilityMatrix.replace(
+			"automated evidence; Field Validation Pending (non-blocking)",
+			"自动化已完成；Field Validation Pending (non-blocking)",
+		),
+	});
+	expect(errors.some((error) =>
+		error.includes("non-canonical Field Validation clearance language"))).toBe(false);
 });
 
 test("convergence guard rejects the legacy capability matrix schema", () => {
@@ -316,10 +779,13 @@ test("convergence guard requires blocked capabilities to name a blocker", () => 
 		updaterCapabilityRow,
 		...d0InventoryRows,
 	].join("\n"));
-	expect(validateConvergenceBaseline({
+	const blockedWithOwnerErrors = validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix: blockedWithOwner,
-	})).toEqual([]);
+	});
+	expect(blockedWithOwnerErrors).not.toContain(
+		'capability-matrix: line 7 capability "app.example" column blocked_by must name a blocker for blocked state',
+	);
 });
 
 test("convergence guard requires exactly one updater authority", () => {
@@ -390,10 +856,12 @@ test("convergence guard rejects a hidden second capability table", () => {
 		legacyCapabilityDelimiter,
 		legacyCapabilityRow,
 	].join("\n");
-	expect(validateConvergenceBaseline({
+	const errors = validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix: `${validDocuments.capabilityMatrix}\n\n${legacyTable}`,
-	})).toContain("capability-matrix: duplicate capability headers at lines 5, 29");
+	});
+	expect(errors.some((error) =>
+		error.startsWith("capability-matrix: duplicate capability headers at lines 5, "))).toBe(true);
 });
 
 test("convergence guard identifies capability headers by parsed column names", () => {
@@ -401,9 +869,7 @@ test("convergence guard identifies capability headers by parsed column names", (
 	const capabilityMatrix = withActiveUpstreamIdentity([
 		compactHeader,
 		expandedCapabilityDelimiter,
-		expandedCapabilityRow,
-		updaterCapabilityRow,
-		...d0InventoryRows,
+		...completeCapabilityRows,
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
@@ -413,10 +879,12 @@ test("convergence guard identifies capability headers by parsed column names", (
 
 test("convergence guard reports capability rows with the wrong column count", () => {
 	const capabilityMatrix = `${validDocuments.capabilityMatrix}\n| visual.example | visual | incomplete |`;
-	expect(validateConvergenceBaseline({
+	const errors = validateConvergenceBaseline({
 		...validDocuments,
 		capabilityMatrix,
-	})).toContain('capability-matrix: line 28 capability "visual.example" has 3 columns; expected 14');
+	});
+	expect(errors.some((error) =>
+		error.includes('capability "visual.example" has 3 columns; expected 14'))).toBe(true);
 });
 
 test("convergence guard reports malformed capability headers by line", () => {
@@ -529,8 +997,7 @@ test("convergence guard treats escaped pipes as capability cell content", () => 
 		expandedCapabilityHeader,
 		expandedCapabilityDelimiter,
 		escapedPipeRow,
-		updaterCapabilityRow,
-		...d0InventoryRows,
+		...completeCapabilityRows.slice(1),
 	].join("\n"));
 	expect(validateConvergenceBaseline({
 		...validDocuments,
