@@ -3,13 +3,13 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 use semver::Version;
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
+pub(crate) mod auto_check;
 pub(crate) mod cache;
 pub(crate) mod download;
 pub(crate) mod github_source;
@@ -17,6 +17,7 @@ pub(crate) mod managed_fs;
 pub(crate) mod policy;
 pub(crate) mod provenance;
 
+use auto_check::{AutomaticCheckOutcome, SystemUpdateTime, UpdateTime, SUCCESS_INTERVAL_MILLIS};
 use cache::{CacheRecoveryFault, CacheRecoveryOutcome, UpdateStartupRecovery};
 use download::{
     InstallerDownloadError, InstallerDownloadEvent, InstallerDownloadEvents,
@@ -325,6 +326,13 @@ impl UpdateSnapshotSink for NoopSnapshotSink {
 struct PendingCheck {
     operation_id: String,
     previous_phase: UpdatePhase,
+    trigger: CheckTrigger,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckTrigger {
+    Manual,
+    Automatic,
 }
 
 #[derive(Debug, Clone)]
@@ -461,13 +469,14 @@ impl UpdateState {
         Some(pending.clone())
     }
 
-    fn begin_check(&mut self) -> UpdateSnapshot {
+    fn begin_check(&mut self, trigger: CheckTrigger) -> UpdateSnapshot {
         let operation_id = format!("check-{}", self.next_operation);
         self.next_operation += 1;
         let previous_phase = self.snapshot.phase;
         self.pending_check = Some(PendingCheck {
             operation_id: operation_id.clone(),
             previous_phase,
+            trigger,
         });
         self.snapshot.phase = UpdatePhase::Checking;
         self.snapshot.operation = Some(UpdateOperationView {
@@ -872,24 +881,11 @@ impl UpdateState {
                     self.snapshot.revision += 1;
                     return Some(self.snapshot.clone());
                 }
-                if self.policy.skipped_version.as_deref() == Some(release.version.as_str()) {
-                    self.clear_candidate_for_policy(UpdatePhase::Current);
-                    self.snapshot.fault = None;
-                    self.snapshot.revision += 1;
-                    return Some(self.snapshot.clone());
-                }
                 let decision = self.candidate_refresh_decision(&release);
+                let automatic_exact_skip = pending.trigger == CheckTrigger::Automatic
+                    && self.policy.skipped_version.as_deref() == Some(release.version.as_str());
 
                 match decision {
-                    None | Some(CandidateRefreshDecision::Higher) => {
-                        if matches!(decision, Some(CandidateRefreshDecision::Higher)) {
-                            self.quarantined_candidate = None;
-                        }
-                        self.commit_candidate(release, UpdatePhase::Available);
-                    }
-                    Some(CandidateRefreshDecision::Same) => {
-                        self.commit_candidate(release, pending.previous_phase);
-                    }
                     Some(CandidateRefreshDecision::IdentityConflict) => {
                         self.snapshot.phase = pending.previous_phase;
                         self.snapshot.fault = Some(candidate_fault(
@@ -910,6 +906,26 @@ impl UpdateState {
                             "UPDATE_CANDIDATE_VERSION_REJECTED",
                             "更新源返回了无效 candidate 版本",
                         ));
+                    }
+                    None if automatic_exact_skip => {
+                        self.snapshot.phase = UpdatePhase::Current;
+                        self.snapshot.fault = None;
+                    }
+                    Some(CandidateRefreshDecision::Higher) if automatic_exact_skip => {
+                        // skip 只压制新版本的自动提示，不能撤销当前较低版本仍持有的
+                        // verified authority；手动检查仍可显式接受该更高版本。
+                        self.snapshot.phase = pending.previous_phase;
+                        self.snapshot.fault = None;
+                    }
+                    Some(CandidateRefreshDecision::Same) => {
+                        // 同一可信 candidate 只刷新展示 metadata，并保留 ready artifact。
+                        self.commit_candidate(release, pending.previous_phase);
+                    }
+                    None | Some(CandidateRefreshDecision::Higher) => {
+                        if matches!(decision, Some(CandidateRefreshDecision::Higher)) {
+                            self.quarantined_candidate = None;
+                        }
+                        self.commit_candidate(release, UpdatePhase::Available);
                     }
                 }
             }
@@ -970,9 +986,15 @@ impl UpdateState {
 
     fn verified_artifact_replaced_by(
         &self,
+        pending: &PendingCheck,
         result: &Result<Option<NormalizedRelease>, UpdateSourceError>,
     ) -> Option<VerifiedInstallerArtifact> {
         let release = result.as_ref().ok()?.as_ref()?;
+        if pending.trigger == CheckTrigger::Automatic
+            && self.policy.skipped_version.as_deref() == Some(release.version.as_str())
+        {
+            return None;
+        }
         if self.candidate_refresh_decision(release) == Some(CandidateRefreshDecision::Higher) {
             self.verified_artifact.clone()
         } else {
@@ -1071,13 +1093,6 @@ fn candidate_fault(code: &str, message: &str) -> UpdateFaultView {
     }
 }
 
-fn policy_timestamp_millis() -> Result<u64, &'static str> {
-    let elapsed = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "UPDATE_POLICY_CLOCK_REJECTED")?;
-    u64::try_from(elapsed.as_millis()).map_err(|_| "UPDATE_POLICY_CLOCK_REJECTED")
-}
-
 fn policy_source_error(code: impl Into<String>) -> UpdateSourceError {
     UpdateSourceError {
         code: code.into(),
@@ -1148,6 +1163,7 @@ pub struct UpdateRuntime {
     downloader: Option<Arc<dyn InstallerDownloader>>,
     recovery: Option<Arc<dyn UpdateStartupRecovery>>,
     policy_store: Arc<dyn UpdatePolicyStore>,
+    time: Arc<dyn UpdateTime>,
     #[cfg(test)]
     download_commit_barrier: Mutex<Option<DownloadCommitBarrier>>,
 }
@@ -1185,6 +1201,7 @@ impl UpdateRuntime {
             downloader,
             recovery: None,
             policy_store: Arc::new(MemoryUpdatePolicyStore::default()),
+            time: Arc::new(SystemUpdateTime),
             #[cfg(test)]
             download_commit_barrier: Mutex::new(None),
         }
@@ -1338,7 +1355,7 @@ impl UpdateRuntime {
             .policy_gate
             .lock()
             .expect("update runtime policy gate poisoned");
-        let now = match policy_timestamp_millis() {
+        let now = match self.time.now_millis() {
             Ok(now) => now,
             Err(code) => {
                 let error = UpdatePolicyStoreError::runtime(code, "本机时钟无法生成更新策略时间");
@@ -1655,7 +1672,7 @@ impl UpdateRuntime {
                     ) {
                         return UpdateReceipt::InvalidOrder;
                     }
-                    state.begin_check()
+                    state.begin_check(CheckTrigger::Manual)
                 }
             }
         };
@@ -1666,6 +1683,68 @@ impl UpdateRuntime {
             self.drain_publications();
         }
         UpdateReceipt::Accepted
+    }
+
+    fn begin_automatic_check(&self) -> AutomaticCheckOutcome {
+        let now = match self.time.now_millis() {
+            Ok(now) => now,
+            Err(_) => return AutomaticCheckOutcome::TimingUnavailable,
+        };
+        let policy = self
+            .policy_gate
+            .lock()
+            .expect("update runtime policy gate poisoned");
+        let commit = self
+            .commit_gate
+            .lock()
+            .expect("update runtime commit gate poisoned");
+        let published = {
+            let mut state = self.state.lock().expect("update runtime state poisoned");
+            if state.snapshot.phase == UpdatePhase::Disabled {
+                return AutomaticCheckOutcome::Disabled;
+            }
+            if state.snapshot.phase == UpdatePhase::RecoveringCache || state.cache_cleanup_blocked {
+                return AutomaticCheckOutcome::PolicyBlocked;
+            }
+            if !matches!(
+                state.snapshot.phase,
+                UpdatePhase::Idle
+                    | UpdatePhase::Current
+                    | UpdatePhase::Available
+                    | UpdatePhase::ReadyToInstall
+            ) {
+                return AutomaticCheckOutcome::Busy;
+            }
+            if state
+                .policy
+                .last_successful_check_at
+                .is_some_and(|checked_at| {
+                    checked_at <= now && now - checked_at < SUCCESS_INTERVAL_MILLIS
+                })
+            {
+                return AutomaticCheckOutcome::Throttled;
+            }
+            state.begin_check(CheckTrigger::Automatic)
+        };
+        let should_drain = self.queue_committed_snapshot(published);
+        drop(commit);
+        drop(policy);
+        if should_drain {
+            self.drain_publications();
+        }
+        AutomaticCheckOutcome::Started
+    }
+
+    pub(crate) async fn run_automatic_check(&self) -> AutomaticCheckOutcome {
+        let started = self.begin_automatic_check();
+        if started != AutomaticCheckOutcome::Started {
+            return started;
+        }
+        if self.run_pending_check().await {
+            AutomaticCheckOutcome::Completed
+        } else {
+            AutomaticCheckOutcome::Busy
+        }
     }
 
     pub async fn run_pending_check(&self) -> bool {
@@ -1692,12 +1771,12 @@ impl UpdateRuntime {
             let state = self.state.lock().expect("update runtime state poisoned");
             (
                 state.policy.clone(),
-                state.verified_artifact_replaced_by(&result),
+                state.verified_artifact_replaced_by(&pending, &result),
             )
         };
         let mut policy_to_hydrate = None;
         if result.is_ok() {
-            match policy_timestamp_millis() {
+            match self.time.now_millis() {
                 Ok(checked_at) => {
                     next_policy.last_successful_check_at = Some(checked_at);
                     if let Ok(Some(release)) = &result {
@@ -1826,7 +1905,7 @@ impl UpdateRuntime {
             CacheRecoveryOutcome::Empty {
                 quarantine: Some(rejected),
                 ..
-            } => match policy_timestamp_millis() {
+            } => match self.time.now_millis() {
                 Ok(rejected_at) => {
                     next_policy.quarantine = Some(UpdatePolicyQuarantine {
                         candidate_id: rejected.candidate_id.clone(),
@@ -1999,7 +2078,7 @@ impl UpdateRuntime {
                                 .expect_err("quarantine requires an error")
                                 .code()
                                 .into(),
-                            rejected_at: policy_timestamp_millis().ok()?,
+                            rejected_at: self.time.now_millis().ok()?,
                         }
                     };
                     let mut policy = state.policy.clone();

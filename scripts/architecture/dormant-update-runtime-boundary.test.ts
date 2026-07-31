@@ -46,8 +46,11 @@ test("dormant Update Runtime is not wired into the production bootstrap", () => 
 	expect(desktop).not.toContain("dispatch_update_runtime_intent");
 	expect(desktop).not.toContain("GitHubReleaseSource");
 	expect(desktop).not.toContain("UpdateRuntime::new");
+	expect(desktop).not.toContain("StartupUpdateScheduler");
+	expect(desktop).not.toContain("run_automatic_check");
 	expect(state).not.toContain("GitHubReleaseSource");
 	expect(state).not.toContain("UpdateRuntime");
+	expect(state).not.toContain("StartupUpdateScheduler");
 	expect(desktop).toContain("commands::get_updater_status");
 	expect(desktop).toContain("commands::check_for_update");
 	expect(desktop).toContain("commands::install_update");
@@ -83,6 +86,8 @@ test("dormant Update Runtime cannot move into another production module", () => 
 			"runtime::updater",
 			"GitHubReleaseSource",
 			"UpdateRuntime",
+			"StartupUpdateScheduler",
+			"run_automatic_check",
 			"get_update_runtime_snapshot",
 			"dispatch_update_runtime_intent",
 		]),

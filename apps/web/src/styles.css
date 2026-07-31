@@ -6659,6 +6659,14 @@ body.render-deep-sleep #login-guide-canvas {
   line-height: 1.55;
 }
 
+.update-progress-status {
+  margin-top: 9px;
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: rgba(244, 210, 138, .72);
+  font-variant-numeric: tabular-nums;
+}
+
 .update-list {
   display: flex;
   flex-direction: column;
@@ -6705,6 +6713,30 @@ body.render-deep-sleep #login-guide-canvas {
   border-radius: 13px;
   font-family: inherit;
   cursor: pointer;
+}
+
+.update-policy-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-top: 12px;
+}
+
+.update-policy-actions button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 244, 214, .58);
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+
+.update-policy-actions button:hover,
+.update-policy-actions button:focus-visible {
+  color: rgba(255, 244, 214, .92);
+  text-decoration: underline;
+  text-underline-offset: 3px;
 }
 
 .update-primary-btn {

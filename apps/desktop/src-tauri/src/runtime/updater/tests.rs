@@ -6,6 +6,9 @@ use std::{
     },
 };
 
+use super::auto_check::{
+    AutomaticCheckOutcome, StartupUpdateScheduler, UpdateTime, SUCCESS_INTERVAL_MILLIS,
+};
 use super::download::{
     InstallerDownloadError, InstallerDownloadEvent, InstallerDownloadEvents, InstallerDownloader,
     VerifiedInstallerArtifact, VerifiedInstallerPlan,
@@ -16,6 +19,108 @@ use super::policy::{
 };
 use super::*;
 use tokio_util::sync::CancellationToken;
+
+#[derive(Clone)]
+struct ImmediateUpdateTime {
+    now: Arc<std::sync::atomic::AtomicU64>,
+    delay_millis: u64,
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl ImmediateUpdateTime {
+    fn new(now: u64, delay_millis: u64, events: Arc<Mutex<Vec<&'static str>>>) -> Self {
+        Self {
+            now: Arc::new(std::sync::atomic::AtomicU64::new(now)),
+            delay_millis,
+            events,
+        }
+    }
+
+    fn set_now(&self, now: u64) {
+        self.now.store(now, Ordering::Release);
+    }
+}
+
+impl UpdateTime for ImmediateUpdateTime {
+    fn now_millis(&self) -> Result<u64, &'static str> {
+        Ok(self.now.load(Ordering::Acquire))
+    }
+
+    fn startup_delay_millis(&self) -> Result<u64, &'static str> {
+        Ok(self.delay_millis)
+    }
+
+    fn sleep<'a>(
+        &'a self,
+        _delay_millis: u64,
+        cancellation: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("update time event log poisoned")
+                .push("sleep");
+            !cancellation.is_cancelled()
+        })
+    }
+}
+
+#[derive(Clone)]
+struct PausedUpdateTime {
+    now: u64,
+    delay_millis: u64,
+    sleep_entered: Arc<tokio::sync::Notify>,
+    release_sleep: Arc<tokio::sync::Notify>,
+}
+
+impl UpdateTime for PausedUpdateTime {
+    fn now_millis(&self) -> Result<u64, &'static str> {
+        Ok(self.now)
+    }
+
+    fn startup_delay_millis(&self) -> Result<u64, &'static str> {
+        Ok(self.delay_millis)
+    }
+
+    fn sleep<'a>(
+        &'a self,
+        _delay_millis: u64,
+        cancellation: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            self.sleep_entered.notify_one();
+            tokio::select! {
+                _ = self.release_sleep.notified() => true,
+                _ = cancellation.cancelled() => false,
+            }
+        })
+    }
+}
+
+struct CancelOnWakeUpdateTime {
+    now: u64,
+}
+
+impl UpdateTime for CancelOnWakeUpdateTime {
+    fn now_millis(&self) -> Result<u64, &'static str> {
+        Ok(self.now)
+    }
+
+    fn startup_delay_millis(&self) -> Result<u64, &'static str> {
+        Ok(15_000)
+    }
+
+    fn sleep<'a>(
+        &'a self,
+        _delay_millis: u64,
+        cancellation: CancellationToken,
+    ) -> Pin<Box<dyn Future<Output = bool> + Send + 'a>> {
+        Box::pin(async move {
+            cancellation.cancel();
+            true
+        })
+    }
+}
 
 const RAW_PROVENANCE: &[u8] = include_bytes!("fixtures/provenance-v2.json");
 const CONTRACT_JSON: &str = include_str!("fixtures/provenance-v2-contract.json");
@@ -99,6 +204,802 @@ fn runtime_with_recovery_policy_and_downloader(
     .expect("策略应能载入");
     runtime.downloader = Some(downloader);
     runtime
+}
+
+struct OrderedStartupRecovery {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+impl UpdateStartupRecovery for OrderedStartupRecovery {
+    fn recover<'a>(
+        &'a self,
+        _current_version: &'a str,
+    ) -> Pin<Box<dyn Future<Output = CacheRecoveryOutcome> + Send + 'a>> {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("startup event log poisoned")
+                .push("recover");
+            CacheRecoveryOutcome::Empty {
+                fault: None,
+                quarantine: None,
+            }
+        })
+    }
+}
+
+struct OrderedUpdateSource {
+    events: Arc<Mutex<Vec<&'static str>>>,
+}
+
+struct CountingPendingUpdateSource {
+    entered: Arc<tokio::sync::Notify>,
+    checks: AtomicUsize,
+}
+
+impl UpdateSource for CountingPendingUpdateSource {
+    fn check(
+        &self,
+        _request: CheckRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<NormalizedRelease>, UpdateSourceError>> + Send + '_>,
+    > {
+        self.checks.fetch_add(1, Ordering::AcqRel);
+        Box::pin(async move {
+            self.entered.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+
+struct RejectEveryPolicySaveStore {
+    snapshot: UpdatePolicySnapshot,
+}
+
+impl UpdatePolicyStore for RejectEveryPolicySaveStore {
+    fn load(&self) -> Result<UpdatePolicySnapshot, UpdatePolicyStoreError> {
+        Ok(self.snapshot.clone())
+    }
+
+    fn save(&self, _snapshot: &UpdatePolicySnapshot) -> Result<(), UpdatePolicyStoreError> {
+        Err(UpdatePolicyStoreError::runtime(
+            "UPDATE_POLICY_TEST_REJECTED",
+            "测试策略存储拒绝写入",
+        ))
+    }
+}
+
+impl UpdateSource for OrderedUpdateSource {
+    fn check(
+        &self,
+        _request: CheckRequest,
+    ) -> Pin<
+        Box<dyn Future<Output = Result<Option<NormalizedRelease>, UpdateSourceError>> + Send + '_>,
+    > {
+        Box::pin(async move {
+            self.events
+                .lock()
+                .expect("startup event log poisoned")
+                .push("source");
+            Ok(None)
+        })
+    }
+}
+
+#[test]
+fn startup_scheduler_waits_until_recovery_finishes_before_the_first_check() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let time = Arc::new(ImmediateUpdateTime::new(1_000_000, 15_000, events.clone()));
+        let source = Arc::new(OrderedUpdateSource {
+            events: events.clone(),
+        });
+        let recovery = Arc::new(OrderedStartupRecovery {
+            events: events.clone(),
+        });
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source,
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            Arc::new(MemoryUpdatePolicyStore::default()),
+        )
+        .expect("默认策略应能载入");
+        runtime.time = time.clone();
+        let scheduler = StartupUpdateScheduler::new();
+
+        let outcome = scheduler.run_once(&runtime, CancellationToken::new()).await;
+
+        assert_eq!(outcome, AutomaticCheckOutcome::Completed);
+        assert_eq!(
+            *events.lock().expect("startup event log poisoned"),
+            vec!["recover", "sleep", "source"]
+        );
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::Current);
+    });
+}
+
+#[test]
+fn manual_check_bypasses_the_automatic_interval_and_persists_the_injected_clock() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let time = Arc::new(ImmediateUpdateTime::new(7_000, 15_000, events.clone()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+        let recovery = Arc::new(OrderedStartupRecovery { events });
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+            last_successful_check_at: Some(6_999),
+            ..UpdatePolicySnapshot::default()
+        }));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source.clone(),
+            Arc::new(NoopSnapshotSink),
+            recovery,
+            policy_store.clone(),
+        )
+        .expect("策略应能载入");
+        runtime.time = time;
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+
+        assert_eq!(source.check_count(), 1);
+        assert_eq!(runtime.snapshot().checked_at, Some(7_000));
+        assert_eq!(
+            policy_store.load().unwrap().last_successful_check_at,
+            Some(7_000)
+        );
+    });
+}
+
+#[test]
+fn automatic_check_is_silent_before_the_24_hour_boundary_and_runs_at_the_boundary() {
+    tauri::async_runtime::block_on(async {
+        let checked_at = 1_000_000;
+        for (now, expected_outcome, expected_checks) in [
+            (
+                checked_at + SUCCESS_INTERVAL_MILLIS - 1,
+                AutomaticCheckOutcome::Throttled,
+                0,
+            ),
+            (
+                checked_at + SUCCESS_INTERVAL_MILLIS,
+                AutomaticCheckOutcome::Completed,
+                1,
+            ),
+        ] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let time = Arc::new(ImmediateUpdateTime::new(now, 15_000, events.clone()));
+            let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+            let recovery = Arc::new(OrderedStartupRecovery { events });
+            let policy_store = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+                last_successful_check_at: Some(checked_at),
+                ..UpdatePolicySnapshot::default()
+            }));
+            let mut runtime = UpdateRuntime::with_recovery_and_policy(
+                "0.1.0",
+                source.clone(),
+                Arc::new(NoopSnapshotSink),
+                recovery,
+                policy_store,
+            )
+            .expect("策略应能载入");
+            runtime.time = time;
+
+            let outcome = StartupUpdateScheduler::new()
+                .run_once(&runtime, CancellationToken::new())
+                .await;
+
+            assert_eq!(outcome, expected_outcome);
+            assert_eq!(source.check_count(), expected_checks);
+            assert!(runtime.snapshot().operation.is_none());
+            if expected_checks == 0 {
+                assert_eq!(
+                    runtime.snapshot().revision,
+                    1,
+                    "限频不得制造 checking revision"
+                );
+                assert_eq!(runtime.snapshot().checked_at, Some(checked_at));
+            } else {
+                assert_eq!(runtime.snapshot().checked_at, Some(now));
+            }
+        }
+    });
+}
+
+#[test]
+fn future_success_timestamps_never_starve_automatic_checks() {
+    tauri::async_runtime::block_on(async {
+        let now = 1_000_000;
+        for checked_at in [now + 1, u64::MAX] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let time = Arc::new(ImmediateUpdateTime::new(now, 15_000, events.clone()));
+            let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+            let policy_store = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+                last_successful_check_at: Some(checked_at),
+                ..UpdatePolicySnapshot::default()
+            }));
+            let mut runtime = UpdateRuntime::with_recovery_and_policy(
+                "0.1.0",
+                source.clone(),
+                Arc::new(NoopSnapshotSink),
+                Arc::new(OrderedStartupRecovery { events }),
+                policy_store.clone(),
+            )
+            .expect("未来检查时间策略应能载入");
+            runtime.time = time;
+
+            assert_eq!(
+                StartupUpdateScheduler::new()
+                    .run_once(&runtime, CancellationToken::new())
+                    .await,
+                AutomaticCheckOutcome::Completed,
+                "checked_at={checked_at}"
+            );
+            assert_eq!(source.check_count(), 1, "checked_at={checked_at}");
+            assert_eq!(runtime.snapshot().checked_at, Some(now));
+            assert_eq!(
+                policy_store.load().unwrap().last_successful_check_at,
+                Some(now)
+            );
+        }
+    });
+}
+
+#[test]
+fn startup_scheduler_accepts_only_the_closed_15_to_30_second_jitter_range() {
+    tauri::async_runtime::block_on(async {
+        for (delay_millis, expected_outcome, expected_checks) in [
+            (14_999, AutomaticCheckOutcome::TimingUnavailable, 0),
+            (15_000, AutomaticCheckOutcome::Completed, 1),
+            (30_000, AutomaticCheckOutcome::Completed, 1),
+            (30_001, AutomaticCheckOutcome::TimingUnavailable, 0),
+        ] {
+            let events = Arc::new(Mutex::new(Vec::new()));
+            let time = Arc::new(ImmediateUpdateTime::new(
+                1_000_000,
+                delay_millis,
+                events.clone(),
+            ));
+            let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+            let mut runtime = UpdateRuntime::with_recovery_and_policy(
+                "0.1.0",
+                source.clone(),
+                Arc::new(NoopSnapshotSink),
+                Arc::new(OrderedStartupRecovery { events }),
+                Arc::new(MemoryUpdatePolicyStore::default()),
+            )
+            .expect("默认策略应能载入");
+            runtime.time = time;
+
+            assert_eq!(
+                StartupUpdateScheduler::new()
+                    .run_once(&runtime, CancellationToken::new())
+                    .await,
+                expected_outcome,
+                "delay={delay_millis}"
+            );
+            assert_eq!(
+                source.check_count(),
+                expected_checks,
+                "delay={delay_millis}"
+            );
+        }
+    });
+}
+
+#[test]
+fn cancellation_at_delay_completion_wins_before_an_operation_is_created() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None)]));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source.clone(),
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery { events }),
+            Arc::new(MemoryUpdatePolicyStore::default()),
+        )
+        .expect("默认策略应能载入");
+        runtime.time = Arc::new(CancelOnWakeUpdateTime { now: 1_000_000 });
+        let cancellation = CancellationToken::new();
+
+        let outcome = StartupUpdateScheduler::new()
+            .run_once(&runtime, cancellation.clone())
+            .await;
+
+        assert_eq!(outcome, AutomaticCheckOutcome::Cancelled);
+        assert!(cancellation.is_cancelled());
+        assert_eq!(source.check_count(), 0);
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Idle);
+        assert!(snapshot.operation.is_none());
+        assert_eq!(snapshot.revision, 1, "取消不得制造 checking revision");
+    });
+}
+
+#[test]
+fn manual_success_during_startup_delay_prevents_a_second_automatic_check() {
+    tauri::async_runtime::block_on(async {
+        let sleep_entered = Arc::new(tokio::sync::Notify::new());
+        let release_sleep = Arc::new(tokio::sync::Notify::new());
+        let time = Arc::new(PausedUpdateTime {
+            now: 50_000,
+            delay_millis: 15_000,
+            sleep_entered: sleep_entered.clone(),
+            release_sleep: release_sleep.clone(),
+        });
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(None), Ok(None)]));
+        let recovery_events = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source.clone(),
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: recovery_events,
+            }),
+            Arc::new(MemoryUpdatePolicyStore::default()),
+        )
+        .expect("策略应能载入");
+        runtime.time = time;
+        let runtime = Arc::new(runtime);
+        let task_runtime = runtime.clone();
+        let scheduler = tauri::async_runtime::spawn(async move {
+            StartupUpdateScheduler::new()
+                .run_once(&task_runtime, CancellationToken::new())
+                .await
+        });
+        sleep_entered.notified().await;
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        release_sleep.notify_one();
+
+        assert_eq!(scheduler.await.unwrap(), AutomaticCheckOutcome::Throttled);
+        assert_eq!(source.check_count(), 1);
+        assert_eq!(runtime.snapshot().checked_at, Some(50_000));
+    });
+}
+
+#[test]
+fn automatic_and_manual_checks_share_one_operation_single_flight() {
+    tauri::async_runtime::block_on(async {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let source = Arc::new(CountingPendingUpdateSource {
+            entered: entered.clone(),
+            checks: AtomicUsize::new(0),
+        });
+        let time = Arc::new(ImmediateUpdateTime::new(
+            60_000,
+            15_000,
+            Arc::new(Mutex::new(Vec::new())),
+        ));
+        let mut runtime = UpdateRuntime::with_noop_sink("0.1.0", source.clone());
+        runtime.time = time;
+        let runtime = Arc::new(runtime);
+        let task_runtime = runtime.clone();
+        let task =
+            tauri::async_runtime::spawn(async move { task_runtime.run_automatic_check().await });
+        entered.notified().await;
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::InvalidOrder
+        );
+        assert_eq!(source.checks.load(Ordering::Acquire), 1);
+
+        task.abort();
+        let _ = task.await;
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::Idle);
+        assert!(runtime.snapshot().operation.is_none());
+    });
+}
+
+#[test]
+fn cancelling_during_the_source_check_restores_the_stable_phase() {
+    tauri::async_runtime::block_on(async {
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let source = Arc::new(CountingPendingUpdateSource {
+            entered: entered.clone(),
+            checks: AtomicUsize::new(0),
+        });
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source.clone(),
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: events.clone(),
+            }),
+            Arc::new(MemoryUpdatePolicyStore::default()),
+        )
+        .expect("默认策略应能载入");
+        runtime.time = Arc::new(ImmediateUpdateTime::new(70_000, 15_000, events));
+        let runtime = Arc::new(runtime);
+        let cancellation = CancellationToken::new();
+        let task_runtime = runtime.clone();
+        let task_cancellation = cancellation.clone();
+        let task = tauri::async_runtime::spawn(async move {
+            StartupUpdateScheduler::new()
+                .run_once(&task_runtime, task_cancellation)
+                .await
+        });
+        entered.notified().await;
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::Checking);
+
+        cancellation.cancel();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(1), task)
+            .await
+            .expect("取消必须终止进行中的 source check")
+            .expect("调度任务不应 panic");
+
+        assert_eq!(outcome, AutomaticCheckOutcome::Cancelled);
+        assert_eq!(source.checks.load(Ordering::Acquire), 1);
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Idle);
+        assert!(snapshot.operation.is_none());
+        assert_eq!(snapshot.checked_at, None);
+        assert_eq!(
+            snapshot.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_CHECK_INTERRUPTED")
+        );
+    });
+}
+
+#[test]
+fn manual_check_can_show_an_exact_skipped_version_without_clearing_the_skip() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+            verified_fixture_release(&[]),
+        ))]));
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+            skipped_version: Some("1.2.3".into()),
+            ..UpdatePolicySnapshot::default()
+        }));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source,
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: events.clone(),
+            }),
+            policy_store.clone(),
+        )
+        .expect("skip 策略应能载入");
+        runtime.time = Arc::new(ImmediateUpdateTime::new(10_000, 15_000, events));
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Available);
+        assert_eq!(
+            snapshot
+                .candidate
+                .as_ref()
+                .map(|candidate| candidate.version.as_str()),
+            Some("1.2.3")
+        );
+        assert_eq!(snapshot.skipped_version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            policy_store.load().unwrap().skipped_version.as_deref(),
+            Some("1.2.3")
+        );
+    });
+}
+
+#[test]
+fn automatic_check_keeps_an_exact_skipped_version_silent_without_losing_policy() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+            verified_fixture_release(&[]),
+        ))]));
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::new(UpdatePolicySnapshot {
+            skipped_version: Some("1.2.3".into()),
+            ..UpdatePolicySnapshot::default()
+        }));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source,
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: events.clone(),
+            }),
+            policy_store.clone(),
+        )
+        .expect("skip 策略应能载入");
+        runtime.time = Arc::new(ImmediateUpdateTime::new(11_000, 15_000, events));
+
+        assert_eq!(
+            StartupUpdateScheduler::new()
+                .run_once(&runtime, CancellationToken::new())
+                .await,
+            AutomaticCheckOutcome::Completed
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Current);
+        assert!(snapshot.candidate.is_none());
+        assert_eq!(snapshot.skipped_version.as_deref(), Some("1.2.3"));
+        assert_eq!(snapshot.checked_at, Some(11_000));
+        assert_eq!(
+            policy_store.load().unwrap().skipped_version.as_deref(),
+            Some("1.2.3")
+        );
+    });
+}
+
+#[test]
+fn automatic_exact_skip_does_not_hide_a_same_version_identity_conflict() {
+    tauri::async_runtime::block_on(async {
+        let candidate_a =
+            NormalizedRelease::new("candidate-a", "1.2.3", std::iter::empty::<&str>(), None);
+        let candidate_b =
+            NormalizedRelease::new("candidate-b", "1.2.3", std::iter::empty::<&str>(), None);
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([
+            Ok(Some(candidate_a.clone())),
+            Ok(Some(candidate_a)),
+            Ok(Some(candidate_b)),
+        ]));
+        let time = Arc::new(ImmediateUpdateTime::new(
+            20_000,
+            15_000,
+            Arc::new(Mutex::new(Vec::new())),
+        ));
+        let mut runtime = UpdateRuntime::with_noop_sink("0.1.0", source);
+        runtime.time = time.clone();
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::SkipVersion {
+                    candidate_id: "candidate-a".into(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        time.set_now(20_000 + SUCCESS_INTERVAL_MILLIS);
+
+        assert_eq!(
+            runtime.run_automatic_check().await,
+            AutomaticCheckOutcome::Completed
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Available);
+        assert_eq!(snapshot.candidate.unwrap().id, "candidate-a");
+        assert_eq!(
+            snapshot.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_CANDIDATE_IDENTITY_CONFLICT")
+        );
+        assert_eq!(snapshot.skipped_version.as_deref(), Some("1.2.3"));
+    });
+}
+
+#[test]
+fn automatic_exact_skip_preserves_an_existing_ready_artifact() {
+    tauri::async_runtime::block_on(async {
+        let directory = RuntimeTestDirectory::new();
+        let artifact_path = directory.join("verified-installer.exe");
+        std::fs::write(&artifact_path, b"installer").unwrap();
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([
+            Ok(Some(verified_fixture_release(&[]))),
+            Ok(Some(verified_fixture_release(&[]))),
+            Ok(Some(verified_fixture_release(&[]))),
+        ]));
+        let downloader = Arc::new(ScriptedDownloader {
+            events: vec![InstallerDownloadEvent::Verifying {
+                received_bytes: 9,
+                total_bytes: Some(9),
+            }],
+            outcome: ScriptedDownloadOutcome::SuccessAt {
+                path: artifact_path.clone(),
+                before_return: None,
+            },
+            events_emitted: None,
+        });
+        let time = Arc::new(ImmediateUpdateTime::new(
+            30_000,
+            15_000,
+            Arc::new(Mutex::new(Vec::new())),
+        ));
+        let mut runtime =
+            UpdateRuntime::with_downloader("0.1.0", source, Arc::new(NoopSnapshotSink), downloader);
+        runtime.time = time.clone();
+
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        let candidate_id = runtime.snapshot().candidate.unwrap().id;
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::SkipVersion {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::CheckNow,
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_check().await);
+        assert_eq!(
+            runtime.dispatch(UpdateDispatchRequest {
+                expected_revision: runtime.snapshot().revision,
+                intent: UpdateIntent::Download {
+                    candidate_id: candidate_id.clone(),
+                },
+            }),
+            UpdateReceipt::Accepted
+        );
+        assert!(runtime.run_pending_download().await);
+        assert_eq!(runtime.snapshot().phase, UpdatePhase::ReadyToInstall);
+        time.set_now(30_000 + SUCCESS_INTERVAL_MILLIS);
+
+        assert_eq!(
+            runtime.run_automatic_check().await,
+            AutomaticCheckOutcome::Completed
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::ReadyToInstall);
+        assert_eq!(snapshot.candidate.unwrap().id, candidate_id);
+        assert_eq!(snapshot.skipped_version.as_deref(), Some("1.2.3"));
+        assert!(artifact_path.is_file());
+        assert!(runtime
+            .state
+            .lock()
+            .expect("update runtime state poisoned")
+            .verified_artifact
+            .is_some());
+    });
+}
+
+fn superseded_policy_snapshot() -> UpdatePolicySnapshot {
+    UpdatePolicySnapshot {
+        last_successful_check_at: None,
+        remind: Some(UpdatePolicyReminder {
+            candidate_id: "a".repeat(64),
+            version: "1.2.3".into(),
+            until: 99_000,
+        }),
+        skipped_version: Some("1.2.3".into()),
+        quarantine: Some(UpdatePolicyQuarantine {
+            candidate_id: "b".repeat(64),
+            version: "1.2.3".into(),
+            reason: "UPDATE_SIGNATURE_REJECTED".into(),
+            rejected_at: 1,
+        }),
+        ..UpdatePolicySnapshot::default()
+    }
+}
+
+#[test]
+fn strictly_higher_candidate_clears_superseded_policy_before_publication() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+            NormalizedRelease::new("candidate-1.2.4", "1.2.4", std::iter::empty::<&str>(), None),
+        ))]));
+        let policy_store = Arc::new(MemoryUpdatePolicyStore::new(superseded_policy_snapshot()));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source,
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: events.clone(),
+            }),
+            policy_store.clone(),
+        )
+        .expect("旧策略应能载入");
+        runtime.time = Arc::new(ImmediateUpdateTime::new(100_000, 15_000, events));
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        assert_eq!(
+            runtime.run_automatic_check().await,
+            AutomaticCheckOutcome::Completed
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Available);
+        assert_eq!(snapshot.candidate.unwrap().version, "1.2.4");
+        assert_eq!(snapshot.remind_after, None);
+        assert_eq!(snapshot.skipped_version, None);
+        let persisted = policy_store.load().unwrap();
+        assert!(persisted.remind.is_none());
+        assert!(persisted.skipped_version.is_none());
+        assert!(persisted.quarantine.is_none());
+    });
+}
+
+#[test]
+fn higher_candidate_is_not_published_when_clearing_policy_cannot_commit() {
+    tauri::async_runtime::block_on(async {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let source = Arc::new(MemoryUpdateSource::with_outcomes([Ok(Some(
+            NormalizedRelease::new("candidate-1.2.4", "1.2.4", std::iter::empty::<&str>(), None),
+        ))]));
+        let mut runtime = UpdateRuntime::with_recovery_and_policy(
+            "0.1.0",
+            source,
+            Arc::new(NoopSnapshotSink),
+            Arc::new(OrderedStartupRecovery {
+                events: events.clone(),
+            }),
+            Arc::new(RejectEveryPolicySaveStore {
+                snapshot: superseded_policy_snapshot(),
+            }),
+        )
+        .expect("旧策略应能载入");
+        runtime.time = Arc::new(ImmediateUpdateTime::new(100_000, 15_000, events));
+        assert!(runtime.run_pending_cache_recovery().await);
+
+        assert_eq!(
+            runtime.run_automatic_check().await,
+            AutomaticCheckOutcome::Completed
+        );
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(snapshot.phase, UpdatePhase::Idle);
+        assert!(snapshot.candidate.is_none());
+        assert_eq!(snapshot.remind_after, Some(99_000));
+        assert_eq!(snapshot.skipped_version.as_deref(), Some("1.2.3"));
+        assert_eq!(
+            snapshot.fault.as_ref().map(|fault| fault.code.as_str()),
+            Some("UPDATE_POLICY_TEST_REJECTED")
+        );
+    });
 }
 
 #[test]
