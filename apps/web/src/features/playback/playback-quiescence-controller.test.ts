@@ -21,6 +21,13 @@ function identity(
 	return { operationId, operationGeneration, receipt } as const;
 }
 
+function operationIdentity(
+	operationGeneration: number,
+	operationId = OPERATION_A,
+) {
+	return { operationId, operationGeneration } as const;
+}
+
 const OWNER: CommittedPlaybackOwnerLease = Object.freeze({
 	deckId: "a",
 	generation: 7,
@@ -65,7 +72,12 @@ function deferred<T>() {
 test("quiescence prepare stages checkpoint before exact owner pause", () => {
 	const calls: string[] = [];
 	const capturedRequests: CapturePlaybackExitCheckpointRequest[] = [];
+	let receiptCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => {
+			receiptCalls += 1;
+			return RECEIPT_A;
+		},
 		audio: {
 			stageCommittedOwnerLease() {
 				calls.push("stage-owner");
@@ -98,9 +110,16 @@ test("quiescence prepare stages checkpoint before exact owner pause", () => {
 		},
 	});
 
-	const exact = identity(1);
-	const prepared = controller.prepare(exact);
+	const operation = operationIdentity(1);
+	const prepared = controller.prepare(operation);
 	expect(prepared.status).toBe("prepared");
+	if (prepared.status !== "prepared") throw new Error("checkpoint 应已生成");
+	const exact = { ...operation, receipt: prepared.checkpoint.receipt };
+	expect(controller.prepare(operation)).toEqual({
+		status: "already-prepared",
+		checkpoint: prepared.checkpoint,
+	});
+	expect(receiptCalls).toBe(1);
 	expect(calls).toEqual(["stage-owner", "capture-checkpoint"]);
 	expect(capturedRequests[0]?.ownerOriginallyPlaying).toBe(true);
 	expect(controller.confirmCheckpointPersisted(exact)).toBe(true);
@@ -114,6 +133,7 @@ test("quiescence prepare stages checkpoint before exact owner pause", () => {
 test("stale operation or receipt cannot pause the staged owner", () => {
 	let pauseCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => {
@@ -144,6 +164,7 @@ test("local, blob, and opaque owners fail closed before pause", () => {
 		let releaseCalls = 0;
 		const owner = Object.freeze({ ...OWNER, sourceKind });
 		const controller = new PlaybackQuiescenceController({
+			createReceipt: () => RECEIPT_A,
 			audio: {
 				stageCommittedOwnerLease: () => owner,
 				pauseCommittedOwnerLease: () => {
@@ -184,6 +205,7 @@ test("local, blob, and opaque owners fail closed before pause", () => {
 test("quiescence rollback is exact and idempotently restores original owner state", async () => {
 	let rollbackCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,
@@ -204,6 +226,8 @@ test("quiescence rollback is exact and idempotently restores original owner stat
 	controller.confirmCheckpointPersisted(exact);
 
 	expect(await controller.rollback(identity(3, OPERATION_B, RECEIPT_A)))
+		.toBe("rejected");
+	expect(await controller.rollback(identity(4, OPERATION_A, RECEIPT_B)))
 		.toBe("rejected");
 	expect(await controller.rollback(exact)).toBe("restored");
 	expect(await controller.rollback(exact)).toBe("restored");
@@ -242,6 +266,7 @@ test("same-process rollback restores the captured store snapshot and audio owner
 	});
 	let ownerRollbackCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,
@@ -333,6 +358,7 @@ test("same-process rollback publishes checkpoint state only after exact owner re
 	});
 	const ownerResume = deferred<boolean>();
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => ({
 				...OWNER,
@@ -391,6 +417,7 @@ test("same-process rollback publishes checkpoint state only after exact owner re
 test("prepare rejects a checkpoint spliced from a different owner track or intent", () => {
 	let cancelCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,
@@ -421,6 +448,7 @@ test("prepare rejects a checkpoint spliced from a different owner track or inten
 
 test("consumed operation generations cannot be replay-prepared after a newer operation", async () => {
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,
@@ -437,7 +465,7 @@ test("consumed operation generations cannot be replay-prepared after a newer ope
 	controller.prepare(first);
 	controller.confirmCheckpointPersisted(first);
 	expect(await controller.rollback(first)).toBe("restored");
-	const second = identity(7, OPERATION_B, RECEIPT_B);
+	const second = identity(7, OPERATION_B);
 	controller.prepare(second);
 	controller.confirmCheckpointPersisted(second);
 	expect(await controller.rollback(second)).toBe("restored");
@@ -449,6 +477,7 @@ test("consumed operation generations cannot be replay-prepared after a newer ope
 
 test("persisted reconciliation returns exact no-op-not-prepared when no checkpoint exists", async () => {
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => null,
 			pauseCommittedOwnerLease: () => false,
@@ -461,16 +490,18 @@ test("persisted reconciliation returns exact no-op-not-prepared when no checkpoi
 			restorePlaybackExitCheckpoint: restoreCheckpoint,
 		},
 	});
-	const exact = identity(8);
+	const exact = operationIdentity(8);
 	expect(controller.hydratePersistedCheckpoint(exact, null)).toBe("hydrated");
 	expect(await controller.rollback(exact)).toBe("no-op-not-prepared");
 	expect(await controller.rollback(exact)).toBe("no-op-not-prepared");
-	expect(await controller.rollback(identity(8, OPERATION_B, RECEIPT_A)))
+	expect(await controller.rollback(operationIdentity(7))).toBe("rejected");
+	expect(await controller.rollback(operationIdentity(8, OPERATION_B)))
 		.toBe("rejected");
 });
 
 test("a later lost prepare event can hydrate after an earlier operation was released", async () => {
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,
@@ -488,13 +519,14 @@ test("a later lost prepare event can hydrate after an earlier operation was rele
 	controller.confirmCheckpointPersisted(first);
 	expect(await controller.rollback(first)).toBe("restored");
 
-	const second = identity(14, OPERATION_B, RECEIPT_B);
+	const second = operationIdentity(14, OPERATION_B);
 	expect(controller.hydratePersistedCheckpoint(second, null)).toBe("hydrated");
 	expect(await controller.rollback(second)).toBe("no-op-not-prepared");
 });
 
 test("an unknown direct rollback cannot manufacture a persisted no-op", async () => {
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => null,
 			pauseCommittedOwnerLease: () => false,
@@ -513,6 +545,7 @@ test("an unknown direct rollback cannot manufacture a persisted no-op", async ()
 test("sealed-for-exit ownership remains compensatable until irreversible process exit", async () => {
 	let rollbackCalls = 0;
 	const controller = new PlaybackQuiescenceController({
+		createReceipt: () => RECEIPT_A,
 		audio: {
 			stageCommittedOwnerLease: () => OWNER,
 			pauseCommittedOwnerLease: () => true,

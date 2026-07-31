@@ -180,13 +180,6 @@ function findTrackIndex(queue: Track[], track: Track | null): number {
 	return ref ? queue.findIndex((item) => trackRef(item) === ref) : -1;
 }
 
-function validCheckpointIdentity(value: unknown, maxLength: number): value is string {
-	return typeof value === "string"
-		&& value.length > 0
-		&& value.length <= maxLength
-		&& !/[\u0000-\u001f\u007f]/u.test(value);
-}
-
 function checkpointSourceIsRestartRestorable(
 	sourceKind: PlaybackCheckpointSourceKind,
 ): boolean {
@@ -293,6 +286,12 @@ function validCheckpointNumber(value: unknown): value is number {
 		&& value <= MAX_CHECKPOINT_MEDIA_DURATION_MS;
 }
 
+function validCheckpointPlaybackIntentId(value: unknown): value is number {
+	return typeof value === "number"
+		&& Number.isSafeInteger(value)
+		&& value >= 0;
+}
+
 function validatedCheckpointCurrentTrack(
 	checkpoint: PlaybackExitCheckpointV1,
 ): PlaybackCheckpointTrackV1 | null | undefined {
@@ -306,8 +305,7 @@ function validatedCheckpointCurrentTrack(
 		|| !checkpoint.queue.every(validCheckpointTrackValue)
 		|| encodedSize === null
 		|| encodedSize > MAX_PLAYBACK_EXIT_CHECKPOINT_BYTES
-		|| !validCheckpointNumber(checkpoint.capturedPlaybackIntentId)
-		|| !Number.isInteger(checkpoint.capturedPlaybackIntentId)
+		|| !validCheckpointPlaybackIntentId(checkpoint.capturedPlaybackIntentId)
 		|| !validCheckpointNumber(checkpoint.positionMs)
 		|| (checkpoint.durationMs !== null && !validCheckpointNumber(checkpoint.durationMs))
 		|| typeof checkpoint.wasPlaying !== "boolean"
@@ -577,6 +575,7 @@ export const usePlaybackStore = create<PlaybackState>()((set, get) => ({
 		if (
 			state.queue.length > MAX_PLAYBACK_EXIT_CHECKPOINT_QUEUE
 			|| checkpointQueue.some((track) => track === null)
+			|| !validCheckpointPlaybackIntentId(state.playbackIntentId)
 			|| !validCheckpointNumber(state.positionMs)
 			|| (state.durationMs !== null && !validCheckpointNumber(state.durationMs))
 			|| (request.ownerOriginallyPlaying !== undefined

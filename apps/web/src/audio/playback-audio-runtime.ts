@@ -285,7 +285,6 @@ interface CommittedOwnerLeaseRecord {
 	readonly sourceUrl: string;
 	readonly originallyPlaying: boolean;
 	phase: "staged" | "paused" | "sealed-for-exit" | "stale" | "rolled-back";
-	rollbackResult: boolean | null;
 }
 
 type GraphFailureCode = "graph-create-failed" | "graph-attach-failed" | "graph-frame-read-failed";
@@ -969,7 +968,6 @@ export class PlaybackAudioRuntime {
 			sourceUrl: binding.sourceUrl,
 			originallyPlaying: lease.originallyPlaying,
 			phase: "staged",
-			rollbackResult: null,
 		};
 		this.playbackQuiescenceEpoch += 1;
 		this.cancelActiveFade(true);
@@ -986,7 +984,6 @@ export class PlaybackAudioRuntime {
 		if (record.phase !== "staged") return false;
 		if (!this.committedOwnerLeaseIsCurrent(record)) {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
@@ -999,7 +996,6 @@ export class PlaybackAudioRuntime {
 		));
 		if (!this.committedOwnerLeaseIsCurrent(record)) {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
@@ -1007,7 +1003,6 @@ export class PlaybackAudioRuntime {
 			record.deck.audio.pause();
 		} catch {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
@@ -1025,13 +1020,11 @@ export class PlaybackAudioRuntime {
 		if (record.phase === "stale") return false;
 		if (record.phase === "staged") {
 			record.phase = "rolled-back";
-			record.rollbackResult = true;
 			this.clearCommittedOwnerLeaseGate(record);
 			return true;
 		}
 		if (!this.committedOwnerLeaseIsCurrent(record)) {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
@@ -1040,14 +1033,12 @@ export class PlaybackAudioRuntime {
 				await this.playDeck(record.deck, true);
 			} catch {
 				record.phase = "stale";
-				record.rollbackResult = false;
 				this.clearCommittedOwnerLeaseGate(record);
 				return false;
 			}
 			if (!this.committedOwnerLeaseIsCurrent(record)) {
 				try { record.deck.audio.pause(); } catch { /* 旧 deck 不得在 handoff 后继续发声 */ }
 				record.phase = "stale";
-				record.rollbackResult = false;
 				this.clearCommittedOwnerLeaseGate(record);
 				return false;
 			}
@@ -1056,14 +1047,12 @@ export class PlaybackAudioRuntime {
 				record.deck.audio.pause();
 			} catch {
 				record.phase = "stale";
-				record.rollbackResult = false;
 				this.clearCommittedOwnerLeaseGate(record);
 				return false;
 			}
 		}
 		this.syncMirrors();
 		record.phase = "rolled-back";
-		record.rollbackResult = true;
 		this.clearCommittedOwnerLeaseGate(record);
 		return true;
 	}
@@ -1073,13 +1062,11 @@ export class PlaybackAudioRuntime {
 		if (!record || record.phase === "stale" || record.phase === "rolled-back") return false;
 		if (!this.committedOwnerLeaseIsCurrent(record)) {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
 		if (record.phase === "sealed-for-exit") return true;
 		record.phase = "sealed-for-exit";
-		record.rollbackResult = true;
 		return true;
 	}
 
@@ -1088,12 +1075,10 @@ export class PlaybackAudioRuntime {
 		if (!record || record.phase !== "staged") return false;
 		if (!this.committedOwnerLeaseIsCurrent(record)) {
 			record.phase = "stale";
-			record.rollbackResult = false;
 			this.clearCommittedOwnerLeaseGate(record);
 			return false;
 		}
 		record.phase = "rolled-back";
-		record.rollbackResult = true;
 		this.clearCommittedOwnerLeaseGate(record);
 		return true;
 	}
@@ -1106,7 +1091,6 @@ export class PlaybackAudioRuntime {
 		const record = this.activeCommittedOwnerLease;
 		if (!record) return;
 		record.phase = "stale";
-		record.rollbackResult = false;
 		this.activeCommittedOwnerLease = null;
 	}
 

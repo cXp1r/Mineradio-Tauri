@@ -26,6 +26,7 @@ const MAX_CHECKPOINT_QUEUE: usize = 240;
 const MAX_TRACK_ARTISTS: usize = 16;
 const MAX_TRACK_QUALITY_HINTS: usize = 16;
 const MAX_TRACK_DURATION_MS: f64 = 7.0 * 24.0 * 60.0 * 60.0 * 1_000.0;
+const MAX_WEB_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const TEMPORARY_FILE_ATTEMPTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +42,7 @@ pub(crate) enum WebQuiescencePhase {
 pub(crate) struct WebQuiescenceRecordV1 {
     pub(crate) schema: String,
     pub(crate) operation_id: String,
+    pub(crate) operation_generation: u64,
     pub(crate) candidate_id: String,
     pub(crate) phase: WebQuiescencePhase,
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -64,6 +66,7 @@ enum WebQuiescenceCompletionKind {
 struct WebQuiescenceCompletionV1 {
     schema: String,
     operation_id: String,
+    operation_generation: u64,
     candidate_id: String,
     kind: WebQuiescenceCompletionKind,
     #[serde(deserialize_with = "deserialize_required_option")]
@@ -174,6 +177,7 @@ pub(crate) struct PlaybackExitCheckpointV1 {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WebQuiescenceIdentity {
     pub(crate) operation_id: String,
+    pub(crate) operation_generation: u64,
     pub(crate) candidate_id: String,
 }
 
@@ -198,6 +202,12 @@ pub(crate) struct PrepareWebQuiescenceRequest {
 pub(crate) struct RollbackWebQuiescenceRequest {
     pub(crate) identity: WebQuiescenceIdentity,
     pub(crate) checkpoint: Option<PersistedPlaybackCheckpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum RollbackWebQuiescencePlan {
+    Request(Box<RollbackWebQuiescenceRequest>),
+    AlreadyCompleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,7 +304,7 @@ impl NativeWebQuiescenceStore {
         let directory = StableDirectory::open_or_create(&self.updater_directory)
             .map_err(|error| managed_error("UPDATE_WEB_QUIESCENCE_DIRECTORY_FAILED", error))?;
         // 旧 completion 只为上一事务提供幂等答复；格式损坏时必须先 fail closed。
-        let _previous_completion = load_completion(&directory)?;
+        let previous_completion = load_completion(&directory)?;
         if load_record(&directory)?.is_some() {
             return Err(WebQuiescenceError::new(
                 "UPDATE_WEB_QUIESCENCE_OPERATION_ACTIVE",
@@ -308,13 +318,25 @@ impl NativeWebQuiescenceStore {
             ));
         }
 
+        let operation_generation = match previous_completion.as_ref() {
+            None => 1,
+            Some(completion) if completion.operation_generation >= MAX_WEB_SAFE_INTEGER => {
+                return Err(WebQuiescenceError::new(
+                    "UPDATE_WEB_QUIESCENCE_GENERATION_EXHAUSTED",
+                    "Web 静默事务 generation 已达到 JavaScript 安全整数上限",
+                ));
+            }
+            Some(completion) => completion.operation_generation + 1,
+        };
         let identity = WebQuiescenceIdentity {
             operation_id: random_lower_hex_128()?,
+            operation_generation,
             candidate_id: candidate_id.to_owned(),
         };
         let record = WebQuiescenceRecordV1 {
             schema: WEB_QUIESCENCE_SCHEMA.into(),
             operation_id: identity.operation_id.clone(),
+            operation_generation: identity.operation_generation,
             candidate_id: identity.candidate_id.clone(),
             phase: WebQuiescencePhase::PrepareRequested,
             checkpoint_receipt: None,
@@ -379,14 +401,37 @@ impl NativeWebQuiescenceStore {
         evidence: &CheckpointEvidence,
         updated_at: u64,
     ) -> Result<PreparedAcknowledgementOutcome, WebQuiescenceError> {
-        validate_identity(identity)?;
-        validate_evidence(evidence)?;
+        validate_operation_id(&identity.operation_id)?;
+        validate_candidate_id(&identity.candidate_id)?;
         let _guard = self.io_lock.lock().expect("web quiescence store poisoned");
         let directory = existing_directory(&self.updater_directory)?;
         let mut record = required_record(&directory)?;
-        ensure_record_identity(&record, identity)?;
-        let actual = required_checkpoint_evidence(&directory, &identity.operation_id)?;
+        if record.operation_id != identity.operation_id
+            || record.candidate_id != identity.candidate_id
+        {
+            return Err(stale_identity());
+        }
+        if let Err(error) = validate_operation_generation(identity.operation_generation) {
+            mark_rollback_required_locked(&directory, &mut record, updated_at)?;
+            return Err(error);
+        }
+        if record.operation_generation != identity.operation_generation {
+            mark_rollback_required_locked(&directory, &mut record, updated_at)?;
+            return Err(stale_identity());
+        }
+        if let Err(error) = validate_evidence(evidence) {
+            mark_rollback_required_locked(&directory, &mut record, updated_at)?;
+            return Err(error);
+        }
+        let actual = match required_checkpoint_evidence(&directory, &identity.operation_id) {
+            Ok(actual) => actual,
+            Err(error) => {
+                mark_rollback_required_locked(&directory, &mut record, updated_at)?;
+                return Err(error);
+            }
+        };
         if &actual != evidence {
+            mark_rollback_required_locked(&directory, &mut record, updated_at)?;
             return Err(stale_identity());
         }
         match record.phase {
@@ -408,9 +453,20 @@ impl NativeWebQuiescenceStore {
                 Ok(PreparedAcknowledgementOutcome::AlreadyPrepared)
             }
             WebQuiescencePhase::Prepared | WebQuiescencePhase::RollbackRequired => {
+                mark_rollback_required_locked(&directory, &mut record, updated_at)?;
                 Err(stale_identity())
             }
         }
+    }
+
+    /// bounded transport timeout/失败的唯一入口。调用方必须在开始任何 native cleanup 前
+    /// 先把 exact operation 推进到 rollback-required。
+    pub(crate) fn fail_prepare(
+        &self,
+        identity: &WebQuiescenceIdentity,
+        updated_at: u64,
+    ) -> Result<WebQuiescenceReconciliation, WebQuiescenceError> {
+        self.mark_rollback_required(identity, updated_at)
     }
 
     pub(crate) fn mark_rollback_required(
@@ -454,6 +510,54 @@ impl NativeWebQuiescenceStore {
             )?;
         }
         rollback_request(&directory, &record)
+    }
+
+    pub(crate) fn request_rollback_after_native_confirmation(
+        &self,
+        identity: &WebQuiescenceIdentity,
+    ) -> Result<RollbackWebQuiescencePlan, WebQuiescenceError> {
+        validate_identity(identity)?;
+        let _guard = self.io_lock.lock().expect("web quiescence store poisoned");
+        let Some(directory) = StableDirectory::open_existing(&self.updater_directory)
+            .map_err(|error| managed_error("UPDATE_WEB_QUIESCENCE_DIRECTORY_FAILED", error))?
+        else {
+            return Err(stale_identity());
+        };
+        if let Some(record) = load_record(&directory)? {
+            if ensure_record_identity(&record, identity).is_ok() {
+                if record.rollback_acknowledged {
+                    reconcile_acknowledged_rollback(&directory, &record)?;
+                    return Ok(RollbackWebQuiescencePlan::AlreadyCompleted);
+                }
+                if record.phase != WebQuiescencePhase::RollbackRequired
+                    || !record.native_rollback_completed
+                {
+                    return Err(WebQuiescenceError::new(
+                        "UPDATE_WEB_QUIESCENCE_NATIVE_ROLLBACK_REQUIRED",
+                        "必须先完成 exact native rollback，才能请求 Web 恢复",
+                    ));
+                }
+                return Ok(RollbackWebQuiescencePlan::Request(Box::new(
+                    rollback_request(&directory, &record)?,
+                )));
+            }
+            return if completion_has_identity(&directory, identity)? {
+                Ok(RollbackWebQuiescencePlan::AlreadyCompleted)
+            } else {
+                Err(stale_identity())
+            };
+        }
+        if load_checkpoint(&directory)?.is_some() {
+            return Err(WebQuiescenceError::new(
+                "UPDATE_PLAYBACK_CHECKPOINT_ORPHANED",
+                "播放退出 checkpoint 缺少对应的 Web 静默事务",
+            ));
+        }
+        if completion_has_identity(&directory, identity)? {
+            Ok(RollbackWebQuiescencePlan::AlreadyCompleted)
+        } else {
+            Err(stale_identity())
+        }
     }
 
     pub(crate) fn acknowledge_rollback(
@@ -663,28 +767,49 @@ fn mark_rollback_required_locked(
     if record.phase == WebQuiescencePhase::RollbackRequired {
         return Ok(());
     }
-    let checkpoint = match load_checkpoint(directory)? {
-        Some(checkpoint) => {
-            if checkpoint.operation_id != record.operation_id {
-                return Err(stale_identity());
-            }
-            validate_checkpoint(&checkpoint)?;
-            let canonical = canonical_document(&checkpoint, MAX_PLAYBACK_CHECKPOINT_BYTES)?;
-            Some(CheckpointEvidence {
-                receipt: checkpoint.receipt,
-                digest: sha256_hex(&canonical),
-            })
+    // rollback-required 是补偿边界，不能被 checkpoint 丢失或损坏阻止持久化。
+    // Prepared 已把 exact evidence 写入 record；prepare-requested 才尝试从磁盘绑定 evidence。
+    let checkpoint_result = match record.phase {
+        WebQuiescencePhase::Prepared => Ok(record_evidence(record)),
+        WebQuiescencePhase::PrepareRequested => {
+            rollback_evidence_from_checkpoint(directory, record)
         }
-        None => None,
+        WebQuiescencePhase::RollbackRequired => unreachable!("已在函数开头返回"),
     };
-    if record.phase == WebQuiescencePhase::Prepared
-        && record_evidence(record).as_ref() != checkpoint.as_ref()
-    {
-        return Err(WebQuiescenceError::new(
-            "UPDATE_PLAYBACK_CHECKPOINT_EVIDENCE_MISMATCH",
-            "prepared Web record 与磁盘 checkpoint evidence 不一致",
-        ));
+    let (checkpoint, checkpoint_error) = match checkpoint_result {
+        Ok(checkpoint) => (checkpoint, None),
+        Err(error) => (record_evidence(record), Some(error)),
+    };
+    persist_rollback_required_locked(directory, record, checkpoint, updated_at)?;
+    if let Some(error) = checkpoint_error {
+        return Err(error);
     }
+    Ok(())
+}
+
+fn rollback_evidence_from_checkpoint(
+    directory: &StableDirectory,
+    record: &WebQuiescenceRecordV1,
+) -> Result<Option<CheckpointEvidence>, WebQuiescenceError> {
+    let Some(checkpoint) = load_checkpoint(directory)? else {
+        return Ok(None);
+    };
+    if checkpoint.operation_id != record.operation_id {
+        return Err(stale_identity());
+    }
+    let canonical = canonical_document(&checkpoint, MAX_PLAYBACK_CHECKPOINT_BYTES)?;
+    Ok(Some(CheckpointEvidence {
+        receipt: checkpoint.receipt,
+        digest: sha256_hex(&canonical),
+    }))
+}
+
+fn persist_rollback_required_locked(
+    directory: &StableDirectory,
+    record: &mut WebQuiescenceRecordV1,
+    checkpoint: Option<CheckpointEvidence>,
+    updated_at: u64,
+) -> Result<(), WebQuiescenceError> {
     record.phase = WebQuiescencePhase::RollbackRequired;
     record.checkpoint_receipt = checkpoint.as_ref().map(|value| value.receipt.clone());
     record.checkpoint_digest = checkpoint.as_ref().map(|value| value.digest.clone());
@@ -764,6 +889,15 @@ fn completed_rollback_outcome(
     }
 }
 
+fn completion_has_identity(
+    directory: &StableDirectory,
+    identity: &WebQuiescenceIdentity,
+) -> Result<bool, WebQuiescenceError> {
+    Ok(load_completion(directory)?
+        .as_ref()
+        .is_some_and(|completion| identity_from_completion(completion) == *identity))
+}
+
 fn persist_completion_tombstone(
     directory: &StableDirectory,
     record: &WebQuiescenceRecordV1,
@@ -817,6 +951,7 @@ fn completion_from_acknowledgement(
     WebQuiescenceCompletionV1 {
         schema: WEB_QUIESCENCE_COMPLETION_SCHEMA.into(),
         operation_id: identity.operation_id.clone(),
+        operation_generation: identity.operation_generation,
         candidate_id: identity.candidate_id.clone(),
         kind,
         checkpoint_receipt,
@@ -871,6 +1006,7 @@ fn completion_matches(
 fn identity_from_completion(completion: &WebQuiescenceCompletionV1) -> WebQuiescenceIdentity {
     WebQuiescenceIdentity {
         operation_id: completion.operation_id.clone(),
+        operation_generation: completion.operation_generation,
         candidate_id: completion.candidate_id.clone(),
     }
 }
@@ -1039,6 +1175,7 @@ fn record_evidence(record: &WebQuiescenceRecordV1) -> Option<CheckpointEvidence>
 fn identity_from_record(record: &WebQuiescenceRecordV1) -> WebQuiescenceIdentity {
     WebQuiescenceIdentity {
         operation_id: record.operation_id.clone(),
+        operation_generation: record.operation_generation,
         candidate_id: record.candidate_id.clone(),
     }
 }
@@ -1354,9 +1491,9 @@ fn validate_checkpoint(checkpoint: &PlaybackExitCheckpointV1) -> Result<(), WebQ
     if checkpoint.queue.len() > MAX_CHECKPOINT_QUEUE {
         return Err(checkpoint_invalid("checkpoint queue 超过 240 首硬上限"));
     }
-    if checkpoint.captured_playback_intent_id > MAX_TRACK_DURATION_MS as u64 {
+    if checkpoint.captured_playback_intent_id > MAX_WEB_SAFE_INTEGER {
         return Err(checkpoint_invalid(
-            "capturedPlaybackIntentId 超出 Web 安全边界",
+            "capturedPlaybackIntentId 超出 JavaScript 安全整数边界",
         ));
     }
     for track in &checkpoint.queue {
@@ -1466,7 +1603,18 @@ fn validate_text(
 
 fn validate_identity(identity: &WebQuiescenceIdentity) -> Result<(), WebQuiescenceError> {
     validate_operation_id(&identity.operation_id)?;
+    validate_operation_generation(identity.operation_generation)?;
     validate_candidate_id(&identity.candidate_id)
+}
+
+fn validate_operation_generation(value: u64) -> Result<(), WebQuiescenceError> {
+    if value == 0 || value > MAX_WEB_SAFE_INTEGER {
+        return Err(WebQuiescenceError::new(
+            "UPDATE_WEB_QUIESCENCE_GENERATION_REJECTED",
+            "operationGeneration 必须是正的 JavaScript 安全整数",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_operation_id(value: &str) -> Result<(), WebQuiescenceError> {
@@ -1527,7 +1675,9 @@ fn ensure_record_identity(
     record: &WebQuiescenceRecordV1,
     identity: &WebQuiescenceIdentity,
 ) -> Result<(), WebQuiescenceError> {
-    if record.operation_id == identity.operation_id && record.candidate_id == identity.candidate_id
+    if record.operation_id == identity.operation_id
+        && record.operation_generation == identity.operation_generation
+        && record.candidate_id == identity.candidate_id
     {
         Ok(())
     } else {
@@ -1751,6 +1901,7 @@ mod tests {
         validate_checkpoint(&checkpoint).unwrap();
         let actual = serde_json::to_value(&checkpoint).unwrap();
         assert_eq!(actual, expected);
+        assert!(actual.get("operationGeneration").is_none());
         assert!(actual["queue"]
             .as_array()
             .unwrap()
@@ -1774,6 +1925,59 @@ mod tests {
         let mut explicit_null = expected;
         explicit_null["queue"][0]["mediaMid"] = serde_json::Value::Null;
         assert!(serde_json::from_value::<PlaybackExitCheckpointV1>(explicit_null).is_err());
+    }
+
+    #[test]
+    fn playback_intent_is_an_identity_counter_not_a_media_duration() {
+        let mut value = checkpoint(&"a".repeat(32));
+        value.captured_playback_intent_id = 700_000_000;
+        validate_checkpoint(&value).expect("长生命周期 intent 计数器应保持有效");
+
+        value.captured_playback_intent_id = MAX_WEB_SAFE_INTEGER + 1;
+        assert_eq!(
+            validate_checkpoint(&value).unwrap_err().code(),
+            "UPDATE_PLAYBACK_CHECKPOINT_INVALID"
+        );
+    }
+
+    #[test]
+    fn operation_generation_is_bounded_by_the_javascript_safe_integer_limit() {
+        let valid = WebQuiescenceIdentity {
+            operation_id: "a".repeat(32),
+            operation_generation: MAX_WEB_SAFE_INTEGER,
+            candidate_id: candidate_id(),
+        };
+        validate_identity(&valid).expect("JavaScript 最大安全整数应仍可作为 generation");
+
+        let mut overflow = valid.clone();
+        overflow.operation_generation = MAX_WEB_SAFE_INTEGER + 1;
+        assert_eq!(
+            validate_identity(&overflow).unwrap_err().code(),
+            "UPDATE_WEB_QUIESCENCE_GENERATION_REJECTED"
+        );
+
+        let root = TestDirectory::new("generation-exhausted");
+        let directory = StableDirectory::open_existing(&root.0).unwrap().unwrap();
+        let completion =
+            completion_from_acknowledgement(&valid, &RollbackAcknowledgement::NoOpNotPrepared, 100);
+        save_document(
+            &directory,
+            WEB_QUIESCENCE_COMPLETION_FILE_NAME,
+            &completion,
+            MAX_WEB_QUIESCENCE_BYTES,
+        )
+        .unwrap();
+        drop(directory);
+
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        assert_eq!(
+            store
+                .begin_prepare(&candidate_id(), 101)
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_GENERATION_EXHAUSTED"
+        );
+        assert!(!root.0.join(WEB_QUIESCENCE_FILE_NAME).exists());
     }
 
     #[test]
@@ -1850,6 +2054,111 @@ mod tests {
                 .unwrap_err()
                 .code(),
             "UPDATE_WEB_QUIESCENCE_STALE_IDENTITY"
+        );
+        assert_eq!(
+            store.reconcile_web(203).unwrap(),
+            WebQuiescenceReconciliation::NativeRollbackRequired(identity)
+        );
+    }
+
+    #[test]
+    fn malformed_or_missing_current_ack_evidence_is_durably_rollback_required() {
+        let root = TestDirectory::new("malformed-current-ack");
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        let (_, identity) = begin(&store);
+        let evidence = store
+            .persist_checkpoint(&identity, &checkpoint(&identity.operation_id))
+            .unwrap();
+        let malformed = CheckpointEvidence {
+            receipt: "not-a-receipt".into(),
+            digest: evidence.digest.clone(),
+        };
+
+        assert_eq!(
+            store
+                .acknowledge_prepared(&identity, &malformed, 200)
+                .unwrap_err()
+                .code(),
+            "UPDATE_PLAYBACK_CHECKPOINT_RECEIPT_REJECTED"
+        );
+        assert_eq!(
+            store.reconcile_web(201).unwrap(),
+            WebQuiescenceReconciliation::NativeRollbackRequired(identity)
+        );
+
+        let missing_root = TestDirectory::new("missing-current-checkpoint");
+        let missing_store = NativeWebQuiescenceStore::with_updater_directory(&missing_root.0);
+        let (_, missing_identity) = begin(&missing_store);
+        let missing_evidence = missing_store
+            .persist_checkpoint(
+                &missing_identity,
+                &checkpoint(&missing_identity.operation_id),
+            )
+            .unwrap();
+        missing_store
+            .acknowledge_prepared(&missing_identity, &missing_evidence, 299)
+            .unwrap();
+        fs::remove_file(missing_root.0.join(PLAYBACK_EXIT_CHECKPOINT_FILE_NAME)).unwrap();
+
+        assert_eq!(
+            missing_store
+                .acknowledge_prepared(&missing_identity, &missing_evidence, 300)
+                .unwrap_err()
+                .code(),
+            "UPDATE_PLAYBACK_CHECKPOINT_MISSING"
+        );
+        assert_eq!(
+            missing_store.reconcile_web(301).unwrap(),
+            WebQuiescenceReconciliation::NativeRollbackRequired(missing_identity)
+        );
+    }
+
+    #[test]
+    fn acknowledgement_from_a_completed_old_operation_does_not_mutate_the_current_operation() {
+        let root = TestDirectory::new("old-ack-isolated");
+        let store = NativeWebQuiescenceStore::with_updater_directory(&root.0);
+        let (old_identity, old_evidence) = prepared(&store);
+        store.mark_rollback_required(&old_identity, 300).unwrap();
+        store.confirm_native_rollback(&old_identity, 301).unwrap();
+        store
+            .acknowledge_rollback(
+                &old_identity,
+                &RollbackAcknowledgement::Restored(old_evidence.clone()),
+                302,
+            )
+            .unwrap();
+
+        let (_, current_identity) = begin(&store);
+        let current_evidence = store
+            .persist_checkpoint(
+                &current_identity,
+                &checkpoint(&current_identity.operation_id),
+            )
+            .unwrap();
+        assert_eq!(
+            store
+                .acknowledge_prepared(&old_identity, &old_evidence, 400)
+                .unwrap_err()
+                .code(),
+            "UPDATE_WEB_QUIESCENCE_STALE_IDENTITY"
+        );
+
+        let directory = StableDirectory::open_existing(&root.0).unwrap().unwrap();
+        let current = load_record(&directory).unwrap().unwrap();
+        assert_eq!(identity_from_record(&current), current_identity);
+        assert_eq!(current.phase, WebQuiescencePhase::PrepareRequested);
+        drop(directory);
+        assert_eq!(
+            store
+                .request_rollback_after_native_confirmation(&old_identity)
+                .unwrap(),
+            RollbackWebQuiescencePlan::AlreadyCompleted
+        );
+        assert_eq!(
+            store
+                .acknowledge_prepared(&current_identity, &current_evidence, 401)
+                .unwrap(),
+            PreparedAcknowledgementOutcome::Prepared
         );
     }
 
@@ -2277,6 +2586,7 @@ mod tests {
 
         let forged = WebQuiescenceIdentity {
             operation_id: identity.operation_id,
+            operation_generation: identity.operation_generation,
             candidate_id: "c".repeat(64),
         };
         assert_eq!(

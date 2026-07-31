@@ -17,6 +17,9 @@ pub(crate) mod managed_fs;
 pub(crate) mod policy;
 pub(crate) mod provenance;
 pub(crate) mod quiescence;
+// #54 production cutover 前保持 transport-neutral dormant，只由契约测试消费。
+#[allow(dead_code)]
+pub(crate) mod web_quiescence_handshake;
 
 use auto_check::{AutomaticCheckOutcome, SystemUpdateTime, UpdateTime, SUCCESS_INTERVAL_MILLIS};
 use cache::{CacheRecoveryFault, CacheRecoveryOutcome, UpdateStartupRecovery};

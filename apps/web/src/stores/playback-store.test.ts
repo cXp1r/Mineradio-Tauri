@@ -594,6 +594,37 @@ test("checkpoint playback intent follows the exact committed owner lease", () =>
 	expect(checkpoint?.wasPlaying).toBe(true);
 });
 
+test("checkpoint playback intent is validated as an identity counter, not media duration", () => {
+	const track = makeTrack("long-lived-owner");
+	usePlaybackStore.setState({
+		queue: [track],
+		currentTrack: track,
+		playbackIntentId: 700_000_000,
+		isPlaying: true,
+	});
+	const checkpoint = usePlaybackStore.getState().capturePlaybackExitCheckpoint({
+		operationId: operationId(31),
+		receipt: RECEIPT_A,
+		sourceKind: "remote",
+	})!;
+
+	resetStore();
+	expect(usePlaybackStore.getState().restorePlaybackExitCheckpoint({
+		operationId: checkpoint.operationId,
+		receipt: checkpoint.receipt,
+		mode: "restart-reconciliation",
+		checkpoint,
+	})).toBe("restored");
+	expect(usePlaybackStore.getState().currentTrack?.id).toBe("long-lived-owner");
+
+	usePlaybackStore.setState({ playbackIntentId: Number.MAX_SAFE_INTEGER + 1 });
+	expect(usePlaybackStore.getState().capturePlaybackExitCheckpoint({
+		operationId: operationId(32),
+		receipt: RECEIPT_B,
+		sourceKind: "remote",
+	})).toBeNull();
+});
+
 test("checkpoint restore is one atomic paused transition bound to operation and receipt", () => {
 	const queue = [makeTrack("a"), makeTrack("b")];
 	const sourceStore = usePlaybackStore.getState();

@@ -8,9 +8,13 @@ import type {
 	RestorePlaybackExitCheckpointRequest,
 } from "../../stores/playback-store";
 
-export interface PlaybackQuiescenceIdentity {
+export interface PlaybackQuiescenceOperationIdentity {
 	readonly operationId: string;
 	readonly operationGeneration: number;
+}
+
+export interface PlaybackQuiescencePreparedIdentity
+	extends PlaybackQuiescenceOperationIdentity {
 	readonly receipt: string;
 }
 
@@ -36,6 +40,7 @@ export interface PlaybackQuiescenceCheckpointPort {
 export interface PlaybackQuiescenceControllerOptions {
 	readonly audio: PlaybackQuiescenceAudioPort;
 	readonly checkpoint: PlaybackQuiescenceCheckpointPort;
+	readonly createReceipt?: () => string;
 }
 
 export type PlaybackQuiescencePrepareResult =
@@ -60,7 +65,7 @@ export type PlaybackQuiescenceRollbackResult =
 	| "rejected";
 
 interface ActivePlaybackQuiescence {
-	readonly identity: PlaybackQuiescenceIdentity;
+	readonly identity: PlaybackQuiescenceOperationIdentity;
 	readonly checkpoint: PlaybackExitCheckpointV1 | null;
 	readonly owner: CommittedPlaybackOwnerLease | null;
 	phase: "not-prepared" | "staged" | "paused" | "pause-failed" | "sealed-for-exit" | "released";
@@ -69,19 +74,62 @@ interface ActivePlaybackQuiescence {
 }
 
 function sameIdentity(
-	left: PlaybackQuiescenceIdentity,
-	right: PlaybackQuiescenceIdentity,
+	left: PlaybackQuiescenceOperationIdentity,
+	right: PlaybackQuiescenceOperationIdentity,
 ): boolean {
 	return left.operationId === right.operationId
-		&& left.receipt === right.receipt
 		&& left.operationGeneration === right.operationGeneration;
 }
 
-function validIdentity(identity: PlaybackQuiescenceIdentity): boolean {
+function validOperationIdentity(
+	identity: PlaybackQuiescenceOperationIdentity,
+): boolean {
 	return /^[0-9a-f]{32}$/u.test(identity.operationId)
 		&& Number.isSafeInteger(identity.operationGeneration)
-		&& identity.operationGeneration > 0
+		&& identity.operationGeneration > 0;
+}
+
+function validPreparedIdentity(
+	identity: PlaybackQuiescencePreparedIdentity,
+): boolean {
+	return validOperationIdentity(identity)
 		&& /^[0-9a-f]{32}$/u.test(identity.receipt);
+}
+
+function createCryptographicReceipt(): string {
+	const bytes = new Uint8Array(16);
+	const crypto = globalThis.crypto;
+	if (!crypto || typeof crypto.getRandomValues !== "function") {
+		throw new Error("cryptographic randomness is unavailable");
+	}
+	crypto.getRandomValues(bytes);
+	return [...bytes].map((value) => value.toString(16).padStart(2, "0")).join("");
+}
+
+function operationIdentity(
+	identity: PlaybackQuiescenceOperationIdentity,
+): PlaybackQuiescenceOperationIdentity {
+	return Object.freeze({
+		operationId: identity.operationId,
+		operationGeneration: identity.operationGeneration,
+	});
+}
+
+function suppliedReceipt(
+	identity: PlaybackQuiescenceOperationIdentity,
+): string | null {
+	const candidate = identity as PlaybackQuiescenceOperationIdentity & {
+		readonly receipt?: unknown;
+	};
+	return typeof candidate.receipt === "string" ? candidate.receipt : null;
+}
+
+function samePreparedIdentity(
+	active: ActivePlaybackQuiescence,
+	identity: PlaybackQuiescencePreparedIdentity,
+): boolean {
+	return sameIdentity(active.identity, identity)
+		&& active.checkpoint?.receipt === identity.receipt;
 }
 
 /**
@@ -91,17 +139,21 @@ function validIdentity(identity: PlaybackQuiescenceIdentity): boolean {
 export class PlaybackQuiescenceController {
 	private active: ActivePlaybackQuiescence | null = null;
 	private readonly consumed = new Map<number, {
-		readonly identity: PlaybackQuiescenceIdentity;
+		readonly identity: PlaybackQuiescenceOperationIdentity;
+		readonly checkpointReceipt: string | null;
 		readonly result: PlaybackQuiescenceRollbackResult;
 	}>();
 	private highestConsumedGeneration = 0;
+	private readonly createReceipt: () => string;
 
 	constructor(
 		private readonly options: PlaybackQuiescenceControllerOptions,
-	) {}
+	) {
+		this.createReceipt = options.createReceipt ?? createCryptographicReceipt;
+	}
 
-	prepare(identity: PlaybackQuiescenceIdentity): PlaybackQuiescencePrepareResult {
-		if (!validIdentity(identity)) {
+	prepare(identity: PlaybackQuiescenceOperationIdentity): PlaybackQuiescencePrepareResult {
+		if (!validOperationIdentity(identity)) {
 			return { status: "rejected", reason: "checkpoint-rejected" };
 		}
 		if (identity.operationGeneration <= this.highestConsumedGeneration) {
@@ -117,10 +169,19 @@ export class PlaybackQuiescenceController {
 			return { status: "rejected", reason: "operation-active" };
 		}
 
+		let receipt: string;
+		try {
+			receipt = this.createReceipt();
+		} catch {
+			return { status: "rejected", reason: "checkpoint-rejected" };
+		}
+		if (!/^[0-9a-f]{32}$/u.test(receipt)) {
+			return { status: "rejected", reason: "checkpoint-rejected" };
+		}
 		const owner = this.options.audio.stageCommittedOwnerLease();
 		const checkpoint = this.options.checkpoint.capturePlaybackExitCheckpoint({
 			operationId: identity.operationId,
-			receipt: identity.receipt,
+			receipt,
 			sourceKind: owner?.sourceKind ?? "opaque",
 			ownerOriginallyPlaying: owner?.originallyPlaying,
 		});
@@ -131,7 +192,7 @@ export class PlaybackQuiescenceController {
 		const checkpointHasOwner = checkpoint.currentTrackRef.length > 0;
 		if (
 			checkpoint.operationId !== identity.operationId
-			|| checkpoint.receipt !== identity.receipt
+			|| checkpoint.receipt !== receipt
 			|| (!!owner !== checkpointHasOwner)
 			|| (owner && (
 				owner.trackRef !== checkpoint.currentTrackRef
@@ -149,7 +210,7 @@ export class PlaybackQuiescenceController {
 			};
 		}
 		this.active = {
-			identity: Object.freeze({ ...identity }),
+			identity: operationIdentity(identity),
 			checkpoint,
 			owner,
 			phase: "staged",
@@ -160,27 +221,29 @@ export class PlaybackQuiescenceController {
 	}
 
 	hydratePersistedCheckpoint(
-		identity: PlaybackQuiescenceIdentity,
+		identity: PlaybackQuiescenceOperationIdentity,
 		checkpoint: PlaybackExitCheckpointV1 | null,
 	): "hydrated" | "already-hydrated" | "rejected" {
-		if (!validIdentity(identity)) return "rejected";
+		if (!validOperationIdentity(identity)) return "rejected";
 		const consumed = this.consumed.get(identity.operationGeneration);
 		if (consumed) return sameIdentity(consumed.identity, identity)
+			&& (consumed.checkpointReceipt === null
+				|| consumed.checkpointReceipt === checkpoint?.receipt)
 			? "already-hydrated"
 			: "rejected";
 		if (identity.operationGeneration < this.highestConsumedGeneration) return "rejected";
 		if (this.active && this.active.phase !== "released") {
 			return sameIdentity(this.active.identity, identity)
+				&& this.active.checkpoint?.receipt === checkpoint?.receipt
 				? "already-hydrated"
 				: "rejected";
 		}
 		if (checkpoint && (
 			checkpoint.operationId !== identity.operationId
-			|| checkpoint.receipt !== identity.receipt
 			|| !checkpoint.restartRestorable
 		)) return "rejected";
 		this.active = {
-			identity: Object.freeze({ ...identity }),
+			identity: operationIdentity(identity),
 			checkpoint,
 			owner: null,
 			phase: checkpoint ? "paused" : "not-prepared",
@@ -190,9 +253,13 @@ export class PlaybackQuiescenceController {
 		return "hydrated";
 	}
 
-	confirmCheckpointPersisted(identity: PlaybackQuiescenceIdentity): boolean {
+	confirmCheckpointPersisted(identity: PlaybackQuiescencePreparedIdentity): boolean {
 		const active = this.active;
-		if (!active || !sameIdentity(active.identity, identity)) return false;
+		if (
+			!validPreparedIdentity(identity)
+			|| !active
+			|| !samePreparedIdentity(active, identity)
+		) return false;
 		if (active.phase === "paused") return true;
 		if (active.phase !== "staged") return false;
 		if (!active.owner) {
@@ -205,39 +272,50 @@ export class PlaybackQuiescenceController {
 	}
 
 	rollback(
-		identity: PlaybackQuiescenceIdentity,
+		identity: PlaybackQuiescenceOperationIdentity,
 	): Promise<PlaybackQuiescenceRollbackResult> {
+		if (!validOperationIdentity(identity)) return Promise.resolve("rejected");
 		const active = this.active;
 		if (!active) {
 			const prior = this.consumed.get(identity.operationGeneration);
 			if (prior) {
 				return Promise.resolve(sameIdentity(prior.identity, identity)
+					&& (prior.checkpointReceipt === null
+						|| prior.checkpointReceipt === suppliedReceipt(identity))
 					? prior.result
 					: "rejected");
 			}
-			if (!validIdentity(identity)) return Promise.resolve("rejected");
 			return Promise.resolve("rejected");
 		}
 		if (!sameIdentity(active.identity, identity)) {
 			return Promise.resolve("rejected");
 		}
+		if (
+			active.checkpoint
+			&& active.checkpoint.receipt !== suppliedReceipt(identity)
+		) return Promise.resolve("rejected");
 		if (active.rollback) return active.rollback;
 		if (active.rollbackResult) return Promise.resolve(active.rollbackResult);
 		if (active.phase === "not-prepared") {
 			active.phase = "released";
-			active.rollbackResult = this.consume(active.identity, "no-op-not-prepared");
+			active.rollbackResult = this.consume(
+				active.identity,
+				null,
+				"no-op-not-prepared",
+			);
 			return Promise.resolve(active.rollbackResult);
 		}
 		if (!active.owner && active.checkpoint) {
 			const restored = this.options.checkpoint.restorePlaybackExitCheckpoint({
 				operationId: active.identity.operationId,
-				receipt: active.identity.receipt,
+				receipt: active.checkpoint.receipt,
 				mode: "restart-reconciliation",
 				checkpoint: active.checkpoint,
 			});
 			active.phase = "released";
 			active.rollbackResult = this.consume(
 				active.identity,
+				active.checkpoint.receipt,
 				restored === "restored" || restored === "already-restored"
 					? "restored"
 					: "rejected",
@@ -250,7 +328,11 @@ export class PlaybackQuiescenceController {
 		) {
 			if (active.owner) this.options.audio.cancelCommittedOwnerLease(active.owner);
 			active.phase = "released";
-			active.rollbackResult = this.consume(active.identity, "no-op-not-paused");
+			active.rollbackResult = this.consume(
+				active.identity,
+				active.checkpoint?.receipt ?? null,
+				"no-op-not-paused",
+			);
 			return Promise.resolve(active.rollbackResult);
 		}
 		const checkpoint = active.checkpoint;
@@ -259,7 +341,7 @@ export class PlaybackQuiescenceController {
 				const storeRestored = restored && checkpoint
 					? this.options.checkpoint.restorePlaybackExitCheckpoint({
 						operationId: active.identity.operationId,
-						receipt: active.identity.receipt,
+						receipt: checkpoint.receipt,
 						mode: "same-process-rollback",
 						checkpoint,
 					})
@@ -270,19 +352,31 @@ export class PlaybackQuiescenceController {
 						? "restored"
 						: "rejected";
 				active.phase = "released";
-				active.rollbackResult = this.consume(active.identity, result);
+				active.rollbackResult = this.consume(
+					active.identity,
+					checkpoint?.receipt ?? null,
+					result,
+				);
 				return result;
 			}, () => {
 				active.phase = "released";
-				active.rollbackResult = this.consume(active.identity, "owner-stale");
+				active.rollbackResult = this.consume(
+					active.identity,
+					checkpoint?.receipt ?? null,
+					"owner-stale",
+				);
 				return "owner-stale";
 			});
 		return active.rollback;
 	}
 
-	releaseForExit(identity: PlaybackQuiescenceIdentity): boolean {
+	releaseForExit(identity: PlaybackQuiescencePreparedIdentity): boolean {
 		const active = this.active;
-		if (!active || !sameIdentity(active.identity, identity)) return false;
+		if (
+			!validPreparedIdentity(identity)
+			|| !active
+			|| !samePreparedIdentity(active, identity)
+		) return false;
 		if (active.phase === "released") return true;
 		if (active.phase === "sealed-for-exit") return true;
 		if (active.phase !== "paused") return false;
@@ -294,12 +388,14 @@ export class PlaybackQuiescenceController {
 	}
 
 	private consume(
-		identity: PlaybackQuiescenceIdentity,
+		identity: PlaybackQuiescenceOperationIdentity,
+		checkpointReceipt: string | null,
 		result: PlaybackQuiescenceRollbackResult,
 	): PlaybackQuiescenceRollbackResult {
-		const frozenIdentity = Object.freeze({ ...identity });
+		const frozenIdentity = operationIdentity(identity);
 		this.consumed.set(identity.operationGeneration, {
 			identity: frozenIdentity,
+			checkpointReceipt,
 			result,
 		});
 		this.highestConsumedGeneration = Math.max(
