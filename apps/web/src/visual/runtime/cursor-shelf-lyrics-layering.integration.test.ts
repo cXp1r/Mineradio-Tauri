@@ -261,6 +261,8 @@ test("idle cursor, passive Shelf, production Stage lyrics and detail layer conve
 	stageLyrics.update(frame(15));
 	expect(taskQueue.getSnapshot().completed).toBe(completedBeforeSecond);
 	expect(stageLyrics.getCurrentText()).toBe("Second row");
+	// 仅推进生产调度器，让第三行完成 resident prewarm；短暂过渡仍由真实 Stage frame 保留。
+	await settleStageLyrics(16);
 	let rows = attachedStageRows(stageLyrics.group);
 	expect(rows.length).toBe(2);
 	expect(rows.map((row) => row.renderOrder)).toEqual([38, 38]);
@@ -305,15 +307,46 @@ test("idle cursor, passive Shelf, production Stage lyrics and detail layer conve
 		expect(detailOrder.indexOf(name)).toBeLessThan(detailOrder.indexOf("shelf-detail"));
 	}
 
-	// 第三行在 attach 前已接收 detail-open 的 24 base，激活仍不新增 raster task。
-	const completedBeforeThird = taskQueue.getSnapshot().completed;
+	// 第三行在 attach 前已接收 detail-open 的 24 base。激活只允许为滑动后的
+	// resident window 排入一个后台补位任务，不能再为 current 排入第二个 raster task。
+	const rowsBeforeThird = [...rows];
+	const queueBeforeThird = taskQueue.getSnapshot();
+	expect(queueBeforeThird.queued).toBe(0);
 	lyricTimeSeconds = 2.1;
-	stageLyrics.update(frame(49));
-	stageLyrics.update(frame(50));
-	expect(taskQueue.getSnapshot().completed).toBe(completedBeforeThird);
+	let newlyAttachedThirdRows: THREE.Group[] = [];
+	for (const now of [49, 50]) {
+		stageLyrics.update(frame(now));
+		const visibleRows = attachedStageRows(stageLyrics.group);
+		newlyAttachedThirdRows = visibleRows.filter((row) => !rowsBeforeThird.includes(row));
+		if (newlyAttachedThirdRows.length === 0) continue;
+		// upload gate 可以延迟 attach，但 row 第一次进入 scene 时必须已经采用 detail base。
+		expect(newlyAttachedThirdRows.length).toBe(1);
+		expect(newlyAttachedThirdRows[0]?.renderOrder).toBe(24);
+		expect(visibleRows.every((row) => row.renderOrder === 24)).toBe(true);
+		break;
+	}
+	expect(newlyAttachedThirdRows.length).toBe(1);
+	stageLyrics.update(frame(51));
+	const queueAfterThird = taskQueue.getSnapshot();
+	expect({
+		completed: queueAfterThird.completed,
+		queued: queueAfterThird.queued,
+		running: queueAfterThird.running,
+		failed: queueAfterThird.failed,
+		cancelled: queueAfterThird.cancelled,
+		staleResultsDropped: queueAfterThird.staleResultsDropped,
+	}).toEqual({
+		completed: queueBeforeThird.completed,
+		queued: 1,
+		running: queueBeforeThird.running,
+		failed: queueBeforeThird.failed,
+		cancelled: queueBeforeThird.cancelled,
+		staleResultsDropped: queueBeforeThird.staleResultsDropped,
+	});
 	expect(stageLyrics.getCurrentText()).toBe("Third row");
 	rows = attachedStageRows(stageLyrics.group);
 	expect(rows.length).toBeGreaterThanOrEqual(1);
+	expect(rows.some((row) => !rowsBeforeThird.includes(row))).toBe(true);
 	expect(rows.every((row) => row.renderOrder === 24)).toBe(true);
 
 	shelf.clearSelected();
@@ -325,7 +358,9 @@ test("idle cursor, passive Shelf, production Stage lyrics and detail layer conve
 	expect(cursor.getSnapshot().hidden).toBe(false);
 	expect(shelf.getSelectedIdx()).toBe(-1);
 	expect(shelfGroup.renderOrder).toBe(30);
-	expect(attachedStageRows(stageLyrics.group).every((row) => row.renderOrder === 38)).toBe(true);
+	const restoredRows = attachedStageRows(stageLyrics.group);
+	expect(restoredRows.length).toBeGreaterThanOrEqual(1);
+	expect(restoredRows.every((row) => row.renderOrder === 38)).toBe(true);
 
 	stageLyrics.dispose();
 	taskQueue.dispose();
