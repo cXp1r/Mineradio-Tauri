@@ -3,6 +3,7 @@ import {
 	M8_PREFERENCE_KEYS,
 	PLAYBACK_AUDIO_PREFERENCE,
 	SEARCH_HISTORY_PREFERENCE,
+	VISUAL_WORKSHOP_PREFERENCE,
 	normalizeSearchHistory,
 } from "./keys";
 import { createJsonPreferenceKey } from "../ports/preferences-repository";
@@ -42,6 +43,31 @@ test("M8 preference catalog contains only unique typed keys", () => {
 	expect(new Set(names).size).toBe(names.length);
 	expect(names).toContain("search.history");
 	expect(names).toContain("home.listenLedger.v2");
+	expect(names).toContain("visual.workshop.v1");
+});
+
+test("Workshop preference requires its stable activation id and returns complete normalized settings", () => {
+	const preference = VISUAL_WORKSHOP_PREFERENCE.parse({
+		version: 1,
+		activationId: "sonic-workshop-v1",
+		active: true,
+		settings: { audioIntensity: 99 },
+	});
+	expect(preference?.version).toBe(1);
+	expect(preference?.activationId).toBe("sonic-workshop-v1");
+	expect(preference?.active).toBe(true);
+	expect(preference?.settings.active).toBe(true);
+	expect(preference?.settings.audioIntensity).toBe(2.5);
+	expect(preference?.settings.inputGain).toBe(82);
+	expect(preference?.settings.theme).toBe("coral-mirage");
+	expect(
+		VISUAL_WORKSHOP_PREFERENCE.parse({
+			version: 1,
+			activationId: "legacy-numeric-8",
+			active: true,
+			settings: {},
+		}),
+	).toBe(undefined);
 });
 
 test("typed preference rejects a default that does not satisfy its schema", () => {

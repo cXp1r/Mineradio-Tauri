@@ -18,6 +18,39 @@ test("Electron v3 search history migrates from its real legacy key and mirrors a
 	);
 });
 
+test("legacy visual.fx numeric 8 always migrates to Sonic 7 and cannot smuggle Workshop state", () => {
+	const mapping = DEFAULT_LEGACY_PREFERENCE_MAPPINGS.find(
+		(candidate) => candidate.legacyKey === "mineradio-tauri-visual-settings-v1",
+	);
+
+	expect(
+		mapping?.decode(
+			JSON.stringify({
+				preset: 8,
+				intensity: 1.2,
+				workshop: { active: true },
+			}),
+		),
+	).toEqual({ preset: 7, intensity: 1.2 });
+});
+
+test("Workshop preference uses its own browser fallback key", () => {
+	const mapping = DEFAULT_LEGACY_PREFERENCE_MAPPINGS.find(
+		(candidate) => candidate.preferenceKey.name === "visual.workshop.v1",
+	);
+	expect(mapping?.legacyKey).toBe("mineradio-tauri-workshop-settings-v1");
+	expect(
+		mapping?.decode(
+			JSON.stringify({
+				version: 1,
+				activationId: "sonic-workshop-v1",
+				active: true,
+				settings: { inputGain: 93 },
+			}),
+		),
+	).not.toBe(undefined);
+});
+
 test("Electron 2.0.2 的四个音频 key 会先合成为单一 typed migration", () => {
 	const values = new Map<string, string>([
 		["mineradio-audio-fade-v1", JSON.stringify({ fadeInMs: 9_999, fadeOutMs: 380 })],

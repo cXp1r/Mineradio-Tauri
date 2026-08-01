@@ -2,24 +2,25 @@
 
 ## 结论
 
-维护者决定：**迁移该能力，但只允许独立重实现。**
+维护者决定：**迁移该能力，但只允许独立重实现。** 当前独立实现已经完成。
 
 当前不复制或再分发 Electron 2.0.3 的 vendor bundle。
 
-因此当前终态是 `migration-pending`：
+因此当前工程状态是 `independent-implementation-complete`：
 
-- `visual.sonic-workshop` 保持 `missing / P0 / parity`；
+- `visual.sonic-workshop` 为 `implemented / P0 / parity`；
 - provenance blocker 已转化为实现约束，`blocked_by=none`；
-- 后续必须建立独立 visual Module，依据公开可观察行为和本项目自己的 Interface 重实现；
-- 在形成新实现前，legacy numeric preset `8` 继续迁移到 Sonic Topography `7`，避免旧偏好指向不存在的能力；
-- 新实现必须使用新的 preference schema 明确区分 legacy `8 → 7` 与新的 Workshop preset 8。
+- `packages/visual-engine/src/sonic-workshop` 依据公开可观察行为和本项目自己的 Interface 独立实现，不依赖上游 vendor bundle；
+- legacy `visual.fx` numeric preset `8` 继续迁移到 Sonic Topography `7`，避免把旧偏好重新解释为新能力；
+- 当前 Workshop preset 8 只通过新的 `visual.workshop.v1` preference schema 与 `sonic-workshop-v1` activation id 恢复。
 - 独立 Module 的输入边界、生命周期和 hard budget 固定在 `sonic-workshop-module-design.md`。
+- Windows/WebView2 观感及真实 CPU/GPU/frame timing 为 `Field Validation Pending (non-blocking)`，不阻塞代码完成状态。
 
 这是一项工程与维护决策，不是法律结论。
 
 | decision_id | status | source_owner | implementation_target | bundle_policy | legacy_migration | preference_schema | parity_claim | authority_status |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| sonic-workshop-preset-8 | migration-pending | CmzYa@3747222633 | independent-visual-module | no-vendor-bundle-import-or-redistribution | legacy-8-to-sonic-topography-7 | distinct-workshop-preset-8 | prohibited-until-independent-implementation | active |
+| sonic-workshop-preset-8 | independent-implementation-complete | CmzYa@3747222633 | independent-visual-module | no-vendor-bundle-import-or-redistribution | legacy-8-to-sonic-topography-7 | distinct-workshop-preset-8 | code-implemented-field-validation-pending | active |
 
 ## 可核验来源
 
@@ -61,7 +62,7 @@
 - 用 Ajin / Yin Yizhen 的 Sonic Topography 来源链覆盖 preset 8；
 - 把原作者公开发布 Mineradio、Workshop 页面公开或存在赞助渠道解释为 bundle 再分发许可；
 - 从 Electron 上游复制 `public/vendor/sonic-workshop/**` 到 Tauri 发布物；
-- 在独立实现完成前声明全部视觉能力一致。
+- 将代码完成状态宣称为已经通过 Windows/WebView2 实机验证、`Field Validated` 或 `Release Verified`。
 
 ## 上游声明审计
 
@@ -74,14 +75,14 @@
 
 这些事实不足以确认 vendor bundle 的版权归属或再分发范围，也不否定权利方可能另行授予过许可。当前工程选择不依赖该不确定性。
 
-## 后续实现约束
+## 持续实现约束
 
-新的 Workshop Module 必须：
+当前及后续 Workshop Module 必须：
 
 1. 不导入上述 vendor bundle 或其反编译源码；
-2. 只以 typed audio frame、媒体元数据、主题 palette 和 pointer intent 为输入；
+2. 只以 typed audio frame、媒体元数据和主题 palette 为输入；
 3. 不通过 iframe/全局变量重新建立旧全局运行时；
 4. 独占自身 WebGL/Three.js 资源并在 dispose 后归零；
 5. 为 160×160 音域网格、低频波纹、高频流星、idle wave、主题和媒体卡片建立独立规格与性能预算；
-6. 在新 schema 中分配明确的 preset identity，并保留 legacy numeric `8 → 7` migration 测试；
+6. 在独立 schema 中保留明确的 preset identity，并持续保留 legacy numeric `8 → 7` migration 测试；
 7. 任何未来直接采用第三方 bundle 的方案都必须重新记录 exact bundle identity 与允许使用、修改和再分发的持久证据。

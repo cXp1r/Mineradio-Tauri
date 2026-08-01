@@ -3,6 +3,14 @@ import {
 	type JsonValue,
 	type PreferenceKey,
 } from "../ports/preferences-repository";
+import {
+	SONIC_WORKSHOP_DEFAULTS,
+	SONIC_WORKSHOP_ACTIVATION_ID,
+	normalizeSonicWorkshopSettings,
+	type SonicWorkshopSettings,
+} from "@mineradio/visual-engine";
+
+export { SONIC_WORKSHOP_ACTIVATION_ID };
 
 export type JsonObject = { [key: string]: JsonValue };
 
@@ -190,6 +198,48 @@ export const VISUAL_FX_PREFERENCE = createJsonPreferenceKey({
 	parse: parseObject,
 });
 
+export interface VisualWorkshopPreference {
+	readonly version: 1;
+	readonly activationId: typeof SONIC_WORKSHOP_ACTIVATION_ID;
+	readonly active: boolean;
+	readonly settings: SonicWorkshopSettings;
+}
+
+function parseVisualWorkshopPreference(
+	value: unknown,
+): VisualWorkshopPreference | undefined {
+	const record = parseObject(value);
+	if (
+		record?.version !== 1 ||
+		record.activationId !== SONIC_WORKSHOP_ACTIVATION_ID ||
+		typeof record.active !== "boolean"
+	) {
+		return undefined;
+	}
+	const settings = normalizeSonicWorkshopSettings({
+		...(parseObject(record.settings) ?? {}),
+		active: record.active,
+	});
+	return {
+		version: 1,
+		activationId: SONIC_WORKSHOP_ACTIVATION_ID,
+		active: record.active,
+		settings,
+	};
+}
+
+export const VISUAL_WORKSHOP_PREFERENCE = createJsonPreferenceKey({
+	name: "visual.workshop.v1",
+	schemaVersion: 1,
+	defaultValue: (): VisualWorkshopPreference => ({
+		version: 1,
+		activationId: SONIC_WORKSHOP_ACTIVATION_ID,
+		active: false,
+		settings: SONIC_WORKSHOP_DEFAULTS,
+	}),
+	parse: parseVisualWorkshopPreference,
+});
+
 export const SETTINGS_FAB_AUTO_HIDE_PREFERENCE = createJsonPreferenceKey({
 	name: "settings.fabAutoHide",
 	schemaVersion: 1,
@@ -242,6 +292,7 @@ export const M8_PREFERENCE_KEYS: readonly PreferenceKey<unknown>[] = Object.free
 	VISUAL_GUIDE_SEEN_PREFERENCE,
 	SHELF_PREFERENCE,
 	VISUAL_FX_PREFERENCE,
+	VISUAL_WORKSHOP_PREFERENCE,
 	SETTINGS_FAB_AUTO_HIDE_PREFERENCE,
 	WALLPAPER_SELECTION_PREFERENCE,
 	HOME_LISTEN_LEDGER_PREFERENCE,

@@ -64,7 +64,7 @@ const d0InventoryCapabilities = [
 	["lyrics.stage-v2", "implemented", "P0", "parity", "none"],
 	["visual.cursor-activity", "implemented", "P0", "parity", "none"],
 	["visual.shelf-cursor-layer", "implemented", "P0", "parity", "none"],
-	["visual.sonic-workshop", "missing", "P0", "parity", "none"],
+	["visual.sonic-workshop", "implemented", "P0", "parity", "none"],
 	["wallpaper.idle-dispose", "implemented", "P0", "parity", "none"],
 	["playback.startup-resume", "missing", "P0", "parity", "none"],
 	["queue.drag-sort", "missing", "P1", "parity", "none"],
@@ -85,6 +85,7 @@ const positiveFieldValidationCapabilities = new Set([
 	"playback.output-routing",
 	"lyrics.stage-v2",
 	"visual.cursor-activity",
+	"visual.sonic-workshop",
 	"home.dashboard",
 	"desktop.tray-close",
 	"desktop.lyrics",
@@ -107,10 +108,10 @@ const d0InventoryRows = d0InventoryCapabilities.map(([
 ]) => renderCapability({
 	...exampleCapability,
 	...(capabilityId === "visual.sonic-workshop" ? {
-		target_module: "`packages/visual-engine/src/sonic-workshop` (future)",
+		target_module: "`packages/visual-engine/src/sonic-workshop`",
 		owner_layer: "visual-engine Module",
-		state_migration: "legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
-		verification: "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐",
+		state_migration: "legacy `visual.fx` numeric 8 始终迁为 Sonic Topography 7；`visual.workshop.v1` 以 activation id 恢复当前 Workshop preset 8",
+		verification: "独立 Module、动态冷加载、独立 render lane、typed audio/media/theme 输入、160×160 有界实例网格、9 主题/六色、封面与有界标题/作者叠层、资源归零、偏好事务与独立性守卫均有自动化证据；Windows/WebView2 观感、CPU/GPU timing 及 frame regression 为 Field Validation Pending (non-blocking)",
 		performance_budget: "disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
 	} : {}),
 	capability_id: capabilityId,
@@ -118,11 +119,12 @@ const d0InventoryRows = d0InventoryCapabilities.map(([
 	parity_level: parityLevel,
 	convergence_mode: convergenceMode,
 	blocked_by: blockedBy,
-	verification: capabilityId === "visual.sonic-workshop"
-		? "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐"
-		: positiveFieldValidationCapabilities.has(capabilityId)
+	verification: positiveFieldValidationCapabilities.has(capabilityId)
+		&& capabilityId !== "visual.sonic-workshop"
 		? "automated evidence; Field Validation Pending (non-blocking)"
-		: "tests",
+		: capabilityId === "visual.sonic-workshop"
+		? "独立 Module、动态冷加载、独立 render lane、typed audio/media/theme 输入、160×160 有界实例网格、9 主题/六色、封面与有界标题/作者叠层、资源归零、偏好事务与独立性守卫均有自动化证据；Windows/WebView2 观感、CPU/GPU timing 及 frame regression 为 Field Validation Pending (non-blocking)"
+			: "tests",
 }));
 const blockedApiCapabilities = [
 	["provider.kugou", "MineRadio-api"],
@@ -355,7 +357,7 @@ test("D0 source map requires every reviewed v2.0.3 delta", () => {
 	expect(errors).toContain("upstream-source-map: missing D0 delta visual.sonic-workshop");
 });
 
-test("D3 guard requires the active Sonic Workshop migration decision", () => {
+test("D3 guard requires the active Sonic Workshop independent implementation decision", () => {
 	expect(validateConvergenceBaseline({
 		...validDocuments,
 		sonicWorkshopProvenance: undefined,
@@ -364,7 +366,7 @@ test("D3 guard requires the active Sonic Workshop migration decision", () => {
 	for (const marker of [
 		"CmzYa",
 		"`3747222633`",
-		"legacy numeric preset `8` 继续迁移到 Sonic Topography `7`",
+		"legacy `visual.fx` numeric preset `8` 继续迁移到 Sonic Topography `7`",
 	]) {
 		const errors = validateConvergenceBaseline({
 			...validDocuments,
@@ -375,8 +377,8 @@ test("D3 guard requires the active Sonic Workshop migration decision", () => {
 
 	for (const [active, replacement] of [
 		[
-			"- 在独立实现完成前声明全部视觉能力一致。",
-			"- 不禁止在独立实现完成前声明全部视觉能力一致。",
+			"- 将代码完成状态宣称为已经通过 Windows/WebView2 实机验证、`Field Validated` 或 `Release Verified`。",
+			"- 将代码完成状态视为已经通过全部实机验证。",
 		],
 		[
 			"- 从 Electron 上游复制 `public/vendor/sonic-workshop/**` 到 Tauri 发布物；",
@@ -405,9 +407,9 @@ test("D3 guard requires the active Sonic Workshop migration decision", () => {
 		&& error.includes("independent-visual-module"))).toBe(true);
 
 	const reversedMatrix = validDocuments.capabilityMatrix
-		.replace("`packages/visual-engine/src/sonic-workshop` (future)", "App.tsx inline bridge")
+		.replace("`packages/visual-engine/src/sonic-workshop`", "App.tsx inline bridge")
 		.replace(
-			"legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
+			"legacy `visual.fx` numeric 8 始终迁为 Sonic Topography 7；`visual.workshop.v1` 以 activation id 恢复当前 Workshop preset 8",
 			"legacy numeric 8 直接复用为 Workshop preset 8",
 		);
 	errors = validateConvergenceBaseline({
@@ -627,7 +629,7 @@ test("#59 guard keeps D0-D3 truthful and cannot clear the #56 human gate", () =>
 	}
 });
 
-test("#59 guard freezes all 17 unresolved capability tuples", () => {
+test("#59 guard freezes all 16 unresolved capability tuples", () => {
 	const missingStatusGap = reviewedDeltaStatus.replace(
 		"| visual.archive | missing | P1 | parity | none |\n",
 		"",
@@ -637,7 +639,7 @@ test("#59 guard freezes all 17 unresolved capability tuples", () => {
 		reviewedDeltaStatus: missingStatusGap,
 	});
 	expect(errors).toContain(
-		"reviewed-delta-status: expected exactly 17 unresolved capability rows; found 16",
+		"reviewed-delta-status: expected exactly 16 unresolved capability rows; found 15",
 	);
 	expect(errors).toContain(
 		"reviewed-delta-status: missing unresolved capability visual.archive",
@@ -652,7 +654,7 @@ test("#59 guard freezes all 17 unresolved capability tuples", () => {
 		capabilityMatrix: missingMatrixGap,
 	});
 	expect(errors).toContain(
-		"capability-matrix: expected exactly 17 unresolved capability rows; found 16",
+		"capability-matrix: expected exactly 16 unresolved capability rows; found 15",
 	);
 	expect(errors).toContain(
 		"capability-matrix: missing unresolved capability provider.kugou",
@@ -686,16 +688,16 @@ test("Cuefield AutoMix remains a local playback gap instead of a MineRadio-api b
 		&& error.includes("none（无 MineRadio-api；只复用现有 playback/lyrics/beatmap Ports 与本地 feedback repository Port）"))).toBe(true);
 });
 
-test("#59 guard preserves the Sonic tuple and all 16 positive Field Validation Pending rows", () => {
+test("#59 guard preserves the implemented Sonic tuple and all 17 positive Field Validation Pending rows", () => {
 	let errors = validateConvergenceBaseline({
 		...validDocuments,
 		reviewedDeltaStatus: reviewedDeltaStatus.replace(
-			"| visual.sonic-workshop | missing | P0 | parity | none |",
-			"| visual.sonic-workshop | implemented | P0 | parity | none |",
+			"| visual.sonic-workshop | implemented | Field Validation Pending (non-blocking) |",
+			"| visual.sonic-workshop | missing | Field Validation Pending (non-blocking) |",
 		),
 	});
 	expect(errors.some((error) =>
-		error.includes("visual.sonic-workshop tuple must be missing / P0 / parity / none"))).toBe(true);
+		error.includes("visual.sonic-workshop tuple must be implemented / Field Validation Pending (non-blocking)"))).toBe(true);
 
 	errors = validateConvergenceBaseline({
 		...validDocuments,
@@ -705,7 +707,7 @@ test("#59 guard preserves the Sonic tuple and all 16 positive Field Validation P
 		),
 	});
 	expect(errors).toContain(
-		"reviewed-delta-status: expected exactly 16 positive Field Validation Pending capability rows; found 15",
+		"reviewed-delta-status: expected exactly 17 positive Field Validation Pending capability rows; found 16",
 	);
 	expect(errors).toContain(
 		"reviewed-delta-status: missing positive Field Validation Pending capability home.dashboard",
@@ -719,7 +721,7 @@ test("#59 guard preserves the Sonic tuple and all 16 positive Field Validation P
 		),
 	});
 	expect(errors).toContain(
-		"capability-matrix: expected exactly 16 positive Field Validation Pending capability rows; found 15",
+		"capability-matrix: expected exactly 17 positive Field Validation Pending capability rows; found 16",
 	);
 	expect(errors).toContain(
 		"capability-matrix: missing positive Field Validation Pending capability lyrics.stage-v2",

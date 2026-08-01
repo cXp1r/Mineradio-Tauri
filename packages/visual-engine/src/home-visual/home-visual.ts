@@ -3,7 +3,12 @@ import type { FrameContext } from "../runtime/frame-context";
 import type { ThreeFactory } from "../runtime/renderer-setup";
 import type { FxState } from "./fx-defaults";
 import { cloneFxState } from "./fx-defaults";
-import { applyPreset, SKULL_PRESET_INDEX, type PresetOpts } from "./preset-state";
+import {
+	applyPreset,
+	isDedicatedVisualPreset,
+	SKULL_PRESET_INDEX,
+	type PresetOpts,
+} from "./preset-state";
 import { syncFxUniforms, type UniformContainer } from "./sync-uniforms";
 import {
 	createHomeParticleField,
@@ -172,7 +177,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 	let runtimeWakePending = false;
 	let latestCoverFallbackUrl = "";
 	field.applyFxState(fx);
-	const initialHomeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+	const initialHomeFieldVisible = !isDedicatedVisualPreset(fx.preset);
 	field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && initialHomeFieldVisible;
 	field.points.visible = initialHomeFieldVisible;
 
@@ -268,7 +273,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 		}
 		field.applyFxState(fx);
 		coverController.setAiDepthEnabled(fx.aiDepth);
-		const homeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+		const homeFieldVisible = !isDedicatedVisualPreset(fx.preset);
 		field.points.visible = homeFieldVisible;
 		const bloomAllowed = !!(fx.bloom && fx.bloomStrength > 0.01) && homeFieldVisible;
 		field.bloomPoints.visible = bloomAllowed;
@@ -326,7 +331,7 @@ export async function createHomeVisual(opts: HomeVisualOptions): Promise<HomeVis
 			const next = applyPreset(fx, p, setOpts);
 			fx.preset = next.preset;
 			field.applyFxState(fx);
-			const homeFieldVisible = fx.preset !== SKULL_PRESET_INDEX && fx.preset !== 7;
+			const homeFieldVisible = !isDedicatedVisualPreset(fx.preset);
 			field.points.visible = homeFieldVisible;
 			field.bloomPoints.visible = !!(fx.bloom && fx.bloomStrength > 0.01) && homeFieldVisible;
 		},

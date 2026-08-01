@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PlaybackQualityRequest } from "@mineradio/shared";
-import type { FxState, FxStatePatch } from "@mineradio/visual-engine";
+import {
+  SONIC_WORKSHOP_PRESET_INDEX,
+  type FxState,
+  type FxStatePatch,
+} from "@mineradio/visual-engine";
 import {
   loadShelfSettingsFromStorage,
   mergeShelfSettings,
@@ -15,13 +19,18 @@ import {
 } from "../../stores/shelf-store";
 import {
   mergeVisualFxState,
+  decodeLegacyVisualFxState,
   normalizeVisualFxState,
   saveVisualFxToStorage,
   serializeVisualFxState,
+  serializeVisualWorkshopPreference,
   useVisualStore,
 } from "../../stores/visual-store";
 import { VISUAL_GUIDE_SEEN_STORE_KEY } from "../../components/shell/VisualGuideHost";
-import type { PreferencesRepository } from "../../ports/preferences-repository";
+import type {
+  PreferencesRepository,
+  PreferencesTransaction,
+} from "../../ports/preferences-repository";
 import {
   CAPSULE_AUTO_HIDE_PREFERENCE,
   DIY_MODE_PREFERENCE,
@@ -30,6 +39,7 @@ import {
   SETTINGS_FAB_AUTO_HIDE_PREFERENCE,
   SHELF_PREFERENCE,
   VISUAL_FX_PREFERENCE,
+  VISUAL_WORKSHOP_PREFERENCE,
   VISUAL_GUIDE_SEEN_PREFERENCE,
   WALLPAPER_SELECTION_PREFERENCE,
 } from "../../preferences/keys";
@@ -118,6 +128,32 @@ export interface HydratedShellPreferencesSnapshot {
   visualFx: FxState;
 }
 
+function visualFxFromCanonicalPreferences(
+  visualFx: unknown,
+  visualWorkshop: ReturnType<typeof VISUAL_WORKSHOP_PREFERENCE.defaultValue>,
+): FxState {
+  const legacySafeVisual = decodeLegacyVisualFxState(visualFx as FxStatePatch);
+  return mergeVisualFxState(legacySafeVisual, {
+    preset: visualWorkshop.active
+      ? SONIC_WORKSHOP_PRESET_INDEX
+      : legacySafeVisual.preset,
+    workshop: {
+      ...visualWorkshop.settings,
+      active: visualWorkshop.active,
+    },
+  });
+}
+
+async function readCanonicalVisualFx(
+  transaction: PreferencesTransaction,
+): Promise<FxState> {
+  const [visualFx, visualWorkshop] = await Promise.all([
+    transaction.get(VISUAL_FX_PREFERENCE),
+    transaction.get(VISUAL_WORKSHOP_PREFERENCE),
+  ]);
+  return visualFxFromCanonicalPreferences(visualFx, visualWorkshop);
+}
+
 export async function loadHydratedShellPreferencesSnapshot(
   preferences: PreferencesRepository,
 ): Promise<HydratedShellPreferencesSnapshot> {
@@ -131,6 +167,7 @@ export async function loadHydratedShellPreferencesSnapshot(
     wallpaperSelection,
     shelf,
     visualFx,
+	visualWorkshop,
   ] = await Promise.all([
     preferences.get(DIY_MODE_PREFERENCE),
     preferences.get(PLAYLIST_PANEL_PINNED_PREFERENCE),
@@ -141,6 +178,7 @@ export async function loadHydratedShellPreferencesSnapshot(
     preferences.get(WALLPAPER_SELECTION_PREFERENCE),
     preferences.get(SHELF_PREFERENCE),
     preferences.get(VISUAL_FX_PREFERENCE),
+	preferences.get(VISUAL_WORKSHOP_PREFERENCE),
   ]);
   return {
     diyMode,
@@ -151,7 +189,7 @@ export async function loadHydratedShellPreferencesSnapshot(
     settingsFabAutoHide,
     wallpaperSelection,
     shelf: normalizeShelfSettings(shelf),
-    visualFx: normalizeVisualFxState(visualFx as FxStatePatch),
+    visualFx: visualFxFromCanonicalPreferences(visualFx, visualWorkshop),
   };
 }
 
@@ -213,6 +251,14 @@ function canonicalShelfValue(settings: ShelfSettings) {
 function canonicalVisualValue(fx: FxState) {
   const value = VISUAL_FX_PREFERENCE.parse(serializeVisualFxState(fx));
   if (!value) throw new Error("VISUAL_PREFERENCE_SERIALIZE_FAILED");
+  return value;
+}
+
+function canonicalWorkshopValue(fx: FxState) {
+  const value = VISUAL_WORKSHOP_PREFERENCE.parse(
+    serializeVisualWorkshopPreference(fx),
+  );
+  if (!value) throw new Error("WORKSHOP_PREFERENCE_SERIALIZE_FAILED");
   return value;
 }
 
@@ -400,9 +446,7 @@ export function useShellPreferences({
           canonicalShelfValue(nextShelf),
         );
 
-        const currentVisual = normalizeVisualFxState(
-          (await transaction.get(VISUAL_FX_PREFERENCE)) as FxStatePatch,
-        );
+        const currentVisual = await readCanonicalVisualFx(transaction);
         const nextVisual = mergeVisualFxState(
           currentVisual,
           visualFxPatchFromShelfSettings(patch),
@@ -410,6 +454,10 @@ export function useShellPreferences({
         await transaction.set(
           VISUAL_FX_PREFERENCE,
           canonicalVisualValue(nextVisual),
+        );
+        await transaction.set(
+          VISUAL_WORKSHOP_PREFERENCE,
+          canonicalWorkshopValue(nextVisual),
         );
         return { shelf: nextShelf, visualFx: nextVisual };
       });
@@ -425,13 +473,15 @@ export function useShellPreferences({
       if (!preferences) throw new Error("PREFERENCES_REPOSITORY_REQUIRED");
       const shelfPatch = shelfSettingsPatchFromVisualFx(patch);
       const committed = await preferences.transaction(async (transaction) => {
-        const currentVisual = normalizeVisualFxState(
-          (await transaction.get(VISUAL_FX_PREFERENCE)) as FxStatePatch,
-        );
+        const currentVisual = await readCanonicalVisualFx(transaction);
         const nextVisual = mergeVisualFxState(currentVisual, patch);
         await transaction.set(
           VISUAL_FX_PREFERENCE,
           canonicalVisualValue(nextVisual),
+        );
+        await transaction.set(
+          VISUAL_WORKSHOP_PREFERENCE,
+          canonicalWorkshopValue(nextVisual),
         );
         if (!shelfPatch) return { visualFx: nextVisual, shelf: null };
 
@@ -559,7 +609,10 @@ export function useShellPreferences({
   const updateVisualPreset = useCallback(
     (preset: number) => {
       if (preferences) {
-        return commitCanonicalVisualPatch({ preset });
+        return commitCanonicalVisualPatch({
+          preset,
+          workshop: { active: false },
+        });
       }
       setVisualPreset(preset);
       persistVisual();

@@ -40,6 +40,10 @@ export interface VisualMediaClock {
 
 export interface PlaybackVisualSnapshot {
 	readonly trackKey: string;
+	/** 视觉模块只读消费的媒体标题；空值不会触发任何数据请求。 */
+	readonly title?: string;
+	/** 已格式化的艺术家文本，避免视觉模块依赖业务 Track 类型。 */
+	readonly artist?: string;
 	readonly playing: boolean;
 	readonly durationMs: number | null;
 	readonly coverUrl: string;

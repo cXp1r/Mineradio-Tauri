@@ -24,11 +24,48 @@ test("VisualControlPanelHost server-renders the baseline fx fab and panel shell"
   expect(html).toContain("MINERADIO VISUALS");
   expect(html).toContain('id="preset-grid"');
   expect(html).toContain('class="preset-card');
-  expect(html.match(/class="preset-card/g)?.length).toBe(8);
+  expect(html.match(/class="preset-card/g)?.length).toBe(9);
   expect(html).toContain('data-preset="7"');
+  expect(html).toContain('data-preset="8"');
   expect(html).toContain("安魂");
   expect(html).toContain("YUI7W");
   expect(html).toContain("Sonic Topography");
+  expect(html).toContain("音域回响 Wallpaper Engine");
+  expect(html).toContain("CmzYa");
+});
+
+test("VisualControlPanelHost selects Workshop and leaves it through transactional fx patches", async () => {
+  await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+  const patches: Array<Record<string, unknown>> = [];
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = createRoot(container);
+  root.render(
+    React.createElement(VisualControlPanelHost, {
+      preset: 0,
+      onSettingsTransaction: async (patch) => {
+        patches.push(patch as Record<string, unknown>);
+      },
+    }),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  (container.querySelector('.preset-card[data-preset="8"]') as HTMLButtonElement).click();
+  for (let tick = 0; tick < 12 && patches.length < 1; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  (container.querySelector('.preset-card[data-preset="4"]') as HTMLButtonElement).click();
+  for (let tick = 0; tick < 12 && patches.length < 2; tick += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  expect(patches).toEqual([
+    { preset: 8, workshop: { active: true } },
+    { preset: 4, workshop: { active: false } },
+  ]);
+
+  root.unmount();
+  container.remove();
 });
 
 test("VisualControlPanelHost renders baseline DIY control sections", () => {

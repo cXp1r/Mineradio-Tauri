@@ -20,3 +20,13 @@ test("sonic renders after skull and before stage lyrics", () => {
 		RENDER_STEP_ORDER.indexOf(RenderStepSlot.StageLyrics),
 	);
 });
+
+test("Workshop owns a distinct lane after Topography and before stage lyrics", () => {
+	expect(RENDER_STEP_ORDER.filter((slot) => slot === RenderStepSlot.SonicWorkshop)).toHaveLength(1);
+	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.SonicWorkshop)).toBeGreaterThan(
+		RENDER_STEP_ORDER.indexOf(RenderStepSlot.SonicTopography),
+	);
+	expect(RENDER_STEP_ORDER.indexOf(RenderStepSlot.SonicWorkshop)).toBeLessThan(
+		RENDER_STEP_ORDER.indexOf(RenderStepSlot.StageLyrics),
+	);
+});

@@ -6216,6 +6216,45 @@ html.control-glass-svg-ok #play-btn {
   background: transparent;
 }
 
+#visual-host.sonic-workshop-active {
+  background: #000;
+  transition: background-color 180ms ease;
+}
+
+.sonic-workshop-media-copy {
+  position: fixed;
+  left: 50%;
+  bottom: clamp(64px, 12vh, 132px);
+  z-index: 2;
+  width: min(560px, calc(100vw - 48px));
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.96);
+  text-align: center;
+  text-shadow: 0 2px 18px rgba(0, 0, 0, 0.82);
+  pointer-events: none;
+  user-select: none;
+}
+
+.sonic-workshop-media-title,
+.sonic-workshop-media-artist {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sonic-workshop-media-title {
+  font-size: clamp(16px, 2vw, 28px);
+  font-weight: 650;
+  letter-spacing: 0.035em;
+}
+
+.sonic-workshop-media-artist {
+  margin-top: 5px;
+  color: rgba(255, 255, 255, 0.62);
+  font-size: clamp(11px, 1.1vw, 15px);
+  letter-spacing: 0.09em;
+}
+
 .wallpaper-engine-background {
   position: fixed;
   inset: 0;

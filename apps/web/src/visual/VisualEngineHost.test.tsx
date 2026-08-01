@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
+import { SONIC_WORKSHOP_DEFAULTS } from "@mineradio/visual-engine";
 import {
 	normalizeVisualCoverUrl,
 	resolveVisualCoverUrl,
@@ -81,6 +82,36 @@ test("VisualEngineHost restores baseline album background layer from the direct 
 	expect(html).not.toContain("mineradio-image://");
 });
 
+test("Workshop replaces the album glow with an opaque visual host without intercepting UI", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(VisualEngineHost, {
+			playbackVolume: 1,
+			audioFrameSource: () => null,
+			lyricsPayload: null,
+			positionMs: 0,
+			isPlaying: false,
+			currentCoverUrl: "https://img.example/a.jpg",
+			currentTrack: {
+				provider: "netease",
+				id: "track-42",
+				title: "音域回响",
+				artists: ["CmzYa"],
+				coverUrl: "https://img.example/a.jpg",
+			} as never,
+			fxState: {
+				preset: 8,
+				workshop: { ...SONIC_WORKSHOP_DEFAULTS, active: true },
+			},
+		}),
+	);
+	expect(html).toContain('id="album-bg"');
+	expect(html).not.toContain('id="album-bg" class="visible"');
+	expect(html).toContain('class="visual-host sonic-workshop-active"');
+	expect(html).toContain('class="sonic-workshop-media-copy"');
+	expect(html).toContain("音域回响");
+	expect(html).toContain("CmzYa");
+});
+
 test("visual host keeps the WebGL canvas hit-testable for baseline stage drag and wheel controls", async () => {
 	const css = await fetch(new URL("../styles.css", import.meta.url)).then((res) => res.text());
 	expect(/#visual-host\s*\{[\s\S]*pointer-events:\s*auto;/.test(css)).toBe(true);
@@ -93,6 +124,7 @@ test("album background CSS matches the Electron baseline cover glow layer", asyn
 	expect(/#visual-host\s*\{[\s\S]*z-index:\s*1;[\s\S]*background:\s*transparent;/.test(css)).toBe(true);
 	expect(/#album-bg\s*\{[\s\S]*position:\s*fixed;[\s\S]*z-index:\s*0;[\s\S]*filter:\s*blur\(120px\) brightness\(0\.18\) saturate\(1\.5\);[\s\S]*transform:\s*scale\(1\.4\);[\s\S]*transition:\s*background-image 1\.5s ease, opacity 1\.5s ease;/.test(css)).toBe(true);
 	expect(/#visual-host canvas\s*\{[\s\S]*z-index:\s*1;/.test(css)).toBe(true);
+	expect(/#visual-host\.sonic-workshop-active\s*\{[\s\S]*background:\s*#000;/.test(css)).toBe(true);
 });
 
 test("resolveRuntimeShelfMode keeps runtime side promotion across default off rerenders", () => {

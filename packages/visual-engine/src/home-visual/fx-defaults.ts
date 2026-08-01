@@ -6,6 +6,10 @@ import {
 	SONIC_TOPOGRAPHY_DEFAULTS,
 	type SonicTopographySettings,
 } from "../sonic-topography/sonic-settings";
+import {
+	SONIC_WORKSHOP_DEFAULTS,
+	type SonicWorkshopSettings,
+} from "../sonic-workshop/sonic-workshop-settings";
 
 export interface FxState {
 	preset: number;
@@ -98,6 +102,8 @@ export interface FxState {
 	stageLyrics: Readonly<StageLyricsSettings>;
 	/** M4 Sonic Topography 的完整、已归一化设置快照。 */
 	sonic: Readonly<SonicTopographySettings>;
+	/** Sonic Workshop 的完整、已归一化设置快照。 */
+	workshop: Readonly<SonicWorkshopSettings>;
 }
 
 export type DeepPartial<T> = {
@@ -105,9 +111,13 @@ export type DeepPartial<T> = {
 };
 
 /** UI 与持久化输入允许嵌套增量；运行时快照始终为完整的 FxState。 */
-export type FxStatePatch = Omit<Partial<FxState>, "stageLyrics" | "sonic"> & {
+export type FxStatePatch = Omit<
+	Partial<FxState>,
+	"stageLyrics" | "sonic" | "workshop"
+> & {
 	readonly stageLyrics?: Partial<StageLyricsSettings>;
 	readonly sonic?: DeepPartial<SonicTopographySettings>;
+	readonly workshop?: DeepPartial<SonicWorkshopSettings>;
 };
 
 export const FX_DEFAULTS: FxState = {
@@ -199,6 +209,7 @@ export const FX_DEFAULTS: FxState = {
 	particleDim: 1,
 	stageLyrics: DEFAULT_STAGE_LYRICS_SETTINGS,
 	sonic: SONIC_TOPOGRAPHY_DEFAULTS,
+	workshop: SONIC_WORKSHOP_DEFAULTS,
 };
 
 export function cloneFxState(): FxState {
@@ -206,5 +217,6 @@ export function cloneFxState(): FxState {
 	base.mouseXy = { ...FX_DEFAULTS.mouseXy };
 	base.stageLyrics = FX_DEFAULTS.stageLyrics;
 	base.sonic = FX_DEFAULTS.sonic;
+	base.workshop = FX_DEFAULTS.workshop;
 	return base;
 }

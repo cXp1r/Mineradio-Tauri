@@ -19,6 +19,8 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 
 	const playback = buildPlaybackVisualSnapshot({
 		trackKey: "netease:42",
+		title: "晴天",
+		artist: "周杰伦",
 		playing: true,
 		durationMs: 210_000,
 		coverUrl: "mineradio-image://cover/session-token/track-42",
@@ -62,6 +64,8 @@ test("visual snapshot builders create complete immutable snapshots while preserv
 	expect(playback.beatMap).toBe(beatMap);
 	expect(playback).toEqual({
 		trackKey: "netease:42",
+		title: "晴天",
+		artist: "周杰伦",
 		playing: true,
 		durationMs: 210_000,
 		coverUrl: "mineradio-image://cover/session-token/track-42",

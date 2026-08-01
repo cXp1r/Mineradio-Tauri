@@ -12,11 +12,13 @@ import {
 	LEGACY_VISUAL_LANE_CADENCE,
 	mountOwnedStageLyricsLifecycle,
 	normalizeSonicPerformanceQuality,
+	resolveHomeVisualPreset,
 	resolveLegacyVisualCameraPolicyInput,
 	sonicPaletteSnapshotFromLyricPalette,
 	resolveSonicPointerRipple,
 	resolveSonicShelfMode,
 	shouldActivateSonicTopography,
+	shouldActivateSonicWorkshop,
 } from "./create-legacy-visual-composition";
 import { createLegacyVisualEventBridge } from "./legacy-visual-events";
 import { connectCursorActivityToShelf } from "./create-legacy-visual-composition";
@@ -76,6 +78,18 @@ test("Sonic production route activates only for preset 7 and normalizes quality"
 	expect(normalizeSonicPerformanceQuality("eco")).toBe("eco");
 	expect(normalizeSonicPerformanceQuality("ultra")).toBe("ultra");
 	expect(normalizeSonicPerformanceQuality("unknown")).toBe("high");
+});
+
+test("Workshop owns preset 8 without changing the Topography route", () => {
+	expect(shouldActivateSonicWorkshop(8)).toBe(true);
+	expect(shouldActivateSonicWorkshop(7)).toBe(false);
+	expect(shouldActivateSonicTopography(8)).toBe(false);
+	expect(LEGACY_VISUAL_LANE_CADENCE.SonicWorkshop).toBe("presentation");
+	expect(resolveHomeVisualPreset(true, 8, 8, null)).toEqual({
+		preset: 8,
+		previousPreset: null,
+		changed: false,
+	});
 });
 
 test("Sonic cover palette receives Stage primary, secondary, and highlight colors", () => {
@@ -281,6 +295,7 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 		Shelf: 30,
 		LyricParticles: 45,
 		SonicTopography: "presentation",
+		SonicWorkshop: "presentation",
 		StageLyrics: 45,
 		DesktopOverlaySync: 12,
 		HomeVisual: "presentation",
@@ -297,6 +312,9 @@ test("legacy composition uses facade-owned scheduler services and dedicated visu
 	expect(source).toContain("RenderStepSlot.Shelf");
 	expect(source).toContain("RenderStepSlot.LyricParticles");
 	expect(source).toContain("RenderStepSlot.SonicTopography");
+	expect(source).toContain("RenderStepSlot.SonicWorkshop");
+	expect(source).toContain('import("@mineradio/visual-engine/sonic-workshop")');
+	expect(/^import[^;]*createSonicWorkshopRuntime\b/ms.test(source)).toBe(false);
 	expect(source).toContain("RenderStepSlot.StageLyrics");
 	expect(source).toContain("RenderStepSlot.DesktopOverlaySync");
 	expect(source).not.toContain("scheduler.start(");
@@ -322,6 +340,7 @@ test("home visual runtime governor releases in exact order and wakes only in an 
 				return { disposed: 0, errors: [] };
 			},
 		},
+		beforeReleaseResources: () => calls.push("workshop:release"),
 		trimCache: (maxEntries) => calls.push(`trim:${maxEntries}`),
 		refreshPerformanceSnapshots: () => calls.push("refresh"),
 	});
@@ -332,6 +351,7 @@ test("home visual runtime governor releases in exact order and wakes only in an 
 	governor.sync("deep-sleep");
 	expect(calls).toEqual([
 		"active:false",
+		"workshop:release",
 		"cancel:background",
 		"trim:0",
 		"release:rebuildable+ephemeral",

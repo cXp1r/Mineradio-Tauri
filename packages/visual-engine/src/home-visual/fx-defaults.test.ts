@@ -30,10 +30,10 @@ const EXPECTED_KEYS = [
 	"performanceBackground", "performanceQuality", "liveBackgroundKeep",
 	"cam",
 	"mouseActive", "mouseXy", "burstAmt", "vinylSpin", "particleDim",
-	"stageLyrics", "sonic",
+	"stageLyrics", "sonic", "workshop",
 ] as const;
 
-test("FX_DEFAULTS exposes 81 baseline keys, 5 runtime keys, and 2 M4 typed settings", () => {
+test("FX_DEFAULTS exposes baseline, runtime, and typed visual-module settings", () => {
 	expect(Object.keys(FX_DEFAULTS).length).toBe(EXPECTED_KEYS.length);
 	for (const key of EXPECTED_KEYS) {
 		expect(Object.prototype.hasOwnProperty.call(FX_DEFAULTS, key)).toBe(true);
@@ -140,4 +140,6 @@ test("cloneFxState returns a deep-ish copy with a fresh mouseXy nested object", 
 	expect(a.mouseXy).toEqual(b.mouseXy);
 	expect(a.preset).toBe(FX_DEFAULTS.preset);
 	expect(a.intensity).toBe(FX_DEFAULTS.intensity);
+	expect(a.workshop).toBe(FX_DEFAULTS.workshop);
+	expect(a.workshop.active).toBe(false);
 });

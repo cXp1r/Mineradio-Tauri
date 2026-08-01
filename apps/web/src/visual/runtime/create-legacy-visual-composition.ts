@@ -88,6 +88,7 @@ import {
 	type CursorActivityRuntime,
 } from "./cursor-activity-runtime";
 import type { LegacyVisualEventSink } from "./legacy-visual-events";
+import { createSonicWorkshopRuntimeLoader } from "./sonic-workshop-runtime-loader";
 
 export function connectCursorActivityToShelf(input: {
 	readonly cursorActivity: Pick<CursorActivityRuntime, "getSnapshot" | "subscribe">;
@@ -835,11 +836,11 @@ export function resolveHomeVisualPreset(
 			changed: currentPreset !== defaultPreset,
 		};
 	}
-	if (homeActive && defaultPreset === 7) {
+	if (homeActive && (defaultPreset === 7 || defaultPreset === 8)) {
 		return {
-			preset: 7,
+			preset: defaultPreset,
 			previousPreset: null,
-			changed: currentPreset !== 7,
+			changed: currentPreset !== defaultPreset,
 		};
 	}
 	if (homeActive) {
@@ -1003,6 +1004,7 @@ export const LEGACY_VISUAL_LANE_CADENCE = Object.freeze({
 	Shelf: 30,
 	LyricParticles: 45,
 	SonicTopography: "presentation",
+	SonicWorkshop: "presentation",
 	StageLyrics: 45,
 	DesktopOverlaySync: 12,
 	HomeVisual: "presentation",
@@ -1026,6 +1028,10 @@ export function shouldActivateSonicTopography(preset: number | null | undefined)
 	return Number(preset) === 7;
 }
 
+export function shouldActivateSonicWorkshop(preset: number | null | undefined): boolean {
+	return Number(preset) === 8;
+}
+
 export function resolveSonicShelfMode(
 	preset: number | null | undefined,
 	mode: string | null | undefined,
@@ -1043,6 +1049,7 @@ export function createLegacyHomeVisualRuntimeGovernor(input: {
 	readonly homeVisual: Pick<HomeVisual, "setRuntimeActive">;
 	readonly tasks: Pick<VisualEngineCompositionContext["tasks"], "cancelPriority">;
 	readonly resources: Pick<VisualResourceScope, "releaseRetention">;
+	readonly beforeReleaseResources?: () => void;
 	readonly trimCache?: (maxEntries: number) => void;
 	readonly refreshPerformanceSnapshots: () => void;
 }): LegacyHomeVisualRuntimeGovernor {
@@ -1054,6 +1061,7 @@ export function createLegacyHomeVisualRuntimeGovernor(input: {
 			if (mode === "released") {
 				input.homeVisual.setRuntimeActive(false);
 				homeRuntimeActive = false;
+				input.beforeReleaseResources?.();
 				input.tasks.cancelPriority("background");
 				(input.trimCache ?? trimHomeCoverTextureCache)(0);
 				input.resources.releaseRetention(["rebuildable", "ephemeral"]);
@@ -1083,6 +1091,12 @@ function mutableFxCopy(fx: Readonly<Partial<FxState>>): Partial<FxState> {
 				colors: { ...fx.sonic.colors },
 				floating: { ...fx.sonic.floating },
 				trigger: { ...fx.sonic.trigger },
+			},
+		} : {}),
+		...(fx.workshop ? {
+			workshop: {
+				...fx.workshop,
+				colors: { ...fx.workshop.colors },
 			},
 		} : {}),
 	};
@@ -1347,10 +1361,14 @@ export function createLegacyVisualComposition(
 				random: options.random,
 			}));
 			audioEngine.setSonicTriggerSettings(homeVisual.getFx().sonic.trigger);
+			let workshopLoader: ReturnType<typeof createSonicWorkshopRuntimeLoader> | null = null;
 			runtimeGovernor = createLegacyHomeVisualRuntimeGovernor({
 				homeVisual,
 				tasks: nextContext.tasks,
 				resources: scope,
+				beforeReleaseResources: () => {
+					workshopLoader?.sync(false, homeVisual.getFx().workshop);
+				},
 				refreshPerformanceSnapshots: nextContext.refreshPerformanceSnapshots,
 			});
 			const maintenanceLane = createVisualMaintenanceLane({
@@ -1632,6 +1650,59 @@ export function createLegacyVisualComposition(
 					? createGpuFrameTimer(renderer.renderer.getContext())
 					: undefined,
 			}));
+			workshopLoader = registerOwnedDisposable(
+				scope,
+				isCurrent,
+				"sonic-workshop-loader",
+				"subscription",
+				createSonicWorkshopRuntimeLoader({
+					// 只有明确选中当前 schema 的 preset 8 后才加载独立实现。
+					load: () => import("@mineradio/visual-engine/sonic-workshop"),
+					createContext: () => ({
+						scene: renderer.scene,
+						renderer: renderer.renderer,
+						resources: scope,
+						cancellation: nextContext.cancellation,
+						tasks: nextContext.tasks,
+						diagnostics: nextContext.diagnostics,
+						audio: () => {
+							const snapshot = audioEngine.getSnapshot().sonic;
+							if (!snapshot) throw new Error("Workshop audio snapshot is unavailable.");
+							return snapshot;
+						},
+						coverTexture: () => (
+							homeVisual.getField().materialUniforms.uCoverTex?.value as THREE.Texture | null
+						) ?? null,
+						media: () => {
+							const playback = nextContext.getFrameSnapshot().playback;
+							return Object.freeze({
+								trackKey: playback.trackKey,
+								title: playback.title ?? "",
+								artist: playback.artist ?? "",
+								playing: playback.playing,
+								coverTexture: (
+									homeVisual.getField().materialUniforms.uCoverTex?.value as THREE.Texture | null
+								) ?? null,
+							});
+						},
+						coverPalette: () => latestCoverLyricPalette
+							? Object.freeze({
+								primary: latestCoverLyricPalette.primary,
+								warm: latestCoverLyricPalette.primary,
+								cool: latestCoverLyricPalette.secondary,
+								ripple: latestCoverLyricPalette.highlight,
+								peak: latestCoverLyricPalette.glowColor,
+							})
+							: null,
+						random: options.random,
+					}),
+					registerStep: (run) => renderLoop.registerStep(
+						RenderStepSlot.SonicWorkshop,
+						run,
+						{ cadence: LEGACY_VISUAL_LANE_CADENCE.SonicWorkshop },
+					),
+				}),
+			);
 			const visualAudioDebugger = registerOwnedDisposable(scope, isCurrent, "visual-audio-debugger", "subscription", createVisualAudioDebugger({
 				frameSource,
 				audioEngine,
@@ -1658,6 +1729,11 @@ export function createLegacyVisualComposition(
 			registerOwnedCleanup(scope, isCurrent, "home-visual-lane", "subscription", renderLoop.registerStep(RenderStepSlot.HomeVisual, (frame) => {
 				mergeFxState(homeVisual.getFx(), refs?.fxRef?.current);
 				audioEngine.setSonicTriggerSettings(homeVisual.getFx().sonic.trigger);
+				const workshopSettings = homeVisual.getFx().workshop;
+				workshopLoader.sync(
+					shouldActivateSonicWorkshop(homeVisual.getFx().preset) && workshopSettings.active,
+					workshopSettings,
+				);
 				const sonicRequested = shouldActivateSonicTopography(homeVisual.getFx().preset);
 				if (sonicRequested) {
 					const settings = homeVisual.getFx().sonic;

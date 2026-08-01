@@ -8,10 +8,12 @@ import {
 	SETTINGS_FAB_AUTO_HIDE_PREFERENCE,
 	SHELF_PREFERENCE,
 	VISUAL_FX_PREFERENCE,
+	VISUAL_WORKSHOP_PREFERENCE,
 	VISUAL_GUIDE_SEEN_PREFERENCE,
 	WALLPAPER_SELECTION_PREFERENCE,
 } from "./keys";
 import type { PreferenceKey } from "../ports/preferences-repository";
+import { migrateLegacyPreset } from "@mineradio/visual-engine";
 
 export interface LegacyPreferenceStorage {
 	getItem(key: string): string | null;
@@ -107,6 +109,22 @@ function jsonMapping<T>(
 	};
 }
 
+export function decodeLegacyVisualFxPreference(raw: string) {
+	try {
+		const parsed = VISUAL_FX_PREFERENCE.parse(JSON.parse(raw));
+		if (!parsed) return undefined;
+		const { workshop: _workshop, ...visualFx } = parsed;
+		return VISUAL_FX_PREFERENCE.parse({
+			...visualFx,
+			...(visualFx.preset === undefined
+				? {}
+				: { preset: migrateLegacyPreset(Number(visualFx.preset)) }),
+		});
+	} catch {
+		return undefined;
+	}
+}
+
 export const DEFAULT_LEGACY_PREFERENCE_MAPPINGS: readonly LegacyPreferenceMapping<unknown>[] =
 	Object.freeze([
 		{
@@ -141,7 +159,16 @@ export const DEFAULT_LEGACY_PREFERENCE_MAPPINGS: readonly LegacyPreferenceMappin
 			VISUAL_GUIDE_SEEN_PREFERENCE,
 		),
 		jsonMapping("mineradio-tauri-shelf-settings-v1", SHELF_PREFERENCE),
-		jsonMapping("mineradio-tauri-visual-settings-v1", VISUAL_FX_PREFERENCE),
+		{
+			legacyKey: "mineradio-tauri-visual-settings-v1",
+			preferenceKey: VISUAL_FX_PREFERENCE,
+			decode: decodeLegacyVisualFxPreference,
+			encode: (value) => JSON.stringify(value),
+		},
+		jsonMapping(
+			"mineradio-tauri-workshop-settings-v1",
+			VISUAL_WORKSHOP_PREFERENCE,
+		),
 		booleanMapping(
 			"mineradio-fx-fab-auto-hide-v1",
 			SETTINGS_FAB_AUTO_HIDE_PREFERENCE,

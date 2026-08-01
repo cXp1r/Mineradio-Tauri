@@ -24,6 +24,10 @@ import {
   SonicTopographyControls,
 } from "./controls/SonicTopographyControls";
 import {
+  SONIC_WORKSHOP_SETTINGS_SEARCH_TERMS,
+  SonicWorkshopControls,
+} from "./controls/SonicWorkshopControls";
+import {
   STAGE_LYRICS_SETTINGS_SEARCH_TERMS,
   StageLyricsControls,
 } from "./controls/StageLyricsControls";
@@ -56,6 +60,7 @@ const PRESETS = [
   { id: 5, name: "星河", desc: "静默流光" },
   { id: 6, name: "安魂", desc: "骷髅 · YUI7W" },
   { id: 7, name: "声景", desc: "Sonic Topography" },
+  { id: 8, name: "音域回响 Wallpaper Engine", desc: "CmzYa" },
 ] as const;
 
 type NumberKey = Extract<keyof FxState, string>;
@@ -418,6 +423,7 @@ export const VISUAL_SETTINGS_SEARCH_INDEX = Object.freeze({
     "频谱",
     ...STAGE_LYRICS_SETTINGS_SEARCH_TERMS,
     ...SONIC_TOPOGRAPHY_SETTINGS_SEARCH_TERMS,
+    ...SONIC_WORKSHOP_SETTINGS_SEARCH_TERMS,
   ],
   systemAdvanced: [
     "系统",
@@ -534,7 +540,7 @@ function settingChangesFromPatch(
   const visit = (path: string, value: unknown): void => {
     const root = path.split(".")[0];
     if (
-      (root === "stageLyrics" || root === "sonic") &&
+      (root === "stageLyrics" || root === "sonic" || root === "workshop") &&
       value &&
       typeof value === "object" &&
       !Array.isArray(value)
@@ -590,6 +596,7 @@ function settingLabel(path: string): string {
   const root = path.split(".")[0] as keyof FxState | undefined;
   if (root === "stageLyrics") return "歌词舞台";
   if (root === "sonic") return "Sonic Topography";
+  if (root === "workshop") return "音域回响 Wallpaper Engine";
   return (root && SETTING_LABELS[root]) || path;
 }
 
@@ -721,7 +728,8 @@ export function VisualControlPanelHost(
     readHistory,
     readHistory,
   );
-  const preset = clampPreset(props.preset ?? 0);
+  const workshopActive = props.settings?.workshop?.active === true;
+  const preset = workshopActive ? 8 : clampPreset(props.preset ?? 0);
   useEffect(() => {
     pendingValuesRef.current = {};
   }, [props.intensity, props.preset, props.settings]);
@@ -752,7 +760,8 @@ export function VisualControlPanelHost(
     }
     for (const [key, value] of Object.entries(patch)) {
       if (typeof value === "number") {
-        current.onNumberSettingChange?.(key as keyof FxState, value);
+        if (key === "preset") current.onPresetChange?.(value);
+        else current.onNumberSettingChange?.(key as keyof FxState, value);
       } else if (typeof value === "boolean") {
         current.onBooleanSettingChange?.(key as keyof FxState, value);
       } else if (typeof value === "string") {
@@ -812,16 +821,6 @@ export function VisualControlPanelHost(
       });
   }, [currentTrackedValue, reportTransactionError, transactionController]);
 
-  const trackedPresetChange = useCallback((next: number) => {
-    trackMutation({
-      label: "切换视觉预设",
-      changes: {
-        preset: { before: currentTrackedValue("preset"), after: next },
-      },
-      commit: () => propsRef.current.onPresetChange?.(next),
-    });
-  }, [currentTrackedValue, trackMutation]);
-
   const trackedNumberChange = useCallback((key: keyof FxState, value: number) => {
     const path = String(key);
     trackMutation({
@@ -865,11 +864,15 @@ export function VisualControlPanelHost(
         ? `patch:${[...paths].sort().join("|")}`
         : undefined;
     trackMutation({
-      label: paths.some((path) => path.startsWith("sonic."))
-        ? "调整 Sonic Topography"
-        : paths.some((path) => path.startsWith("stageLyrics."))
-          ? "调整歌词舞台"
-          : "调整视觉设置",
+      label: paths.includes("preset")
+        ? "切换视觉预设"
+        : paths.some((path) => path.startsWith("sonic."))
+          ? "调整 Sonic Topography"
+          : paths.some((path) => path.startsWith("workshop."))
+            ? "调整音域回响 Wallpaper Engine"
+            : paths.some((path) => path.startsWith("stageLyrics."))
+              ? "调整歌词舞台"
+              : "调整视觉设置",
       changes,
       mergeKey: gestureMergeKey,
       commit: () => applySettingsPatch(patch),
@@ -1008,9 +1011,12 @@ export function VisualControlPanelHost(
   }, [autoHide, open]);
   const changePreset = useCallback(
     (next: number) => {
-      trackedPresetChange(next);
+      trackedFxPatchChange({
+        preset: next,
+        workshop: { active: next === 8 },
+      });
     },
-    [trackedPresetChange],
+    [trackedFxPatchChange],
   );
   const toggleBoolean = useCallback(
     (def: ToggleDef) => {
@@ -1592,6 +1598,12 @@ export function VisualControlPanelHost(
             settings={props.settings}
             onFxPatchChange={trackedFxPatchChange}
           />
+          {preset === 8 ? (
+            <SonicWorkshopControls
+              settings={props.settings}
+              onFxPatchChange={trackedFxPatchChange}
+            />
+          ) : null}
         </SettingsSection>
 
         <SettingsSection

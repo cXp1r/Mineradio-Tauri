@@ -52,6 +52,8 @@ export function buildPlaybackVisualSnapshot(
 ): PlaybackVisualSnapshot {
 	return Object.freeze({
 		trackKey: input.trackKey,
+		title: input.title ?? "",
+		artist: input.artist ?? "",
 		playing: input.playing,
 		durationMs: input.durationMs,
 		coverUrl: input.coverUrl,

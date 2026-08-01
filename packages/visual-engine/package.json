@@ -4,6 +4,11 @@
   "type": "module",
   "private": true,
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./sonic-workshop": "./src/sonic-workshop/index.ts",
+    "./src/fixtures/m4": "./src/fixtures/m4/index.ts"
+  },
   "scripts": {
     "test": "bun test",
     "typecheck": "tsc --noEmit"

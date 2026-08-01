@@ -57,6 +57,8 @@ const DEFAULT_VISIBILITY: VisualVisibilityState = {
 
 const DEFAULT_PLAYBACK: PlaybackVisualSnapshot = Object.freeze({
 	trackKey: "",
+	title: "",
+	artist: "",
 	playing: false,
 	durationMs: null,
 	coverUrl: "",

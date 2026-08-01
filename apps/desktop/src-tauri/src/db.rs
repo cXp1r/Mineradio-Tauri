@@ -150,6 +150,7 @@ const ALLOWED_PREFERENCE_KEYS: &[(&str, u32)] = &[
     ("shell.visualGuideSeen", 1),
     ("visual.shelf", 1),
     ("visual.fx", 1),
+    ("visual.workshop.v1", 1),
     ("settings.fabAutoHide", 1),
     ("desktop.wallpaperSelection", 1),
     ("home.listenLedger.v2", 2),
@@ -171,6 +172,7 @@ const ALLOWED_LEGACY_PREFERENCE_MIGRATIONS: &[(&str, &str)] = &[
     ("mineradio-visual-guide-seen-v2", "shell.visualGuideSeen"),
     ("mineradio-tauri-shelf-settings-v1", "visual.shelf"),
     ("mineradio-tauri-visual-settings-v1", "visual.fx"),
+    ("mineradio-tauri-workshop-settings-v1", "visual.workshop.v1"),
     ("mineradio-fx-fab-auto-hide-v1", "settings.fabAutoHide"),
     (
         "mineradio.wallpaper-engine.selection.v1",

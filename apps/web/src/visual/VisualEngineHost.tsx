@@ -288,6 +288,9 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 	const fallbackText = useMemo(() => trackFallbackText(props.currentTrack), [props.currentTrack]);
 	const durationMs = props.durationMs ?? props.currentTrack?.durationMs ?? null;
 	const trackKey = resolveVisualTrackKey(props.currentTrack);
+	const workshopPreset = props.fxState?.preset ?? props.fxDefaults?.preset;
+	const workshopSettings = props.fxState?.workshop ?? props.fxDefaults?.workshop;
+	const workshopActive = Number(workshopPreset) === 8 && workshopSettings?.active === true;
 	const wallpaperSafe = useMemo(
 		() => resolveVisualWallpaperSafe(props.fxDefaults, props.fxState),
 		[props.fxDefaults, props.fxState],
@@ -299,6 +302,8 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 
 	const playbackSnapshot = useMemo(() => buildPlaybackVisualSnapshot({
 		trackKey,
+		title: props.currentTrack?.title ?? "",
+		artist: props.currentTrack?.artists.join(" / ") ?? "",
 		playing: props.isPlaying,
 		durationMs,
 		coverUrl: webglCoverSource.uri,
@@ -307,7 +312,7 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 		beatMap: props.beatMap ?? null,
 		splashActive: props.splashActive ?? false,
 		homeActive: props.homeActive ?? false,
-	}), [trackKey, props.isPlaying, durationMs, webglCoverSource, props.beatMapKey, props.beatMap, props.splashActive, props.homeActive]);
+	}), [trackKey, props.currentTrack?.title, props.currentTrack?.artists, props.isPlaying, durationMs, webglCoverSource, props.beatMapKey, props.beatMap, props.splashActive, props.homeActive]);
 	const lyricsSnapshot = useMemo(() => buildLyricsVisualSnapshot({
 		lines: lyricLines,
 		fallbackText,
@@ -373,8 +378,20 @@ export function VisualEngineHost(props: VisualEngineHostProps): ReactElement {
 			<div id="custom-bg" aria-hidden="true">
 				<video id="custom-bg-video" muted loop playsInline preload="metadata" />
 			</div>
-			<div id="album-bg" className={directCoverUrl ? "visible" : undefined} style={albumBgStyle} aria-hidden="true" />
-			<div id="visual-host" className="visual-host" ref={hostRef} />
+			<div id="album-bg" className={directCoverUrl && !workshopActive ? "visible" : undefined} style={albumBgStyle} aria-hidden="true" />
+			<div
+				id="visual-host"
+				className={workshopActive ? "visual-host sonic-workshop-active" : "visual-host"}
+				ref={hostRef}
+			/>
+			{workshopActive && props.currentTrack ? (
+				<div className="sonic-workshop-media-copy" aria-hidden="true">
+					<div className="sonic-workshop-media-title">{props.currentTrack.title}</div>
+					<div className="sonic-workshop-media-artist">
+						{props.currentTrack.artists.join(" / ")}
+					</div>
+				</div>
+			) : null}
 		</>
 	);
 }

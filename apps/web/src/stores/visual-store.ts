@@ -6,13 +6,23 @@ import {
 import {
   clampPreset,
   cloneFxState,
+  migrateLegacyPreset,
+  normalizeSonicWorkshopSettings,
   normalizeSonicTopographySettings,
+  SONIC_WORKSHOP_PRESET_INDEX,
   normalizeStageLyricsSettings,
   type FxState,
   type FxStatePatch,
 } from "@mineradio/visual-engine";
+import {
+  SONIC_WORKSHOP_ACTIVATION_ID,
+  VISUAL_WORKSHOP_PREFERENCE,
+  type VisualWorkshopPreference,
+} from "../preferences/keys";
 
 export const VISUAL_SETTINGS_STORE_KEY = "mineradio-tauri-visual-settings-v1";
+export const VISUAL_WORKSHOP_SETTINGS_STORE_KEY =
+  "mineradio-tauri-workshop-settings-v1";
 
 type StorageLike = Pick<Storage, "getItem" | "setItem">;
 const LYRIC_FONT_KEYS = new Set([
@@ -248,8 +258,24 @@ export function normalizeVisualFxState(
     // 视觉存储是 Web 设置恢复和更新的唯一归一化入口；运行时只消费此快照。
     stageLyrics: normalizeStageLyricsSettings(input.stageLyrics),
     sonic: normalizeSonicTopographySettings(input.sonic),
+    workshop: normalizeSonicWorkshopSettings(input.workshop),
     mouseXy: { ...fx.mouseXy, ...(input.mouseXy ?? {}) },
   };
+}
+
+/** 旧 visual.fx 的 numeric 8 永远表示旧预设并迁往 Sonic 7。 */
+export function decodeLegacyVisualFxState(
+  input?: FxStatePatch | null,
+): FxState {
+  if (!input) return normalizeVisualFxState(input);
+  const { workshop: _legacyWorkshop, ...legacyVisualFx } = input;
+  if (legacyVisualFx.preset === undefined) {
+    return normalizeVisualFxState(legacyVisualFx);
+  }
+  return normalizeVisualFxState({
+    ...legacyVisualFx,
+    preset: migrateLegacyPreset(Number(legacyVisualFx.preset)),
+  });
 }
 
 /**
@@ -257,6 +283,7 @@ export function normalizeVisualFxState(
  */
 function mergeVisualFxPatch(base: FxState, patch: FxStatePatch): FxStatePatch {
   const sonicPatch = patch.sonic;
+  const workshopPatch = patch.workshop;
   return {
     ...base,
     ...patch,
@@ -274,6 +301,13 @@ function mergeVisualFxPatch(base: FxState, patch: FxStatePatch): FxStatePatch {
           trigger: { ...base.sonic.trigger, ...sonicPatch.trigger },
         }
       : base.sonic,
+    workshop: workshopPatch
+      ? {
+          ...base.workshop,
+          ...workshopPatch,
+          colors: { ...base.workshop.colors, ...workshopPatch.colors },
+        }
+      : base.workshop,
     mouseXy: { ...base.mouseXy, ...patch.mouseXy },
   };
 }
@@ -285,8 +319,37 @@ export function mergeVisualFxState(
   return normalizeVisualFxState(mergeVisualFxPatch(base, patch));
 }
 
-export function serializeVisualFxState(state: FxState): FxState {
-  return normalizeVisualFxState(state);
+export type SerializedVisualFxState = Omit<FxState, "workshop">;
+
+export function serializeVisualFxState(state: FxState): SerializedVisualFxState {
+  const normalized = normalizeVisualFxState(state);
+  const { workshop: _workshop, ...visualFx } = normalized;
+  return {
+    ...visualFx,
+    // visual.fx 是 legacy-compatible 文档，绝不以 numeric 8 激活 Workshop。
+    preset:
+      normalized.preset === SONIC_WORKSHOP_PRESET_INDEX
+        ? migrateLegacyPreset(SONIC_WORKSHOP_PRESET_INDEX)
+        : normalized.preset,
+  };
+}
+
+export function serializeVisualWorkshopPreference(
+  state: FxState,
+): VisualWorkshopPreference {
+  const normalized = normalizeVisualFxState(state);
+  const active =
+    normalized.preset === SONIC_WORKSHOP_PRESET_INDEX &&
+    normalized.workshop.active;
+  return {
+    version: 1,
+    activationId: SONIC_WORKSHOP_ACTIVATION_ID,
+    active,
+    settings: normalizeSonicWorkshopSettings({
+      ...normalized.workshop,
+      active,
+    }),
+  };
 }
 
 export interface VisualState {
@@ -324,13 +387,32 @@ function storageOrNull(storage?: StorageLike): StorageLike | null {
 export function loadVisualFxFromStorage(storage?: StorageLike): FxState | null {
   const target = storageOrNull(storage);
   if (!target) return null;
+  let visual: FxState | null = null;
   try {
     const raw = target.getItem(VISUAL_SETTINGS_STORE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as FxStatePatch;
-    return normalizeVisualFxState(parsed);
+    visual = raw
+      ? decodeLegacyVisualFxState(JSON.parse(raw) as FxStatePatch)
+      : null;
   } catch {
-    return null;
+    visual = null;
+  }
+  try {
+    const workshopRaw = target.getItem(VISUAL_WORKSHOP_SETTINGS_STORE_KEY);
+    if (!workshopRaw) return visual;
+    const workshop = VISUAL_WORKSHOP_PREFERENCE.parse(JSON.parse(workshopRaw));
+    if (!workshop) return visual;
+    return mergeVisualFxState(visual ?? normalizeVisualFxState(), {
+      preset: workshop.active
+        ? SONIC_WORKSHOP_PRESET_INDEX
+        : (visual?.preset ?? 0),
+      workshop: normalizeSonicWorkshopSettings({
+        ...workshop.settings,
+        active: workshop.active,
+      }),
+    });
+  } catch {
+    // Workshop fallback 单键损坏不能抹掉仍然有效的 legacy visual.fx。
+    return visual;
   }
 }
 
@@ -338,9 +420,16 @@ export function saveVisualFxToStorage(storage?: StorageLike): void {
   const target = storageOrNull(storage);
   if (!target) return;
   try {
+    const fx = useVisualStore.getState().fx;
+    // 先写独立 Workshop 关闭/激活状态，避免第二键失败时遗留旧 active=true
+    // 反向覆盖新的普通 preset。真正的跨键原子提交由 PreferencesRepository 负责。
+    target.setItem(
+      VISUAL_WORKSHOP_SETTINGS_STORE_KEY,
+      JSON.stringify(serializeVisualWorkshopPreference(fx)),
+    );
     target.setItem(
       VISUAL_SETTINGS_STORE_KEY,
-      JSON.stringify(useVisualStore.getState().fx),
+      JSON.stringify(serializeVisualFxState(fx)),
     );
   } catch {}
 }
@@ -354,7 +443,11 @@ export const useVisualStore = create<VisualState>()((set, get) => ({
   custom: {},
   setPreset: (preset) =>
     set((state) => {
-      const fx = normalizeVisualFxState({ ...state.fx, preset });
+      const fx = normalizeVisualFxState({
+        ...state.fx,
+        preset,
+        workshop: { ...state.fx.workshop, active: false },
+      });
       return { fx, preset: fx.preset, intensity: fx.intensity };
     }),
   setIntensity: (intensity) =>

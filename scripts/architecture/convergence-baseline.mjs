@@ -27,7 +27,7 @@ const D0_INVENTORY_CAPABILITIES = new Map([
 	["lyrics.stage-v2", ["implemented", "P0", "parity", "none"]],
 	["visual.cursor-activity", ["implemented", "P0", "parity", "none"]],
 	["visual.shelf-cursor-layer", ["implemented", "P0", "parity", "none"]],
-	["visual.sonic-workshop", ["missing", "P0", "parity", "none"]],
+	["visual.sonic-workshop", ["implemented", "P0", "parity", "none"]],
 	["wallpaper.idle-dispose", ["implemented", "P0", "parity", "none"]],
 	["playback.startup-resume", ["missing", "P0", "parity", "none"]],
 	["queue.drag-sort", ["missing", "P1", "parity", "none"]],
@@ -53,7 +53,7 @@ const D0_SOURCE_MAP_DELTAS = new Map([
 	["lyrics.nested-render-base", ["implemented", "parity"]],
 	["visual.cursor-shelf-layer", ["implemented", "parity"]],
 	["updater.github-release", ["implemented", "architecture-replacement"]],
-	["visual.sonic-workshop", ["missing", "parity"]],
+	["visual.sonic-workshop", ["implemented", "parity"]],
 	["wallpaper.idle-dispose", ["implemented", "parity"]],
 ]);
 const D0_SOURCE_MAP_COLUMNS = [
@@ -115,25 +115,25 @@ const API_FREEZE_MARKERS = [
 const SONIC_WORKSHOP_DECISION_MARKERS = [
 	"# Sonic Workshop preset 8 来源与处置",
 	"迁移该能力，但只允许独立重实现",
-	"`migration-pending`",
-	"`visual.sonic-workshop` 保持 `missing / P0 / parity`",
+	"`independent-implementation-complete`",
+	"`visual.sonic-workshop` 为 `implemented / P0 / parity`",
 	"`blocked_by=none`",
 	"CmzYa",
 	"`3747222633`",
-	"legacy numeric preset `8` 继续迁移到 Sonic Topography `7`",
+	"legacy `visual.fx` numeric preset `8` 继续迁移到 Sonic Topography `7`",
 ];
 const SONIC_WORKSHOP_REQUIRED_POLICY_LINES = [
-	"- 新实现必须使用新的 preference schema 明确区分 legacy `8 → 7` 与新的 Workshop preset 8。",
+	"- 当前 Workshop preset 8 只通过新的 `visual.workshop.v1` preference schema 与 `sonic-workshop-v1` activation id 恢复。",
 	"因此禁止：",
 	"- 从 Electron 上游复制 `public/vendor/sonic-workshop/**` 到 Tauri 发布物；",
-	"- 在独立实现完成前声明全部视觉能力一致。",
+	"- 将代码完成状态宣称为已经通过 Windows/WebView2 实机验证、`Field Validated` 或 `Release Verified`。",
 ];
 // 这些文档共同定义当前收口事实，整篇锁定可避免用正则猜测自由文本的语义。
 const CONVERGENCE_POLICY_SNAPSHOT_DIGESTS = new Map([
-	["upstream-source-map", "27d8cdae2f26d5b5b331b5f3909c00110fe6824088f99464915a92560b74f6c0"],
-	["sonic-workshop-provenance", "5a13a1cdbb845bbfa2b33494a68de150a2ef952c26a83e2a2422da0b3f451838"],
-	["sonic-workshop-module-design", "d83308c9816a9e5ca1d6c8cf60de5ce998b6ea4b1518480d644953772175db53"],
-	["reviewed-delta-status", "390cfa67134c98473fc6e672e021251804791d014dbcffa094eb49d6d819755d"],
+	["upstream-source-map", "b44fc29c4c1793a07fc1d4a138b12e8e26f10c08a511476c99076e94f2bba4ff"],
+	["sonic-workshop-provenance", "ec07b553add89d5549e6ca5c0a12d1607228d4d83a7c117f2efdf74cd3841c89"],
+	["sonic-workshop-module-design", "c0eff31bb364fa9f42247741ec914e5851ddd219b7da93ed496d07fb33da5c1e"],
+	["reviewed-delta-status", "3b6bf71761c111cd5b0fe23acaf96a690496532af8198042d66632a8d5d346cf"],
 ]);
 const SONIC_WORKSHOP_DECISION_COLUMNS = [
 	"decision_id",
@@ -148,24 +148,24 @@ const SONIC_WORKSHOP_DECISION_COLUMNS = [
 ];
 const EXPECTED_SONIC_WORKSHOP_DECISIONS = new Map([
 	["sonic-workshop-preset-8", [
-		"migration-pending",
+		"independent-implementation-complete",
 		"CmzYa@3747222633",
 		"independent-visual-module",
 		"no-vendor-bundle-import-or-redistribution",
 		"legacy-8-to-sonic-topography-7",
 		"distinct-workshop-preset-8",
-		"prohibited-until-independent-implementation",
+		"code-implemented-field-validation-pending",
 		"active",
 	]],
 ]);
 const EXPECTED_SONIC_WORKSHOP_CAPABILITY = {
-	target_module: "`packages/visual-engine/src/sonic-workshop` (future)",
-	current_tauri: "missing",
+	target_module: "`packages/visual-engine/src/sonic-workshop`",
+	current_tauri: "implemented",
 	parity_level: "P0",
 	convergence_mode: "parity",
 	owner_layer: "visual-engine Module",
-	state_migration: "legacy numeric 8 当前继续迁为 Sonic Topography 7；新 schema 必须区分 Workshop preset 8",
-	verification: "维护者已选择独立重实现且当前为 migration-pending；不复制或再分发 vendor bundle，独立 Module 完成前不得声明视觉完整对齐",
+	state_migration: "legacy `visual.fx` numeric 8 始终迁为 Sonic Topography 7；`visual.workshop.v1` 以 activation id 恢复当前 Workshop preset 8",
+	verification: "独立 Module、动态冷加载、独立 render lane、typed audio/media/theme 输入、160×160 有界实例网格、9 主题/六色、封面与有界标题/作者叠层、资源归零、偏好事务与独立性守卫均有自动化证据；Windows/WebView2 观感、CPU/GPU timing 及 frame regression 为 Field Validation Pending (non-blocking)",
 	blocked_by: "none",
 	performance_budget: "disabled cost=0；high hard caps：mesh/draw 8、geometry 8 MiB、texture/cache 16 MiB、queued task cost 32、CPU p95 1.5 ms、GPU delta p95 5 ms、frame +10%",
 };
@@ -199,7 +199,7 @@ const EXPECTED_SONIC_WORKSHOP_MODULE_DESIGNS = new Map([
 	["sonic-workshop-v1", [
 		"packages/visual-engine/src/sonic-workshop",
 		"sonic-workshop-v1",
-		"shared-frame-audio-pointer-only",
+		"shared-frame-audio-media-theme-only",
 		"none",
 		"visual.workshop.v1",
 		"migrates-to-sonic-topography-7",
@@ -227,7 +227,7 @@ const EXPECTED_REVIEWED_DELTAS = new Map([
 	["D0", ["complete", "none", "recorded"]],
 	["D1", ["complete", "none", "joint-gate-recorded"]],
 	["D2", ["implementation-complete", "#56", "external-gate-pending"]],
-	["D3", ["migration-pending", "none", "decision-recorded"]],
+	["D3", ["implementation-complete", "none", "recorded"]],
 ]);
 const REVIEWED_DELTA_SUMMARY_COLUMNS = ["status_key", "value"];
 const EXPECTED_REVIEWED_DELTA_SUMMARY = new Map([
@@ -256,7 +256,6 @@ const EXPECTED_UNRESOLVED_CAPABILITIES = new Map([
 	["beatmap.local-song", ["partial", "P1", "parity", "none"]],
 	["queue.drag-sort", ["missing", "P1", "parity", "none"]],
 	["lyrics.track-offset", ["missing", "P1", "parity", "none"]],
-	["visual.sonic-workshop", ["missing", "P0", "parity", "none"]],
 	["visual.archive", ["missing", "P1", "parity", "none"]],
 	["visual.camera-gesture", ["missing", "P2", "parity", "none"]],
 	["accounts.provider-order", ["missing", "P1", "parity", "none"]],
@@ -275,6 +274,7 @@ const EXPECTED_POSITIVE_FIELD_VALIDATIONS = new Set([
 	"playback.output-routing",
 	"lyrics.stage-v2",
 	"visual.cursor-activity",
+	"visual.sonic-workshop",
 	"home.dashboard",
 	"desktop.tray-close",
 	"desktop.lyrics",

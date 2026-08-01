@@ -332,8 +332,33 @@ export type { ThreeResourceObjectLike } from "./runtime/three-resource-scanner";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
 export type { DeepPartial, FxState, FxStatePatch } from "./home-visual/fx-defaults";
-export { applyPreset, clampPreset, PRESET_COUNT, SKULL_PRESET_INDEX, SONIC_PRESET_INDEX } from "./home-visual/preset-state";
+export {
+	applyPreset,
+	clampCurrentPreset,
+	clampPreset,
+	isDedicatedVisualPreset,
+	migrateLegacyPreset,
+	PRESET_COUNT,
+	SKULL_PRESET_INDEX,
+	SONIC_PRESET_INDEX,
+	SONIC_WORKSHOP_PRESET_INDEX,
+} from "./home-visual/preset-state";
 export type { PresetOpts } from "./home-visual/preset-state";
+export {
+	SONIC_WORKSHOP_DEFAULTS,
+	SONIC_WORKSHOP_ACTIVATION_ID,
+	SONIC_WORKSHOP_THEME_COLORS,
+	SONIC_WORKSHOP_THEMES,
+	areSonicWorkshopSettingsEqual,
+	normalizeSonicWorkshopSettings,
+} from "./sonic-workshop/sonic-workshop-settings";
+export type {
+	SonicWorkshopColorMode,
+	SonicWorkshopColors,
+	SonicWorkshopSettings,
+	SonicWorkshopTheme,
+	SonicWorkshopThemeColors,
+} from "./sonic-workshop/sonic-workshop-settings";
 export { syncFxUniforms, lerp } from "./home-visual/sync-uniforms";
 export type { SyncUniformsOpts, UniformContainer, UniformSlot } from "./home-visual/sync-uniforms";
 export {

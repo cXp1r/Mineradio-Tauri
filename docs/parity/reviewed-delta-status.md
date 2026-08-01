@@ -9,9 +9,9 @@
 | D0 | complete | none | recorded |
 | D1 | complete | none | joint-gate-recorded |
 | D2 | implementation-complete | #56 | external-gate-pending |
-| D3 | migration-pending | none | decision-recorded |
+| D3 | implementation-complete | none | recorded |
 
-D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-list 与完整资源归零联合门禁收口。D2 的本地 Runtime、Draft N−1→N harness 与发布工作流实现不等于真实受保护发布；#56 所需的独立人工批准、首次真实升级和公开 discovery 证据不得由本地 fixture 替代。D3 选择独立重实现 Sonic Workshop，能力本身仍为 `missing / P0 / parity / blocked_by=none`。
+D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-list 与完整资源归零联合门禁收口。D2 的本地 Runtime、Draft N−1→N harness 与发布工作流实现不等于真实受保护发布；#56 所需的独立人工批准、首次真实升级和公开 discovery 证据不得由本地 fixture 替代。D3 已完成 Sonic Workshop 独立重实现，能力为 `implemented / P0 / parity / blocked_by=none`；Windows/WebView2 观感与 CPU/GPU/frame timing 继续是非阻塞待实测。
 
 ## 关闭状态
 
@@ -30,7 +30,7 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 
 ## 未解决能力快照
 
-下表必须与活动 capability matrix 保持逐项一致，共 17 项。它们是代码、迁移或依赖缺口，不得改写成待实测。
+下表必须与活动 capability matrix 保持逐项一致，共 16 项。它们是代码、迁移或依赖缺口，不得改写成待实测。
 
 | capability_id | current_tauri | parity_level | convergence_mode | blocked_by |
 | --- | --- | --- | --- | --- |
@@ -39,7 +39,6 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 | beatmap.local-song | partial | P1 | parity | none |
 | queue.drag-sort | missing | P1 | parity | none |
 | lyrics.track-offset | missing | P1 | parity | none |
-| visual.sonic-workshop | missing | P0 | parity | none |
 | visual.archive | missing | P1 | parity | none |
 | visual.camera-gesture | missing | P2 | parity | none |
 | accounts.provider-order | missing | P1 | parity | none |
@@ -54,7 +53,7 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 
 ## 已实现但仍待实机验证
 
-以下 16 项的自动化实现状态是 `implemented`，但正向实机证据仍为非阻塞 Field Validation Pending。删除待实测标记不能提升其证据等级。
+以下 17 项的自动化实现状态是 `implemented`，但正向实机证据仍为非阻塞 Field Validation Pending。删除待实测标记不能提升其证据等级。
 
 | capability_id | current_tauri | validation_status |
 | --- | --- | --- |
@@ -62,6 +61,7 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 | playback.output-routing | implemented | Field Validation Pending (non-blocking) |
 | lyrics.stage-v2 | implemented | Field Validation Pending (non-blocking) |
 | visual.cursor-activity | implemented | Field Validation Pending (non-blocking) |
+| visual.sonic-workshop | implemented | Field Validation Pending (non-blocking) |
 | home.dashboard | implemented | Field Validation Pending (non-blocking) |
 | desktop.tray-close | implemented | Field Validation Pending (non-blocking) |
 | desktop.lyrics | implemented | Field Validation Pending (non-blocking) |
@@ -81,4 +81,4 @@ D1 已由生产 `StageLyricsLifecycle`、Shelf supplier、真实 WebGL render-li
 
 `cuefield.automix` 不属于 Provider/API blocker。上游 `/api/cuefield/transition` 和 `/api/cuefield/feedback` 只承载同机 beat-map planner 与本地 JSONL 反馈；未来由 Web playback Module 拥有规划、时间线和播放交接，desktop persistence Adapter 只实现本地 feedback repository 与历史迁移，并复用现有 playback、lyrics、beatmap Ports。只有 `provider.kugou` 与 `provider.spotify` 继续由 `MineRadio-api` 阻塞。
 
-Sonic Workshop 只能迁入未来的 `packages/visual-engine/src/sonic-workshop`。不得导入或再分发现有 vendor bundle，legacy numeric preset `8` 继续迁移到 Sonic Topography `7`，新的 `visual.workshop.v1` preference schema 必须区分 Workshop preset 8；在独立实现完成前，`visual.sonic-workshop` 不得离开上述 unresolved tuple。
+Sonic Workshop 已独立实现于 `packages/visual-engine/src/sonic-workshop`。不得导入或再分发现有 vendor bundle；legacy `visual.fx` numeric preset `8` 继续迁移到 Sonic Topography `7`，新的 `visual.workshop.v1` preference schema 与 `sonic-workshop-v1` activation id 区分当前 Workshop preset 8。自动化实现完成不等于通过 Windows/WebView2 观感、真实 CPU/GPU/frame timing 或长时 soak，这些证据继续保持 `Field Validation Pending (non-blocking)`。
