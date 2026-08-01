@@ -269,6 +269,8 @@ pub struct CacheRuntime {
     active_fallback_used: bool,
     active_fallback_reason: Option<String>,
     snapshots: Arc<CacheSnapshotCoordinator>,
+    #[cfg(windows)]
+    root_handle: Arc<WindowsStableDirectory>,
     #[cfg(test)]
     io_test_hooks: Arc<CacheIoTestHooks>,
 }
@@ -289,6 +291,8 @@ struct CacheScanPlan {
     fallback_reason: Option<String>,
     restart_required: bool,
     scan_limits: CacheScanLimits,
+    #[cfg(windows)]
+    root_handle: Arc<WindowsStableDirectory>,
     #[cfg(test)]
     io_test_hooks: Arc<CacheIoTestHooks>,
 }
@@ -432,6 +436,8 @@ impl CacheSnapshotCoordinator {
 #[derive(Clone, Debug)]
 pub struct CacheClearRequest {
     root: PathBuf,
+    #[cfg(windows)]
+    root_handle: Arc<WindowsStableDirectory>,
     category: CacheCategory,
     snapshots: Arc<CacheSnapshotCoordinator>,
     #[cfg(test)]
@@ -552,7 +558,7 @@ impl CacheRuntime {
         let validation = validate_desired_root(desired_root);
         let mut root_decision =
             decide_cache_root(&default_root, &default_root, &fallback_root, validation);
-        let root = if root_decision.effective_root == default_root {
+        let mut root = if root_decision.effective_root == default_root {
             default_root.clone()
         } else {
             let ownership = if root_decision.fallback_used {
@@ -576,6 +582,18 @@ impl CacheRuntime {
                 }
             }
         };
+        #[cfg(windows)]
+        let root_handle = {
+            let (retained_root, retained_handle) = retain_windows_selected_root_with(
+                root,
+                &default_root,
+                &fallback_root,
+                &mut root_decision,
+                open_windows_managed_root,
+            )?;
+            root = retained_root;
+            Arc::new(retained_handle)
+        };
         let active_fallback_used = root_decision.fallback_used;
         let active_fallback_reason = root_decision.fallback_reason.clone();
         root_decision.effective_root = root.clone();
@@ -592,6 +610,8 @@ impl CacheRuntime {
             fallback_reason: active_fallback_reason.clone(),
             restart_required: false,
             scan_limits,
+            #[cfg(windows)]
+            root_handle: Arc::clone(&root_handle),
             #[cfg(test)]
             io_test_hooks: Arc::clone(&io_test_hooks),
         };
@@ -605,6 +625,8 @@ impl CacheRuntime {
             active_fallback_used,
             active_fallback_reason,
             snapshots: Arc::new(CacheSnapshotCoordinator::new(&initial_plan)),
+            #[cfg(windows)]
+            root_handle,
             #[cfg(test)]
             io_test_hooks,
         })
@@ -682,6 +704,8 @@ impl CacheRuntime {
             fallback_reason: self.active_fallback_reason.clone(),
             restart_required: self.root_decision.restart_required,
             scan_limits: self.scan_limits,
+            #[cfg(windows)]
+            root_handle: Arc::clone(&self.root_handle),
             #[cfg(test)]
             io_test_hooks: Arc::clone(&self.io_test_hooks),
         }
@@ -694,6 +718,8 @@ impl CacheRuntime {
     pub fn clear_request(&self, category: CacheCategory) -> CacheClearRequest {
         CacheClearRequest {
             root: self.root.clone(),
+            #[cfg(windows)]
+            root_handle: Arc::clone(&self.root_handle),
             category,
             snapshots: Arc::clone(&self.snapshots),
             #[cfg(test)]
@@ -1240,6 +1266,38 @@ fn canonicalize_for_display(path: &Path) -> io::Result<PathBuf> {
 }
 
 #[cfg(windows)]
+fn retain_windows_selected_root_with<T>(
+    selected_root: PathBuf,
+    default_root: &Path,
+    fallback_root: &Path,
+    decision: &mut CacheRootDecision,
+    mut retain: impl FnMut(&Path) -> Result<T, CacheRuntimeError>,
+) -> Result<(PathBuf, T), CacheRuntimeError> {
+    match retain(&selected_root) {
+        Ok(retained) => Ok((selected_root, retained)),
+        Err(error)
+            if selected_root != default_root
+                && selected_root != fallback_root
+                && !decision.fallback_used =>
+        {
+            *decision = decide_cache_root(
+                default_root,
+                default_root,
+                fallback_root,
+                CacheRootValidation::Fallback {
+                    desired_root: decision.desired_root.clone(),
+                    reason: error.to_string(),
+                },
+            );
+            let retained = retain(fallback_root)?;
+            Ok((fallback_root.to_path_buf(), retained))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
 struct WindowsStableDirectory {
     guard: std::os::windows::io::OwnedHandle,
     reader: std::os::windows::io::OwnedHandle,
@@ -1280,7 +1338,7 @@ fn open_windows_handle(
     if share_delete {
         share_mode |= FILE_SHARE_DELETE;
     }
-    // OPEN_REPARSE_POINT 保证最终路径分量不会被解析；父目录句柄同时禁止删除/重命名。
+    // OPEN_REPARSE_POINT 只保证最终路径分量不会被解析；长期操作还必须保留本次打开的对象句柄。
     let handle = unsafe {
         CreateFileW(
             wide.as_ptr(),
@@ -1295,7 +1353,135 @@ fn open_windows_handle(
     if handle == INVALID_HANDLE_VALUE {
         return Err(io::Error::last_os_error());
     }
+    // SAFETY: CreateFileW 成功后返回由当前函数独占的有效 HANDLE，交给 OwnedHandle 后只释放一次。
     Ok(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle.cast()) })
+}
+
+#[cfg(windows)]
+fn windows_handle_relative(
+    parent: &std::os::windows::io::OwnedHandle,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    expect_directory: bool,
+    create_disposition: u32,
+) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use std::{
+        mem::size_of,
+        os::windows::{
+            ffi::OsStrExt,
+            io::{AsRawHandle, FromRawHandle},
+        },
+        path::Component,
+    };
+    use windows_sys::{
+        Wdk::{
+            Foundation::OBJECT_ATTRIBUTES,
+            Storage::FileSystem::{
+                NtCreateFile, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE,
+                FILE_OPEN_FOR_BACKUP_INTENT, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+            },
+        },
+        Win32::{
+            Foundation::{RtlNtStatusToDosError, HANDLE, OBJ_CASE_INSENSITIVE, UNICODE_STRING},
+            Storage::FileSystem::{FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE},
+            System::IO::IO_STATUS_BLOCK,
+        },
+    };
+
+    let mut components = Path::new(name).components();
+    if !matches!(components.next(), Some(Component::Normal(component)) if component == name)
+        || components.next().is_some()
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "Windows 相对路径必须是单一普通名称分量",
+        ));
+    }
+    let mut wide = name.encode_wide().collect::<Vec<_>>();
+    let byte_length = wide
+        .len()
+        .checked_mul(size_of::<u16>())
+        .filter(|length| *length <= u16::MAX as usize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Windows 名称分量过长"))?;
+    wide.push(0);
+    let maximum_byte_length = wide
+        .len()
+        .checked_mul(size_of::<u16>())
+        .filter(|length| *length <= u16::MAX as usize)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Windows 名称分量过长"))?;
+    let object_name = UNICODE_STRING {
+        Length: byte_length as u16,
+        MaximumLength: maximum_byte_length as u16,
+        Buffer: wide.as_mut_ptr(),
+    };
+    let object_attributes = OBJECT_ATTRIBUTES {
+        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle().cast(),
+        ObjectName: &object_name,
+        Attributes: OBJ_CASE_INSENSITIVE,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let create_options = FILE_OPEN_REPARSE_POINT
+        | FILE_OPEN_FOR_BACKUP_INTENT
+        | FILE_SYNCHRONOUS_IO_NONALERT
+        | if expect_directory {
+            FILE_DIRECTORY_FILE
+        } else {
+            FILE_NON_DIRECTORY_FILE
+        };
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let mut io_status = IO_STATUS_BLOCK::default();
+    // SAFETY: object_name、object_attributes、io_status 与名称缓冲区在调用期间均保持有效；
+    // RootDirectory 来自仍存活的父目录 OwnedHandle，返回句柄由下方 OwnedHandle 接管。
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access | SYNCHRONIZE,
+            &object_attributes,
+            &mut io_status,
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            create_disposition,
+            create_options,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 {
+        let code = unsafe { RtlNtStatusToDosError(status) };
+        return Err(io::Error::from_raw_os_error(code as i32));
+    }
+    if handle.is_null() {
+        return Err(io::Error::other("Windows 相对打开成功但没有返回有效句柄"));
+    }
+    // SAFETY: NtCreateFile 已返回成功且 handle 非空，所有权尚未转移，交给 OwnedHandle 后只释放一次。
+    Ok(unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(handle.cast()) })
+}
+
+#[cfg(windows)]
+fn open_windows_handle_relative(
+    parent: &std::os::windows::io::OwnedHandle,
+    name: &std::ffi::OsStr,
+    desired_access: u32,
+    expect_directory: bool,
+) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use windows_sys::Wdk::Storage::FileSystem::FILE_OPEN;
+
+    windows_handle_relative(parent, name, desired_access, expect_directory, FILE_OPEN)
+}
+
+#[cfg(windows)]
+fn create_windows_directory_relative(
+    parent: &std::os::windows::io::OwnedHandle,
+    name: &std::ffi::OsStr,
+) -> io::Result<std::os::windows::io::OwnedHandle> {
+    use windows_sys::{
+        Wdk::Storage::FileSystem::FILE_CREATE, Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES,
+    };
+
+    windows_handle_relative(parent, name, FILE_READ_ATTRIBUTES, true, FILE_CREATE)
 }
 
 #[cfg(windows)]
@@ -1357,30 +1543,30 @@ fn windows_attributes_are_directory(attributes: u32) -> bool {
 }
 
 #[cfg(windows)]
-fn open_windows_stable_directory(
-    path: &Path,
+fn open_windows_stable_entry_relative(
+    parent: &WindowsStableDirectory,
+    name: &std::ffi::OsStr,
     guard_access: u32,
+    expect_directory: bool,
 ) -> io::Result<(WindowsStableDirectory, u32)> {
     use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
 
-    let guard = open_windows_handle(path, guard_access | FILE_READ_ATTRIBUTES, false)?;
+    let path = parent.path.join(name);
+    let guard_access = guard_access
+        | FILE_READ_ATTRIBUTES
+        | if expect_directory {
+            FILE_LIST_DIRECTORY
+        } else {
+            0
+        };
+    let guard = open_windows_handle_relative(&parent.guard, name, guard_access, expect_directory)?;
     let attributes = windows_handle_attributes(&guard)?;
-    if windows_attributes_are_reparse(attributes) || !windows_attributes_are_directory(attributes) {
-        return Ok((
-            WindowsStableDirectory {
-                guard,
-                reader: open_windows_handle(path, FILE_READ_ATTRIBUTES, true)?,
-                path: path.to_path_buf(),
-            },
-            attributes,
-        ));
-    }
-    let reader = open_windows_handle(path, FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES, true)?;
+    let reader = guard.try_clone()?;
     Ok((
         WindowsStableDirectory {
             guard,
             reader,
-            path: path.to_path_buf(),
+            path,
         },
         attributes,
     ))
@@ -1481,12 +1667,16 @@ fn verify_windows_cache_marker(
     use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
 
     let marker = root.path.join(CACHE_OWNERSHIP_MARKER_NAME);
-    let handle = open_windows_handle(&marker, FILE_READ_ATTRIBUTES, false).map_err(|source| {
-        CacheRuntimeError::Io {
-            operation: "验证缓存所有权标记",
-            path: marker.clone(),
-            source,
-        }
+    let handle = open_windows_handle_relative(
+        &root.guard,
+        std::ffi::OsStr::new(CACHE_OWNERSHIP_MARKER_NAME),
+        FILE_READ_ATTRIBUTES,
+        false,
+    )
+    .map_err(|source| CacheRuntimeError::Io {
+        operation: "验证缓存所有权标记",
+        path: marker.clone(),
+        source,
     })?;
     let attributes =
         windows_handle_attributes(&handle).map_err(|source| CacheRuntimeError::Io {
@@ -1504,6 +1694,42 @@ fn verify_windows_cache_marker(
 }
 
 #[cfg(windows)]
+fn open_windows_managed_root(path: &Path) -> Result<WindowsStableDirectory, CacheRuntimeError> {
+    use windows_sys::Win32::Storage::FileSystem::FILE_READ_ATTRIBUTES;
+
+    let guard = open_windows_handle(path, FILE_READ_ATTRIBUTES, false).map_err(|source| {
+        CacheRuntimeError::Io {
+            operation: "打开受管缓存根目录句柄",
+            path: path.to_path_buf(),
+            source,
+        }
+    })?;
+    let attributes = windows_handle_attributes(&guard).map_err(|source| CacheRuntimeError::Io {
+        operation: "读取受管缓存根目录属性",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    if windows_attributes_are_reparse(attributes) || !windows_attributes_are_directory(attributes) {
+        return Err(CacheRuntimeError::UnsafeManagedPath {
+            path: path.to_path_buf(),
+            reason: "缓存根目录不是安全的普通目录".to_string(),
+        });
+    }
+    let reader = guard.try_clone().map_err(|source| CacheRuntimeError::Io {
+        operation: "复制受管缓存根目录句柄",
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let root = WindowsStableDirectory {
+        guard,
+        reader,
+        path: path.to_path_buf(),
+    };
+    drop(verify_windows_cache_marker(&root)?);
+    Ok(root)
+}
+
+#[cfg(windows)]
 fn scan_cache_category_windows(
     plan: &CacheScanPlan,
     category: CacheCategory,
@@ -1512,36 +1738,40 @@ fn scan_cache_category_windows(
 
     let category_path = plan.active_root.join(category.directory_name());
     let mut usage = CacheCategoryUsage::empty(category, category_path.clone());
-    let (root, root_attributes) =
-        match open_windows_stable_directory(&plan.active_root, FILE_READ_ATTRIBUTES) {
-            Ok(value) => value,
-            Err(_) => {
-                usage.error_count = 1;
-                return usage;
-            }
-        };
+    let root = plan.root_handle.as_ref();
+    let root_attributes = match windows_handle_attributes(&root.guard) {
+        Ok(attributes) => attributes,
+        Err(_) => {
+            usage.error_count = 1;
+            return usage;
+        }
+    };
     if windows_attributes_are_reparse(root_attributes)
         || !windows_attributes_are_directory(root_attributes)
     {
         usage.error_count = 1;
         return usage;
     }
-    let _marker = match verify_windows_cache_marker(&root) {
+    let _marker = match verify_windows_cache_marker(root) {
         Ok(marker) => marker,
         Err(_) => {
             usage.error_count = 1;
             return usage;
         }
     };
-    let (category_root, attributes) =
-        match open_windows_stable_directory(&category_path, FILE_READ_ATTRIBUTES) {
-            Ok(value) => value,
-            Err(error) if windows_error_is_not_found(&error) => return usage,
-            Err(_) => {
-                usage.error_count = 1;
-                return usage;
-            }
-        };
+    let (category_root, attributes) = match open_windows_stable_entry_relative(
+        root,
+        std::ffi::OsStr::new(category.directory_name()),
+        FILE_READ_ATTRIBUTES,
+        true,
+    ) {
+        Ok(value) => value,
+        Err(error) if windows_error_is_not_found(&error) => return usage,
+        Err(_) => {
+            usage.error_count = 1;
+            return usage;
+        }
+    };
     if windows_attributes_are_reparse(attributes) {
         usage.skipped_link_count = 1;
         return usage;
@@ -1583,8 +1813,12 @@ fn scan_cache_category_windows(
                 usage.truncated = true;
                 continue;
             }
-            let child_path = directory.path.join(entry.name);
-            match open_windows_stable_directory(&child_path, FILE_READ_ATTRIBUTES) {
+            match open_windows_stable_entry_relative(
+                &directory,
+                &entry.name,
+                FILE_READ_ATTRIBUTES,
+                windows_attributes_are_directory(entry.attributes),
+            ) {
                 Ok((_child, child_attributes))
                     if windows_attributes_are_reparse(child_attributes) =>
                 {
@@ -1678,54 +1912,35 @@ fn remove_windows_tree(
             source,
         })?;
     for entry in entries {
-        let child_path = directory.path.join(entry.name);
-        let guard = open_windows_handle(&child_path, DELETE | FILE_READ_ATTRIBUTES, false)
-            .map_err(|source| CacheRuntimeError::Io {
-                operation: "打开待清理缓存条目句柄",
-                path: child_path.clone(),
-                source,
-            })?;
-        let attributes =
-            windows_handle_attributes(&guard).map_err(|source| CacheRuntimeError::Io {
-                operation: "读取待清理缓存条目属性",
-                path: child_path.clone(),
-                source,
-            })?;
+        let child_path = directory.path.join(&entry.name);
+        let (child, attributes) = open_windows_stable_entry_relative(
+            &directory,
+            &entry.name,
+            DELETE | FILE_READ_ATTRIBUTES,
+            windows_attributes_are_directory(entry.attributes),
+        )
+        .map_err(|source| CacheRuntimeError::Io {
+            operation: "相对打开待清理缓存条目句柄",
+            path: child_path.clone(),
+            source,
+        })?;
         if windows_attributes_are_reparse(attributes) {
-            delete_windows_handle(&guard, &child_path)?;
-            drop(guard);
+            delete_windows_handle(&child.guard, &child_path)?;
+            drop(child);
             stats.links = stats.links.saturating_add(1);
             continue;
         }
         if windows_attributes_are_directory(attributes) {
-            use windows_sys::Win32::Storage::FileSystem::FILE_LIST_DIRECTORY;
-            let reader = open_windows_handle(
-                &child_path,
-                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                true,
-            )
-            .map_err(|source| CacheRuntimeError::Io {
-                operation: "打开待清理缓存子目录句柄",
-                path: child_path.clone(),
-                source,
-            })?;
-            remove_windows_tree(
-                WindowsStableDirectory {
-                    guard,
-                    reader,
-                    path: child_path,
-                },
-                stats,
-            )?;
+            remove_windows_tree(child, stats)?;
             continue;
         }
-        let length = windows_handle_size(&guard).map_err(|source| CacheRuntimeError::Io {
+        let length = windows_handle_size(&child.guard).map_err(|source| CacheRuntimeError::Io {
             operation: "读取待清理缓存文件长度",
             path: child_path.clone(),
             source,
         })?;
-        delete_windows_handle(&guard, &child_path)?;
-        drop(guard);
+        delete_windows_handle(&child.guard, &child_path)?;
+        drop(child);
         stats.bytes = stats.bytes.saturating_add(length);
         stats.files = stats.files.saturating_add(1);
     }
@@ -1737,18 +1952,52 @@ fn remove_windows_tree(
 }
 
 #[cfg(windows)]
+fn create_windows_managed_directory(
+    parent: &WindowsStableDirectory,
+    name: &std::ffi::OsStr,
+    display_path: &Path,
+) -> Result<std::os::windows::io::OwnedHandle, CacheRuntimeError> {
+    let handle = create_windows_directory_relative(&parent.guard, name).map_err(|source| {
+        if source.kind() == io::ErrorKind::AlreadyExists {
+            CacheRuntimeError::UnsafeManagedPath {
+                path: display_path.to_path_buf(),
+                reason: "缓存分类路径在操作期间被替换".to_string(),
+            }
+        } else {
+            CacheRuntimeError::Io {
+                operation: "相对重建缓存分类目录",
+                path: display_path.to_path_buf(),
+                source,
+            }
+        }
+    })?;
+    let attributes =
+        windows_handle_attributes(&handle).map_err(|source| CacheRuntimeError::Io {
+            operation: "验证重建缓存分类目录",
+            path: display_path.to_path_buf(),
+            source,
+        })?;
+    if windows_attributes_are_reparse(attributes) || !windows_attributes_are_directory(attributes) {
+        return Err(CacheRuntimeError::UnsafeManagedPath {
+            path: display_path.to_path_buf(),
+            reason: "重建后的缓存分类目录不是安全的普通目录".to_string(),
+        });
+    }
+    Ok(handle)
+}
+
+#[cfg(windows)]
 fn clear_cache_category_windows(
     request: CacheClearRequest,
 ) -> Result<CacheClearResult, CacheRuntimeError> {
     use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_READ_ATTRIBUTES};
 
-    let (root, root_attributes) =
-        open_windows_stable_directory(&request.root, FILE_READ_ATTRIBUTES).map_err(|source| {
-            CacheRuntimeError::Io {
-                operation: "打开受管缓存根目录句柄",
-                path: request.root.clone(),
-                source,
-            }
+    let root = request.root_handle.as_ref();
+    let root_attributes =
+        windows_handle_attributes(&root.guard).map_err(|source| CacheRuntimeError::Io {
+            operation: "读取受管缓存根目录属性",
+            path: request.root.clone(),
+            source,
         })?;
     if windows_attributes_are_reparse(root_attributes)
         || !windows_attributes_are_directory(root_attributes)
@@ -1758,34 +2007,39 @@ fn clear_cache_category_windows(
             reason: "缓存根目录不是安全的普通目录".to_string(),
         });
     }
-    let _marker = verify_windows_cache_marker(&root)?;
-    let target = root.path.join(request.category.directory_name());
-    let (category_root, attributes) =
-        match open_windows_stable_directory(&target, DELETE | FILE_READ_ATTRIBUTES) {
-            Ok(value) => value,
-            Err(error) if windows_error_is_not_found(&error) => {
-                fs::create_dir(&target).map_err(|source| CacheRuntimeError::Io {
-                    operation: "重建缓存分类目录",
-                    path: target.clone(),
-                    source,
-                })?;
-                return Ok(CacheClearResult {
-                    category: request.category,
-                    path: target,
-                    removed_bytes: 0,
-                    removed_files: 0,
-                    removed_directories: 0,
-                    removed_links: 0,
-                });
-            }
-            Err(source) => {
-                return Err(CacheRuntimeError::Io {
-                    operation: "打开缓存分类目录句柄",
-                    path: target,
-                    source,
-                });
-            }
-        };
+    let _marker = verify_windows_cache_marker(root)?;
+    let category_name = std::ffi::OsStr::new(request.category.directory_name());
+    let target = root.path.join(category_name);
+    let (category_root, attributes) = match open_windows_stable_entry_relative(
+        root,
+        category_name,
+        DELETE | FILE_READ_ATTRIBUTES,
+        true,
+    ) {
+        Ok(value) => value,
+        Err(error) if windows_error_is_not_found(&error) => {
+            drop(create_windows_managed_directory(
+                root,
+                category_name,
+                &target,
+            )?);
+            return Ok(CacheClearResult {
+                category: request.category,
+                path: target,
+                removed_bytes: 0,
+                removed_files: 0,
+                removed_directories: 0,
+                removed_links: 0,
+            });
+        }
+        Err(source) => {
+            return Err(CacheRuntimeError::Io {
+                operation: "打开缓存分类目录句柄",
+                path: target,
+                source,
+            });
+        }
+    };
     if windows_attributes_are_reparse(attributes) {
         return Err(CacheRuntimeError::UnsafeManagedPath {
             path: target,
@@ -1805,28 +2059,11 @@ fn clear_cache_category_windows(
 
     let mut stats = RemovalStats::default();
     remove_windows_tree(category_root, &mut stats)?;
-    fs::create_dir(&target).map_err(|source| CacheRuntimeError::Io {
-        operation: "重建缓存分类目录",
-        path: target.clone(),
-        source,
-    })?;
-    let (recreated, recreated_attributes) =
-        open_windows_stable_directory(&target, FILE_READ_ATTRIBUTES).map_err(|source| {
-            CacheRuntimeError::Io {
-                operation: "验证重建缓存分类目录",
-                path: target.clone(),
-                source,
-            }
-        })?;
-    if windows_attributes_are_reparse(recreated_attributes)
-        || !windows_attributes_are_directory(recreated_attributes)
-    {
-        return Err(CacheRuntimeError::UnsafeManagedPath {
-            path: target,
-            reason: "重建后的缓存分类目录不是安全的普通目录".to_string(),
-        });
-    }
-    drop(recreated);
+    drop(create_windows_managed_directory(
+        root,
+        category_name,
+        &target,
+    )?);
     Ok(CacheClearResult {
         category: request.category,
         path: target,
@@ -1956,6 +2193,10 @@ mod tests {
         }
     }
 
+    fn canonical_runtime_path(path: &Path) -> PathBuf {
+        canonicalize_for_display(path).expect("测试路径应解析为运行时返回的最终路径")
+    }
+
     #[cfg(windows)]
     fn create_directory_link(target: &Path, link: &Path) -> io::Result<()> {
         std::os::windows::fs::symlink_dir(target, link)
@@ -1974,7 +2215,10 @@ mod tests {
         let runtime = CacheRuntime::with_settings_path(&test_dir.path, settings_path)
             .expect("默认缓存运行时应初始化成功");
 
-        assert_eq!(runtime.root(), test_dir.path.join(CACHE_DIRECTORY_NAME));
+        assert_eq!(
+            runtime.root(),
+            canonical_runtime_path(&test_dir.path.join(CACHE_DIRECTORY_NAME))
+        );
         for category in CacheCategory::ALL {
             assert!(runtime.root().join(category.directory_name()).is_dir());
         }
@@ -2364,6 +2608,175 @@ mod tests {
 
     #[cfg(windows)]
     #[test]
+    fn windows_relative_open_stays_bound_to_the_original_parent_directory() {
+        use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
+
+        let test_dir = TestDirectory::new("windows-relative-open");
+        let parent_path = test_dir.path.join("managed-parent");
+        let parked_parent = test_dir.path.join("parked-parent");
+        fs::create_dir_all(&parent_path).expect("应创建原始父目录");
+        fs::write(parent_path.join("same-name.bin"), [1_u8; 8]).expect("应写入原始目录样本");
+
+        let parent = WindowsStableDirectory {
+            guard: open_windows_handle(&parent_path, FILE_READ_ATTRIBUTES, true)
+                .expect("应以允许重命名的方式打开父目录 guard"),
+            reader: open_windows_handle(
+                &parent_path,
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                true,
+            )
+            .expect("应以允许重命名的方式打开父目录 reader"),
+            path: parent_path.clone(),
+        };
+        fs::rename(&parent_path, &parked_parent).expect("应重命名已打开的父目录");
+        fs::create_dir(&parent_path).expect("应在旧路径放置替换目录");
+        fs::write(parent_path.join("same-name.bin"), [2_u8; 32]).expect("应写入替换目录样本");
+
+        let (child, attributes) = open_windows_stable_entry_relative(
+            &parent,
+            std::ffi::OsStr::new("same-name.bin"),
+            FILE_READ_ATTRIBUTES,
+            false,
+        )
+        .expect("相对打开必须保持绑定原始父目录");
+
+        assert!(!windows_attributes_are_directory(attributes));
+        assert_eq!(
+            windows_handle_size(&child.guard).expect("应读取原始文件长度"),
+            8
+        );
+        assert_eq!(
+            fs::metadata(parent_path.join("same-name.bin"))
+                .expect("替换目录文件应保留")
+                .len(),
+            32
+        );
+
+        drop(child);
+        drop(parent);
+        fs::remove_dir_all(&parent_path).expect("应移除测试替换目录");
+        fs::rename(&parked_parent, &parent_path).expect("应恢复原始父目录");
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_runtime_keeps_the_initialized_root_when_its_path_is_replaced() {
+        let test_dir = TestDirectory::new("windows-retained-cache-root");
+        let runtime = CacheRuntime::with_settings_path(
+            &test_dir.path,
+            test_dir.path.join("settings/cache.json"),
+        )
+        .expect("缓存运行时应初始化成功");
+        let root_path = runtime.root().to_path_buf();
+        let parked_root = test_dir.path.join("parked-cache-root");
+        let local_file = root_path.join("audio/nested/same-name.bin");
+        fs::create_dir_all(local_file.parent().expect("本地文件应有父目录"))
+            .expect("应创建本地缓存目录");
+        fs::write(&local_file, [1_u8; 8]).expect("应写入本地缓存文件");
+
+        let external_root = test_dir.path.join("external-cache-root");
+        let external_file = external_root.join("audio/nested/same-name.bin");
+        fs::create_dir_all(external_file.parent().expect("外部文件应有父目录"))
+            .expect("应创建外部缓存目录");
+        fs::write(
+            external_root.join(CACHE_OWNERSHIP_MARKER_NAME),
+            b"MineRadio cache ownership v1\n",
+        )
+        .expect("应创建外部所有权标记诱饵");
+        fs::write(&external_file, [2_u8; 32]).expect("应写入外部文件");
+
+        let root_swap_succeeded = fs::rename(&root_path, &parked_root).is_ok();
+        if root_swap_succeeded {
+            fs::rename(&external_root, &root_path).expect("应把旧缓存根路径替换为外部目录");
+        }
+        let visible_external_file = if root_swap_succeeded {
+            root_path.join("audio/nested/same-name.bin")
+        } else {
+            external_file.clone()
+        };
+
+        let snapshot = runtime.snapshot();
+        assert_eq!(
+            snapshot
+                .usage(CacheCategory::Audio)
+                .expect("应包含音频分类")
+                .total_bytes,
+            8,
+            "扫描必须继续绑定初始化时的缓存根"
+        );
+        runtime
+            .clear(CacheCategory::Audio)
+            .expect("清理必须继续绑定初始化时的缓存根");
+        assert_eq!(
+            fs::metadata(&visible_external_file)
+                .expect("外部文件应保留")
+                .len(),
+            32
+        );
+
+        drop(runtime);
+        if root_swap_succeeded {
+            fs::rename(&root_path, &external_root).expect("应移走替换缓存根的外部目录");
+            fs::rename(&parked_root, &root_path).expect("应恢复测试缓存根路径");
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_custom_root_handle_failure_uses_fallback_without_forgetting_configuration() {
+        let default_root = PathBuf::from(r"C:\MineRadio\cache");
+        let fallback_root = PathBuf::from(r"C:\MineRadio\cache-fallback");
+        let desired_root = PathBuf::from(r"D:\MusicCache");
+        let selected_root = desired_root
+            .join(CUSTOM_CACHE_APPLICATION_DIRECTORY_NAME)
+            .join(CACHE_DIRECTORY_NAME);
+        let mut decision = decide_cache_root(
+            &default_root,
+            &default_root,
+            &fallback_root,
+            CacheRootValidation::Usable {
+                desired_root: desired_root.clone(),
+                effective_root: selected_root.clone(),
+            },
+        );
+        let mut opened = Vec::new();
+
+        let (active_root, retained_root) = retain_windows_selected_root_with(
+            selected_root.clone(),
+            &default_root,
+            &fallback_root,
+            &mut decision,
+            |path| {
+                opened.push(path.to_path_buf());
+                if path == selected_root {
+                    Err(CacheRuntimeError::UnsafeManagedPath {
+                        path: path.to_path_buf(),
+                        reason: "测试注入的移动磁盘消失".to_string(),
+                    })
+                } else {
+                    Ok(path.to_path_buf())
+                }
+            },
+        )
+        .expect("自定义根句柄失败时应取得 fallback 根句柄");
+
+        assert_eq!(active_root, fallback_root);
+        assert_eq!(retained_root, fallback_root);
+        assert_eq!(opened, vec![selected_root, fallback_root.clone()]);
+        assert_eq!(
+            decision.desired_root.as_deref(),
+            Some(desired_root.as_path())
+        );
+        assert_eq!(decision.effective_root, fallback_root);
+        assert!(decision.fallback_used);
+        assert!(decision
+            .fallback_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("测试注入的移动磁盘消失")));
+    }
+
+    #[cfg(windows)]
+    #[test]
     fn windows_scan_and_clear_hold_no_follow_handles_against_category_swap() {
         let test_dir = TestDirectory::new("windows-category-swap");
         let mut runtime = CacheRuntime::with_settings_path(
@@ -2372,8 +2785,10 @@ mod tests {
         )
         .expect("缓存运行时应初始化成功");
         let external = test_dir.path.join("external-library");
-        fs::create_dir_all(&external).expect("应创建外部目录");
-        fs::write(external.join("must-stay.bin"), [2_u8; 32]).expect("应写入外部文件");
+        let external_file = external.join("nested/same-name.bin");
+        fs::create_dir_all(external_file.parent().expect("外部文件应有父目录"))
+            .expect("应创建外部目录");
+        fs::write(&external_file, [2_u8; 32]).expect("应写入外部文件");
 
         let probe_link = test_dir.path.join("link-capability-probe");
         if create_directory_link(&external, &probe_link).is_err() {
@@ -2382,44 +2797,74 @@ mod tests {
         fs::remove_dir(&probe_link).expect("应移除链接能力探针");
 
         let audio_root = runtime.root().join(CacheCategory::Audio.directory_name());
+        let local_file = audio_root.join("nested/same-name.bin");
+        fs::create_dir_all(local_file.parent().expect("本地文件应有父目录"))
+            .expect("应创建本地缓存目录");
+        fs::write(&local_file, [1_u8; 8]).expect("应写入本地缓存文件");
+        let scan_parked_root = runtime.root().join("audio-scan-parked");
         let scan_swap_succeeded = Arc::new(AtomicBool::new(false));
         let scan_swap_result = Arc::clone(&scan_swap_succeeded);
         let scan_audio_root = audio_root.clone();
+        let scan_parked = scan_parked_root.clone();
         let scan_external = external.clone();
         runtime.set_scan_category_open_hook_for_test(CacheCategory::Audio, move || {
-            if fs::remove_dir(&scan_audio_root).is_ok()
-                && create_directory_link(&scan_external, &scan_audio_root).is_ok()
-            {
-                scan_swap_result.store(true, Ordering::SeqCst);
+            if fs::rename(&scan_audio_root, &scan_parked).is_ok() {
+                if create_directory_link(&scan_external, &scan_audio_root).is_ok() {
+                    scan_swap_result.store(true, Ordering::SeqCst);
+                } else {
+                    let _ = fs::rename(&scan_parked, &scan_audio_root);
+                }
             }
         });
 
         let scan = runtime.snapshot();
-        assert!(!scan_swap_succeeded.load(Ordering::SeqCst));
         assert_eq!(
             scan.usage(CacheCategory::Audio)
                 .expect("应包含音频分类")
                 .total_bytes,
-            0
+            8
         );
+        assert_eq!(
+            fs::metadata(&external_file).expect("外部文件应保留").len(),
+            32
+        );
+        if scan_swap_succeeded.load(Ordering::SeqCst) {
+            fs::remove_dir(&audio_root).expect("应移除扫描交换链接");
+            fs::rename(&scan_parked_root, &audio_root).expect("应恢复扫描缓存目录");
+        }
 
+        let clear_parked_root = runtime.root().join("audio-clear-parked");
         let clear_swap_succeeded = Arc::new(AtomicBool::new(false));
         let clear_swap_result = Arc::clone(&clear_swap_succeeded);
         let clear_audio_root = audio_root.clone();
+        let clear_parked = clear_parked_root.clone();
         let clear_external = external.clone();
         runtime.set_clear_category_open_hook_for_test(CacheCategory::Audio, move || {
-            if fs::remove_dir(&clear_audio_root).is_ok()
-                && create_directory_link(&clear_external, &clear_audio_root).is_ok()
-            {
-                clear_swap_result.store(true, Ordering::SeqCst);
+            if fs::rename(&clear_audio_root, &clear_parked).is_ok() {
+                if create_directory_link(&clear_external, &clear_audio_root).is_ok() {
+                    clear_swap_result.store(true, Ordering::SeqCst);
+                } else {
+                    let _ = fs::rename(&clear_parked, &clear_audio_root);
+                }
             }
         });
 
-        runtime
-            .clear(CacheCategory::Audio)
-            .expect("句柄锁定期间清理应安全完成");
-        assert!(!clear_swap_succeeded.load(Ordering::SeqCst));
-        assert!(external.join("must-stay.bin").is_file());
+        let clear_result = runtime.clear(CacheCategory::Audio);
+        if clear_swap_succeeded.load(Ordering::SeqCst) {
+            assert!(matches!(
+                clear_result,
+                Err(CacheRuntimeError::UnsafeManagedPath { .. })
+            ));
+            fs::remove_dir(&audio_root).expect("应移除清理交换链接");
+            fs::create_dir(&audio_root).expect("应恢复空缓存分类目录");
+            assert!(!clear_parked_root.exists());
+        } else {
+            clear_result.expect("未发生路径交换时清理应成功");
+        }
+        assert_eq!(
+            fs::metadata(&external_file).expect("外部文件应保留").len(),
+            32
+        );
         assert!(audio_root.is_dir());
     }
 
@@ -2478,7 +2923,10 @@ mod tests {
 
         assert!(decision.restart_required);
         assert!(!decision.fallback_used);
-        assert_eq!(runtime.root(), test_dir.path.join(CACHE_DIRECTORY_NAME));
+        assert_eq!(
+            runtime.root(),
+            canonical_runtime_path(&test_dir.path.join(CACHE_DIRECTORY_NAME))
+        );
         let pending_snapshot = runtime.snapshot();
         assert_eq!(pending_snapshot.configured_root, custom_root);
         assert_eq!(pending_snapshot.active_root, runtime.root());
@@ -2499,9 +2947,11 @@ mod tests {
             .expect("重启时应装载自定义缓存目录");
         assert_eq!(
             restarted.root(),
-            custom_root
-                .join(CUSTOM_CACHE_APPLICATION_DIRECTORY_NAME)
-                .join(CACHE_DIRECTORY_NAME)
+            canonical_runtime_path(
+                &custom_root
+                    .join(CUSTOM_CACHE_APPLICATION_DIRECTORY_NAME)
+                    .join(CACHE_DIRECTORY_NAME),
+            )
         );
         assert!(!restarted.root_decision().restart_required);
         assert!(!restarted.root_decision().fallback_used);
@@ -2554,9 +3004,11 @@ mod tests {
             .expect("应把用户目录视为父目录");
         assert_eq!(
             decision.effective_root,
-            selected_parent
-                .join(CUSTOM_CACHE_APPLICATION_DIRECTORY_NAME)
-                .join(CACHE_DIRECTORY_NAME)
+            canonical_runtime_path(
+                &selected_parent
+                    .join(CUSTOM_CACHE_APPLICATION_DIRECTORY_NAME)
+                    .join(CACHE_DIRECTORY_NAME),
+            )
         );
 
         let restarted = CacheRuntime::with_settings_path(&test_dir.path, &settings_path)
