@@ -141,20 +141,6 @@ function createGitHubClient({ repository, token, fetch }) {
   return { requestJson, downloadAsset, uploadAsset };
 }
 
-async function assertImmutableReleasesEnabled(client, repository) {
-  const policy = await client.requestJson(
-    "GET",
-    `/repos/${repository}/immutable-releases`,
-  );
-  if (
-    policy === null ||
-    typeof policy !== "object" ||
-    policy.enabled !== true
-  ) {
-    throw new Error("仓库必须在公开 Draft 前启用 immutable releases");
-  }
-}
-
 function validateInput(input, environment) {
   if (
     typeof input.repository !== "string" ||
@@ -189,15 +175,6 @@ function validateInput(input, environment) {
   if (typeof token !== "string" || token.trim().length === 0) {
     throw new Error("环境变量 GITHUB_TOKEN 不能为空");
   }
-  const immutableReleasesReadToken =
-    environment?.IMMUTABLE_RELEASES_READ_TOKEN;
-  if (
-    typeof immutableReleasesReadToken !== "string" ||
-    immutableReleasesReadToken.trim().length === 0
-  ) {
-    throw new Error("环境变量 IMMUTABLE_RELEASES_READ_TOKEN 不能为空");
-  }
-
   const version = input.tag.slice(1);
   const expectedExeName = `MineRadio-Tauri_${version}_x64-setup.exe`;
   const expectedNames = new Map([
@@ -242,7 +219,6 @@ function validateInput(input, environment) {
 
   return {
     token,
-    immutableReleasesReadToken,
     version,
     expectedExeName,
     assetPaths,
@@ -389,11 +365,7 @@ function withoutGitHubTokens(environment) {
   return Object.fromEntries(
     Object.entries(environment ?? {}).filter(
       ([name]) =>
-        !new Set([
-          "GITHUB_TOKEN",
-          "GH_TOKEN",
-          "IMMUTABLE_RELEASES_READ_TOKEN",
-        ]).has(name.toUpperCase()),
+        !new Set(["GITHUB_TOKEN", "GH_TOKEN"]).has(name.toUpperCase()),
     ),
   );
 }
@@ -913,11 +885,6 @@ function createReleaseContext(input, dependencies) {
     token: validation.token,
     fetch: fetchImplementation,
   });
-  const immutablePolicyClient = createGitHubClient({
-    repository: input.repository,
-    token: validation.immutableReleasesReadToken,
-    fetch: fetchImplementation,
-  });
   const signatureVerifier =
     dependencies.verifySignature ?? defaultVerifySignature;
   const provenanceVerifier =
@@ -931,7 +898,6 @@ function createReleaseContext(input, dependencies) {
     client,
     environment,
     input,
-    immutablePolicyClient,
     maximumLatestAttempts,
     provenanceVerifier,
     signatureVerifier,
@@ -945,13 +911,11 @@ async function prepareDraftWithContext(context, requireDraft) {
     client,
     environment,
     input,
-    immutablePolicyClient,
     provenanceVerifier,
     signatureVerifier,
     validation,
   } = context;
 
-  await assertImmutableReleasesEnabled(immutablePolicyClient, input.repository);
   await verifyReleaseSource(client, input);
 
   let listedRelease = await findReleaseByExactTag(
@@ -1038,7 +1002,6 @@ async function finalizeDraftWithContext(
     client,
     environment,
     input,
-    immutablePolicyClient,
     maximumLatestAttempts,
     provenanceVerifier,
     signatureVerifier,
@@ -1106,10 +1069,6 @@ async function finalizeDraftWithContext(
     assertNoHigherStableRelease(
       await listAllReleases(client, input.repository),
       release,
-    );
-    await assertImmutableReleasesEnabled(
-      immutablePolicyClient,
-      input.repository,
     );
     release = await publishDraftWithRecovery(client, input, release);
   }

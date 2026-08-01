@@ -36,7 +36,7 @@ $runIds | ForEach-Object {
 
 ## 1. 确认发布签名材料
 
-确认 `production-release` environment 中的两个 Tauri updater 签名 secret 与一个只读策略 secret 已由受控来源录入，且没有 repository-level 副本。`IMMUTABLE_RELEASES_READ_TOKEN` 必须是只授权本仓库、仅具备 **Administration: read** 的细粒度 token，不得授予 Contents 写入或其他管理权限。不要在日志、artifact、Issue、PR 或本地 smoke evidence 中输出、复制或探测 secret 内容。任一签名材料或策略 token 不可用时停止发布；本流程不设计私钥丢失、恢复或轮换路径。
+确认 `production-release` environment 中的两个 Tauri updater 签名 secret 已由受控来源录入，且没有 repository-level 副本。不要在日志、artifact、Issue、PR 或本地 smoke evidence 中输出、复制或探测 secret 内容。任一签名材料不可用时停止发布；本流程不设计私钥丢失、恢复或轮换路径。
 
 ## 2. 建立独立的 `v*` tag 创建规则
 
@@ -54,7 +54,7 @@ $runIds | ForEach-Object {
 
 1. 打开 **Settings → Environments → New environment**。
 2. environment 名称精确填写 `production-release` 并创建，暂时不要添加 secret。
-3. 配置至少一名 **Required reviewer**；reviewer 必须与 release actor 独立，并关闭管理员自行绕过保护规则的能力。签名和公开 job 必须等待这次人工 environment approval。
+3. 不配置 **Required reviewer**；该 environment 只用于限制签名 secret 的作用域与允许部署的 tag。
 4. 在 **Deployment branches and tags** 中选择 **Selected branches and tags**。
 5. 只新增一条类型为 **Tag**、模式为 `v*` 的规则；不要添加 branch 规则或更宽的 tag 规则。
 
@@ -66,13 +66,12 @@ $runIds | ForEach-Object {
 
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-- `IMMUTABLE_RELEASES_READ_TOKEN`
 
-使用网页或 API 确认三个名称已不在 repository secret 列表中。不要为了“先测试再删除”保留 repository-level copy；只要副本存在，不使用受保护 environment 的 workflow 就可能读取长期签名密钥或读取发布策略。
+使用网页或 API 确认两个名称已不在 repository secret 列表中。不要为了“先测试再删除”保留 repository-level copy；只要副本存在，不使用受保护 environment 的 workflow 就可能读取长期签名密钥。
 
-随后从密码管理器或其他受控安全来源，在 **Settings → Environments → production-release → Environment secrets** 中重新录入同名的三个 secret。GitHub 不会显示录入后的值，不能通过 API 或 CLI 比对；若值有误，应让受保护发布失败后重新覆盖 environment secret，不能恢复 repository-level copy。
+随后从密码管理器或其他受控安全来源，在 **Settings → Environments → production-release → Environment secrets** 中重新录入同名的两个 secret。GitHub 不会显示录入后的值，不能通过 API 或 CLI 比对；若值有误，应让受保护发布失败后重新覆盖 environment secret，不能恢复 repository-level copy。
 
-最后确认三个名称只存在于 `production-release` environment。发布工作流中的签名 secret 只进入签名 job；`IMMUTABLE_RELEASES_READ_TOKEN` 只进入 Draft 冻结与公开 job，并在调用安装验证器或标准用户 smoke 前从环境中移除。
+最后确认两个名称只存在于 `production-release` environment。发布工作流中的签名 secret 只进入签名 job，并在调用安装验证器或标准用户 smoke 前从环境中移除。
 
 ## 5. 建立无绕过的 tag 更新与删除规则
 
@@ -88,15 +87,7 @@ $runIds | ForEach-Object {
 
 1. 打开仓库 **Settings → General**。
 2. 在 **Releases** 区域启用 **Immutable releases**。
-3. 使用存放在 `production-release` environment 的只读策略 token 调用官方端点，确认 `enabled` 精确为 `true`：
-
-```powershell
-$env:GH_TOKEN = "<临时注入 IMMUTABLE_RELEASES_READ_TOKEN；不要写入脚本或日志>"
-gh api repos/zzstar101/Mineradio-Tauri/immutable-releases --jq '.enabled == true'
-Remove-Item Env:GH_TOKEN
-```
-
-发布脚本会在创建或恢复 Draft 前检查一次，并在版本顺序复核后、公开 PATCH 紧前再次检查；任一检查失败都保持 Draft。
+3. 在仓库设置页确认该开关保持启用。发布脚本会在公开后校验 GitHub 返回的 release `immutable` 精确为 `true`；不需要额外的策略读取 token。
 
 Immutable releases 只作用于启用后正式发布的 release，不会追溯转换旧 release。现有 `v0.1.0` 仍为 `immutable: false`，不能原地变成 immutable；不要删除并重建它。必须发布一个高于 `v0.1.0` 的新版本取代其 Latest 位置，并把旧版本记录为遗留风险。
 
@@ -106,8 +97,8 @@ Immutable releases 只作用于启用后正式发布的 release，不会追溯�
 
 - legacy `release.yml` 仍处于 disabled，且所有 legacy run 已清空。
 - 所有在途 Release run 和 waiting deployment 已清空。
-- 三个 repository secret 已删除。
-- `production-release` environment、至少一名独立 Required reviewer、关闭管理员自行绕过、仅 `v*` 的 deployment policy 和 environment secret 已就绪。
+- 两个 repository secret 已删除。
+- `production-release` environment、仅 `v*` 的 deployment policy 和两个 environment secret 已就绪；不配置 Required reviewer。
 - 两个 tag ruleset 均为 Active。
 - Immutable releases 已启用。
 
@@ -118,7 +109,7 @@ gh workflow enable protected-release.yml --repo zzstar101/Mineradio-Tauri
 gh workflow disable release.yml --repo zzstar101/Mineradio-Tauri
 ```
 
-首次替代发布版本固定为 `v1.0.0`，并要求四个版本文件完全一致。指定 release actor 必须验证 tag 精确指向创建时默认分支 tip，并确认该提交中的 workflow 路径是 `protected-release.yml`；随后才创建并推送 tag。签名和公开 job 到达 `production-release` environment 后，由独立 reviewer 核对 tag、commit、Draft id 与 smoke evidence，再批准继续。
+首次替代发布版本固定为 `v1.0.0`，并要求四个版本文件完全一致。指定 release actor 必须验证 tag 精确指向创建时默认分支 tip，并确认该提交中的 workflow 路径是 `protected-release.yml`；随后才创建并推送 tag。签名、Draft smoke 与公开步骤由工作流按固定顺序执行，不等待 environment 人工审批。
 
 ## 8. 验证首次不可变发布
 
@@ -158,6 +149,6 @@ gh api repos/zzstar101/Mineradio-Tauri/releases/latest `
 
 ## 后续变更规则
 
-- deployment policy、ruleset、immutable releases、Required reviewer 或 secret 作用域的任何变更都按发布安全变更审查。
-- 每次发布前确认没有新增 bypass actor，并保证 reviewer 与 release actor 独立。
+- deployment policy、ruleset、immutable releases 或 secret 作用域的任何变更都按发布安全变更审查。
+- 每次发布前确认没有新增 bypass actor。
 - 已发布版本需要修复时创建更高版本 tag，不得移动旧 tag、删除旧 release 或替换旧资产。

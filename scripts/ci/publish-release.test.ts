@@ -206,7 +206,6 @@ function createFakeGitHub(options: {
     latestResponseLost?: boolean;
   };
   immutableOnPublish?: boolean;
-  immutableReleasesEnabled?: boolean;
 } = {}) {
   const releases = [...(options.releases ?? [])];
   const requests: any[] = [];
@@ -214,7 +213,6 @@ function createFakeGitHub(options: {
   let latestId = options.latestId ?? null;
   let tagReadCount = 0;
   let publishDuringAssetDownloadName: string | undefined;
-  let immutableReleasesEnabled = options.immutableReleasesEnabled ?? true;
   let nextReleaseId = Math.max(200, ...releases.map((release) => release.id + 1));
   let nextAssetId = Math.max(
     2000,
@@ -240,16 +238,6 @@ function createFakeGitHub(options: {
     requests.push({ method, url: url.toString(), headers, body });
 
     const repositoryPrefix = `/repos/${REPOSITORY}`;
-
-    if (
-      method === "GET" &&
-      url.pathname === `${repositoryPrefix}/immutable-releases`
-    ) {
-      return jsonResponse({
-        enabled: immutableReleasesEnabled,
-        enforced_by_owner: false,
-      });
-    }
 
     if (
       method === "GET" &&
@@ -444,9 +432,6 @@ function createFakeGitHub(options: {
     publishDuringAssetDownload(name: string) {
       publishDuringAssetDownloadName = name;
     },
-    setImmutableReleasesEnabled(enabled: boolean) {
-      immutableReleasesEnabled = enabled;
-    },
   };
 }
 
@@ -464,7 +449,6 @@ async function runPublish(
       env: {
         GITHUB_TOKEN: "secret-token",
         GH_TOKEN: "must-also-be-removed",
-        IMMUTABLE_RELEASES_READ_TOKEN: "policy-token",
         SAFE_ENVIRONMENT_VALUE: "visible",
       },
       sleep: async () => {},
@@ -502,7 +486,6 @@ function releaseDependencies(github: ReturnType<typeof createFakeGitHub>) {
     env: {
       GITHUB_TOKEN: "secret-token",
       GH_TOKEN: "must-also-be-removed",
-      IMMUTABLE_RELEASES_READ_TOKEN: "policy-token",
       SAFE_ENVIRONMENT_VALUE: "visible",
     },
     sleep: async () => {},
@@ -572,24 +555,6 @@ describe("publishRelease", () => {
     }
   });
 
-  test("缺少只读 immutable policy token 时在任何 GitHub 请求前失败", async () => {
-    const fixture = createFixture();
-    const github = createFakeGitHub();
-    const dependencies = {
-      ...releaseDependencies(github),
-      env: { GITHUB_TOKEN: "secret-token" },
-    };
-
-    try {
-      await expect(publishRelease(fixture.input, dependencies)).rejects.toThrow(
-        "IMMUTABLE_RELEASES_READ_TOKEN 不能为空",
-      );
-      expect(github.requests).toHaveLength(0);
-    } finally {
-      rmSync(fixture.root, { recursive: true, force: true });
-    }
-  });
-
   test("新建草稿、上传五项资产、远端复验、发布并收敛 Latest", async () => {
     const fixture = createFixture();
     const github = createFakeGitHub();
@@ -645,11 +610,7 @@ describe("publishRelease", () => {
         ),
       )) {
         expect(request.headers["x-github-api-version"]).toBe(API_VERSION);
-        expect(request.headers.authorization).toBe(
-          request.url.endsWith("/immutable-releases")
-            ? "Bearer policy-token"
-            : "Bearer secret-token",
-        );
+        expect(request.headers.authorization).toBe("Bearer secret-token");
         expect(request.headers.accept).toBe(
           request.url.includes("/releases/assets/")
             ? "application/octet-stream"
@@ -665,7 +626,6 @@ describe("publishRelease", () => {
       for (const call of verifierCalls) {
         expect(call.env.GITHUB_TOKEN).toBeUndefined();
         expect(call.env.GH_TOKEN).toBeUndefined();
-        expect(call.env.IMMUTABLE_RELEASES_READ_TOKEN).toBeUndefined();
         expect(call.env.SAFE_ENVIRONMENT_VALUE).toBe("visible");
         expect(existsSync(call.artifactPath)).toBe(false);
         expect(existsSync(call.signaturePath)).toBe(false);
@@ -1038,7 +998,7 @@ describe("publishRelease", () => {
     }
   });
 
-  test("Immutable releases 设置漂移时拒绝把发布标记为成功", async () => {
+  test("发布结果不是 immutable 时拒绝把发布标记为成功", async () => {
     const fixture = createFixture();
     const github = createFakeGitHub({ immutableOnPublish: false });
 
@@ -1246,20 +1206,6 @@ describe("publishRelease", () => {
     }
   });
 
-  test("仓库未启用 immutable releases 时在任何发布写入前失败", async () => {
-    const fixture = createFixture();
-    const github = createFakeGitHub({ immutableReleasesEnabled: false });
-
-    try {
-      await expect(runPublish(fixture, github)).rejects.toThrow(
-        "仓库必须在公开 Draft 前启用 immutable releases",
-      );
-      expect(writeRequests(github)).toHaveLength(0);
-    } finally {
-      rmSync(fixture.root, { recursive: true, force: true });
-    }
-  });
-
   test("拒绝远端语义相同但不是 canonical encoding 的 provenance v2", async () => {
     const fixture = createFixture();
 
@@ -1360,36 +1306,6 @@ describe("protected draft lifecycle", () => {
       expect(github.releases[0].draft).toBe(true);
       expect(github.releases[0].assets).toHaveLength(5);
       expect(github.latestId).toBeNull();
-      expect(
-        github.requests.filter(
-          (request) => request.method === "PATCH" && request.body.draft === false,
-        ),
-      ).toHaveLength(0);
-    } finally {
-      rmSync(fixture.root, { recursive: true, force: true });
-    }
-  });
-
-  test("Draft smoke 后 immutable policy 漂移时保持 Draft", async () => {
-    const fixture = createFixture();
-    const github = createFakeGitHub();
-
-    try {
-      const prepared = await prepareDraftRelease(
-        fixture.input,
-        releaseDependencies(github),
-      );
-      github.setImmutableReleasesEnabled(false);
-
-      await expect(
-        finalizeDraftRelease(
-          fixture.input,
-          prepared.releaseId,
-          localCandidateId(fixture),
-          releaseDependencies(github),
-        ),
-      ).rejects.toThrow("仓库必须在公开 Draft 前启用 immutable releases");
-      expect(github.releases[0].draft).toBe(true);
       expect(
         github.requests.filter(
           (request) => request.method === "PATCH" && request.body.draft === false,

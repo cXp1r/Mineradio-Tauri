@@ -208,14 +208,9 @@ test("单体 publish CLI fail closed，只允许 split Draft wrapper 进入发�
   const finalize = read("scripts/ci/publish-release-draft.mjs");
 
   expect(publish).toContain("单体 publish CLI 已禁用");
-  expect(publish).toContain("/immutable-releases");
-  expect(publish).toContain(
-    "assertImmutableReleasesEnabled(immutablePolicyClient, input.repository)",
-  );
-  expect(publish).toContain("validation.immutableReleasesReadToken");
-  expect(
-    workflow.match(/IMMUTABLE_RELEASES_READ_TOKEN: \$\{\{ secrets\.IMMUTABLE_RELEASES_READ_TOKEN \}\}/g),
-  ).toHaveLength(2);
+  expect(publish).not.toContain("IMMUTABLE_RELEASES_READ_TOKEN");
+  expect(workflow).not.toContain("IMMUTABLE_RELEASES_READ_TOKEN");
+  expect(publish).toContain("if (release.immutable !== true)");
   expect(stage).toContain("prepareDraftRelease");
   expect(finalize).toContain("finalizeDraftRelease");
 });
