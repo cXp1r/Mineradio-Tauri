@@ -4,6 +4,7 @@ import {
 	attachShelfPointerInteractionWiring,
 	isShelfInteractionUiTarget,
 } from "./shelf-pointer-interactions";
+import { createShelfTrackChangeGuard } from "./shelf-track-change-guard";
 
 function closedSnapshot() {
 	return {
@@ -30,6 +31,7 @@ type ShelfPointerInteractionManager = Pick<
 	| "openDetail"
 	| "closeDetail"
 	| "hasOpenContent"
+	| "getDetailPhase"
 	| "getContentList"
 	| "getShelfPinnedOpen"
 	| "setShelfPinnedOpen"
@@ -52,6 +54,11 @@ function makeShelfManagerMock(
 		openDetail: () => {},
 		closeDetail: () => {},
 		hasOpenContent: () => false,
+		getDetailPhase: () => (
+			overrides.hasOpenContent?.() === true || (overrides.getSnapshot?.().openCardIdx ?? -1) >= 0
+				? "open"
+				: "closed"
+		),
 		getContentList: () => null,
 		getShelfPinnedOpen: () => false,
 		setShelfPinnedOpen: () => {},
@@ -2517,4 +2524,229 @@ test("attachShelfPointerInteractionWiring cleanup removes wheel and contextmenu 
 	expect(target.listeners.get("pointerleave")?.size ?? 0).toBe(0);
 	expect(scrolled).toEqual([]);
 	expect(pinnedCalls).toEqual([]);
+});
+
+test("attachShelfPointerInteractionWiring blocks card interactions for exactly 1120ms after a track change", () => {
+	const target = new FakePointerTarget();
+	const selected: number[] = [];
+	const scrolled: number[] = [];
+	const pinned: boolean[] = [];
+	let trackKey = "track-a";
+	let now = 0;
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getMode: () => "side",
+			getSnapshot: () => ({ ...closedSnapshot(), mode: "side", presence: "always" }),
+			setSelectedIdx: (index) => selected.push(index),
+			clearSelected: () => selected.push(-1),
+			scrollBy: (delta) => scrolled.push(delta),
+			setShelfPinnedOpen: (open) => pinned.push(open),
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(1),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getShelfPresence: () => "always",
+		getTrackKey: () => trackKey,
+		nowMs: () => now,
+	});
+
+	trackKey = "track-b";
+	target.emit("pointermove", { clientX: 1100, clientY: 400, target: null });
+	target.emit("click", makeClickEvent({ clientX: 1100, clientY: 400 }));
+	target.emit("wheel", makeWheelEvent({ deltaY: 120, clientX: 1100, clientY: 400 }));
+	target.emit("contextmenu", makeContextMenuEvent({ clientX: 1100, clientY: 400 }));
+
+	now = 1119;
+	target.emit("wheel", makeWheelEvent({ deltaY: 120, clientX: 1100, clientY: 400 }));
+	expect(scrolled).toEqual([]);
+	expect(pinned).toEqual([]);
+	expect(selected).toEqual([-1]);
+
+	now = 1120;
+	target.emit("wheel", makeWheelEvent({ deltaY: 120, clientX: 1100, clientY: 400 }));
+	cleanup();
+	expect(scrolled).toEqual([1]);
+});
+
+test("attachShelfPointerInteractionWiring discards a pointer release that crosses track generations", () => {
+	const target = new FakePointerTarget();
+	const played: number[] = [];
+	let trackKey = "track-a";
+	let now = 0;
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(0, { kind: "playQueue", index: 9 }),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getTrackKey: () => trackKey,
+		nowMs: () => now,
+		onShelfPlayQueueIndex: (index) => played.push(index),
+	});
+
+	target.emit("pointerdown", { clientX: 10, clientY: 20, target: null });
+	trackKey = "track-b";
+	target.emit("pointerup", { clientX: 10, clientY: 20, target: null });
+	now = 1120;
+	target.emit("click", makeClickEvent({}));
+	expect(played).toEqual([]);
+	target.emit("click", makeClickEvent({}));
+	cleanup();
+	expect(played).toEqual([9]);
+});
+
+test("attachShelfPointerInteractionWiring keeps identity-valid detail rows interactive during the track guard", () => {
+	const target = new FakePointerTarget();
+	const contentScrolled: number[] = [];
+	const shelfScrolled: number[] = [];
+	let trackKey = "track-a";
+	const contentList = {
+		scrollBy: (delta: number) => contentScrolled.push(delta),
+	} as unknown as ReturnType<ShelfPointerInteractionManager["getContentList"]>;
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getSnapshot: () => ({ ...closedSnapshot(), openCardIdx: 0 }),
+			hasOpenContent: () => true,
+			getContentList: () => contentList,
+			scrollBy: (delta) => shelfScrolled.push(delta),
+			getShelfPinnedOpen: () => true,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(1),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getTrackKey: () => trackKey,
+		nowMs: () => 0,
+		isDetailWheelTarget: () => true,
+	});
+
+	trackKey = "track-b";
+	const wheel = makeWheelEvent({ deltaY: 120 });
+	target.emit("wheel", wheel);
+	cleanup();
+
+	expect(contentScrolled).toEqual([1]);
+	expect(shelfScrolled).toEqual([]);
+	expect(wheel.calls).toEqual(["preventDefault", "stopImmediatePropagation"]);
+});
+
+test("attachShelfPointerInteractionWiring never routes a detail miss to an underlay card during the track guard", () => {
+	const target = new FakePointerTarget();
+	const shelfScrolled: number[] = [];
+	const closed: boolean[] = [];
+	let trackKey = "track-a";
+	const guard = createShelfTrackChangeGuard({
+		getTrackKey: () => trackKey,
+		nowMs: () => 0,
+	});
+	const contentList = {
+		pickRowAtScreen: () => null,
+	} as unknown as ReturnType<ShelfPointerInteractionManager["getContentList"]>;
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getSnapshot: () => ({ ...closedSnapshot(), openCardIdx: 0 }),
+			hasOpenContent: () => true,
+			getContentList: () => contentList,
+			getShelfPinnedOpen: () => true,
+			closeDetail: () => closed.push(true),
+			scrollBy: (delta) => shelfScrolled.push(delta),
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => makeHit(2),
+		getStrictHit: () => makeHit(2),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		trackChangeGuard: guard,
+	});
+
+	trackKey = "track-b";
+	target.emit("click", makeClickEvent({ clientX: 320, clientY: 240 }));
+	cleanup();
+
+	expect(closed).toEqual([]);
+	expect(shelfScrolled).toEqual([]);
+});
+
+test("attachShelfPointerInteractionWiring disables detail hits while the close animation is running", () => {
+	const target = new FakePointerTarget();
+	const contentScrolled: number[] = [];
+	const detailClicks: number[] = [];
+	const contentList = {
+		scrollBy: (delta: number) => contentScrolled.push(delta),
+		getRows: () => [{ id: "song-1", name: "Song 1" }],
+	} as unknown as ReturnType<ShelfPointerInteractionManager["getContentList"]>;
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getSnapshot: () => ({ ...closedSnapshot(), openCardIdx: 0 }),
+			hasOpenContent: () => true,
+			getDetailPhase: () => "closing",
+			getContentList: () => contentList,
+		}),
+		cinema: { setFocusZone: () => {} },
+		getHit: () => null,
+		getStrictDetailRowHit: () => ({
+			row: { id: "song-1", name: "Song 1" },
+			index: 0,
+			mesh: {} as never,
+		}),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		isDetailWheelTarget: () => true,
+		onShelfDetailRowClick: (payload) => detailClicks.push(payload.index),
+	});
+
+	target.emit("wheel", makeWheelEvent({ deltaY: 120 }));
+	target.emit("click", makeClickEvent({}));
+	cleanup();
+
+	expect(contentScrolled).toEqual([]);
+	expect(detailClicks).toEqual([]);
+});
+
+test("attachShelfPointerInteractionWiring does not let a direct detail click bypass static camera mode", () => {
+	const target = new FakePointerTarget();
+	const focus: unknown[] = [];
+	const opened: number[] = [];
+	const cleanup = attachShelfPointerInteractionWiring({
+		target,
+		shelfManager: makeShelfManagerMock({
+			getCenterIdx: () => 2,
+			openDetail: (index) => opened.push(index),
+		}),
+		cinema: { setFocusZone: (type, options) => focus.push([type, options]) },
+		getHit: () => makeHit(2, { kind: "loadPlaylist", playlistId: "p2", title: "Mix 2" }),
+		getSplashActive: () => false,
+		getPortrait: () => false,
+		getWallpaperSafe: () => false,
+		getViewportWidth: () => 1200,
+		getViewportHeight: () => 900,
+		getShelfCameraMode: () => "static",
+	});
+
+	target.emit("click", makeClickEvent({}));
+	cleanup();
+
+	expect(opened).toEqual([2]);
+	expect(focus).toEqual([[null, { immediate: true, portrait: false, wallpaperSafe: false }]]);
 });

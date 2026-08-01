@@ -138,6 +138,6 @@ chore: refresh release notes
 
 ## 许可证
 
-本项目采用 GPL-3.0 授权。提交贡献即表示你同意你的贡献按本项目许可证分发。
+本项目原创核心代码采用 GPL-3.0-only 授权。提交贡献即表示你同意你的原创贡献按该许可证分发。修改 Sonic Topography 视觉层时，还必须保留 `THIRD_PARTY_NOTICES.md` 中的 Ajin 署名、来源链、`Non-Commercial Learning License` 和个人非商业告知，并不得把公开合作证据表述为额外书面授权、再许可或许可放宽。
 
 本项目不是网易云音乐、QQ 音乐或腾讯音乐娱乐集团的官方客户端。贡献中不要加入会误导用户的名称、文案、图标或说明。

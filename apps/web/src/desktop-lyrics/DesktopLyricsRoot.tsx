@@ -23,6 +23,20 @@ export type DesktopLyricsPayloadSetter = (
 	updater: Partial<DesktopLyricsPayload> | ((current: Partial<DesktopLyricsPayload>) => Partial<DesktopLyricsPayload>)
 ) => void;
 
+export function mergeDesktopLyricsPayload(
+	current: Partial<DesktopLyricsPayload>,
+	next: Partial<DesktopLyricsPayload>
+): Partial<DesktopLyricsPayload> {
+	if (
+		next.beatMap === undefined
+		&& current.beatMap !== undefined
+		&& next.beatMapKey === current.beatMapKey
+	) {
+		return { ...next, beatMap: current.beatMap };
+	}
+	return next;
+}
+
 export function subscribeDesktopLyricsBridge(
 	bridge: DesktopLyricsBridge,
 	setPayload: DesktopLyricsPayloadSetter
@@ -32,7 +46,7 @@ export function subscribeDesktopLyricsBridge(
 
 	const payloadListener = bridge.listenPayload((nextPayload) => {
 		if (active) {
-			setPayload(nextPayload);
+			setPayload((current) => mergeDesktopLyricsPayload(current, nextPayload));
 		}
 	}).then((dispose) => {
 		if (active) {

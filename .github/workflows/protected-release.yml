@@ -259,6 +259,8 @@ jobs:
 
       - name: Build unsigned NSIS bundle
         shell: pwsh
+        env:
+          MINERADIO_OFFICIAL_DISTRIBUTION: github-release-v1
         run: |
           $ErrorActionPreference = "Stop"
           & bun run --filter ./apps/desktop tauri build --bundles nsis --ci --no-sign -- --locked
@@ -581,8 +583,8 @@ jobs:
           retention-days: 14
           include-hidden-files: false
 
-  publish-release:
-    name: Verify and publish GitHub Release
+  stage-release-draft:
+    name: Freeze verified Draft Release
     needs:
       - build-windows
       - sign-windows
@@ -592,6 +594,8 @@ jobs:
     permissions:
       contents: write
       actions: read
+    outputs:
+      release_id: ${{ steps.stage.outputs.release_id }}
 
     steps:
       - name: Checkout tagged commit
@@ -688,7 +692,8 @@ jobs:
           "provenance_path=$provenancePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "provenance_sig_path=$provenanceSigPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
-      - name: Publish verified release
+      - name: Freeze verified Draft release
+        id: stage
         shell: pwsh
         env:
           GITHUB_TOKEN: ${{ github.token }}
@@ -704,7 +709,7 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
 
-          & $env:BUN_PATH scripts/ci/publish-release.mjs `
+          & $env:BUN_PATH scripts/ci/stage-release-draft.mjs `
             --repository $env:GITHUB_REPOSITORY `
             --tag $env:GITHUB_REF_NAME `
             --commit-sha $env:GITHUB_SHA `
@@ -717,5 +722,715 @@ jobs:
             --provenance-path $env:PROVENANCE_PATH `
             --provenance-sig-path $env:PROVENANCE_SIG_PATH
           if ($LASTEXITCODE -ne 0) {
-            throw "GitHub Release 发布失败"
+            throw "GitHub Draft Release 冻结失败"
+          }
+
+  smoke-upgrade:
+    name: Upgrade the previous release through the Draft runtime
+    needs:
+      - build-windows
+      - sign-windows
+      - stage-release-draft
+    runs-on: windows-2022
+    environment: production-release
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      candidate_id: ${{ steps.smoke.outputs.candidate_id }}
+      previous_version: ${{ steps.smoke.outputs.previous_version }}
+      target_version: ${{ steps.smoke.outputs.target_version }}
+      evidence_sha256: ${{ steps.smoke.outputs.evidence_sha256 }}
+      evidence_artifact_digest: ${{ steps.upload_evidence.outputs.artifact-digest }}
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install Rust 1.95.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & rustup toolchain install 1.95.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw "安装 Rust 1.95.0 失败" }
+          & rustup default 1.95.0
+          if ($LASTEXITCODE -ne 0) { throw "切换 Rust 1.95.0 失败" }
+
+      - name: Install workspace dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "安装 smoke 依赖失败" }
+
+      - name: Build CI-only updater smoke harness
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo build `
+            --manifest-path apps/desktop/src-tauri/Cargo.toml `
+            --release `
+            --locked `
+            --features updater-smoke `
+            --example updater-smoke
+          if ($LASTEXITCODE -ne 0) { throw "构建 updater smoke harness 失败" }
+
+      - name: Download updater signature verifier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.verifier_artifact_name }}
+          path: ${{ runner.temp }}\release-verifier
+
+      - name: Prepare isolated smoke paths
+        id: paths
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "mineradio-draft-smoke-$env:GITHUB_RUN_ATTEMPT"
+          if (Test-Path -LiteralPath $root) { throw "smoke root 已存在" }
+          $inputs = Join-Path $root "inputs"
+          $tools = Join-Path $inputs "tools"
+          $work = Join-Path $root "work"
+          New-Item -ItemType Directory -Path $tools | Out-Null
+          New-Item -ItemType Directory -Path $work | Out-Null
+
+          $harnessSource = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/release/examples/updater-smoke.exe"
+          $verifierSource = Join-Path $env:RUNNER_TEMP "release-verifier/verify_updater_signature.exe"
+          $configSource = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/tauri.conf.json"
+          $runnerSource = Join-Path $env:GITHUB_WORKSPACE "scripts/ci/run-draft-upgrade-smoke.ps1"
+          foreach ($path in @($harnessSource, $verifierSource, $configSource, $runnerSource)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+              throw "smoke 工具不存在: $path"
+            }
+          }
+          Copy-Item -LiteralPath $harnessSource -Destination (Join-Path $tools "updater-smoke.exe")
+          Copy-Item -LiteralPath $verifierSource -Destination (Join-Path $tools "verify-updater-signature.exe")
+          Copy-Item -LiteralPath $configSource -Destination (Join-Path $tools "tauri.conf.json")
+          Copy-Item -LiteralPath $runnerSource -Destination (Join-Path $tools "run-draft-upgrade-smoke.ps1")
+
+          "root=$root" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "inputs=$inputs" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "work=$work" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "draft=$(Join-Path $inputs 'draft')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "previous=$(Join-Path $inputs 'previous')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "app_data=$(Join-Path $work 'app-data')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "evidence=$(Join-Path $work 'smoke-evidence.json')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "harness=$(Join-Path $tools 'updater-smoke.exe')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "verifier=$(Join-Path $tools 'verify-updater-signature.exe')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tauri_config=$(Join-Path $tools 'tauri.conf.json')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "runner=$(Join-Path $tools 'run-draft-upgrade-smoke.ps1')" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Download exact Draft assets without exposing token to the app
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.stage-release-draft.outputs.release_id }}
+          DRAFT_STAGING: ${{ steps.paths.outputs.draft }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun scripts/ci/download-draft-release.mjs `
+            $env:GITHUB_REPOSITORY `
+            $env:GITHUB_REF_NAME `
+            $env:GITHUB_SHA `
+            $env:RELEASE_ID `
+            $env:DRAFT_STAGING
+          if ($LASTEXITCODE -ne 0) { throw "下载 exact Draft 资产失败" }
+
+      - name: Download the highest stable N-1 release
+        id: previous
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PREVIOUS_STAGING: ${{ steps.paths.outputs.previous }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun scripts/ci/download-previous-release.mjs `
+            $env:GITHUB_REPOSITORY `
+            $env:GITHUB_REF_NAME `
+            $env:PREVIOUS_STAGING
+          if ($LASTEXITCODE -ne 0) { throw "下载 N-1 Release 失败" }
+
+      - name: Verify N-1 installer signature before execution
+        shell: pwsh
+        env:
+          VERIFIER_PATH: ${{ steps.paths.outputs.verifier }}
+          TAURI_CONFIG_PATH: ${{ steps.paths.outputs.tauri_config }}
+          PREVIOUS_INSTALLER: ${{ steps.previous.outputs.previous_installer }}
+          PREVIOUS_SIGNATURE: ${{ steps.previous.outputs.previous_signature }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_TOKEN -or $env:GH_TOKEN) {
+            throw "N-1 verifier 不得继承 GitHub token"
+          }
+          & $env:VERIFIER_PATH `
+            $env:TAURI_CONFIG_PATH `
+            $env:PREVIOUS_INSTALLER `
+            $env:PREVIOUS_SIGNATURE
+          if ($LASTEXITCODE -ne 0) { throw "N-1 installer Minisign 验证失败" }
+
+      - name: Install N-1 and upgrade to the Draft as a standard user
+        id: smoke
+        shell: pwsh
+        env:
+          SMOKE_ROOT: ${{ steps.paths.outputs.root }}
+          SMOKE_INPUTS: ${{ steps.paths.outputs.inputs }}
+          SMOKE_WORK: ${{ steps.paths.outputs.work }}
+          SMOKE_RUNNER: ${{ steps.paths.outputs.runner }}
+          SMOKE_HARNESS: ${{ steps.paths.outputs.harness }}
+          TAURI_CONFIG_PATH: ${{ steps.paths.outputs.tauri_config }}
+          DRAFT_STAGING: ${{ steps.paths.outputs.draft }}
+          APP_DATA_PATH: ${{ steps.paths.outputs.app_data }}
+          EVIDENCE_PATH: ${{ steps.paths.outputs.evidence }}
+          PREVIOUS_INSTALLER: ${{ steps.previous.outputs.previous_installer }}
+          PREVIOUS_VERSION: ${{ steps.previous.outputs.previous_version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_TOKEN -or $env:GH_TOKEN) {
+            throw "真实安装 step 不得继承 GitHub token"
+          }
+
+          $jobOutputPath = $env:GITHUB_OUTPUT
+          if (-not [System.IO.Path]::IsPathFullyQualified($jobOutputPath)) {
+            throw "GitHub output capability 路径无效"
+          }
+
+          $CredentialEnvironmentNamePattern = '(?i)(TOKEN|SECRET|PASSWORD|PASSWD|PASSPHRASE|PRIVATE_KEY|ACCESS_KEY|API_KEY|CREDENTIAL|AUTHORIZATION)'
+          $CredentialCapabilityNames = @(
+            "ACTIONS_CACHE_URL",
+            "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+            "ACTIONS_ID_TOKEN_REQUEST_URL",
+            "ACTIONS_RESULTS_URL",
+            "ACTIONS_RUNTIME_TOKEN",
+            "ACTIONS_RUNTIME_URL",
+            "GH_TOKEN",
+            "GITHUB_ENV",
+            "GITHUB_OUTPUT",
+            "GITHUB_PATH",
+            "GITHUB_STATE",
+            "GITHUB_STEP_SUMMARY",
+            "GITHUB_TOKEN",
+            "SSH_AGENT_PID",
+            "SSH_AUTH_SOCK",
+            "VSS_NUGET_EXTERNAL_FEED_ENDPOINTS"
+          )
+
+          function Get-CredentialEnvironmentNames {
+            return @(
+              Get-ChildItem Env: |
+                ForEach-Object { [string] $_.Name } |
+                Where-Object {
+                  $_ -match $CredentialEnvironmentNamePattern -or
+                  $CredentialCapabilityNames -ccontains $_
+                } |
+                Sort-Object -Unique
+            )
+          }
+
+          function Remove-CredentialEnvironment {
+            foreach ($name in @(Get-CredentialEnvironmentNames)) {
+              Remove-Item -LiteralPath "Env:$name" -ErrorAction Stop
+            }
+            if (@(Get-CredentialEnvironmentNames).Count -ne 0) {
+              throw "创建标准用户 child 前无法清除 credential-like CI 环境变量"
+            }
+          }
+
+          function Invoke-SmokeIcacls([string] $Path, [string[]] $AclArguments, [string] $Failure) {
+            & icacls.exe $Path @AclArguments | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw $Failure }
+          }
+
+          function Protect-SmokeReadOnlyTree([string] $Path, [string] $smokePrincipal, [string] $runnerPrincipal) {
+            Invoke-SmokeIcacls `
+              -Path $Path `
+              -AclArguments @("/inheritance:r", "/T", "/C", "/Q") `
+              -Failure "无法隔离 smoke 只读树"
+            Invoke-SmokeIcacls `
+              -Path $Path `
+              -AclArguments @(
+                "/grant:r",
+                "${runnerPrincipal}:(OI)(CI)F",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "${smokePrincipal}:(OI)(CI)RX",
+                "/T", "/C", "/Q"
+              ) `
+              -Failure "无法授权 smoke 只读树"
+          }
+
+          function Protect-SmokeWritableTree([string] $Path, [string] $smokePrincipal, [string] $runnerPrincipal) {
+            Invoke-SmokeIcacls `
+              -Path $Path `
+              -AclArguments @("/inheritance:r", "/T", "/C", "/Q") `
+              -Failure "无法隔离 smoke 可写树"
+            Invoke-SmokeIcacls `
+              -Path $Path `
+              -AclArguments @(
+                "/grant:r",
+                "${runnerPrincipal}:(OI)(CI)F",
+                "*S-1-5-18:(OI)(CI)F",
+                "*S-1-5-32-544:(OI)(CI)F",
+                "${smokePrincipal}:(OI)(CI)M",
+                "/T", "/C", "/Q"
+              ) `
+              -Failure "无法授权 smoke 可写树"
+          }
+
+          $userName = "mrsmoke$env:GITHUB_RUN_ATTEMPT"
+          $passwordText = [Convert]::ToBase64String(
+            [Security.Cryptography.RandomNumberGenerator]::GetBytes(24)
+          ) + "aA1!"
+          Write-Output "::add-mask::$passwordText"
+          $securePassword = ConvertTo-SecureString $passwordText -AsPlainText -Force
+          $credential = [pscredential]::new("$env:COMPUTERNAME\$userName", $securePassword)
+          $standardUser = New-LocalUser `
+            -Name $userName `
+            -Password $securePassword `
+            -PasswordNeverExpires `
+            -UserMayNotChangePassword
+          try {
+            foreach ($requiredDirectory in @($env:SMOKE_ROOT, $env:SMOKE_INPUTS, $env:SMOKE_WORK)) {
+              if (-not [System.IO.Path]::IsPathFullyQualified($requiredDirectory) -or
+                  -not (Test-Path -LiteralPath $requiredDirectory -PathType Container)) {
+                throw "smoke ACL 目录无效"
+              }
+            }
+            if ((Split-Path -Parent $env:SMOKE_INPUTS) -cne $env:SMOKE_ROOT -or
+                (Split-Path -Parent $env:SMOKE_WORK) -cne $env:SMOKE_ROOT) {
+              throw "smoke inputs/work 必须是 root 的直接隔离子目录"
+            }
+
+            $smokePrincipal = "*$($standardUser.SID.Value)"
+            $runnerPrincipal = "*$([Security.Principal.WindowsIdentity]::GetCurrent().User.Value)"
+            Protect-SmokeReadOnlyTree $env:SMOKE_ROOT $smokePrincipal $runnerPrincipal
+            Protect-SmokeReadOnlyTree $env:SMOKE_INPUTS $smokePrincipal $runnerPrincipal
+            Protect-SmokeWritableTree $env:SMOKE_WORK $smokePrincipal $runnerPrincipal
+
+            function Quote-PowerShell([string] $value) {
+              return "'" + $value.Replace("'", "''") + "'"
+            }
+            $command = @(
+              "& $(Quote-PowerShell $env:SMOKE_RUNNER)",
+              "-PreviousInstaller $(Quote-PowerShell $env:PREVIOUS_INSTALLER)",
+              "-PreviousVersion $(Quote-PowerShell $env:PREVIOUS_VERSION)",
+              "-SmokeHarness $(Quote-PowerShell $env:SMOKE_HARNESS)",
+              "-DraftStaging $(Quote-PowerShell $env:DRAFT_STAGING)",
+              "-TauriConfig $(Quote-PowerShell $env:TAURI_CONFIG_PATH)",
+              "-Tag $(Quote-PowerShell $env:GITHUB_REF_NAME)",
+              "-CommitSha $(Quote-PowerShell $env:GITHUB_SHA)",
+              "-AppDataDirectory $(Quote-PowerShell $env:APP_DATA_PATH)",
+              "-EvidencePath $(Quote-PowerShell $env:EVIDENCE_PATH)"
+            ) -join " "
+            $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+            $pwsh = (Get-Command pwsh -ErrorAction Stop).Source
+            Remove-CredentialEnvironment
+            $process = Start-Process `
+              -FilePath $pwsh `
+              -ArgumentList @("-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", $encoded) `
+              -Credential $credential `
+              -LoadUserProfile `
+              -PassThru `
+              -Wait
+            if ($process.ExitCode -ne 0) {
+              throw "标准用户 N-1 到 N smoke 失败，exit=$($process.ExitCode)"
+            }
+          } finally {
+            Remove-LocalUser -Name $userName -ErrorAction SilentlyContinue
+          }
+
+          if (-not (Test-Path -LiteralPath $env:EVIDENCE_PATH -PathType Leaf)) {
+            throw "标准用户 smoke 未生成 evidence"
+          }
+          $evidenceFile = Get-Item -LiteralPath $env:EVIDENCE_PATH
+          if ($evidenceFile.Length -le 0 -or $evidenceFile.Length -gt 16384) {
+            throw "smoke evidence 大小不受允许"
+          }
+          $evidenceBytes = [System.IO.File]::ReadAllBytes($evidenceFile.FullName)
+          if ($evidenceBytes.Length -ge 3 -and
+              $evidenceBytes[0] -eq 0xef -and
+              $evidenceBytes[1] -eq 0xbb -and
+              $evidenceBytes[2] -eq 0xbf) {
+            throw "smoke evidence 不允许 UTF-8 BOM"
+          }
+          try {
+            $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $evidenceText = $strictUtf8.GetString($evidenceBytes)
+            $evidence = $evidenceText | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "smoke evidence 不是严格 UTF-8 JSON"
+          }
+
+          $expectedEvidenceProperties = @(
+            "schema",
+            "previousVersion",
+            "targetVersion",
+            "candidateId",
+            "releaseTag",
+            "commitSha",
+            "standardUser",
+            "processElevated",
+            "githubTokenAbsent",
+            "ciCredentialsAbsent",
+            "installedProductVersion",
+            "candidateRelaunched",
+            "databasePreserved",
+            "typedPreferencePreserved",
+            "checkpointConsumed",
+            "updaterCacheClean",
+            "baselineStartupCount",
+            "verifiedStartupCount"
+          )
+          $actualEvidenceProperties = @($evidence.PSObject.Properties.Name)
+          $propertyDifference = @(
+            Compare-Object `
+              -ReferenceObject $expectedEvidenceProperties `
+              -DifferenceObject $actualEvidenceProperties `
+              -CaseSensitive
+          )
+          if ($actualEvidenceProperties.Count -ne $expectedEvidenceProperties.Count -or
+              $propertyDifference.Count -ne 0) {
+            throw "smoke evidence schema 字段集不匹配"
+          }
+
+          $targetVersion = $env:GITHUB_REF_NAME.Substring(1)
+          if ([version]$env:PREVIOUS_VERSION -ge [version]$targetVersion) {
+            throw "N-1 version 必须严格低于候选版本"
+          }
+          if ($evidence.schema -cne "mineradio-draft-upgrade-smoke-v1" -or
+              $evidence.releaseTag -cne $env:GITHUB_REF_NAME -or
+              $evidence.commitSha -cne $env:GITHUB_SHA -or
+              $evidence.targetVersion -cne $targetVersion -or
+              $evidence.previousVersion -cne $env:PREVIOUS_VERSION -or
+              $evidence.candidateId -notmatch '^[0-9a-f]{64}$' -or
+              $evidence.standardUser -ne $true -or
+              $evidence.processElevated -ne $false -or
+              $evidence.githubTokenAbsent -ne $true -or
+              $evidence.ciCredentialsAbsent -ne $true -or
+              $evidence.installedProductVersion -cne $targetVersion -or
+              $evidence.candidateRelaunched -ne $true -or
+              $evidence.databasePreserved -ne $true -or
+              $evidence.typedPreferencePreserved -ne $true -or
+              $evidence.checkpointConsumed -ne $true -or
+              $evidence.updaterCacheClean -ne $true) {
+            throw "smoke evidence 不完整"
+          }
+
+          $evidenceSha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($evidenceBytes)
+          ).ToLowerInvariant()
+          if ($evidenceSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "smoke evidence SHA-256 格式无效"
+          }
+          "candidate_id=$($evidence.candidateId)" | Out-File -FilePath $jobOutputPath -Encoding utf8 -Append
+          "previous_version=$($evidence.previousVersion)" | Out-File -FilePath $jobOutputPath -Encoding utf8 -Append
+          "target_version=$($evidence.targetVersion)" | Out-File -FilePath $jobOutputPath -Encoding utf8 -Append
+          "evidence_sha256=$evidenceSha256" | Out-File -FilePath $jobOutputPath -Encoding utf8 -Append
+
+      - name: Upload bounded smoke evidence
+        id: upload_evidence
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: updater-smoke-evidence-${{ github.run_attempt }}
+          path: ${{ steps.paths.outputs.evidence }}
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          include-hidden-files: false
+
+  publish-release:
+    name: Publish the exact smoke-approved Draft
+    needs:
+      - build-windows
+      - sign-windows
+      - stage-release-draft
+      - smoke-upgrade
+    runs-on: windows-2022
+    environment: production-release
+    timeout-minutes: 45
+    permissions:
+      contents: write
+      actions: read
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Download signed release package
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.sign-windows.outputs.signed_artifact_name }}
+          path: ${{ runner.temp }}\signed-release
+
+      - name: Download updater signature verifier
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.build-windows.outputs.verifier_artifact_name }}
+          path: ${{ runner.temp }}\release-verifier
+
+      - name: Download bounded smoke evidence
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: updater-smoke-evidence-${{ github.run_attempt }}
+          path: ${{ runner.temp }}\smoke-evidence
+
+      - name: Reverify bounded smoke evidence
+        shell: pwsh
+        env:
+          EVIDENCE_DIRECTORY: ${{ runner.temp }}\smoke-evidence
+          EVIDENCE_SHA256: ${{ needs.smoke-upgrade.outputs.evidence_sha256 }}
+          EVIDENCE_ARTIFACT_DIGEST: ${{ needs.smoke-upgrade.outputs.evidence_artifact_digest }}
+          EXPECTED_CANDIDATE_ID: ${{ needs.smoke-upgrade.outputs.candidate_id }}
+          EXPECTED_PREVIOUS_VERSION: ${{ needs.smoke-upgrade.outputs.previous_version }}
+          EXPECTED_TARGET_VERSION: ${{ needs.smoke-upgrade.outputs.target_version }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stableVersionPattern = '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$'
+          if ($env:EVIDENCE_SHA256 -notmatch '^[0-9a-f]{64}$') {
+            throw "smoke evidence SHA-256 输出无效"
+          }
+          if ($env:EVIDENCE_ARTIFACT_DIGEST -notmatch '^[0-9a-f]{64}$') {
+            throw "smoke evidence artifact digest 输出无效"
+          }
+          if ($env:EXPECTED_CANDIDATE_ID -notmatch '^[0-9a-f]{64}$') {
+            throw "smoke candidate id 输出无效"
+          }
+          if ($env:EXPECTED_PREVIOUS_VERSION -notmatch $stableVersionPattern -or
+              $env:EXPECTED_TARGET_VERSION -notmatch $stableVersionPattern) {
+            throw "smoke 版本输出不是稳定 SemVer"
+          }
+          if ($env:GITHUB_REF_NAME -cne "v$($env:EXPECTED_TARGET_VERSION)") {
+            throw "smoke target version 与发布 tag 不一致"
+          }
+          if ([version]$env:EXPECTED_PREVIOUS_VERSION -ge [version]$env:EXPECTED_TARGET_VERSION) {
+            throw "smoke N-1 version 必须严格低于候选版本"
+          }
+
+          if (-not [System.IO.Path]::IsPathFullyQualified($env:EVIDENCE_DIRECTORY) -or
+              -not (Test-Path -LiteralPath $env:EVIDENCE_DIRECTORY -PathType Container)) {
+            throw "smoke evidence 下载目录无效"
+          }
+          $evidenceDirectory = [System.IO.Path]::GetFullPath($env:EVIDENCE_DIRECTORY)
+          $runnerTemp = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd(
+            [System.IO.Path]::DirectorySeparatorChar,
+            [System.IO.Path]::AltDirectorySeparatorChar
+          )
+          if (-not $evidenceDirectory.StartsWith(
+                "$runnerTemp$([System.IO.Path]::DirectorySeparatorChar)",
+                [StringComparison]::OrdinalIgnoreCase
+              )) {
+            throw "smoke evidence 下载目录不在 runner temp 内"
+          }
+          $evidenceFiles = @(
+            Get-ChildItem -LiteralPath $evidenceDirectory -File -Recurse -Force
+          )
+          if ($evidenceFiles.Count -ne 1 -or $evidenceFiles[0].Name -cne "smoke-evidence.json") {
+            throw "smoke evidence artifact 必须只包含一个规范 evidence 文件"
+          }
+          $evidenceFile = $evidenceFiles[0]
+          if ($evidenceFile.Length -le 0 -or $evidenceFile.Length -gt 16384) {
+            throw "smoke evidence 大小不受允许"
+          }
+          $evidenceBytes = [System.IO.File]::ReadAllBytes($evidenceFile.FullName)
+          if ($evidenceBytes.Length -ge 3 -and
+              $evidenceBytes[0] -eq 0xef -and
+              $evidenceBytes[1] -eq 0xbb -and
+              $evidenceBytes[2] -eq 0xbf) {
+            throw "smoke evidence 不允许 UTF-8 BOM"
+          }
+          try {
+            $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
+            $evidenceText = $strictUtf8.GetString($evidenceBytes)
+            $evidence = $evidenceText | ConvertFrom-Json -ErrorAction Stop
+          } catch {
+            throw "smoke evidence 不是严格 UTF-8 JSON"
+          }
+
+          $expectedEvidenceProperties = @(
+            "schema",
+            "previousVersion",
+            "targetVersion",
+            "candidateId",
+            "releaseTag",
+            "commitSha",
+            "standardUser",
+            "processElevated",
+            "githubTokenAbsent",
+            "ciCredentialsAbsent",
+            "installedProductVersion",
+            "candidateRelaunched",
+            "databasePreserved",
+            "typedPreferencePreserved",
+            "checkpointConsumed",
+            "updaterCacheClean",
+            "baselineStartupCount",
+            "verifiedStartupCount"
+          )
+          $actualEvidenceProperties = @($evidence.PSObject.Properties.Name)
+          $propertyDifference = @(
+            Compare-Object `
+              -ReferenceObject $expectedEvidenceProperties `
+              -DifferenceObject $actualEvidenceProperties `
+              -CaseSensitive
+          )
+          if ($actualEvidenceProperties.Count -ne $expectedEvidenceProperties.Count -or
+              $propertyDifference.Count -ne 0) {
+            throw "smoke evidence schema 字段集不匹配"
+          }
+
+          $actualEvidenceSha256 = [Convert]::ToHexString(
+            [Security.Cryptography.SHA256]::HashData($evidenceBytes)
+          ).ToLowerInvariant()
+          if ($actualEvidenceSha256 -cne $env:EVIDENCE_SHA256) {
+            throw "smoke evidence 内容 SHA-256 与 smoke job 输出不一致"
+          }
+          if ($evidence.schema -cne "mineradio-draft-upgrade-smoke-v1" -or
+              $evidence.releaseTag -cne $env:GITHUB_REF_NAME -or
+              $evidence.commitSha -cne $env:GITHUB_SHA -or
+              $evidence.targetVersion -cne $env:EXPECTED_TARGET_VERSION -or
+              $evidence.previousVersion -cne $env:EXPECTED_PREVIOUS_VERSION -or
+              $evidence.candidateId -cne $env:EXPECTED_CANDIDATE_ID -or
+              $evidence.candidateId -notmatch '^[0-9a-f]{64}$' -or
+              $evidence.standardUser -ne $true -or
+              $evidence.processElevated -ne $false -or
+              $evidence.githubTokenAbsent -ne $true -or
+              $evidence.ciCredentialsAbsent -ne $true -or
+              $evidence.installedProductVersion -cne $env:EXPECTED_TARGET_VERSION -or
+              $evidence.candidateRelaunched -ne $true -or
+              $evidence.databasePreserved -ne $true -or
+              $evidence.typedPreferencePreserved -ne $true -or
+              $evidence.checkpointConsumed -ne $true -or
+              $evidence.updaterCacheClean -ne $true -or
+              $evidence.baselineStartupCount -lt 1 -or
+              $evidence.verifiedStartupCount -le $evidence.baselineStartupCount) {
+            throw "smoke evidence 与本次发布身份或验收结果不一致"
+          }
+
+      - name: Reverify and publish exact Draft release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          RELEASE_ID: ${{ needs.stage-release-draft.outputs.release_id }}
+          EXPECTED_CANDIDATE_ID: ${{ needs.smoke-upgrade.outputs.candidate_id }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:RELEASE_ID -notmatch '^[1-9]\d*$') { throw "Draft release id 无效" }
+          if ($env:EXPECTED_CANDIDATE_ID -notmatch '^[0-9a-f]{64}$') {
+            throw "smoke candidate id 无效"
+          }
+          $version = $env:GITHUB_REF_NAME.Substring(1)
+          $exeName = "MineRadio-Tauri_${version}_x64-setup.exe"
+          $signed = Join-Path $env:RUNNER_TEMP "signed-release"
+          $verifier = Join-Path $env:RUNNER_TEMP "release-verifier/verify_updater_signature.exe"
+          & bun scripts/ci/publish-release-draft.mjs `
+            $env:RELEASE_ID `
+            $env:EXPECTED_CANDIDATE_ID `
+            --repository $env:GITHUB_REPOSITORY `
+            --tag $env:GITHUB_REF_NAME `
+            --commit-sha $env:GITHUB_SHA `
+            --default-branch $env:DEFAULT_BRANCH `
+            --tauri-config-path (Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/tauri.conf.json") `
+            --signature-verifier-path $verifier `
+            --exe-path (Join-Path $signed $exeName) `
+            --exe-sig-path (Join-Path $signed "$exeName.sig") `
+            --manifest-path (Join-Path $signed "latest.json") `
+            --provenance-path (Join-Path $signed "release-provenance.json") `
+            --provenance-sig-path (Join-Path $signed "release-provenance.json.sig")
+          if ($LASTEXITCODE -ne 0) { throw "公开 exact Draft Release 失败" }
+
+  probe-public-release:
+    name: Probe the public production discovery path
+    needs:
+      - publish-release
+      - smoke-upgrade
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout tagged commit
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install Rust 1.95.0
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & rustup toolchain install 1.95.0 --profile minimal
+          if ($LASTEXITCODE -ne 0) { throw "安装 Rust 1.95.0 失败" }
+          & rustup default 1.95.0
+          if ($LASTEXITCODE -ne 0) { throw "切换 Rust 1.95.0 失败" }
+
+      - name: Install workspace dependencies
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & bun install --frozen-lockfile
+          if ($LASTEXITCODE -ne 0) { throw "安装 discovery probe 依赖失败" }
+
+      - name: Build CI-only updater probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & cargo build `
+            --manifest-path apps/desktop/src-tauri/Cargo.toml `
+            --release `
+            --locked `
+            --features updater-smoke `
+            --example updater-smoke
+          if ($LASTEXITCODE -ne 0) { throw "构建 updater discovery probe 失败" }
+
+      - name: Verify public latest through the production GitHub source
+        shell: pwsh
+        env:
+          PREVIOUS_VERSION: ${{ needs.smoke-upgrade.outputs.previous_version }}
+          TARGET_VERSION: ${{ needs.smoke-upgrade.outputs.target_version }}
+          CANDIDATE_ID: ${{ needs.smoke-upgrade.outputs.candidate_id }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ($env:GITHUB_TOKEN -or $env:GH_TOKEN) {
+            throw "公开 discovery probe 不得依赖 GitHub token"
+          }
+          $harness = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/target/release/examples/updater-smoke.exe"
+          $config = Join-Path $env:GITHUB_WORKSPACE "apps/desktop/src-tauri/tauri.conf.json"
+          $verified = $false
+          for ($attempt = 1; $attempt -le 8; $attempt++) {
+            & $harness probe-public `
+              $config `
+              $env:PREVIOUS_VERSION `
+              $env:TARGET_VERSION `
+              $env:CANDIDATE_ID
+            if ($LASTEXITCODE -eq 0) {
+              $verified = $true
+              break
+            }
+            Start-Sleep -Seconds 10
+          }
+          if (-not $verified) {
+            throw "公开 /latest 未在 bounded retry 内收敛到 smoke-approved candidate"
           }

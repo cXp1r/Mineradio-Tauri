@@ -33,6 +33,7 @@ export interface ShelfCardSprite {
 	readonly material: THREE.MeshBasicMaterial;
 	readonly mesh: THREE.Mesh;
 	update(item: ShelfItem, state?: ShelfCardDrawState): void;
+	retire(): void;
 	dispose(): void;
 }
 
@@ -106,7 +107,12 @@ export function createShelfCardMesh(opts: CreateShelfCardMeshOptions): ShelfCard
 	mesh.renderOrder = 50 + opts.index;
 	mesh.userData.shelfCardIndex = opts.index;
 	mesh.userData.action = makeShelfCardAction(opts.item);
-	let disposed = false;
+	let retired = false;
+	let resourcesDisposed = false;
+	let bindingGeneration = 0;
+	let bindingKey = "";
+	let currentItem = opts.item;
+	let currentState: ShelfCardDrawState = opts.drawState ?? { index: opts.index };
 
 	const sprite: ShelfCardSprite = {
 		canvas,
@@ -116,18 +122,44 @@ export function createShelfCardMesh(opts: CreateShelfCardMeshOptions): ShelfCard
 		material,
 		mesh,
 		update(item, state = { index: opts.index }) {
+			if (retired) return;
+			const nextBindingKey = makeShelfCardBindingKey(item, state.index);
+			if (nextBindingKey !== bindingKey) {
+				bindingKey = nextBindingKey;
+				bindingGeneration += 1;
+				mesh.userData.drawKey = undefined;
+			}
+			currentItem = item;
+			currentState = { ...state };
+			mesh.userData.shelfCardIndex = state.index;
+			mesh.userData.shelfBindingGeneration = bindingGeneration;
+			mesh.renderOrder = 50 + state.index;
 			const coverImage = item.cover ? getLoadedShelfCover(item.cover) : null;
 			drawShelfCard(context, item, state, { coverImage });
 			texture.needsUpdate = true;
 			mesh.userData.action = makeShelfCardAction(item);
 			if (item.cover && !coverImage) {
+				const requestedCover = item.cover;
+				const requestedGeneration = bindingGeneration;
 				requestShelfCover(item.cover, opts.createImage, () => {
-					if (!disposed) sprite.update(item, state);
+					if (
+						retired ||
+						requestedGeneration !== bindingGeneration ||
+						currentItem.cover !== requestedCover
+					) return;
+					sprite.update(currentItem, currentState);
 				});
 			}
 		},
+		retire() {
+			if (retired) return;
+			retired = true;
+			bindingGeneration += 1;
+		},
 		dispose() {
-			disposed = true;
+			if (resourcesDisposed) return;
+			resourcesDisposed = true;
+			sprite.retire();
 			texture.dispose();
 			material.dispose();
 			geometry.dispose();
@@ -135,6 +167,21 @@ export function createShelfCardMesh(opts: CreateShelfCardMeshOptions): ShelfCard
 	};
 	sprite.update(opts.item, opts.drawState ?? { index: opts.index });
 	return sprite;
+}
+
+function makeShelfCardBindingKey(item: ShelfItem, index: number): string {
+	return [
+		index,
+		item.type || "",
+		item.title || "",
+		item.sub || "",
+		item.cover || "",
+		item.tag || "",
+		item.playlistId || "",
+		item.podcastKey || "",
+		item.queueIndex == null ? "" : item.queueIndex,
+		item.provider || "",
+	].join("|");
 }
 
 export function drawShelfCard(

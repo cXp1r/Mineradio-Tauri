@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
-import type { ProviderId, PodcastProgram, PodcastRadio, Track } from "@mineradio/shared";
-import { SidecarClient } from "../../api/sidecar-client";
+import type { PodcastRadio, Track } from "@mineradio/shared";
+import type { SearchExperiencePort } from "../../ports/music/search-port";
 import { isPlayable, playSearchResult } from "../search/play-search-result";
 import { isSharedPlaylistCandidateText } from "../../shared-playlist/imported-playlists";
 import { useSearchStore, type SearchMode } from "../../stores/search-store";
+import { searchSessionController } from "../../features/search/search-session-runtime";
 import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list";
 
 export type { SearchMode } from "../../stores/search-store";
 
 export interface SearchShellProps {
-	client: SidecarClient | null;
+	client: SearchExperiencePort | null;
 	onFocus?: () => void;
 	onUpload?: () => void;
 	onClearCustomCover?: () => void;
@@ -26,11 +27,6 @@ export interface SearchShellProps {
 	requestedMode?: SearchMode;
 }
 
-const HISTORY_CHIPS: Array<{ label: string; mode?: SearchMode; keyword: string }> = [
-	{ label: "遇见", keyword: "遇见" },
-	{ label: "周杰伦", keyword: "周杰伦" },
-	{ label: "播客", mode: "podcast", keyword: "播客" },
-];
 const SEARCH_RESULT_ROW_HEIGHT = 58;
 const SEARCH_RESULT_VIEWPORT_HEIGHT = 348;
 const SEARCH_RESULT_VIRTUAL_THRESHOLD = 80;
@@ -38,16 +34,6 @@ const SEARCH_RESULT_VIRTUAL_THRESHOLD = 80;
 function isPodcastTrack(track: Track): boolean {
 	const candidate = track as Track & { type?: string; programId?: string; radioId?: string };
 	return candidate.type === "podcast" || !!candidate.programId || !!candidate.radioId;
-}
-
-function modeProvider(mode: SearchMode): ProviderId | undefined {
-	if (mode === "netease") return "netease";
-	if (mode === "qq") return "qq";
-	return undefined;
-}
-
-function providerFromMode(mode: SearchMode): ProviderId {
-	return mode === "qq" ? "qq" : "netease";
 }
 
 function trackArtists(track: Track): string {
@@ -63,34 +49,6 @@ function virtualListStyle(window: VirtualListWindow): CSSProperties | undefined 
 			paddingBottom: window.paddingBottom,
 		}
 		: undefined;
-}
-
-export async function searchTracksForMode(
-	client: Pick<SidecarClient, "search" | "searchAll">,
-	mode: SearchMode,
-	keyword: string,
-	limit: number,
-): Promise<Track[]> {
-	const providerFilter = modeProvider(mode);
-	return providerFilter
-		? client.search(providerFilter, keyword, limit)
-		: client.searchAll(keyword, limit);
-}
-
-export function clearSearchAfterPlayback(
-	ops: {
-		nextSearchSeq: () => void;
-		setLoading: (loading: boolean) => void;
-		setKeyword: (keyword: string) => void;
-		setResults: (results: Track[]) => void;
-		setError: (error: string | null) => void;
-	},
-): void {
-	ops.nextSearchSeq();
-	ops.setLoading(false);
-	ops.setKeyword("");
-	ops.setResults([]);
-	ops.setError(null);
 }
 
 function HeartIcon(): ReactElement {
@@ -129,240 +87,93 @@ export function SearchShell({
 }: SearchShellProps): ReactElement {
 	const provider = useSearchStore((s) => s.provider);
 	const keyword = useSearchStore((s) => s.keyword);
+	const mode = useSearchStore((s) => s.mode);
 	const results = useSearchStore((s) => s.results);
+	const podcastResults = useSearchStore((s) => s.podcasts);
+	const podcastPrograms = useSearchStore((s) => s.programs);
+	const podcastCurrentRadio = useSearchStore((s) => s.selectedPodcast);
 	const loading = useSearchStore((s) => s.loading);
+	const loadingNext = useSearchStore((s) => s.loadingNext);
 	const error = useSearchStore((s) => s.error);
-	const setProvider = useSearchStore((s) => s.setProvider);
-	const setKeyword = useSearchStore((s) => s.setKeyword);
-	const setMode = useSearchStore((s) => s.setMode);
-	const setResults = useSearchStore((s) => s.setResults);
-	const setLoading = useSearchStore((s) => s.setLoading);
-	const setError = useSearchStore((s) => s.setError);
-	const openDetail = useSearchStore((s) => s.openDetail);
-	const reset = useSearchStore((s) => s.reset);
-	const modeRef = useRef<SearchMode>("song");
-	const searchSeqRef = useRef(0);
-	const [podcastResults, setPodcastResults] = useState<PodcastRadio[]>([]);
-	const [podcastPrograms, setPodcastPrograms] = useState<PodcastProgram[]>([]);
-	const [podcastCurrentRadio, setPodcastCurrentRadio] = useState<PodcastRadio | null>(null);
+	const exhausted = useSearchStore((s) => s.exhausted);
+	const visibleCount = useSearchStore((s) => s.visibleCount);
+	const recentQueries = useSearchStore((s) => s.recentQueries);
 	const [songResultScrollTop, setSongResultScrollTop] = useState(0);
 	const [podcastResultScrollTop, setPodcastResultScrollTop] = useState(0);
 	const [podcastProgramScrollTop, setPodcastProgramScrollTop] = useState(0);
+	const [surfaceNotice, setSurfaceNotice] = useState<string | null>(null);
+	const requestedModeRef = useRef<SearchMode | undefined>(undefined);
+	const controller = searchSessionController;
 
 	const runSearch = useCallback(
-		async (nextKeyword: string, nextMode: SearchMode = modeRef.current) => {
+		async (nextKeyword: string, nextMode: SearchMode = mode) => {
+			controller.setPort(client);
 			const trimmed = nextKeyword.trim();
-			setKeyword(nextKeyword);
-			modeRef.current = nextMode;
-			setMode(nextMode);
-			setProvider(providerFromMode(nextMode));
-			if (isSharedPlaylistCandidateText(trimmed)) {
-				const seq = searchSeqRef.current + 1;
-				searchSeqRef.current = seq;
-				setSongResultScrollTop(0);
-				setPodcastResultScrollTop(0);
-				setPodcastProgramScrollTop(0);
-				setResults([]);
-				setPodcastResults([]);
-				setPodcastPrograms([]);
-				setPodcastCurrentRadio(null);
-				setLoading(true);
-				setError(null);
-				try {
-					if (!onSharedPlaylistImport) throw new Error("当前版本暂不支持导入歌单链接");
-					await onSharedPlaylistImport(trimmed);
-					if (searchSeqRef.current === seq) setLoading(false);
-				} catch (e) {
-					if (searchSeqRef.current !== seq) return;
-					setLoading(false);
-					const message = e instanceof Error ? e.message : "歌单导入失败";
-					setError(message);
-				}
-				return;
-			}
-			if (nextMode === "podcast") {
-				setSongResultScrollTop(0);
-				setPodcastResultScrollTop(0);
-				setPodcastProgramScrollTop(0);
-				setResults([]);
-				setPodcastPrograms([]);
-				setPodcastCurrentRadio(null);
-				if (!client) {
-					setPodcastResults([]);
-					setError("sidecar 尚未就绪，稍后再试");
-					return;
-				}
-				const seq = searchSeqRef.current + 1;
-				searchSeqRef.current = seq;
-				setLoading(true);
-				setError(null);
-				try {
-					const podcastClient = client as Pick<SidecarClient, "podcastSearch" | "podcastHot">;
-					const detail = trimmed
-						? await podcastClient.podcastSearch(trimmed, 30)
-						: await podcastClient.podcastHot(18, 0);
-					if (searchSeqRef.current === seq) {
-						setPodcastResults(detail.podcasts);
-						setLoading(false);
-					}
-				} catch (e) {
-					if (searchSeqRef.current !== seq) return;
-					setPodcastResults([]);
-					const message = e instanceof Error ? e.message : "播客加载失败";
-					setError(message);
-				}
-				return;
-			}
-			setPodcastResults([]);
-			setPodcastPrograms([]);
-			setPodcastCurrentRadio(null);
 			setSongResultScrollTop(0);
 			setPodcastResultScrollTop(0);
 			setPodcastProgramScrollTop(0);
-			if (!trimmed) {
-				setResults([]);
-				setError(null);
+			if (isSharedPlaylistCandidateText(trimmed)) {
+				await controller.importSharedPlaylist(
+					nextKeyword,
+					nextMode,
+					async (value) => {
+						if (!onSharedPlaylistImport) {
+							throw new Error("当前版本暂不支持导入歌单链接");
+						}
+						await onSharedPlaylistImport(value);
+					},
+				);
 				return;
 			}
-			if (!client) {
-				setResults([]);
-				setError("sidecar 尚未就绪，稍后再试");
-				return;
-			}
-			const seq = searchSeqRef.current + 1;
-			searchSeqRef.current = seq;
-			setLoading(true);
-			setError(null);
-			try {
-				const tracks = await searchTracksForMode(client, nextMode, trimmed, 30);
-				if (searchSeqRef.current === seq) {
-					setSongResultScrollTop(0);
-					setResults(tracks);
-				}
-			} catch (e) {
-				if (searchSeqRef.current !== seq) return;
-				const message = e instanceof Error ? e.message : "搜索失败";
-				setError(message);
-			}
+			await controller.search(nextKeyword, nextMode);
 		},
-		[client, onSharedPlaylistImport, setError, setKeyword, setLoading, setMode, setProvider, setResults],
+		[client, controller, mode, onSharedPlaylistImport],
 	);
 
 	useEffect(() => {
-		if (!keyword.trim() && modeRef.current !== "podcast") {
-			searchSeqRef.current += 1;
-			setLoading(false);
-			setResults([]);
-			setPodcastResults([]);
-			setPodcastPrograms([]);
-			setPodcastCurrentRadio(null);
-			setError(null);
+		if (!keyword.trim() && mode !== "podcast") {
+			controller.clear(false);
 			return;
 		}
 		const timer = setTimeout(() => {
-			void runSearch(keyword, modeRef.current);
+			void runSearch(keyword, mode);
 		}, 180);
 		return () => clearTimeout(timer);
-	}, [keyword, runSearch]);
+	}, [keyword, mode, runSearch]);
 
 	useEffect(() => {
-		if (!requestedMode) return;
-		modeRef.current = requestedMode;
-		setMode(requestedMode);
-		setProvider(providerFromMode(requestedMode));
-		if (requestedMode === "podcast") {
-			void runSearch(keyword.trim() ? keyword : "", "podcast");
-		} else if (keyword.trim()) {
-			void runSearch(keyword, requestedMode);
-		} else {
-			setPodcastResults([]);
-			setResults([]);
-			setError(null);
-		}
-	}, [keyword, requestedMode, runSearch, setError, setMode, setProvider, setResults]);
+		if (!requestedMode || requestedModeRef.current === requestedMode) return;
+		requestedModeRef.current = requestedMode;
+		controller.setPort(client);
+		void controller.search(keyword, requestedMode);
+	}, [client, controller, keyword, requestedMode]);
 
-	const selectMode = (mode: SearchMode) => {
-		modeRef.current = mode;
-		setMode(mode);
-		setProvider(providerFromMode(mode));
-		setResults([]);
-		setPodcastResults([]);
-		setPodcastPrograms([]);
-		setPodcastCurrentRadio(null);
+	const selectMode = (nextMode: SearchMode) => {
 		setSongResultScrollTop(0);
 		setPodcastResultScrollTop(0);
 		setPodcastProgramScrollTop(0);
-		setError(null);
-		if (mode === "podcast") {
-			void runSearch(keyword.trim() ? keyword : "", mode);
-		} else if (keyword.trim()) {
-			void runSearch(keyword, mode);
-		}
+		void runSearch(keyword, nextMode);
 	};
 
 	const submit = () => {
-		openDetail(keyword, modeRef.current);
-		void runSearch(keyword, modeRef.current);
+		controller.setPort(client);
+		void controller.openDetail(keyword, mode);
 	};
 
 	const playResult = (track: Track) => {
 		playSearchResult(track);
-		if (isPodcastTrack(track)) {
-			modeRef.current = "song";
-			setMode("song");
-			setProvider(providerFromMode("song"));
-			setPodcastResults([]);
-			setPodcastPrograms([]);
-			setPodcastCurrentRadio(null);
-		}
-		clearSearchAfterPlayback({
-			nextSearchSeq: () => {
-				searchSeqRef.current += 1;
-			},
-			setLoading,
-			setKeyword,
-			setResults,
-			setError,
-		});
+		controller.clear(false, isPodcastTrack(track) ? "song" : undefined);
 		onResultPlay?.(track);
 	};
 
 	const openPodcastPrograms = async (radio: PodcastRadio) => {
-		if (!client) {
-			setError("sidecar 尚未就绪，稍后再试");
-			return;
-		}
-		const id = radio.id || radio.rid;
-		if (!id) return;
-		const seq = searchSeqRef.current + 1;
-		searchSeqRef.current = seq;
-		setPodcastCurrentRadio(radio);
-		setPodcastPrograms([]);
 		setPodcastProgramScrollTop(0);
-		setLoading(true);
-		setError(null);
-		try {
-			const detail = await (client as Pick<SidecarClient, "podcastPrograms">).podcastPrograms(id, 36, 0);
-			if (searchSeqRef.current !== seq || modeRef.current !== "podcast") return;
-			setPodcastCurrentRadio({ ...radio, ...detail.radio, id, rid: radio.rid || id });
-			setPodcastProgramScrollTop(0);
-			setPodcastPrograms(detail.programs);
-			setLoading(false);
-		} catch (e) {
-			if (searchSeqRef.current !== seq) return;
-			setPodcastPrograms([]);
-			setLoading(false);
-			const message = e instanceof Error ? e.message : "Episodes load failed";
-			setError(message);
-		}
+		controller.setPort(client);
+		await controller.openPodcastPrograms(radio);
 	};
 
 	const backToPodcastRadios = () => {
-		searchSeqRef.current += 1;
-		setPodcastPrograms([]);
-		setPodcastCurrentRadio(null);
-		setLoading(false);
-		setError(null);
+		controller.backToPodcastResults();
 	};
 
 	const openArtist = (track: Track) => {
@@ -377,40 +188,47 @@ export function SearchShell({
 			submit();
 		}
 		if (event.key === "Escape") {
-			reset();
+			controller.clear(false);
 		}
 	};
 
-	const showResults = results.length > 0 || podcastResults.length > 0 || podcastPrograms.length > 0 || !!error || loading || keyword.trim().length > 0 || modeRef.current === "podcast";
+	const showResults = results.length > 0 || podcastResults.length > 0 || podcastPrograms.length > 0 || !!error || loading || keyword.trim().length > 0 || mode === "podcast";
 	const effectivePeek = peek || showResults;
 	const searchAreaClassName = [
 		effectivePeek ? "peek" : "",
 		showResults ? "has-results" : "",
 	].filter(Boolean).join(" ");
+	const displayedResults = results.slice(0, visibleCount);
+	const displayedPodcasts = podcastResults.slice(0, visibleCount);
+	const displayedPrograms = podcastPrograms.slice(0, visibleCount);
 	const songResultWindow = resolveVirtualListWindow({
-		itemCount: results.length,
+		itemCount: displayedResults.length,
 		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
 		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
 		scrollTop: songResultScrollTop,
 		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
 	});
-	const visibleSongResults = results.slice(songResultWindow.startIndex, songResultWindow.endIndex);
+	const visibleSongResults = displayedResults.slice(songResultWindow.startIndex, songResultWindow.endIndex);
 	const podcastResultWindow = resolveVirtualListWindow({
-		itemCount: podcastResults.length,
+		itemCount: displayedPodcasts.length,
 		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
 		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
 		scrollTop: podcastResultScrollTop,
 		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
 	});
-	const visiblePodcastResults = podcastResults.slice(podcastResultWindow.startIndex, podcastResultWindow.endIndex);
+	const visiblePodcastResults = displayedPodcasts.slice(podcastResultWindow.startIndex, podcastResultWindow.endIndex);
 	const podcastProgramWindow = resolveVirtualListWindow({
-		itemCount: podcastPrograms.length,
+		itemCount: displayedPrograms.length,
 		rowHeight: SEARCH_RESULT_ROW_HEIGHT,
 		viewportHeight: SEARCH_RESULT_VIEWPORT_HEIGHT,
 		scrollTop: podcastProgramScrollTop,
 		threshold: SEARCH_RESULT_VIRTUAL_THRESHOLD,
 	});
-	const visiblePodcastPrograms = podcastPrograms.slice(podcastProgramWindow.startIndex, podcastProgramWindow.endIndex);
+	const visiblePodcastPrograms = displayedPrograms.slice(podcastProgramWindow.startIndex, podcastProgramWindow.endIndex);
+	const activeItemCount = mode === "podcast"
+		? podcastCurrentRadio ? podcastPrograms.length : podcastResults.length
+		: results.length;
+	const canLoadNext = visibleCount < activeItemCount || !exhausted;
 
 	return (
 		<div id="search-area" className={searchAreaClassName} data-shell="home-search">
@@ -428,36 +246,30 @@ export function SearchShell({
 						autoComplete="off"
 						spellCheck={false}
 						value={keyword}
-						onChange={(event) => setKeyword(event.target.value)}
+						onChange={(event) => controller.updateDraft(event.target.value)}
 						onFocus={onFocus}
 						onKeyDown={onInputKeyDown}
 					/>
 				</div>
 				<div id="search-mode-tabs" className="search-mode-tabs" role="tablist" aria-label="Search mode">
-					<button id="search-mode-song" className={modeRef.current === "song" ? "active" : ""} type="button" aria-selected={modeRef.current === "song"} onClick={() => selectMode("song")}>All</button>
-					<button id="search-mode-netease" className={modeRef.current === "netease" ? "active" : ""} type="button" aria-selected={modeRef.current === "netease"} onClick={() => selectMode("netease")}>NE</button>
-					<button id="search-mode-qq" className={modeRef.current === "qq" ? "active" : ""} type="button" aria-selected={modeRef.current === "qq"} onClick={() => selectMode("qq")}>QQ</button>
-					<button id="search-mode-podcast" className={modeRef.current === "podcast" ? "active" : ""} type="button" aria-selected={modeRef.current === "podcast"} onClick={() => selectMode("podcast")}>Podcast</button>
+					<button id="search-mode-song" className={mode === "song" ? "active" : ""} type="button" aria-selected={mode === "song"} onClick={() => selectMode("song")}>All</button>
+					<button id="search-mode-netease" className={mode === "netease" ? "active" : ""} type="button" aria-selected={mode === "netease"} onClick={() => selectMode("netease")}>NE</button>
+					<button id="search-mode-qq" className={mode === "qq" ? "active" : ""} type="button" aria-selected={mode === "qq"} onClick={() => selectMode("qq")}>QQ</button>
+					<button id="search-mode-podcast" className={mode === "podcast" ? "active" : ""} type="button" aria-selected={mode === "podcast"} onClick={() => selectMode("podcast")}>Podcast</button>
 				</div>
 				<div id="search-results" className={showResults ? "show" : ""} aria-live="polite">
-					{!showResults ? (
+					{!showResults && recentQueries.length > 0 ? (
 						<div className="search-history">
 							<div className="search-history-head">
 								<span>搜索历史</span>
+								<button className="search-history-clear" type="button" onClick={() => void controller.clearHistory()}>清空</button>
 							</div>
 							<div className="search-history-list">
-								{HISTORY_CHIPS.map((chip) => (
-									<button
-										className="search-history-chip"
-										type="button"
-										key={chip.label}
-										onClick={() => {
-											modeRef.current = chip.mode ?? "song";
-											void runSearch(chip.keyword, modeRef.current);
-										}}
-									>
-										{chip.label}
-									</button>
+								{recentQueries.map((item) => (
+									<span key={item.keyword.toLocaleLowerCase()}>
+										<button className="search-history-chip" type="button" onClick={() => void runSearch(item.keyword, mode)}>{item.keyword}</button>
+										<button className="search-history-remove" type="button" aria-label={`删除历史 ${item.keyword}`} onClick={() => void controller.removeHistory(item.keyword)}>×</button>
+									</span>
 								))}
 							</div>
 						</div>
@@ -628,6 +440,17 @@ export function SearchShell({
 							})}
 						</ul>
 					) : null}
+					{canLoadNext ? (
+						<button
+							className="search-shell-state search-load-more"
+							type="button"
+							data-search-load-more
+							disabled={loadingNext}
+							onClick={() => void searchSessionController.loadNext()}
+						>
+							{loadingNext ? "加载中..." : "加载更多"}
+						</button>
+					) : null}
 				</div>
 			</div>
 			<div id="upload-actions">
@@ -646,13 +469,13 @@ export function SearchShell({
 					aria-label={hasCustomCover ? "取消自定义封面" : "当前没有自定义封面"}
 					onClick={() => {
 						if (hasCustomCover) onClearCustomCover?.();
-						else setError("当前没有自定义封面");
+						else setSurfaceNotice("当前没有自定义封面");
 					}}
 				>×</button>
-				<div id="upload-tip" role="status" aria-live="polite">
-					<button className="upload-tip-close" type="button" aria-label="关闭提示" onClick={() => setError(null)}>×</button>
+				<div id="upload-tip" className={surfaceNotice ? "show" : undefined} role="status" aria-live="polite">
+					<button className="upload-tip-close" type="button" aria-label="关闭提示" onClick={() => setSurfaceNotice(null)}>×</button>
 					<span className="upload-tip-title">导入入口</span>
-					这里支持上传歌曲，也可以给当前曲目换自定义封面。
+					{surfaceNotice ?? "这里支持上传歌曲，也可以给当前曲目换自定义封面。"}
 				</div>
 			</div>
 		</div>

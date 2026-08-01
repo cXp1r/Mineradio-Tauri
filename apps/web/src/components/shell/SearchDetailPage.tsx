@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
-import type { PodcastProgram, PodcastRadio, ProviderId, Track } from "@mineradio/shared";
-import { SidecarClient } from "../../api/sidecar-client";
+import { useEffect, useState, type CSSProperties, type KeyboardEvent, type ReactElement } from "react";
+import type { PodcastRadio, ProviderId, Track } from "@mineradio/shared";
+import type { SearchExperiencePort } from "../../ports/music/search-port";
 import { isPlayable } from "../search/play-search-result";
 import { useSearchStore, type SearchMode } from "../../stores/search-store";
+import { searchSessionController } from "../../features/search/search-session-runtime";
 import { resolveVirtualListWindow, type VirtualListWindow } from "./virtual-list";
 
 export interface SearchDetailPageProps {
-	client: SidecarClient | null;
+	client: SearchExperiencePort | null;
 	onClose: () => void;
 	onPlayResults: (tracks: Track[], index: number) => void;
 	onAppendQueue: (track: Track) => void;
@@ -28,12 +29,6 @@ const SEARCH_DETAIL_MODES: Array<{ mode: SearchMode; label: string; sub: string 
 	{ mode: "qq", label: "QQ 音乐", sub: "QQ" },
 	{ mode: "podcast", label: "播客", sub: "Podcast" },
 ];
-
-function modeProvider(mode: SearchMode): ProviderId | undefined {
-	if (mode === "netease") return "netease";
-	if (mode === "qq") return "qq";
-	return undefined;
-}
 
 function providerLabel(provider: ProviderId): string {
 	if (provider === "netease") return "网易云";
@@ -89,137 +84,56 @@ export function SearchDetailPage({
 	const keyword = useSearchStore((s) => s.keyword);
 	const mode = useSearchStore((s) => s.mode);
 	const results = useSearchStore((s) => s.results);
+	const podcasts = useSearchStore((s) => s.podcasts);
+	const programs = useSearchStore((s) => s.programs);
+	const selectedPodcast = useSearchStore((s) => s.selectedPodcast);
 	const loading = useSearchStore((s) => s.loading);
+	const loadingNext = useSearchStore((s) => s.loadingNext);
 	const error = useSearchStore((s) => s.error);
+	const exhausted = useSearchStore((s) => s.exhausted);
+	const visibleCount = useSearchStore((s) => s.visibleCount);
 	const recentQueries = useSearchStore((s) => s.recentQueries);
-	const setKeyword = useSearchStore((s) => s.setKeyword);
-	const setMode = useSearchStore((s) => s.setMode);
-	const setResults = useSearchStore((s) => s.setResults);
-	const setLoading = useSearchStore((s) => s.setLoading);
-	const setError = useSearchStore((s) => s.setError);
-	const openDetail = useSearchStore((s) => s.openDetail);
-	const closeDetail = useSearchStore((s) => s.closeDetail);
 	const [draftKeyword, setDraftKeyword] = useState(keyword);
 	const [songScrollTop, setSongScrollTop] = useState(0);
 	const [podcastScrollTop, setPodcastScrollTop] = useState(0);
 	const [programScrollTop, setProgramScrollTop] = useState(0);
-	const [podcasts, setPodcasts] = useState<PodcastRadio[]>([]);
-	const [programs, setPrograms] = useState<PodcastProgram[]>([]);
-	const [selectedPodcast, setSelectedPodcast] = useState<PodcastRadio | null>(null);
-	const requestSeqRef = useRef(0);
+	const controller = searchSessionController;
 
 	useEffect(() => {
 		setDraftKeyword(keyword);
 	}, [keyword]);
 
-	const runSearch = useCallback(
-		async (nextKeyword: string, nextMode: SearchMode) => {
-			const trimmed = nextKeyword.trim();
-			requestSeqRef.current += 1;
-			const seq = requestSeqRef.current;
-			setSongScrollTop(0);
-			setPodcastScrollTop(0);
-			setProgramScrollTop(0);
-			setSelectedPodcast(null);
-			setPrograms([]);
-			setError(null);
-
-			if (nextMode === "podcast") {
-				setResults([]);
-				if (!client) {
-					setPodcasts([]);
-					setError("sidecar 尚未就绪，稍后再试");
-					return;
-				}
-				setLoading(true);
-				try {
-					const detail = trimmed
-						? await client.podcastSearch(trimmed, 30)
-						: await client.podcastHot(18, 0);
-					if (requestSeqRef.current !== seq) return;
-					setPodcasts(detail.podcasts);
-					setLoading(false);
-				} catch (e) {
-					if (requestSeqRef.current !== seq) return;
-					setPodcasts([]);
-					setError(e instanceof Error ? e.message : "播客加载失败");
-				}
-				return;
-			}
-
-			setPodcasts([]);
-			if (!trimmed) {
-				setResults([]);
-				setLoading(false);
-				return;
-			}
-			if (!client) {
-				setResults([]);
-				setError("sidecar 尚未就绪，稍后再试");
-				return;
-			}
-			setLoading(true);
-			try {
-				const provider = modeProvider(nextMode);
-				const tracks = provider
-					? await client.search(provider, trimmed, 30)
-					: await client.searchAll(trimmed, 30);
-				if (requestSeqRef.current !== seq) return;
-				setResults(tracks);
-			} catch (e) {
-				if (requestSeqRef.current !== seq) return;
-				setResults([]);
-				setError(e instanceof Error ? e.message : "搜索失败");
-			}
-		},
-		[client, setError, setLoading, setResults],
-	);
-
 	useEffect(() => {
 		if (!detailOpen) return;
-		void runSearch(keyword, mode);
-	}, [detailOpen, keyword, mode, runSearch]);
+		controller.setPort(client);
+		void controller.search(keyword, mode);
+	}, [client, controller, detailOpen, keyword, mode]);
 
 	const submitSearch = () => {
-		openDetail(draftKeyword, mode);
+		setSongScrollTop(0);
+		setPodcastScrollTop(0);
+		setProgramScrollTop(0);
+		controller.setPort(client);
+		void controller.openDetail(draftKeyword, mode);
 	};
 
 	const closePage = () => {
-		requestSeqRef.current += 1;
-		closeDetail();
+		controller.closeDetail();
 		onClose();
 	};
 
 	const selectMode = (nextMode: SearchMode) => {
-		setMode(nextMode);
-		openDetail(draftKeyword, nextMode);
+		setSongScrollTop(0);
+		setPodcastScrollTop(0);
+		setProgramScrollTop(0);
+		controller.setPort(client);
+		void controller.openDetail(draftKeyword, nextMode);
 	};
 
 	const openPodcastPrograms = async (radio: PodcastRadio) => {
-		if (!client) {
-			setError("sidecar 尚未就绪，稍后再试");
-			return;
-		}
-		const id = radio.id || radio.rid;
-		if (!id) return;
-		requestSeqRef.current += 1;
-		const seq = requestSeqRef.current;
-		setSelectedPodcast(radio);
-		setPrograms([]);
 		setProgramScrollTop(0);
-		setLoading(true);
-		setError(null);
-		try {
-			const detail = await client.podcastPrograms(id, 36, 0);
-			if (requestSeqRef.current !== seq) return;
-			setSelectedPodcast({ ...radio, ...detail.radio, id, rid: radio.rid || id });
-			setPrograms(detail.programs);
-			setLoading(false);
-		} catch (e) {
-			if (requestSeqRef.current !== seq) return;
-			setPrograms([]);
-			setError(e instanceof Error ? e.message : "播客节目加载失败");
-		}
+		controller.setPort(client);
+		await controller.openPodcastPrograms(radio);
 	};
 
 	const playResult = (index: number) => {
@@ -244,30 +158,37 @@ export function SearchDetailPage({
 
 	if (!detailOpen) return null;
 
+	const displayedResults = results.slice(0, visibleCount);
+	const displayedPodcasts = podcasts.slice(0, visibleCount);
+	const displayedPrograms = programs.slice(0, visibleCount);
 	const songWindow = resolveVirtualListWindow({
-		itemCount: results.length,
+		itemCount: displayedResults.length,
 		rowHeight: SEARCH_DETAIL_ROW_HEIGHT,
 		viewportHeight: SEARCH_DETAIL_VIEWPORT_HEIGHT,
 		scrollTop: songScrollTop,
 		threshold: SEARCH_DETAIL_VIRTUAL_THRESHOLD,
 	});
-	const visibleResults = results.slice(songWindow.startIndex, songWindow.endIndex);
+	const visibleResults = displayedResults.slice(songWindow.startIndex, songWindow.endIndex);
 	const podcastWindow = resolveVirtualListWindow({
-		itemCount: podcasts.length,
+		itemCount: displayedPodcasts.length,
 		rowHeight: SEARCH_DETAIL_ROW_HEIGHT,
 		viewportHeight: SEARCH_DETAIL_VIEWPORT_HEIGHT,
 		scrollTop: podcastScrollTop,
 		threshold: SEARCH_DETAIL_VIRTUAL_THRESHOLD,
 	});
-	const visiblePodcasts = podcasts.slice(podcastWindow.startIndex, podcastWindow.endIndex);
+	const visiblePodcasts = displayedPodcasts.slice(podcastWindow.startIndex, podcastWindow.endIndex);
 	const programWindow = resolveVirtualListWindow({
-		itemCount: programs.length,
+		itemCount: displayedPrograms.length,
 		rowHeight: SEARCH_DETAIL_ROW_HEIGHT,
 		viewportHeight: SEARCH_DETAIL_VIEWPORT_HEIGHT,
 		scrollTop: programScrollTop,
 		threshold: SEARCH_DETAIL_VIRTUAL_THRESHOLD,
 	});
-	const visiblePrograms = programs.slice(programWindow.startIndex, programWindow.endIndex);
+	const visiblePrograms = displayedPrograms.slice(programWindow.startIndex, programWindow.endIndex);
+	const activeItemCount = mode === "podcast"
+		? selectedPodcast ? programs.length : podcasts.length
+		: results.length;
+	const canLoadNext = visibleCount < activeItemCount || !exhausted;
 	const activeMode = SEARCH_DETAIL_MODES.find((item) => item.mode === mode) ?? SEARCH_DETAIL_MODES[0]!;
 	const showEmpty =
 		!loading &&
@@ -321,13 +242,7 @@ export function SearchDetailPage({
 				</div>
 				{mode === "podcast" && selectedPodcast ? (
 					<div className="search-detail-podcast-head">
-						<button className="search-detail-podcast-back" type="button" onClick={() => {
-							requestSeqRef.current += 1;
-							setSelectedPodcast(null);
-							setPrograms([]);
-							setError(null);
-							setLoading(false);
-						}}>返回播客</button>
+						<button className="search-detail-podcast-back" type="button" onClick={() => controller.backToPodcastResults()}>返回播客</button>
 						<div className={`search-detail-cover${selectedPodcast.coverUrl ? " has-cover" : ""}`} style={coverStyle(selectedPodcast.coverUrl)} />
 						<div>
 							<div className="search-detail-track-title">{selectedPodcast.name || "播客"}</div>
@@ -350,7 +265,8 @@ export function SearchDetailPage({
 								{recentQueries.slice(0, 5).map((item) => (
 									<button key={`${item.mode}:${item.keyword}`} type="button" onClick={() => {
 										setDraftKeyword(item.keyword);
-										openDetail(item.keyword, item.mode);
+										controller.setPort(client);
+										void controller.openDetail(item.keyword, mode);
 									}}>
 										{item.keyword || "热门播客"}
 									</button>
@@ -596,6 +512,17 @@ export function SearchDetailPage({
 							);
 						})}
 					</div>
+				) : null}
+				{canLoadNext ? (
+					<button
+						className="search-detail-state search-load-more"
+						type="button"
+						data-search-detail-load-more
+						disabled={loadingNext}
+						onClick={() => void searchSessionController.loadNext()}
+					>
+						{loadingNext ? "加载中..." : "加载更多"}
+					</button>
 				) : null}
 			</div>
 		</section>

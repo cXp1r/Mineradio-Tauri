@@ -42,6 +42,7 @@ export interface JsDelivrAiDepthEstimatorOptions {
 	onStatus?: (detail: AiDepthStatusDetail) => void;
 }
 
+let sharedModulePromise: Promise<TransformersModule> | null = null;
 let sharedPipelinePromise: Promise<DepthPipeline> | null = null;
 
 function defaultImportModule(url: string): Promise<TransformersModule> {
@@ -65,27 +66,43 @@ function emitAiDepthStatus(
 	window.dispatchEvent(new CustomEvent<AiDepthStatusDetail>(AI_DEPTH_STATUS_EVENT, { detail }));
 }
 
-async function loadPipeline(
+async function loadTransformersModule(
 	importModule: RemoteImport,
 	onStatus?: (detail: AiDepthStatusDetail) => void,
-): Promise<DepthPipeline> {
-	if (!sharedPipelinePromise) {
+): Promise<TransformersModule> {
+	if (!sharedModulePromise) {
 		emitAiDepthStatus({ visible: true, text: "加载 AI 深度模型 (首次需下载 50MB)…" }, onStatus);
-		sharedPipelinePromise = importModule(TRANSFORMERS_JSDELIVR_URL)
-			.then(async (mod) => {
+		sharedModulePromise = importModule(TRANSFORMERS_JSDELIVR_URL)
+			.then((mod) => {
 				if (mod.env) {
 					mod.env.allowLocalModels = false;
 					const wasm = mod.env.backends?.onnx?.wasm;
 					if (wasm) wasm.numThreads = 1;
 				}
-				return mod.pipeline("depth-estimation", AI_DEPTH_MODEL_ID);
+				return mod;
 			})
+			.catch((error) => {
+				sharedModulePromise = null;
+				throw error;
+			});
+	}
+	return await sharedModulePromise;
+}
+
+async function loadPipeline(mod: TransformersModule): Promise<DepthPipeline> {
+	if (!sharedPipelinePromise) {
+		sharedPipelinePromise = mod.pipeline("depth-estimation", AI_DEPTH_MODEL_ID)
 			.catch((error) => {
 				sharedPipelinePromise = null;
 				throw error;
 			});
 	}
-	return sharedPipelinePromise;
+	return await sharedPipelinePromise;
+}
+
+function throwIfAborted(signal?: AbortSignal): void {
+	if (!signal?.aborted) return;
+	throw signal.reason ?? new DOMException("Aborted", "AbortError");
 }
 
 function makeAIDepthInputCanvas(
@@ -107,13 +124,15 @@ function makeAIDepthInputCanvas(
 	}
 }
 
-async function canvasLikeFromDepthResult(result: unknown): Promise<HomeCoverImage | null> {
+async function canvasLikeFromDepthResult(result: unknown, signal?: AbortSignal): Promise<HomeCoverImage | null> {
 	const record = result as Record<string, unknown> | null;
 	const raw = record && (record.depth ?? record.predicted_depth ?? result);
 	if (!raw) return null;
 	const maybeCanvas = raw as { toCanvas?: () => Promise<HomeCoverImage> | HomeCoverImage };
 	if (typeof maybeCanvas.toCanvas === "function") {
-		return await maybeCanvas.toCanvas();
+		const canvas = await maybeCanvas.toCanvas();
+		throwIfAborted(signal);
+		return canvas;
 	}
 	return raw as HomeCoverImage;
 }
@@ -132,14 +151,25 @@ export function createJsDelivrAiDepthEstimator(
 	let busy = false;
 	let inputCanvas: ReturnType<DepthCanvasFactory> | null = null;
 
-	return async (image) => {
+	return async (image, signal) => {
 		const current = now();
 		if (busy || current < failUntil || current - lastRunAt < minGapMs) return null;
+		const previousLastRunAt = lastRunAt;
 		lastRunAt = current;
 		busy = true;
+		let hidden = false;
+		const hide = (toast?: string) => {
+			if (hidden) return;
+			hidden = true;
+			emitAiDepthStatus({ visible: false, text: "", ...(toast ? { toast } : {}) }, onStatus);
+		};
 		try {
+			throwIfAborted(signal);
 			emitAiDepthStatus({ visible: true, text: "后台增强封面深度…" }, onStatus);
-			const pipeline = await loadPipeline(importModule, onStatus);
+			const transformersModule = await loadTransformersModule(importModule, onStatus);
+			throwIfAborted(signal);
+			const pipeline = await loadPipeline(transformersModule);
+			throwIfAborted(signal);
 			inputCanvas = inputCanvas ?? createCanvas(160);
 			const inputCanvasImage = inputCanvas
 				? makeAIDepthInputCanvas(image, createCanvas, inputCanvas)
@@ -152,17 +182,19 @@ export function createJsDelivrAiDepthEstimator(
 				input = inputCanvasImage;
 			}
 			const result = await pipeline(input);
-			const canvas = await canvasLikeFromDepthResult(result);
-			emitAiDepthStatus(
-				canvas
-					? { visible: false, text: "", toast: "AI 深度已后台增强" }
-					: { visible: false, text: "" },
-				onStatus,
-			);
+			throwIfAborted(signal);
+			const canvas = await canvasLikeFromDepthResult(result, signal);
+			throwIfAborted(signal);
+			hide(canvas ? "AI 深度已后台增强" : undefined);
 			return canvas;
 		} catch {
+			if (signal?.aborted) {
+				lastRunAt = previousLastRunAt;
+				hide();
+				return null;
+			}
 			failUntil = now() + cooldownMs;
-			emitAiDepthStatus({ visible: false, text: "" }, onStatus);
+			hide();
 			return null;
 		} finally {
 			busy = false;
@@ -171,5 +203,6 @@ export function createJsDelivrAiDepthEstimator(
 }
 
 export function resetJsDelivrAiDepthPipelineForTests(): void {
+	sharedModulePromise = null;
 	sharedPipelinePromise = null;
 }

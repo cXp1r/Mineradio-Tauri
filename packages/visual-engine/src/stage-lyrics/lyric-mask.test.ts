@@ -60,3 +60,23 @@ test("makeLyricMask collapses whitespace and trims text", () => {
 	const mask = makeLyricMask("   hello   world  ", makeFakeThree());
 	expect(mask.lines[0]).toBe("hello world");
 });
+
+test("makeLyricMask renders structured Stage rows without flattening translations", () => {
+	const mask = makeLyricMask("ignored fallback", makeFakeThree(), {
+		structuredRows: [
+			{ key: "prev", text: "上一句", alpha: 0.52, scale: 0.82, translationLine: false, active: false, offset: -1.4 },
+			{ key: "current", text: "当前句", alpha: 1, scale: 1, translationLine: false, active: true, offset: 0 },
+			{ key: "translation", text: "Current line", alpha: 0.78, scale: 0.72, weight: 650, translationLine: true, active: false, offset: 1.2 },
+			{ key: "next", text: "下一句", alpha: 0.48, scale: 0.82, translationLine: false, active: false, offset: 2.4 },
+		],
+	});
+
+	expect(mask.lines).toEqual(["上一句", "当前句", "Current line", "下一句"]);
+	expect(mask.lineCount).toBe(4);
+	expect(mask.height).toBeGreaterThan(LYRIC_MASK_H);
+	expect(mask.rasterRows?.find((row) => row.active)?.text).toBe("当前句");
+	expect(mask.rasterRows?.find((row) => row.translationLine)?.weight).toBe(650);
+	expect(mask.activeYMin).toBeGreaterThanOrEqual(0);
+	expect(mask.activeYMax).toBeLessThanOrEqual(1);
+	expect(mask.activeYMin).toBeLessThan(mask.activeYMax ?? 0);
+});

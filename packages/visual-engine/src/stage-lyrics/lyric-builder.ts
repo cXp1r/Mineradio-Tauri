@@ -10,9 +10,15 @@ import { makeDotTexture } from "./lyric-dot-texture";
 import { lyricThreeColor } from "./color-utils";
 import { resolveLyricPalette, type LyricPalette } from "./palette";
 import type { LyricTextOptions } from "./lyric-text";
+import {
+	createLyricTextureLease,
+	estimateLyricTextureBytes,
+	type LyricTextureLease,
+} from "./textures/texture-lease";
 
 export interface LyricGroupOptions extends LyricShaderMaterialOptions, LyricTextOptions {
 	threeFactory?: ThreeFactory;
+	renderBase?: number;
 	pixelScale?: number;
 	lyricGlowParticles?: boolean;
 	dotTexture?: THREE.Texture;
@@ -21,6 +27,44 @@ export interface LyricGroupOptions extends LyricShaderMaterialOptions, LyricText
 	maskOptions?: Omit<MakeLyricMaskOptions, "lyricFont" | "lyricLetterSpacing" | "lyricLineHeight">;
 	glowOptions?: LyricGlowTextureOptions;
 	readabilityOptions?: LyricReadabilityTextureOptions;
+	reserveResources?: () => LyricGroupResourceReservation | null;
+	isCancelled?: () => boolean;
+}
+
+export interface LyricGroupResourceAllocation {
+	readonly textureBytes: number;
+	readonly geometryBytes: number;
+	readonly released: boolean;
+	release(): void;
+}
+
+export interface LyricGroupResourceReservation {
+	readonly active: boolean;
+	readonly committed: boolean;
+	readonly allocation: LyricGroupResourceAllocation;
+	commit(dispose: () => void): boolean;
+	cancel(): void;
+}
+
+export class LyricGroupResourceAdmissionError extends Error {
+	constructor() {
+		super("Stage lyric resource admission was denied before allocation.");
+		this.name = "LyricGroupResourceAdmissionError";
+	}
+}
+
+export class LyricGroupBuildCancelledError extends Error {
+	constructor() {
+		super("Stage lyric build was cancelled.");
+		this.name = "LyricGroupBuildCancelledError";
+	}
+}
+
+export class LyricGroupResourceCommitError extends Error {
+	constructor() {
+		super("Stage lyric resource reservation could not be committed.");
+		this.name = "LyricGroupResourceCommitError";
+	}
 }
 
 export interface LyricGroup {
@@ -41,10 +85,13 @@ export interface LyricGroup {
 	readonly textWorldH: number;
 	readonly worldW: number;
 	readonly worldH: number;
+	readonly textureLeases: readonly LyricTextureLease[];
 }
 
 const DEFAULT_THREE_FACTORY: ThreeFactory = async () => await import("three");
 const SPARK_COUNT = 132;
+const disposedLyricGroups = new WeakSet<object>();
+const lyricGroupResourceAllocations = new WeakMap<object, LyricGroupResourceAllocation>();
 
 const FACING_TEXTURE_VERTEX_SHADER = [
 	"varying vec2 vUv;",
@@ -111,24 +158,35 @@ function disposeObject(obj: unknown): void {
 	}
 }
 
-function disposeTexture(tex: { dispose?: () => void } | null | undefined): void {
-	if (!tex) return;
-	try {
-		tex.dispose?.();
-	} catch {
-		void tex;
-	}
+function textureSize(texture: THREE.Texture | null | undefined, fallbackWidth: number, fallbackHeight: number): {
+	width: number;
+	height: number;
+} {
+	const image = (texture as unknown as { image?: { width?: unknown; height?: unknown } } | null | undefined)?.image;
+	const width = Number(image?.width);
+	const height = Number(image?.height);
+	return {
+		width: Number.isFinite(width) && width > 0 ? width : fallbackWidth,
+		height: Number.isFinite(height) && height > 0 ? height : fallbackHeight,
+	};
 }
 
-function disposeMaterialTexture(material: unknown): void {
-	const mat = material as {
-		map?: { dispose?: () => void } | null;
-		uniforms?: { uMap?: { value?: { dispose?: () => void } | null } };
-	} | null | undefined;
-	const map = mat?.map;
-	const uniformMap = mat?.uniforms?.uMap?.value;
-	disposeTexture(map);
-	if (uniformMap !== map) disposeTexture(uniformMap);
+function leaseTexture(
+	leases: LyricTextureLease[],
+	texture: THREE.Texture | null | undefined,
+	ownership: "owned" | "borrowed",
+	fallbackWidth: number,
+	fallbackHeight: number,
+): LyricTextureLease | null {
+	if (!texture) return null;
+	const size = textureSize(texture, fallbackWidth, fallbackHeight);
+	const lease = createLyricTextureLease({
+		texture,
+		ownership,
+		estimatedBytes: estimateLyricTextureBytes(size.width, size.height),
+	});
+	leases.push(lease);
+	return lease;
 }
 
 function rgbToThreeColor(THREE: ThreeModule, rgb: ReturnType<typeof lyricThreeColor>): THREE.Color | null {
@@ -169,7 +227,39 @@ export async function buildLyricGroup(
 	opts: LyricGroupOptions = {},
 ): Promise<LyricGroup> {
 	const factory = opts.threeFactory ?? DEFAULT_THREE_FACTORY;
+	const throwIfCancelled = () => {
+		if (opts.isCancelled?.()) throw new LyricGroupBuildCancelledError();
+	};
+	throwIfCancelled();
+	const reservation = opts.reserveResources?.();
+	if (opts.reserveResources && !reservation) {
+		throw new LyricGroupResourceAdmissionError();
+	}
+	const textureLeases: LyricTextureLease[] = [];
+	const rollback: Array<() => void> = [];
+	const trackTexture = (
+		texture: THREE.Texture | null | undefined,
+		ownership: "owned" | "borrowed",
+		fallbackWidth: number,
+		fallbackHeight: number,
+	) => {
+		const lease = leaseTexture(textureLeases, texture, ownership, fallbackWidth, fallbackHeight);
+		if (lease) rollback.push(() => lease.release());
+	};
+	const trackDisposable = <T extends { dispose?: () => void }>(resource: T): T => {
+		rollback.push(() => {
+			try {
+				resource.dispose?.();
+			} catch {
+				// 失败构建必须继续逆序释放其余已创建资源。
+			}
+		});
+		return resource;
+	};
+	try {
+	throwIfCancelled();
 	const THREE = await factory();
+	throwIfCancelled();
 	const pal = resolveLyricPalette(palette);
 	const rand = opts.rand ?? Math.random;
 	const cleaned = String(text ?? "")
@@ -182,14 +272,18 @@ export async function buildLyricGroup(
 		lyricWeight: opts.lyricWeight,
 	};
 	const mask = makeLyricMask(cleaned, THREE, { ...(opts.maskOptions ?? {}), maxAnisotropy: opts.maxAnisotropy, ...maskTextOpts });
+	trackTexture(mask.texture, "owned", mask.width, mask.height);
+	throwIfCancelled();
 	const worldW = 6.1;
 	const worldH = worldW * (mask.height / mask.width);
-	const geo = new THREE.PlaneGeometry(worldW, worldH, 1, 1) as THREE.PlaneGeometry;
+	const geo = trackDisposable(new THREE.PlaneGeometry(worldW, worldH, 1, 1) as THREE.PlaneGeometry);
 	const textWorldW = worldW * (mask.textWidth / mask.width);
 	const textWorldH = worldH * ((mask.textHeight || mask.fontSize) / mask.height);
 
 	const group = new THREE.Group() as THREE.Group;
-	(group as unknown as { renderOrder: number }).renderOrder = 42;
+	(group as unknown as { renderOrder: number }).renderOrder = Number.isFinite(opts.renderBase)
+		? Number(opts.renderBase)
+		: 38;
 	group.position.set((rand() - 0.5) * 0.08, 0.2, 1.46);
 	group.scale.setScalar(0.96);
 	group.userData.age = 0;
@@ -198,12 +292,14 @@ export async function buildLyricGroup(
 	group.userData.floatSeed = rand() * 100;
 
 	const sunBloomTex = getLyricSunBloomTexture(THREE);
+	trackTexture(sunBloomTex, "borrowed", 1024, 512);
 	const sunMatColor = lyricThreeColor(pal.highlight || pal.secondary || pal.primary, "#ffe7a6", 0.5);
-	const sunMat = makeFacingTextureMaterial(THREE, sunBloomTex, sunMatColor, 0, THREE.AdditiveBlending);
+	const sunMat = trackDisposable(makeFacingTextureMaterial(THREE, sunBloomTex, sunMatColor, 0, THREE.AdditiveBlending));
 	const sunWorldW0 = Math.max(textWorldW + worldH * 1.1, textWorldW * 1.18);
 	const sunWorldW = Math.min(worldW * 1.16, Math.max(worldH * 1.35, sunWorldW0));
 	const sunWorldH = Math.max(worldH * 1.02, Math.min(worldH * 1.54, worldH + textWorldW * 0.07));
-	const sun = new THREE.Mesh(new THREE.PlaneGeometry(sunWorldW, sunWorldH, 1, 1) as THREE.PlaneGeometry, sunMat) as THREE.Mesh;
+	const sunGeometry = trackDisposable(new THREE.PlaneGeometry(sunWorldW, sunWorldH, 1, 1) as THREE.PlaneGeometry);
+	const sun = new THREE.Mesh(sunGeometry, sunMat) as THREE.Mesh;
 	(sun as unknown as { renderOrder: number }).renderOrder = 40;
 	sun.position.set(0, 0.02, -0.03);
 	sun.scale.set(0.78, 0.58, 1);
@@ -214,17 +310,27 @@ export async function buildLyricGroup(
 		lyricLetterSpacing: opts.lyricLetterSpacing,
 		lyricLineHeight: opts.lyricLineHeight,
 		lyricWeight: opts.lyricWeight,
+		...(mask.rasterRows?.length
+			? {
+				structuredRows: mask.rasterRows,
+				canvasWidth: mask.width,
+				canvasHeight: mask.height,
+			}
+			: {}),
 		...(opts.glowOptions ?? {}),
 	};
 	const glowTex = makeLyricGlowTexture(cleaned, mask.fontSize, mask.textWidth, mask.lines, mask.lineHeight, mask.fitScaleX, THREE, glowOptions);
+	trackTexture(glowTex, "owned", mask.width, mask.height);
+	throwIfCancelled();
 	const glowMatColor = lyricThreeColor(pal.secondary, "#9cffdf", 0.36);
-	const glowMat = makeFacingTextureMaterial(THREE, glowTex, glowMatColor, 0, THREE.AdditiveBlending);
+	const glowMat = trackDisposable(makeFacingTextureMaterial(THREE, glowTex, glowMatColor, 0, THREE.AdditiveBlending));
 	const glowMeta = (glowTex as unknown as { userData?: { width?: number; height?: number; textWidth?: number } } | null)?.userData ?? {};
 	const glowWorldW0 = textWorldW * ((glowMeta.width || mask.width) / Math.max(1, glowMeta.textWidth || mask.textWidth));
 	const glowWorldW = Math.min(worldW * 1.1, Math.max(textWorldW + worldH * 0.38, glowWorldW0));
 	const glowWorldH0 = worldH * ((glowMeta.height || mask.height) / mask.height);
 	const glowWorldH = Math.min(worldH * 1.42, Math.max(worldH * 0.92, glowWorldH0));
-	const glow = new THREE.Mesh(new THREE.PlaneGeometry(glowWorldW, glowWorldH, 1, 1) as THREE.PlaneGeometry, glowMat) as THREE.Mesh;
+	const glowGeometry = trackDisposable(new THREE.PlaneGeometry(glowWorldW, glowWorldH, 1, 1) as THREE.PlaneGeometry);
+	const glow = new THREE.Mesh(glowGeometry, glowMat) as THREE.Mesh;
 	(glow as unknown as { renderOrder: number }).renderOrder = 41;
 	glow.scale.set(1, 1.06, 1);
 	group.add(glow);
@@ -238,20 +344,42 @@ export async function buildLyricGroup(
 		...(opts.readabilityOptions ?? {}),
 	};
 	const readabilityTex = makeLyricReadabilityTexture(mask, THREE, readabilityOptions);
-	const readabilityMat = makeFacingTextureMaterial(THREE, readabilityTex, lyricThreeColor("#ffffff", "#ffffff", 0), 0, THREE.NormalBlending);
-	const readability = new THREE.Mesh(new THREE.PlaneGeometry(worldW, worldH, 1, 1) as THREE.PlaneGeometry, readabilityMat) as THREE.Mesh;
+	trackTexture(readabilityTex, "owned", mask.width, mask.height);
+	throwIfCancelled();
+	const readabilityMat = trackDisposable(makeFacingTextureMaterial(THREE, readabilityTex, lyricThreeColor("#ffffff", "#ffffff", 0), 0, THREE.NormalBlending));
+	const readabilityGeometry = trackDisposable(new THREE.PlaneGeometry(worldW, worldH, 1, 1) as THREE.PlaneGeometry);
+	const readability = new THREE.Mesh(readabilityGeometry, readabilityMat) as THREE.Mesh;
 	(readability as unknown as { renderOrder: number }).renderOrder = 42;
 	readability.position.set(0, 0, -0.012);
 	group.add(readability);
 
-	const shaderOpts: LyricShaderMaterialOptions = { lyricsHasNativeKaraoke: opts.lyricsHasNativeKaraoke };
-	const { material: textMat } = makeLyricShaderMaterial(mask, pal, THREE, shaderOpts);
+	const motionSeed = Number.isFinite(opts.motionSeed) ? Number(opts.motionSeed) : rand() * 997;
+	const shaderOpts: LyricShaderMaterialOptions = {
+		lyricsHasNativeKaraoke: opts.lyricsHasNativeKaraoke,
+		motionProfile: opts.motionProfile,
+		motionSeed,
+		timeUniform: opts.timeUniform,
+	};
+	const {
+		material: createdTextMat,
+		motionProfile,
+	} = makeLyricShaderMaterial(mask, pal, THREE, shaderOpts);
+	const textMat = trackDisposable(createdTextMat);
+	group.userData.motionStyle = motionProfile.style;
+	group.userData.motionProfile = motionProfile;
+	group.userData.glitchSeed = motionSeed;
+	group.userData.glitchBurst = 0;
+	group.userData.glitchHold = 0;
+	group.userData.glitchNextAt = 0;
+	group.userData.glitchLastBeatAt = -10;
 	const textMesh = new THREE.Mesh(geo, textMat) as THREE.Mesh;
 	(textMesh as unknown as { renderOrder: number }).renderOrder = 43;
 	group.add(textMesh);
 
 	const dotTex = opts.dotTexture ?? makeDotTexture(THREE);
-	const pgeo = new THREE.BufferGeometry() as THREE.BufferGeometry;
+	trackTexture(dotTex, opts.dotTexture ? "borrowed" : "owned", 64, 64);
+	throwIfCancelled();
+	const pgeo = trackDisposable(new THREE.BufferGeometry() as THREE.BufferGeometry);
 	const ppos = new Float32Array(SPARK_COUNT * 3);
 	const pseed = new Float32Array(SPARK_COUNT);
 	for (let i = 0; i < SPARK_COUNT; i++) {
@@ -268,7 +396,7 @@ export async function buildLyricGroup(
 	pgeo.setAttribute("seed", new THREE.BufferAttribute(pseed, 1) as THREE.BufferAttribute);
 	const sparkColorRgb = lyricThreeColor(pal.highlight || pal.secondary || pal.primary, "#fff7d2", 0.3);
 	const pixelScale = opts.pixelScale ?? 1;
-	const pmat = new THREE.ShaderMaterial({
+	const pmat = trackDisposable(new THREE.ShaderMaterial({
 		uniforms: {
 			uMap: { value: dotTex },
 			uSize: { value: 0.052 },
@@ -282,7 +410,7 @@ export async function buildLyricGroup(
 		depthWrite: false,
 		depthTest: false,
 		blending: THREE.AdditiveBlending,
-	} as THREE.ShaderMaterialParameters) as THREE.ShaderMaterial;
+	} as THREE.ShaderMaterialParameters) as THREE.ShaderMaterial);
 	const sparks = new THREE.Points(pgeo, pmat) as THREE.Points;
 	(sparks as unknown as { renderOrder: number }).renderOrder = 44;
 	(sparks as unknown as { visible: boolean }).visible = !!(opts.lyricGlowParticles ?? false);
@@ -320,7 +448,7 @@ export async function buildLyricGroup(
 		0,
 	);
 
-	return {
+	const lyric: LyricGroup = {
 		group,
 		mask,
 		textMesh,
@@ -338,7 +466,32 @@ export async function buildLyricGroup(
 		textWorldH,
 		worldW,
 		worldH,
+		textureLeases,
 	};
+	throwIfCancelled();
+	if (reservation) {
+		if (!reservation.commit(() => disposeLyricGroupResources(lyric))) {
+			throw new LyricGroupResourceCommitError();
+		}
+		lyricGroupResourceAllocations.set(lyric as unknown as object, reservation.allocation);
+	}
+	rollback.length = 0;
+	return lyric;
+	} catch (error) {
+		for (let index = rollback.length - 1; index >= 0; index -= 1) {
+			try {
+				rollback[index]();
+			} catch {
+				// 单个 rollback 失败不能阻断其余部分资源收口。
+			}
+		}
+		try {
+			reservation?.cancel();
+		} catch {
+			// reservation 回滚异常不能掩盖原始构建错误。
+		}
+		throw error;
+	}
 }
 
 export function updateLyricGroupProgress(lyric: Pick<LyricGroup, "textMat" | "group">, progress: number): void {
@@ -348,7 +501,16 @@ export function updateLyricGroupProgress(lyric: Pick<LyricGroup, "textMat" | "gr
 	(lyric.group as unknown as { userData: Record<string, unknown> }).userData.lastLyricProgress = p;
 }
 
-export function disposeLyricGroup(lyric: LyricGroup): void {
+export function getLyricGroupResourceAllocation(
+	lyric: LyricGroup,
+): LyricGroupResourceAllocation | undefined {
+	return lyricGroupResourceAllocations.get(lyric as unknown as object);
+}
+
+function disposeLyricGroupResources(lyric: LyricGroup): void {
+	const disposalKey = lyric as unknown as object;
+	if (disposedLyricGroups.has(disposalKey)) return;
+	disposedLyricGroups.add(disposalKey);
 	const { group } = lyric;
 	disposeObject(lyric.sun);
 	disposeObject(lyric.glow);
@@ -361,11 +523,13 @@ export function disposeLyricGroup(lyric: LyricGroup): void {
 		};
 		disposeObject(sparkObj);
 	}
-	disposeTexture(lyric.mask.texture);
-	disposeMaterialTexture(lyric.sunMat);
-	disposeMaterialTexture(lyric.glowMat);
-	disposeMaterialTexture(lyric.readabilityMat);
-	disposeMaterialTexture(lyric.sparkMat);
+	for (const lease of lyric.textureLeases) {
+		try {
+			lease.release();
+		} catch {
+			// 单个 lease 释放失败不能阻断其余 group 资源收口。
+		}
+	}
 	if (group) {
 		const children = (group as unknown as { children: unknown[] }).children;
 		if (Array.isArray(children)) children.length = 0;
@@ -374,5 +538,14 @@ export function disposeLyricGroup(lyric: LyricGroup): void {
 		} catch {
 			void group;
 		}
+	}
+}
+
+export function disposeLyricGroup(lyric: LyricGroup): void {
+	const allocation = getLyricGroupResourceAllocation(lyric);
+	try {
+		if (allocation && !allocation.released) allocation.release();
+	} finally {
+		disposeLyricGroupResources(lyric);
 	}
 }

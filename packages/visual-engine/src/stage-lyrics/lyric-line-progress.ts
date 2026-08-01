@@ -9,6 +9,7 @@ export interface LyricWord {
 export interface LyricLine {
 	t: number;
 	text: string;
+	translation?: string;
 	duration?: number;
 	charCount?: number;
 	fallback?: boolean;

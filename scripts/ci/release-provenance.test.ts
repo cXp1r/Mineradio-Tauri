@@ -15,7 +15,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "bun:test";
 
 import {
+  canonicalReleaseCandidateIdentityText,
+  canonicalReleaseProvenanceText,
+  createReleaseCandidateIdentity,
   createReleaseProvenance,
+  releaseProvenanceDigest,
   verifyReleaseProvenance,
 } from "./release-provenance.mjs";
 
@@ -23,12 +27,38 @@ function sha256(content: string) {
   return createHash("sha256").update(content).digest("hex");
 }
 
+function validationJson(value: unknown) {
+  return `${JSON.stringify(value)}\n`;
+}
+
+function rewriteTauriSignature(
+  encoded: string,
+  rewrite: (lines: string[]) => void,
+) {
+  const decoded = Buffer.from(encoded, "base64").toString("utf8");
+  const lines = decoded.replace(/\n$/, "").split("\n");
+  rewrite(lines);
+  return Buffer.from(`${lines.join("\n")}\n`, "utf8").toString("base64");
+}
+
 const cliPath = fileURLToPath(
   new URL("./release-provenance.mjs", import.meta.url),
 );
+const sharedProvenancePath = fileURLToPath(
+  new URL(
+    "../../apps/desktop/src-tauri/src/runtime/updater/fixtures/provenance-v2.json",
+    import.meta.url,
+  ),
+);
+const sharedContractPath = fileURLToPath(
+  new URL(
+    "../../apps/desktop/src-tauri/src/runtime/updater/fixtures/provenance-v2-contract.json",
+    import.meta.url,
+  ),
+);
 
 describe("createReleaseProvenance", () => {
-  test("生成固定 schema，并按名称排序记录三项发布资产", () => {
+  test("生成绑定 Windows x64 currentUser NSIS 安装包的 canonical provenance v2", () => {
     const temporaryRoot = mkdtempSync(
       join(tmpdir(), "mineradio-release-provenance-create-"),
     );
@@ -50,28 +80,32 @@ describe("createReleaseProvenance", () => {
           assetPaths: [manifestPath, signaturePath, executablePath],
         }),
       ).toEqual({
-        schema_version: 1,
+        schema_version: 2,
         repository: "zzstar101/Mineradio-Tauri",
         tag: "v1.2.3",
         commit_sha: "0123456789abcdef0123456789abcdef01234567",
-        assets: [
-          {
-            name: executableName,
-            size: 9,
-            sha256: sha256("installer"),
-          },
-          {
-            name: `${executableName}.sig`,
-            size: 9,
-            sha256: sha256("signature"),
-          },
-          {
-            name: "latest.json",
-            size: 20,
-            sha256: sha256('{"version":"1.2.3"}\n'),
-          },
-        ],
+        platform: "windows-x86_64",
+        package_type: "nsis",
+        install_mode: "currentUser",
+        installer: {
+          name: executableName,
+          size: 9,
+          sha256: sha256("installer"),
+        },
       });
+
+      const provenance = createReleaseProvenance({
+        repository: "zzstar101/Mineradio-Tauri",
+        tag: "v1.2.3",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        assetPaths: [manifestPath, signaturePath, executablePath],
+      });
+      expect(canonicalReleaseProvenanceText(provenance)).toBe(
+        '{"schema_version":2,"repository":"zzstar101/Mineradio-Tauri","tag":"v1.2.3","commit_sha":"0123456789abcdef0123456789abcdef01234567","platform":"windows-x86_64","package_type":"nsis","install_mode":"currentUser","installer":{"name":"MineRadio-Tauri_1.2.3_x64-setup.exe","size":9,"sha256":"9c0d294c05fc1d88d698034609bb81c0c69196327594e4c69d2915c80fd9850c"}}\n',
+      );
+      expect(releaseProvenanceDigest(provenance)).toBe(
+        "8f0e1c18d801bde833d2aec15adca1bc6b49f19ad81b4c4300655fb0350f29a6",
+      );
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
@@ -241,7 +275,153 @@ describe("createReleaseProvenance", () => {
   });
 });
 
+describe("createReleaseCandidateIdentity", () => {
+  test("共享 fixture 让 GitHub 与 CI staging 产生相同 candidate identity", () => {
+    const rawProvenance = readFileSync(sharedProvenancePath, "utf8");
+    const provenance = JSON.parse(rawProvenance);
+    const contract = JSON.parse(readFileSync(sharedContractPath, "utf8"));
+    const canonicalInput = {
+      provenance,
+      version: "1.2.3",
+      installerSignature: contract.installer_signature,
+      provenanceSignature: contract.provenance_signature,
+    };
+    const githubFixture = {
+      ...canonicalInput,
+      artifactLocator: contract.github_locator,
+    };
+    const stagingFixture = {
+      ...canonicalInput,
+      artifactLocator: contract.staging_locator,
+    };
+
+    expect(canonicalReleaseProvenanceText(provenance)).toBe(rawProvenance);
+    expect(releaseProvenanceDigest(provenance)).toBe(
+      contract.expected_provenance_sha256,
+    );
+    const canonical = canonicalReleaseCandidateIdentityText(githubFixture);
+    expect(canonical).toBe(contract.expected_candidate_identity);
+    expect(canonical).not.toContain("github.com");
+    expect(canonical).not.toContain("actions\\_temp");
+    expect(createReleaseCandidateIdentity(githubFixture)).toBe(
+      contract.expected_candidate_id,
+    );
+    expect(createReleaseCandidateIdentity(stagingFixture)).toBe(
+      createReleaseCandidateIdentity(githubFixture),
+    );
+    expect(() =>
+      createReleaseCandidateIdentity({
+        ...stagingFixture,
+        installerSignature: `${contract.installer_signature}tampered`,
+      }),
+    ).toThrow("canonical Tauri base64");
+    expect(() =>
+      createReleaseCandidateIdentity({
+        ...githubFixture,
+        version: "1.2.4",
+      }),
+    ).toThrow("候选版本与 provenance tag 不一致");
+  });
+
+  test("候选身份忽略 untrusted comment 并拒绝尾随 Minisign 行", () => {
+    const provenance = JSON.parse(
+      readFileSync(sharedProvenancePath, "utf8"),
+    );
+    const contract = JSON.parse(readFileSync(sharedContractPath, "utf8"));
+    const canonicalInput = {
+      provenance,
+      version: "1.2.3",
+      installerSignature: contract.installer_signature,
+      provenanceSignature: contract.provenance_signature,
+    };
+    const rewrittenComment = rewriteTauriSignature(
+      contract.installer_signature,
+      (lines) => {
+        lines[0] = "untrusted comment: 可变但不属于候选身份";
+      },
+    );
+    const trailingLine = rewriteTauriSignature(
+      contract.installer_signature,
+      (lines) => {
+        lines.push("未签名尾随内容");
+      },
+    );
+
+    expect(
+      createReleaseCandidateIdentity({
+        ...canonicalInput,
+        installerSignature: rewrittenComment,
+      }),
+    ).toBe(createReleaseCandidateIdentity(canonicalInput));
+    expect(() =>
+      createReleaseCandidateIdentity({
+        ...canonicalInput,
+        installerSignature: trailingLine,
+      }),
+    ).toThrow("canonical 四行 Minisign");
+  });
+});
+
 describe("verifyReleaseProvenance", () => {
+  test("只接受 canonical provenance v2 原始字节并拒绝旧 schema", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-release-provenance-canonical-"),
+    );
+
+    try {
+      const executablePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_1.2.3_x64-setup.exe",
+      );
+      const signaturePath = `${executablePath}.sig`;
+      const manifestPath = join(temporaryRoot, "latest.json");
+      const input = {
+        repository: "zzstar101/Mineradio-Tauri",
+        tag: "v1.2.3",
+        commitSha: "0123456789abcdef0123456789abcdef01234567",
+        assetPaths: [executablePath, signaturePath, manifestPath],
+      };
+      writeFileSync(executablePath, "installer", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+      writeFileSync(manifestPath, '{"version":"1.2.3"}\n', "utf8");
+      const provenance = createReleaseProvenance(input);
+      const canonical = canonicalReleaseProvenanceText(provenance);
+
+      expect(
+        verifyReleaseProvenance({
+          rawProvenance: canonical,
+          ...input,
+        }),
+      ).toEqual(provenance);
+      expect(() =>
+        verifyReleaseProvenance({
+          rawProvenance: `${JSON.stringify(provenance, null, 2)}\n`,
+          ...input,
+        }),
+      ).toThrow("来源证明不是 canonical provenance v2 编码");
+      expect(() =>
+        verifyReleaseProvenance({
+          rawProvenance: `\uFEFF${canonical}`,
+          ...input,
+        }),
+      ).toThrow("来源证明不是 canonical provenance v2 编码");
+      expect(() =>
+        verifyReleaseProvenance({
+          rawProvenance: validationJson({
+            schema_version: 1,
+            repository: provenance.repository,
+            tag: provenance.tag,
+            commit_sha: provenance.commit_sha,
+            assets: [],
+          }),
+          ...input,
+        }),
+      ).toThrow("来源证明顶层字段必须恰好为");
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
   test("接受来源与当前发布资产完全一致的证明", () => {
     const temporaryRoot = mkdtempSync(
       join(tmpdir(), "mineradio-release-provenance-verify-"),
@@ -266,9 +446,12 @@ describe("verifyReleaseProvenance", () => {
       writeFileSync(manifestPath, '{"version":"1.2.3"}\n', "utf8");
       const provenance = createReleaseProvenance(input);
 
-      expect(verifyReleaseProvenance({ provenance, ...input })).toEqual(
-        provenance,
-      );
+      expect(
+        verifyReleaseProvenance({
+          rawProvenance: canonicalReleaseProvenanceText(provenance),
+          ...input,
+        }),
+      ).toEqual(provenance);
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
@@ -276,20 +459,18 @@ describe("verifyReleaseProvenance", () => {
 
   test("拒绝仓库、标签或 commit SHA 与期望发布来源不符", () => {
     const executableName = "MineRadio-Tauri_1.2.3_x64-setup.exe";
-    const asset = { size: 1, sha256: "a".repeat(64) };
     const provenance = {
-      schema_version: 1,
+      schema_version: 2,
       repository: "zzstar101/Mineradio-Tauri",
       tag: "v1.2.3",
       commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      assets: [
-        { name: executableName, ...asset },
-        { name: `${executableName}.sig`, ...asset },
-        { name: "latest.json", ...asset },
-      ],
+      platform: "windows-x86_64",
+      package_type: "nsis",
+      install_mode: "currentUser",
+      installer: { name: executableName, size: 1, sha256: "a".repeat(64) },
     };
     const commonInput = {
-      provenance,
+      rawProvenance: canonicalReleaseProvenanceText(provenance),
       repository: provenance.repository,
       tag: provenance.tag,
       commitSha: provenance.commit_sha,
@@ -321,11 +502,18 @@ describe("verifyReleaseProvenance", () => {
 
   test("拒绝畸形的顶层 schema 与来源字段", () => {
     const validProvenance = {
-      schema_version: 1,
+      schema_version: 2,
       repository: "zzstar101/Mineradio-Tauri",
       tag: "v1.2.3",
       commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      assets: [],
+      platform: "windows-x86_64",
+      package_type: "nsis",
+      install_mode: "currentUser",
+      installer: {
+        name: "MineRadio-Tauri_1.2.3_x64-setup.exe",
+        size: 1,
+        sha256: "a".repeat(64),
+      },
     };
     const input = {
       repository: validProvenance.repository,
@@ -339,8 +527,8 @@ describe("verifyReleaseProvenance", () => {
         error: "来源证明必须是 JSON 对象",
       },
       {
-        provenance: { ...validProvenance, schema_version: 2 },
-        error: "来源证明 schema_version 必须为 1",
+        provenance: { ...validProvenance, schema_version: 1 },
+        error: "来源证明 schema_version 必须为 2",
       },
       {
         provenance: {
@@ -351,10 +539,13 @@ describe("verifyReleaseProvenance", () => {
       },
       {
         provenance: {
-          schema_version: 1,
+          schema_version: 2,
           repository: validProvenance.repository,
           tag: validProvenance.tag,
           commit_sha: validProvenance.commit_sha,
+          platform: validProvenance.platform,
+          package_type: validProvenance.package_type,
+          install_mode: validProvenance.install_mode,
         },
         error: "来源证明顶层字段必须恰好为",
       },
@@ -374,38 +565,49 @@ describe("verifyReleaseProvenance", () => {
         error: "来源证明 commit_sha 字段格式无效",
       },
       {
-        provenance: { ...validProvenance, assets: {} },
-        error: "来源证明 assets 字段必须是数组",
+        provenance: { ...validProvenance, platform: "linux-x86_64" },
+        error: "来源证明 platform 必须为 windows-x86_64",
+      },
+      {
+        provenance: { ...validProvenance, package_type: "msi" },
+        error: "来源证明 package_type 必须为 nsis",
+      },
+      {
+        provenance: { ...validProvenance, install_mode: "perMachine" },
+        error: "来源证明 install_mode 必须为 currentUser",
+      },
+      {
+        provenance: { ...validProvenance, installer: null },
+        error: "来源证明 installer 必须是 JSON 对象",
       },
     ];
 
     for (const testCase of cases) {
       expect(() =>
         verifyReleaseProvenance({
-          provenance: testCase.provenance as never,
+          rawProvenance: validationJson(testCase.provenance),
           ...input,
         }),
       ).toThrow(testCase.error);
     }
   });
 
-  test("拒绝畸形的资产 descriptor", () => {
+  test("拒绝畸形或非 exact 的 installer descriptor", () => {
     const executableName = "MineRadio-Tauri_1.2.3_x64-setup.exe";
-    const validAsset = {
+    const validInstaller = {
       name: executableName,
       size: 1,
       sha256: "a".repeat(64),
     };
     const validProvenance = {
-      schema_version: 1,
+      schema_version: 2,
       repository: "zzstar101/Mineradio-Tauri",
       tag: "v1.2.3",
       commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      assets: [
-        validAsset,
-        { ...validAsset, name: `${executableName}.sig` },
-        { ...validAsset, name: "latest.json" },
-      ],
+      platform: "windows-x86_64",
+      package_type: "nsis",
+      install_mode: "currentUser",
+      installer: validInstaller,
     };
     const input = {
       repository: validProvenance.repository,
@@ -415,133 +617,69 @@ describe("verifyReleaseProvenance", () => {
     };
     const cases = [
       {
-        asset: null,
-        error: "来源证明 assets[0] 必须是 JSON 对象",
+        installer: null,
+        error: "来源证明 installer 必须是 JSON 对象",
       },
       {
-        asset: { ...validAsset, digest: `sha256:${validAsset.sha256}` },
-        error: "来源证明 assets[0] 字段必须恰好为",
+        installer: {
+          ...validInstaller,
+          digest: `sha256:${validInstaller.sha256}`,
+        },
+        error: "来源证明 installer 字段必须恰好为",
       },
       {
-        asset: { name: validAsset.name, size: validAsset.size },
-        error: "来源证明 assets[0] 字段必须恰好为",
+        installer: {
+          name: validInstaller.name,
+          size: validInstaller.size,
+        },
+        error: "来源证明 installer 字段必须恰好为",
       },
       {
-        asset: { ...validAsset, name: 123 },
-        error: "来源证明 assets[0].name 必须是非空字符串",
+        installer: { ...validInstaller, name: 123 },
+        error: `来源证明 installer.name 必须为 ${executableName}`,
       },
       {
-        asset: { ...validAsset, size: 0 },
-        error: "来源证明 assets[0].size 必须是正整数",
+        installer: { ...validInstaller, size: 0 },
+        error: "来源证明 installer.size 必须是正安全整数",
       },
       {
-        asset: { ...validAsset, size: 1.5 },
-        error: "来源证明 assets[0].size 必须是正整数",
+        installer: { ...validInstaller, size: 1.5 },
+        error: "来源证明 installer.size 必须是正安全整数",
       },
       {
-        asset: { ...validAsset, size: Number.MAX_SAFE_INTEGER + 1 },
-        error: "来源证明 assets[0].size 必须是正整数",
+        installer: {
+          ...validInstaller,
+          size: Number.MAX_SAFE_INTEGER + 1,
+        },
+        error: "来源证明 installer.size 必须是正安全整数",
       },
       {
-        asset: { ...validAsset, sha256: `sha256:${validAsset.sha256}` },
-        error: "来源证明 assets[0].sha256 必须是 64 位小写十六进制",
+        installer: {
+          ...validInstaller,
+          sha256: `sha256:${validInstaller.sha256}`,
+        },
+        error: "来源证明 installer.sha256 必须是 64 位小写十六进制",
       },
       {
-        asset: { ...validAsset, sha256: "A".repeat(64) },
-        error: "来源证明 assets[0].sha256 必须是 64 位小写十六进制",
+        installer: { ...validInstaller, sha256: "A".repeat(64) },
+        error: "来源证明 installer.sha256 必须是 64 位小写十六进制",
       },
     ];
 
     for (const testCase of cases) {
       expect(() =>
         verifyReleaseProvenance({
-          provenance: {
+          rawProvenance: validationJson({
             ...validProvenance,
-            assets: [testCase.asset, ...validProvenance.assets.slice(1)],
-          } as never,
+            installer: testCase.installer,
+          }),
           ...input,
         }),
       ).toThrow(testCase.error);
     }
   });
 
-  test("拒绝来源证明中缺失、额外或重复的资产", () => {
-    const executableName = "MineRadio-Tauri_1.2.3_x64-setup.exe";
-    const asset = { size: 1, sha256: "a".repeat(64) };
-    const validAssets = [
-      { name: executableName, ...asset },
-      { name: `${executableName}.sig`, ...asset },
-      { name: "latest.json", ...asset },
-    ];
-    const baseProvenance = {
-      schema_version: 1,
-      repository: "zzstar101/Mineradio-Tauri",
-      tag: "v1.2.3",
-      commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      assets: validAssets,
-    };
-    const input = {
-      repository: baseProvenance.repository,
-      tag: baseProvenance.tag,
-      commitSha: baseProvenance.commit_sha,
-      assetPaths: [],
-    };
-
-    expect(() =>
-      verifyReleaseProvenance({
-        provenance: { ...baseProvenance, assets: validAssets.slice(0, 2) },
-        ...input,
-      }),
-    ).toThrow("来源证明资产集合缺少: latest.json");
-
-    expect(() =>
-      verifyReleaseProvenance({
-        provenance: {
-          ...baseProvenance,
-          assets: [...validAssets, { name: "unexpected.txt", ...asset }],
-        },
-        ...input,
-      }),
-    ).toThrow("来源证明资产集合存在额外资产: unexpected.txt");
-
-    expect(() =>
-      verifyReleaseProvenance({
-        provenance: {
-          ...baseProvenance,
-          assets: [...validAssets, { ...validAssets[2] }],
-        },
-        ...input,
-      }),
-    ).toThrow("来源证明资产名称重复: latest.json");
-  });
-
-  test("要求来源证明资产按 name 升序排列", () => {
-    const executableName = "MineRadio-Tauri_1.2.3_x64-setup.exe";
-    const asset = { size: 1, sha256: "a".repeat(64) };
-    const provenance = {
-      schema_version: 1,
-      repository: "zzstar101/Mineradio-Tauri",
-      tag: "v1.2.3",
-      commit_sha: "0123456789abcdef0123456789abcdef01234567",
-      assets: [
-        { name: "latest.json", ...asset },
-        { name: executableName, ...asset },
-        { name: `${executableName}.sig`, ...asset },
-      ],
-    };
-
-    expect(() =>
-      verifyReleaseProvenance({
-        provenance,
-        repository: provenance.repository,
-        tag: provenance.tag,
-        commitSha: provenance.commit_sha,
-        assetPaths: [],
-      }),
-    ).toThrow("来源证明 assets 必须按 name 升序排列");
-  });
-
-  test("拒绝当前资产的 size、SHA-256 或非零约束与证明不符", () => {
+  test("拒绝当前安装包的 size、SHA-256 或发布资产非零约束与证明不符", () => {
     const temporaryRoot = mkdtempSync(
       join(tmpdir(), "mineradio-release-provenance-mismatch-"),
     );
@@ -563,23 +701,27 @@ describe("verifyReleaseProvenance", () => {
       writeFileSync(signaturePath, "signature", "utf8");
       writeFileSync(manifestPath, "{}", "utf8");
       const provenance = createReleaseProvenance(input);
+      const rawProvenance = canonicalReleaseProvenanceText(provenance);
 
       writeFileSync(executablePath, "installer!", "utf8");
-      expect(() => verifyReleaseProvenance({ provenance, ...input })).toThrow(
-        "资产 MineRadio-Tauri_1.2.3_x64-setup.exe size 不一致: provenance=9, local=10",
+      expect(() =>
+        verifyReleaseProvenance({ rawProvenance, ...input }),
+      ).toThrow(
+        "安装包 MineRadio-Tauri_1.2.3_x64-setup.exe size 不一致: provenance=9, local=10",
+      );
+
+      writeFileSync(executablePath, "installeR", "utf8");
+      expect(() =>
+        verifyReleaseProvenance({ rawProvenance, ...input }),
+      ).toThrow(
+        "安装包 MineRadio-Tauri_1.2.3_x64-setup.exe sha256 不一致",
       );
 
       writeFileSync(executablePath, "installer", "utf8");
-      writeFileSync(signaturePath, "different", "utf8");
-      expect(() => verifyReleaseProvenance({ provenance, ...input })).toThrow(
-        "资产 MineRadio-Tauri_1.2.3_x64-setup.exe.sig sha256 不一致",
-      );
-
-      writeFileSync(signaturePath, "signature", "utf8");
       writeFileSync(manifestPath, "", "utf8");
-      expect(() => verifyReleaseProvenance({ provenance, ...input })).toThrow(
-        `发布资产不能为空: ${manifestPath}`,
-      );
+      expect(() =>
+        verifyReleaseProvenance({ rawProvenance, ...input }),
+      ).toThrow(`发布资产不能为空: ${manifestPath}`);
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
@@ -587,7 +729,7 @@ describe("verifyReleaseProvenance", () => {
 });
 
 describe("release-provenance CLI", () => {
-  test("create 写入确定性的 UTF-8 pretty JSON 与末尾换行", () => {
+  test("create 写入确定性的 canonical UTF-8 JSON 与单个末尾换行", () => {
     const temporaryRoot = mkdtempSync(
       join(tmpdir(), "mineradio-release-provenance-cli-create-"),
     );
@@ -630,16 +772,14 @@ describe("release-provenance CLI", () => {
 
       const firstOutput = readFileSync(firstOutputPath, "utf8");
       const secondOutput = readFileSync(secondOutputPath, "utf8");
-      const expected = `${JSON.stringify(
+      const expected = canonicalReleaseProvenanceText(
         createReleaseProvenance({
           repository,
           tag,
           commitSha,
           assetPaths,
         }),
-        null,
-        2,
-      )}\n`;
+      );
 
       expect(firstOutput).toBe(expected);
       expect(secondOutput).toBe(firstOutput);
@@ -761,16 +901,14 @@ describe("release-provenance CLI", () => {
       writeFileSync(manifestPath, "{}", "utf8");
       writeFileSync(
         provenancePath,
-        `${JSON.stringify(
+        canonicalReleaseProvenanceText(
           createReleaseProvenance({
             repository,
             tag,
             commitSha,
             assetPaths,
           }),
-          null,
-          2,
-        )}\n`,
+        ),
         "utf8",
       );
       const arguments_ = [
@@ -786,9 +924,9 @@ describe("release-provenance CLI", () => {
       const success = spawnSync(process.execPath, arguments_, { encoding: "utf8" });
       expect(success.status).toBe(0);
       expect(success.stderr).toBe("");
-      expect(success.stdout).toContain("发布来源证明验证通过: 3 个资产");
+      expect(success.stdout).toContain("发布来源证明验证通过: provenance v2");
 
-      writeFileSync(signaturePath, "different", "utf8");
+      writeFileSync(executablePath, "different", "utf8");
       const failure = spawnSync(process.execPath, arguments_, { encoding: "utf8" });
       expect(failure.status).toBe(1);
       expect(failure.stdout).toBe("");
@@ -830,6 +968,57 @@ describe("release-provenance CLI", () => {
 
       expect(result.status).toBe(1);
       expect(result.stderr).toContain("来源证明 JSON 不是有效的 UTF-8");
+    } finally {
+      rmSync(temporaryRoot, { recursive: true, force: true });
+    }
+  });
+
+  test("verify 拒绝带 UTF-8 BOM 的非 canonical 来源证明", () => {
+    const temporaryRoot = mkdtempSync(
+      join(tmpdir(), "mineradio-release-provenance-bom-"),
+    );
+
+    try {
+      const executablePath = join(
+        temporaryRoot,
+        "MineRadio-Tauri_1.2.3_x64-setup.exe",
+      );
+      const signaturePath = `${executablePath}.sig`;
+      const manifestPath = join(temporaryRoot, "latest.json");
+      const provenancePath = join(temporaryRoot, "provenance.json");
+      const repository = "zzstar101/Mineradio-Tauri";
+      const tag = "v1.2.3";
+      const commitSha = "0123456789abcdef0123456789abcdef01234567";
+      const assetPaths = [executablePath, signaturePath, manifestPath];
+      writeFileSync(executablePath, "installer", "utf8");
+      writeFileSync(signaturePath, "signature", "utf8");
+      writeFileSync(manifestPath, "{}", "utf8");
+      const canonical = canonicalReleaseProvenanceText(
+        createReleaseProvenance({ repository, tag, commitSha, assetPaths }),
+      );
+      writeFileSync(
+        provenancePath,
+        Buffer.concat([Buffer.from([0xef, 0xbb, 0xbf]), Buffer.from(canonical)]),
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          cliPath,
+          "verify",
+          repository,
+          tag,
+          commitSha,
+          provenancePath,
+          ...assetPaths,
+        ],
+        { encoding: "utf8" },
+      );
+
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(
+        "来源证明不是 canonical provenance v2 编码",
+      );
     } finally {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }

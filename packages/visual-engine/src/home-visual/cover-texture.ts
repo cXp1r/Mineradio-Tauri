@@ -1,4 +1,7 @@
 import type * as THREE from "three";
+import { createCancellationScope, type CancellationScope, type CancellationTicket } from "../runtime/cancellation-scope";
+import type { BudgetTaskQueue, BudgetTaskSettlement } from "../runtime/budget-task-queue";
+import type { VisualResourceHandle, VisualResourceScope } from "../runtime/resource-scope";
 import { coverTextureSizeForResolution } from "./home-particle-field";
 import {
 	buildEdgeAndDepthCanvas,
@@ -21,8 +24,12 @@ export interface HomeCoverTextureUniforms {
 }
 
 export type HomeCoverImage = CanvasImageSource | { width?: number; height?: number; src?: string };
-export type HomeCoverLoader = (url: string) => Promise<HomeCoverImage>;
-export type HomeAiDepthEstimator = (image: HomeCoverImage) => Promise<HomeCoverImage | null>;
+export type HomeCoverLoader = (
+	url: string,
+	signal?: AbortSignal,
+	fallbackUrl?: string,
+) => Promise<HomeCoverImage>;
+export type HomeAiDepthEstimator = (image: HomeCoverImage, signal?: AbortSignal) => Promise<HomeCoverImage | null>;
 export type HomeAiDepthMerger = (heuristic: HomeCoverImage, ai: HomeCoverImage) => HomeCoverImage | null;
 export type HomeCoverCanvasFactory = (width: number, height: number) => CanvasImageSource & {
 	width: number;
@@ -42,49 +49,179 @@ export interface HomeCoverTextureControllerOptions {
 	coverResolution?: number;
 	createCanvas?: HomeCoverCanvasFactory;
 	createDepthCanvas?: CoverDepthCanvasFactory;
+	runtime?: HomeCoverRuntimeOptions;
+}
+
+export interface HomeCoverRuntimeOptions {
+	readonly cancellationScope?: CancellationScope;
+	readonly taskQueue?: BudgetTaskQueue;
+	readonly resourceScope?: VisualResourceScope;
 }
 
 export interface HomeCoverTextureController {
-	setCoverUrl(url: string | null | undefined): void;
+	setCoverUrl(
+		url: string | null | undefined,
+		fallbackUrl?: string | null,
+	): void;
 	setAiDepthEnabled(enabled: boolean): void;
 	advanceColorMix(dtSeconds: number): void;
 	advanceDepth(dtSeconds: number): void;
 	getCurrentUrl(): string;
 	whenIdle(): Promise<void>;
+	setRuntimeActive(active: boolean): void;
+	dispose(): void;
 }
 
 const HTTP_URL_RE = /^https?:\/\//i;
 const INLINE_IMAGE_URL_RE = /^data:image\//i;
 const BLOB_URL_RE = /^blob:/i;
-const SAME_ORIGIN_IMAGE_PROXY_RE = /^\/image-proxy(?:[/?#]|$)/i;
+const OPAQUE_IMAGE_URL_RE = /^(?!https?:|data:|blob:|file:|javascript:|vbscript:)[a-z][a-z0-9+.-]*:\/\//i;
 const HOME_COVER_TEXTURE_CACHE_LIMIT = 18;
+let homeCoverControllerSequence = 0;
 
 interface HomeCoverTextureCacheEntry {
 	preparedImage: HomeCoverImage;
 	heuristicImage: HomeCoverImage | null;
 	aiMergedImage: HomeCoverImage | null;
 	heuristicImageIsAiMerged: boolean;
+	readonly leasesByScope: Map<VisualResourceScope, Map<HomeCoverImage, VisualResourceHandle>>;
 }
 
 const homeCoverTextureCache = new Map<string, HomeCoverTextureCacheEntry>();
 
 function isAllowedCoverUrl(url: string): boolean {
-	return HTTP_URL_RE.test(url) || INLINE_IMAGE_URL_RE.test(url) || BLOB_URL_RE.test(url) || SAME_ORIGIN_IMAGE_PROXY_RE.test(url);
+	return HTTP_URL_RE.test(url)
+		|| INLINE_IMAGE_URL_RE.test(url)
+		|| BLOB_URL_RE.test(url)
+		|| OPAQUE_IMAGE_URL_RE.test(url);
 }
 
 export { coverTextureSizeForResolution } from "./home-particle-field";
 
 export function resetHomeCoverTextureCacheForTests(): void {
-	homeCoverTextureCache.clear();
+	trimHomeCoverTextureCache(0);
 }
 
-function coverTextureCacheKey(url: string, coverResolution: number): string {
-	return `${url}|tex=${coverTextureSizeForResolution(coverResolution)}`;
+function estimateImageBytes(image: HomeCoverImage): number {
+	return imageNaturalDimension(image, "width") * imageNaturalDimension(image, "height") * 4;
 }
 
-function getHomeCoverTextureCache(key: string): HomeCoverTextureCacheEntry | null {
+export function estimateHomeCoverTextureCacheBytes(): number {
+	let total = 0;
+	for (const entry of homeCoverTextureCache.values()) {
+		const images = new Set<HomeCoverImage>([
+			entry.preparedImage,
+			...(entry.heuristicImage ? [entry.heuristicImage] : []),
+			...(entry.aiMergedImage ? [entry.aiMergedImage] : []),
+		]);
+		for (const image of images) total += estimateImageBytes(image);
+	}
+	return total;
+}
+
+export function countHomeCoverTextureCacheLeaseScopesForTests(): number {
+	let count = 0;
+	for (const entry of homeCoverTextureCache.values()) count += entry.leasesByScope.size;
+	return count;
+}
+
+function disposeCacheEntry(entry: HomeCoverTextureCacheEntry): void {
+	for (const leases of [...entry.leasesByScope.values()]) {
+		for (const lease of [...leases.values()]) lease.dispose();
+		leases.clear();
+	}
+	entry.leasesByScope.clear();
+}
+
+export function trimHomeCoverTextureCache(maxEntries = HOME_COVER_TEXTURE_CACHE_LIMIT): void {
+	const limit = Math.max(0, Math.floor(maxEntries));
+	while (homeCoverTextureCache.size > limit) {
+		const oldest = homeCoverTextureCache.keys().next().value;
+		if (!oldest) break;
+		const entry = homeCoverTextureCache.get(oldest);
+		homeCoverTextureCache.delete(oldest);
+		if (entry) disposeCacheEntry(entry);
+	}
+}
+
+function coverTextureCacheKey(
+	url: string,
+	fallbackUrl: string,
+	coverResolution: number,
+): string {
+	return JSON.stringify([
+		url,
+		fallbackUrl,
+		coverTextureSizeForResolution(coverResolution),
+	]);
+}
+
+function cacheEntryImages(entry: HomeCoverTextureCacheEntry): Set<HomeCoverImage> {
+	return new Set<HomeCoverImage>([
+		entry.preparedImage,
+		...(entry.heuristicImage ? [entry.heuristicImage] : []),
+		...(entry.aiMergedImage ? [entry.aiMergedImage] : []),
+	]);
+}
+
+function reconcileHomeCoverTextureCacheLeases(
+	key: string,
+	entry: HomeCoverTextureCacheEntry,
+	resourceScope?: VisualResourceScope,
+): boolean {
+	const images = cacheEntryImages(entry);
+	const added: Array<[HomeCoverImage, VisualResourceHandle]> = [];
+	let currentLeases = resourceScope ? entry.leasesByScope.get(resourceScope) : undefined;
+	if (resourceScope) {
+		currentLeases ??= new Map();
+		entry.leasesByScope.set(resourceScope, currentLeases);
+		try {
+			for (const image of images) {
+				const existing = currentLeases.get(image);
+				if (existing && !existing.disposed) continue;
+				if (existing?.disposed) currentLeases.delete(image);
+				let lease: VisualResourceHandle | null = null;
+				lease = resourceScope.register({
+					owner: `home-cover-cache:${key}`,
+					kind: "cache",
+					retention: "rebuildable",
+					estimatedBytes: estimateImageBytes(image),
+					dispose() {
+						const leases = entry.leasesByScope.get(resourceScope);
+						if (!lease || !leases || leases !== currentLeases || leases.get(image) !== lease) return;
+						leases.delete(image);
+						if (leases.size === 0) entry.leasesByScope.delete(resourceScope);
+					},
+				});
+				currentLeases.set(image, lease);
+				added.push([image, lease]);
+			}
+		} catch {
+			for (const [image, lease] of added) {
+				lease.dispose();
+				if (currentLeases.get(image) === lease) currentLeases.delete(image);
+			}
+			if (currentLeases.size === 0 && entry.leasesByScope.get(resourceScope) === currentLeases) {
+				entry.leasesByScope.delete(resourceScope);
+			}
+			return false;
+		}
+	}
+	for (const [scope, leases] of [...entry.leasesByScope]) {
+		for (const [image, lease] of [...leases]) {
+			if (images.has(image) && !lease.disposed) continue;
+			if (!lease.disposed) lease.dispose();
+			if (leases.get(image) === lease) leases.delete(image);
+		}
+		if (leases.size === 0 && entry.leasesByScope.get(scope) === leases) entry.leasesByScope.delete(scope);
+	}
+	return true;
+}
+
+function getHomeCoverTextureCache(key: string, resourceScope?: VisualResourceScope): HomeCoverTextureCacheEntry | null {
 	const cached = homeCoverTextureCache.get(key);
 	if (!cached) return null;
+	reconcileHomeCoverTextureCacheLeases(key, cached, resourceScope);
 	homeCoverTextureCache.delete(key);
 	homeCoverTextureCache.set(key, cached);
 	return cached;
@@ -93,27 +230,27 @@ function getHomeCoverTextureCache(key: string): HomeCoverTextureCacheEntry | nul
 function setHomeCoverTextureCache(
 	key: string,
 	entry: Partial<HomeCoverTextureCacheEntry> & { preparedImage: HomeCoverImage },
-): HomeCoverTextureCacheEntry {
+	resourceScope?: VisualResourceScope,
+): HomeCoverTextureCacheEntry | null {
+	const previous = homeCoverTextureCache.get(key);
 	const next: HomeCoverTextureCacheEntry = {
 		preparedImage: entry.preparedImage,
 		heuristicImage: entry.heuristicImage ?? null,
 		aiMergedImage: entry.aiMergedImage ?? null,
 		heuristicImageIsAiMerged: entry.heuristicImageIsAiMerged === true,
+		leasesByScope: previous?.leasesByScope ?? new Map(),
 	};
+	if (!reconcileHomeCoverTextureCacheLeases(key, next, resourceScope)) return previous ?? null;
 	homeCoverTextureCache.delete(key);
 	homeCoverTextureCache.set(key, next);
-	while (homeCoverTextureCache.size > HOME_COVER_TEXTURE_CACHE_LIMIT) {
-		const oldest = homeCoverTextureCache.keys().next().value;
-		if (!oldest) break;
-		homeCoverTextureCache.delete(oldest);
-	}
+	trimHomeCoverTextureCache();
 	return next;
 }
 
-function patchHomeCoverTextureCache(key: string, patch: Partial<HomeCoverTextureCacheEntry>): HomeCoverTextureCacheEntry | null {
-	const cached = getHomeCoverTextureCache(key);
+function patchHomeCoverTextureCache(key: string, patch: Partial<HomeCoverTextureCacheEntry>, resourceScope?: VisualResourceScope): HomeCoverTextureCacheEntry | null {
+	const cached = getHomeCoverTextureCache(key, resourceScope);
 	if (!cached) return null;
-	return setHomeCoverTextureCache(key, { ...cached, ...patch, preparedImage: patch.preparedImage ?? cached.preparedImage });
+	return setHomeCoverTextureCache(key, { ...cached, ...patch, preparedImage: patch.preparedImage ?? cached.preparedImage }, resourceScope);
 }
 
 function defaultCreateCanvas(width: number, height: number): ReturnType<HomeCoverCanvasFactory> | null {
@@ -152,52 +289,56 @@ export function prepareSquareCoverCanvas(
 	return cv;
 }
 
-function loadImageElement(url: string, crossOrigin: boolean): Promise<HomeCoverImage> {
+function loadImageElement(url: string, crossOrigin: boolean, signal?: AbortSignal): Promise<HomeCoverImage> {
 	if (typeof Image === "undefined") return Promise.reject(new Error("Image unavailable"));
 	return new Promise((resolve, reject) => {
 		const img = new Image();
+		const abort = () => reject(signal?.reason ?? new DOMException("Aborted", "AbortError"));
+		if (signal?.aborted) {
+			abort();
+			return;
+		}
+		signal?.addEventListener("abort", abort, { once: true });
 		if (crossOrigin) img.crossOrigin = "anonymous";
 		img.decoding = "async";
-		img.onload = () => resolve(img);
-		img.onerror = () => reject(new Error(`failed to load cover image: ${url}`));
+		img.onload = () => {
+			signal?.removeEventListener("abort", abort);
+			resolve(img);
+		};
+		img.onerror = () => {
+			signal?.removeEventListener("abort", abort);
+			reject(new Error(`failed to load cover image: ${url}`));
+		};
 		img.src = url;
 	});
 }
 
-function proxiedCoverFallbackUrl(url: string): string | null {
+async function defaultLoadImage(
+	url: string,
+	signal?: AbortSignal,
+	fallbackUrl?: string,
+): Promise<HomeCoverImage> {
 	try {
-		const base = typeof location !== "undefined" && location.href ? location.href : "http://127.0.0.1/";
-		const parsed = new URL(url, base);
-		if (!parsed.pathname.endsWith("/image-proxy")) return null;
-		const direct = parsed.searchParams.get("url")?.trim() ?? "";
-		if (!HTTP_URL_RE.test(direct)) return null;
-		return direct;
-	} catch {
-		return null;
-	}
-}
-
-async function defaultLoadImage(url: string): Promise<HomeCoverImage> {
-	try {
-		return await loadImageElement(url, true);
+		return await loadImageElement(url, true, signal);
 	} catch (firstError) {
-		const directFallback = proxiedCoverFallbackUrl(url);
+		if (signal?.aborted) throw firstError;
+		const directFallback = String(fallbackUrl ?? "").trim();
 		if (
 			typeof fetch !== "function" ||
 			typeof URL === "undefined" ||
 			typeof URL.createObjectURL !== "function"
 		) {
-			if (directFallback) return await loadImageElement(directFallback, true);
+			if (directFallback) return await loadImageElement(directFallback, true, signal);
 			throw firstError;
 		}
 		try {
-			const res = await fetch(url, { cache: "force-cache" });
+			const res = await fetch(url, { cache: "force-cache", signal });
 			if (res.ok) {
 				const contentType = res.headers.get("content-type") ?? "";
 				if (!contentType || /^image\//i.test(contentType)) {
 					const blobUrl = URL.createObjectURL(await res.blob());
 					try {
-						return await loadImageElement(blobUrl, false);
+						return await loadImageElement(blobUrl, false, signal);
 					} finally {
 						if (typeof setTimeout === "function") {
 							setTimeout(() => URL.revokeObjectURL(blobUrl), 30_000);
@@ -210,7 +351,7 @@ async function defaultLoadImage(url: string): Promise<HomeCoverImage> {
 		} catch {
 			// 与原项目一致，代理路径失败后继续尝试原始封面 URL。
 		}
-		if (directFallback) return await loadImageElement(directFallback, true);
+		if (directFallback) return await loadImageElement(directFallback, true, signal);
 		throw firstError;
 	}
 }
@@ -235,92 +376,134 @@ function buildDepthImage(
 	}) as CoverDepthCanvas | null;
 }
 
-async function maybeBuildAiDepthImage(
-	preparedImage: HomeCoverImage,
-	heuristicImage: HomeCoverImage | null,
-	opts: HomeCoverTextureControllerOptions,
-): Promise<{ image: HomeCoverImage | null; aiBoostTarget: number; durationMs: number }> {
-	if (!heuristicImage || !opts.aiDepthEnabled || !opts.estimateAiDepth) {
-		return { image: heuristicImage, aiBoostTarget: 0.55, durationMs: 180 };
-	}
-	const aiImage = await opts.estimateAiDepth(preparedImage);
-	if (!aiImage) return { image: heuristicImage, aiBoostTarget: 0.55, durationMs: 180 };
-	const merge = opts.mergeAiDepth ?? ((heuristic, ai) => mergeAiDepthIntoEdgeCanvas(heuristic as CoverDepthCanvas, ai as CoverDepthCanvas));
-	const mergedImage = merge(heuristicImage, aiImage);
-	if (!mergedImage) return { image: heuristicImage, aiBoostTarget: 0.55, durationMs: 180 };
-	return {
-		image: mergedImage,
-		aiBoostTarget: 1,
-		durationMs: 360,
-	};
-}
-
 export function createHomeCoverTextureController(
 	opts: HomeCoverTextureControllerOptions,
 ): HomeCoverTextureController {
 	const uniforms = opts.uniforms;
 	const loadImage = opts.loadImage ?? defaultLoadImage;
+	const runtime = opts.runtime;
+	const taskQueue = runtime?.taskQueue;
+	const resourceScope = runtime?.resourceScope;
+	const owner = `home-cover-${++homeCoverControllerSequence}`;
+	const cancellationScope = runtime?.cancellationScope
+		? runtime.cancellationScope.createChild(owner)
+		: createCancellationScope(owner);
 	const colorMixDurationMs = Math.max(1, opts.colorMixDurationMs ?? 1400);
 	const coverResolution = opts.coverResolution ?? 1.55;
 	const depthTween: CoverDepthTween | null = uniforms.uHasDepth && uniforms.uAiBoost
 		? createCoverDepthTween({ uHasDepth: uniforms.uHasDepth, uAiBoost: uniforms.uAiBoost })
 		: null;
 	let currentUrl = "";
+	let currentFallbackUrl = "";
+	let committedUrl = "";
 	let token = 0;
-	let pending: Promise<void> | null = null;
 	let aiDepthEnabled = !!opts.aiDepthEnabled;
+	let runtimeActive = true;
+	let disposed = false;
+	let coverPending = false;
+	let aiPending = false;
+	let aiEnhancementNeedsResume = false;
 	let preparedCoverImage: HomeCoverImage | null = null;
 	let heuristicEdgeImage: HomeCoverImage | null = null;
 	let aiMergedEdgeImage: HomeCoverImage | null = null;
 	let currentEdgeIsAiMerged = false;
 	let heuristicEdgeIsAiMerged = false;
 	let currentCoverCacheKey = "";
+	let coverTicket: CancellationTicket | null = null;
+	let aiTicket: CancellationTicket | null = null;
+
+	interface IdleGeneration {
+		readonly token: number;
+		readonly promise: Promise<void>;
+		add(): () => void;
+		cancel(): void;
+	}
+
+	function createIdleGeneration(generationToken: number): IdleGeneration {
+		let pendingCount = 0;
+		let closed = false;
+		let resolve!: () => void;
+		const promise = new Promise<void>((done) => { resolve = done; });
+		queueMicrotask(() => {
+			if (!closed && pendingCount === 0) {
+				closed = true;
+				resolve();
+			}
+		});
+		return {
+			token: generationToken,
+			promise,
+			add() {
+				if (closed) return () => {};
+				pendingCount += 1;
+				let settled = false;
+				return () => {
+					if (settled) return;
+					settled = true;
+					pendingCount = Math.max(0, pendingCount - 1);
+					if (pendingCount === 0 && !closed) {
+						closed = true;
+						resolve();
+					}
+				};
+			},
+			cancel() {
+				if (closed) return;
+				closed = true;
+				resolve();
+			},
+		};
+	}
+
+	let idleGeneration = createIdleGeneration(token);
+
+	function issueTicket(key: "cover-load" | "ai-depth"): CancellationTicket | null {
+		if (!cancellationScope.isOpen()) return null;
+		try {
+			return cancellationScope.issue(owner, `${key}/current`);
+		} catch {
+			return null;
+		}
+	}
+
+	function cancelCoverAndAi(): void {
+		if (coverPending || aiPending) taskQueue?.cancelOwner(owner);
+		coverTicket = issueTicket("cover-load");
+		aiTicket = issueTicket("ai-depth");
+		coverPending = false;
+		aiPending = false;
+		idleGeneration.cancel();
+	}
+
+	function beginGeneration(): IdleGeneration {
+		token += 1;
+		aiEnhancementNeedsResume = false;
+		cancelCoverAndAi();
+		idleGeneration = createIdleGeneration(token);
+		return idleGeneration;
+	}
+
+	function isCurrent(runToken: number, signal?: AbortSignal): boolean {
+		return !disposed && runtimeActive && runToken === token && !signal?.aborted;
+	}
 
 	function clearCover(): void {
-		token += 1;
+		beginGeneration().cancel();
 		currentUrl = "";
+		currentFallbackUrl = "";
+		committedUrl = "";
 		preparedCoverImage = null;
 		heuristicEdgeImage = null;
 		aiMergedEdgeImage = null;
 		currentEdgeIsAiMerged = false;
 		heuristicEdgeIsAiMerged = false;
 		currentCoverCacheKey = "";
+		aiEnhancementNeedsResume = false;
 		uniforms.uHasCover.value = 0;
 		uniforms.uColorMixT.value = 1;
 		if (uniforms.uLoading) uniforms.uLoading.value = 0;
 		depthTween?.setTarget(0, 0, 1);
 		resetDepthUniforms(uniforms);
-		pending = null;
-	}
-
-	async function applyAiDepthForCurrent(runToken: number): Promise<void> {
-		if (!preparedCoverImage || !heuristicEdgeImage || !uniforms.uEdgeTex) return;
-		if (aiDepthEnabled && aiMergedEdgeImage) {
-			if (runToken !== token) return;
-			markTextureImage(uniforms.uEdgeTex.value, aiMergedEdgeImage);
-			currentEdgeIsAiMerged = true;
-			depthTween?.setTarget(1, 1, 180);
-			return;
-		}
-		const { image: edgeImage, aiBoostTarget, durationMs } = await maybeBuildAiDepthImage(preparedCoverImage, heuristicEdgeImage, {
-			...opts,
-			aiDepthEnabled,
-		});
-		if (runToken !== token || !edgeImage || !uniforms.uEdgeTex) return;
-		markTextureImage(uniforms.uEdgeTex.value, edgeImage);
-		currentEdgeIsAiMerged = aiBoostTarget >= 0.99;
-		if (currentEdgeIsAiMerged) {
-			// 默认 merge 会原地写 heuristic canvas；记录后续是否需要重建纯启发式深度。
-			aiMergedEdgeImage = edgeImage;
-			heuristicEdgeIsAiMerged = edgeImage === heuristicEdgeImage;
-			if (currentCoverCacheKey) {
-				patchHomeCoverTextureCache(currentCoverCacheKey, {
-					aiMergedImage: edgeImage,
-					heuristicImageIsAiMerged: heuristicEdgeIsAiMerged,
-				});
-			}
-		}
-		depthTween?.setTarget(1, aiBoostTarget, durationMs);
 	}
 
 	function applyPreparedCoverImage(preparedImage: HomeCoverImage): void {
@@ -329,6 +512,7 @@ export function createHomeCoverTextureController(
 		aiMergedEdgeImage = null;
 		currentEdgeIsAiMerged = false;
 		heuristicEdgeIsAiMerged = false;
+		aiEnhancementNeedsResume = false;
 		if (uniforms.uHasCover.value > 0.5 && uniforms.uCoverTex.value.image) {
 			markTextureImage(uniforms.uPrevCoverTex.value, uniforms.uCoverTex.value.image as HomeCoverImage);
 		}
@@ -352,8 +536,8 @@ export function createHomeCoverTextureController(
 		depthTween?.setTarget(1, 0.55, durationMs);
 	}
 
-	async function applyCachedCoverDepth(runToken: number, cached: HomeCoverTextureCacheEntry): Promise<void> {
-		if (runToken !== token || !uniforms.uEdgeTex) return;
+	function applyCachedCoverDepth(runToken: number, cached: HomeCoverTextureCacheEntry): boolean {
+		if (!isCurrent(runToken) || !uniforms.uEdgeTex) return false;
 		if (aiDepthEnabled && cached.aiMergedImage) {
 			heuristicEdgeImage = cached.heuristicImage;
 			aiMergedEdgeImage = cached.aiMergedImage;
@@ -361,23 +545,22 @@ export function createHomeCoverTextureController(
 			markTextureImage(uniforms.uEdgeTex.value, cached.aiMergedImage);
 			currentEdgeIsAiMerged = true;
 			depthTween?.setTarget(1, 1, 180);
-			return;
+			return false;
 		}
 		if (cached.heuristicImage && !cached.heuristicImageIsAiMerged) {
 			applyHeuristicDepthImage(cached.heuristicImage, 120);
-			if (aiDepthEnabled) await applyAiDepthForCurrent(runToken);
-			return;
+			return aiDepthEnabled;
 		}
 		const rebuilt = rebuildHeuristicDepthFromPrepared();
-		if (runToken !== token || !rebuilt) return;
+		if (!isCurrent(runToken) || !rebuilt) return false;
 		applyHeuristicDepthImage(rebuilt, 120);
 		if (currentCoverCacheKey) {
 			patchHomeCoverTextureCache(currentCoverCacheKey, {
 				heuristicImage: rebuilt,
 				heuristicImageIsAiMerged: false,
-			});
+			}, resourceScope);
 		}
-		if (aiDepthEnabled) await applyAiDepthForCurrent(runToken);
+		return aiDepthEnabled;
 	}
 
 	function rebuildHeuristicDepthFromPrepared(): HomeCoverImage | null {
@@ -389,66 +572,225 @@ export function createHomeCoverTextureController(
 		}
 	}
 
-	function setCoverUrl(rawUrl: string | null | undefined): void {
+	function onCoverFailure(runToken: number): void {
+		if (!isCurrent(runToken)) return;
+		committedUrl = "";
+		uniforms.uHasCover.value = 0;
+		if (uniforms.uLoading) uniforms.uLoading.value = 0;
+		depthTween?.setTarget(0, 0, 1);
+		resetDepthUniforms(uniforms);
+	}
+
+	function runTask<Result>(config: {
+		readonly generation: IdleGeneration;
+		readonly key: "cover-load/current" | "ai-depth/current";
+		readonly priority: "visible" | "background";
+		readonly run: (signal: AbortSignal) => Result | Promise<Result>;
+		readonly commit: (result: Result, signal: AbortSignal) => void;
+		readonly onSettled?: (settlement: BudgetTaskSettlement) => void;
+	}): boolean {
+		const finish = config.generation.add();
+		let settled = false;
+		const settle = (settlement: BudgetTaskSettlement): boolean => {
+			if (settled) return false;
+			settled = true;
+			try {
+				config.onSettled?.(settlement);
+			} catch {
+				// 结算回调不能让任务链再次失败或阻断 idle 收口。
+			} finally {
+				finish();
+			}
+			return true;
+		};
+		if (taskQueue) {
+			const accepted = taskQueue.enqueue({
+				owner,
+				key: config.key,
+				priority: config.priority,
+				cost: 1,
+				run: ({ signal }) => config.run(signal),
+				commit: (result, { signal }) => config.commit(result, signal),
+				onSettled(settlement) {
+					settle(settlement);
+				},
+			});
+			if (!accepted) settle("cancelled");
+			return accepted;
+		}
+		const ticket = config.key.startsWith("cover-load")
+			? (coverTicket = issueTicket("cover-load"))
+			: (aiTicket = issueTicket("ai-depth"));
+		if (!ticket) {
+			settle("cancelled");
+			return false;
+		}
+		const settleCancelled = () => { settle("cancelled"); };
+		ticket.signal.addEventListener("abort", settleCancelled, { once: true });
+		let result: Result | Promise<Result>;
+		try {
+			result = config.run(ticket.signal);
+		} catch {
+			ticket.signal.removeEventListener("abort", settleCancelled);
+			settle(ticket.signal.aborted ? "cancelled" : "failed");
+			return false;
+		}
+		void Promise.resolve(result)
+			.then((result) => {
+				if (!isCurrent(config.generation.token, ticket.signal) || !ticket.isCurrent()) {
+					settle("stale");
+					return;
+				}
+				try {
+					config.commit(result, ticket.signal);
+					settle("completed");
+				} catch {
+					settle("failed");
+				}
+			}, () => {
+				settle(ticket.signal.aborted ? "cancelled" : "failed");
+			})
+			.finally(() => {
+				ticket.signal.removeEventListener("abort", settleCancelled);
+			})
+			.catch(() => {
+				settle(ticket.signal.aborted ? "cancelled" : "failed");
+			});
+		return true;
+	}
+
+	function scheduleAiDepth(generation: IdleGeneration): void {
+		if (!aiDepthEnabled || !opts.estimateAiDepth || !preparedCoverImage || !heuristicEdgeImage || !uniforms.uEdgeTex) return;
+		if (aiMergedEdgeImage) {
+			aiEnhancementNeedsResume = false;
+			markTextureImage(uniforms.uEdgeTex.value, aiMergedEdgeImage);
+			currentEdgeIsAiMerged = true;
+			depthTween?.setTarget(1, 1, 180);
+			return;
+		}
+		const prepared = preparedCoverImage;
+		const heuristic = heuristicEdgeImage;
+		const runToken = generation.token;
+		aiEnhancementNeedsResume = false;
+		aiPending = true;
+		runTask<HomeCoverImage | null>({
+			generation,
+			key: "ai-depth/current",
+			priority: "background",
+			run: (signal) => opts.estimateAiDepth?.(prepared, signal) ?? null,
+			commit(aiImage, signal) {
+				aiPending = false;
+				if (!aiImage || !isCurrent(runToken, signal) || !aiDepthEnabled || heuristic !== heuristicEdgeImage || !uniforms.uEdgeTex) return;
+				const merge = opts.mergeAiDepth ?? ((base, ai) => mergeAiDepthIntoEdgeCanvas(base as CoverDepthCanvas, ai as CoverDepthCanvas));
+				// 合并可能原地改写启发式画布，必须留在 current commit 内。
+				const mergedImage = merge(heuristic, aiImage);
+				if (!mergedImage || !isCurrent(runToken, signal)) return;
+				markTextureImage(uniforms.uEdgeTex.value, mergedImage);
+				currentEdgeIsAiMerged = true;
+				aiMergedEdgeImage = mergedImage;
+				heuristicEdgeIsAiMerged = mergedImage === heuristic;
+				if (currentCoverCacheKey) {
+					patchHomeCoverTextureCache(currentCoverCacheKey, {
+						aiMergedImage: mergedImage,
+						heuristicImageIsAiMerged: heuristicEdgeIsAiMerged,
+					}, resourceScope);
+				}
+				depthTween?.setTarget(1, 1, 360);
+			},
+			onSettled() {
+				aiPending = false;
+			},
+		});
+	}
+
+	function setCoverUrl(
+		rawUrl: string | null | undefined,
+		rawFallbackUrl?: string | null,
+	): void {
+		if (disposed) return;
 		const url = String(rawUrl ?? "").trim();
+		const fallbackCandidate = String(rawFallbackUrl ?? "").trim();
+		const fallbackUrl = isAllowedCoverUrl(fallbackCandidate)
+			? fallbackCandidate
+			: "";
 		if (!url || !isAllowedCoverUrl(url)) {
 			clearCover();
 			return;
 		}
-		if (url === currentUrl && uniforms.uHasCover.value > 0.5) return;
-		currentUrl = url;
-		const runToken = ++token;
-		currentCoverCacheKey = coverTextureCacheKey(url, coverResolution);
-		if (uniforms.uLoading) uniforms.uLoading.value = 1;
-		const cached = getHomeCoverTextureCache(currentCoverCacheKey);
-		if (cached) {
-			pending = Promise.resolve()
-				.then(async () => {
-					if (runToken !== token) return;
-					applyPreparedCoverImage(cached.preparedImage);
-					await applyCachedCoverDepth(runToken, cached);
-				});
+		const sameSource = url === currentUrl && fallbackUrl === currentFallbackUrl;
+		if (sameSource && coverPending) return;
+		if (sameSource && committedUrl === url && uniforms.uHasCover.value > 0.5) {
+			if (
+				runtimeActive &&
+				aiEnhancementNeedsResume &&
+				aiDepthEnabled &&
+				!aiMergedEdgeImage &&
+				preparedCoverImage &&
+				heuristicEdgeImage
+			) {
+				token += 1;
+				idleGeneration = createIdleGeneration(token);
+				scheduleAiDepth(idleGeneration);
+			}
 			return;
 		}
-		pending = loadImage(url)
-			.then(async (image) => {
-				if (runToken !== token) return;
+		const generation = beginGeneration();
+		if (!runtimeActive) {
+			currentUrl = url;
+			currentFallbackUrl = fallbackUrl;
+			generation.cancel();
+			return;
+		}
+		currentUrl = url;
+		currentFallbackUrl = fallbackUrl;
+		const runToken = generation.token;
+		currentCoverCacheKey = coverTextureCacheKey(url, fallbackUrl, coverResolution);
+		if (uniforms.uLoading) uniforms.uLoading.value = 1;
+		const cached = getHomeCoverTextureCache(currentCoverCacheKey, resourceScope);
+		coverPending = true;
+		runTask<{ preparedImage: HomeCoverImage; heuristicImage: HomeCoverImage | null; cached: HomeCoverTextureCacheEntry | null }>({
+			generation,
+			key: "cover-load/current",
+			priority: "visible",
+			async run(signal) {
+				if (cached) return { preparedImage: cached.preparedImage, heuristicImage: cached.heuristicImage, cached };
+				const image = await loadImage(url, signal, fallbackUrl);
+				if (signal.aborted) throw signal.reason;
 				const preparedImage = prepareSquareCoverCanvas(image, { coverResolution, createCanvas: opts.createCanvas });
-				applyPreparedCoverImage(preparedImage);
-				if (currentCoverCacheKey) {
-					setHomeCoverTextureCache(currentCoverCacheKey, { preparedImage });
-				}
-
-				let builtHeuristicEdgeImage: HomeCoverImage | null = null;
+				let heuristicImage: HomeCoverImage | null = null;
 				try {
-					builtHeuristicEdgeImage = uniforms.uEdgeTex ? buildDepthImage(preparedImage, opts) : null;
+					heuristicImage = uniforms.uEdgeTex ? buildDepthImage(preparedImage, opts) : null;
 				} catch {
-					builtHeuristicEdgeImage = null;
+					heuristicImage = null;
 				}
-				if (runToken !== token) return;
-				if (builtHeuristicEdgeImage && uniforms.uEdgeTex) {
-					// 缓存启发式深度，切换 AI depth 时避免重复加载/准备封面。
-					applyHeuristicDepthImage(builtHeuristicEdgeImage);
-					if (currentCoverCacheKey) {
-						patchHomeCoverTextureCache(currentCoverCacheKey, {
-							heuristicImage: builtHeuristicEdgeImage,
-							heuristicImageIsAiMerged: false,
-						});
-					}
-				} else {
+				return { preparedImage, heuristicImage, cached: null };
+			},
+			commit(result, signal) {
+				coverPending = false;
+				if (!isCurrent(runToken, signal)) return;
+				applyPreparedCoverImage(result.preparedImage);
+				committedUrl = url;
+				if (result.cached) {
+					if (applyCachedCoverDepth(runToken, result.cached)) scheduleAiDepth(generation);
+					return;
+				}
+				setHomeCoverTextureCache(currentCoverCacheKey, { preparedImage: result.preparedImage }, resourceScope);
+				if (!result.heuristicImage || !uniforms.uEdgeTex) {
 					depthTween?.setTarget(0, 0, 1);
 					resetDepthUniforms(uniforms);
 					return;
 				}
-
-				await applyAiDepthForCurrent(runToken);
-			})
-		.catch(() => {
-			if (runToken !== token) return;
-			uniforms.uHasCover.value = 0;
-			if (uniforms.uLoading) uniforms.uLoading.value = 0;
-			depthTween?.setTarget(0, 0, 1);
-			resetDepthUniforms(uniforms);
+				applyHeuristicDepthImage(result.heuristicImage);
+				patchHomeCoverTextureCache(currentCoverCacheKey, {
+					heuristicImage: result.heuristicImage,
+					heuristicImageIsAiMerged: false,
+				}, resourceScope);
+				scheduleAiDepth(generation);
+			},
+			onSettled(settlement) {
+				coverPending = false;
+				if (settlement === "failed" || settlement === "cancelled" && isCurrent(runToken)) onCoverFailure(runToken);
+			},
 		});
 	}
 
@@ -461,12 +803,16 @@ export function createHomeCoverTextureController(
 	return {
 		setCoverUrl,
 		setAiDepthEnabled(enabled) {
+			if (disposed) return;
 			const next = !!enabled;
 			if (next === aiDepthEnabled) return;
 			aiDepthEnabled = next;
 			if (!currentUrl) return;
-			const runToken = ++token;
 			if (!aiDepthEnabled) {
+				aiEnhancementNeedsResume = false;
+				if (aiPending) taskQueue?.cancelOwner(owner);
+				aiTicket = issueTicket("ai-depth");
+				aiPending = false;
 				if (heuristicEdgeIsAiMerged) {
 					const rebuilt = rebuildHeuristicDepthFromPrepared();
 					if (rebuilt) {
@@ -480,17 +826,13 @@ export function createHomeCoverTextureController(
 					markTextureImage(uniforms.uEdgeTex.value, heuristicEdgeImage);
 					currentEdgeIsAiMerged = false;
 					depthTween?.setTarget(1, 0.55, 180);
-					pending = Promise.resolve();
 					return;
 				}
-			} else if (preparedCoverImage && heuristicEdgeImage && uniforms.uEdgeTex) {
-				pending = applyAiDepthForCurrent(runToken);
+			} else if (!coverPending && preparedCoverImage && heuristicEdgeImage && uniforms.uEdgeTex) {
+				token += 1;
+				idleGeneration = createIdleGeneration(token);
+				scheduleAiDepth(idleGeneration);
 				return;
-			}
-			if (currentUrl) {
-				const url = currentUrl;
-				currentUrl = "";
-				setCoverUrl(url);
 			}
 		},
 		advanceColorMix,
@@ -501,7 +843,30 @@ export function createHomeCoverTextureController(
 			return currentUrl;
 		},
 		whenIdle() {
-			return pending ?? Promise.resolve();
+			return idleGeneration.promise;
+		},
+		setRuntimeActive(active) {
+			if (disposed || runtimeActive === !!active) return;
+			runtimeActive = !!active;
+			if (!runtimeActive) {
+				aiEnhancementNeedsResume = !!(
+					aiPending &&
+					aiDepthEnabled &&
+					!aiMergedEdgeImage &&
+					currentUrl &&
+					preparedCoverImage &&
+					heuristicEdgeImage
+				);
+				cancelCoverAndAi();
+				if (uniforms.uLoading) uniforms.uLoading.value = 0;
+			}
+		},
+		dispose() {
+			if (disposed) return;
+			disposed = true;
+			runtimeActive = false;
+			cancelCoverAndAi();
+			cancellationScope.dispose();
 		},
 	};
 }

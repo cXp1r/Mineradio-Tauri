@@ -1,0 +1,10 @@
+{
+  "encoded_public_key": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDNCMTY0QTQxMkYwRUM2MDgKUldRSXhnNHZRVW9XTzRwUkdFc1RjQ05tUlZmUlF4b2o2OEVxRWt3SWpSNEQ3a3BoRVduU0x2ZGcK",
+  "provenance_signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRSXhnNHZRVW9XTzRoenQweTNxSGZMT3hGUUplZG1XeDN0MmZoZml6VHI2UGtFOFNHZ2RsNjlpVmRhY2dtNmQzd202WFpuSFlIY0NoSEdVZkhFY2E5UkNMdTlzM3JzRmdFPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDcyNjA0CWZpbGU6cHJvdmVuYW5jZS12Mi5qc29uCmRNK1paUDZtQktSKzVydHV1aVhFUG5OS0dYdzZmV3R4Y0ZPbzA2Ny8rTmNRS1VzbkdpTFNMUTdjMVJUM3NidTNOcU5aVUVzWXhvR2RmcjJrTFZGZ0RnPT0K",
+  "installer_signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRSXhnNHZRVW9XT3gzOW5hcHR5TVNZdkNGM3FNTVdyaTg5K3ZGcTdlNlZBS2dvMWZudHpkNjdrQlphaDFFeVNyY0dkY2owZDdEaVdWVXVnRTVzNDJ5N3dmNEtRZHBUc3dzPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzg1NDcyNjA0CWZpbGU6aW5zdGFsbGVyLmJpbgpmZm1aT0c0czZlVG9oeFdGL1JmV1ZnWEl3cm8wMmVoUEFPUno0MDVhdkl6emhXUlJ0L1k0WDZxdTZBRzg0bzNQSm9wd3RWcHFYMGIyK1NGQ2Z3RkxCdz09Cg==",
+  "expected_provenance_sha256": "8f0e1c18d801bde833d2aec15adca1bc6b49f19ad81b4c4300655fb0350f29a6",
+  "expected_candidate_identity": "{\"schema_version\":2,\"repository\":\"zzstar101/Mineradio-Tauri\",\"tag\":\"v1.2.3\",\"version\":\"1.2.3\",\"asset_name\":\"MineRadio-Tauri_1.2.3_x64-setup.exe\",\"target\":\"windows-x86_64-nsis\",\"provenance_sha256\":\"8f0e1c18d801bde833d2aec15adca1bc6b49f19ad81b4c4300655fb0350f29a6\",\"installer_signature_sha256\":\"cfa439144f43599936ef9b50dd861a79b3673bba82ce007331b971b60ef92485\",\"provenance_signature_sha256\":\"c7cc1d0db0e134c80d6e2fc8f963332a4ba5ca3696ac90219fd9c61484c1c16d\"}\n",
+  "expected_candidate_id": "1f524da9660c738e349f342d1e3f0bc9da3b28b9c4842636475ccdde59b9ee0e",
+  "github_locator": "https://github.com/zzstar101/Mineradio-Tauri/releases/download/v1.2.3/MineRadio-Tauri_1.2.3_x64-setup.exe",
+  "staging_locator": "D:\\actions\\_temp\\draft-101\\MineRadio-Tauri_1.2.3_x64-setup.exe"
+}

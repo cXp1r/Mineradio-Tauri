@@ -205,6 +205,72 @@ test("setPresetCameraBaseline applies baseline wallpaper pulse camera numbers", 
 	cinema.dispose();
 });
 
+test("setPresetCameraBaseline applies the Sonic camera baseline", () => {
+	const camera = makeFakeCamera();
+	const cinema = createCinemaCamera({ camera: camera as never });
+	cinema.setPresetCameraBaseline(7);
+	const orbit = cinema.getState().orbit;
+	expect(orbit.userRadius).toBe(8.4);
+	expect(orbit.userPhi).toBe(0.18);
+	expect(orbit.userTheta).toBe(0);
+	expect(orbit.baselineRadius).toBe(8.4);
+	expect(orbit.baselinePhi).toBe(0.18);
+	expect(orbit.baselineTheta).toBe(0);
+	cinema.dispose();
+});
+
+test("camera policy follows the eligible Stage target and lets Shelf focus win", () => {
+	const camera = makeFakeCamera();
+	const policyInput = {
+		activePreset: 7,
+		lyricCameraLock: false,
+		wallpaperLyricLock: false,
+		stageWorldTarget: { x: 0.4, y: 0.2, z: -0.3 },
+	};
+	const cinema = createCinemaCamera({
+		camera: camera as never,
+		cameraPolicyInputSupplier: () => policyInput,
+	});
+	const ctx = makeContext(makeSnapshot(), 1 / 60);
+
+	cinema.update(ctx);
+	expect(cinema.getState().orbit.lookAt.x).toBeCloseTo(0.4 * 0.115, 6);
+	expect(cinema.getState().orbit.lookAt.y).toBeCloseTo(-0.14 * 0.115, 6);
+	expect(cinema.getState().orbit.lookAt.z).toBeCloseTo(-0.14 * 0.115, 6);
+
+	cinema.setFocusZone("shelf-side", { immediate: true, portrait: false });
+	cinema.update(ctx);
+	const focused = cinema.getState().orbit.lookAt;
+	expect(focused.x).toBeGreaterThan(0.4 * 0.115);
+	expect(focused.y).toBeLessThan(0.02 * 0.115);
+	cinema.dispose();
+});
+
+test("camera policy clears the Stage target after leaving preset 7", () => {
+	const camera = makeFakeCamera();
+	let activePreset = 7;
+	const cinema = createCinemaCamera({
+		camera: camera as never,
+		cameraPolicyInputSupplier: () => ({
+			activePreset,
+			lyricCameraLock: false,
+			wallpaperLyricLock: false,
+			stageWorldTarget: { x: 0.4, y: 0.2, z: -0.3 },
+		}),
+	});
+	const ctx = makeContext(makeSnapshot(), 1 / 60);
+
+	for (let i = 0; i < 60; i++) cinema.update(ctx);
+	expect(cinema.getState().orbit.lookAt.x).toBeGreaterThan(0.39);
+
+	activePreset = 6;
+	for (let i = 0; i < 160; i++) cinema.update(ctx);
+	expect(cinema.getState().orbit.lookAt.x).toBeCloseTo(0, 5);
+	expect(cinema.getState().orbit.lookAt.y).toBeCloseTo(0, 5);
+	expect(cinema.getState().orbit.lookAt.z).toBeCloseTo(0, 5);
+	cinema.dispose();
+});
+
 test("resetLyricStageCoverWallView restores the baseline front-on lyric stage camera", () => {
 	const lookAtCalls: unknown[][] = [];
 	const camera = {

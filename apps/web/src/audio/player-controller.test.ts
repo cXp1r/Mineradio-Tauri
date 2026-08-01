@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { PlayerController } from "./player-controller";
+import {
+	PlayerController,
+	type ErrorPayload,
+	type MediaEventPayload,
+} from "./player-controller";
 
 class StubMediaError {
 	code = 0;
@@ -9,7 +13,7 @@ class StubMediaError {
 class StubAudioElement extends EventTarget {
 	currentTime = 0;
 	duration: number = NaN;
-	src = "";
+	currentSrc = "";
 	crossOrigin: string | null = null;
 	volume = 1;
 	paused = true;
@@ -19,6 +23,13 @@ class StubAudioElement extends EventTarget {
 	playCalled = 0;
 	resumeCalls: string[] = [];
 	_mineradioAudioCtx?: { state: string; resume: () => Promise<void> };
+	private sourceUrl = "";
+	get src(): string {
+		return this.sourceUrl;
+	}
+	set src(value: string) {
+		this.sourceUrl = new URL(value, "https://app.example/").href;
+	}
 	async play(): Promise<void> {
 		this.playCalled += 1;
 		this.resumeCalls.push("play");
@@ -86,13 +97,15 @@ test("play resumes the visual AudioContext before and after media playback like 
 	expect(stub.playCalled).toBe(1);
 });
 
-test("timeupdate handler receives positionMs and durationMs", () => {
+test("timeupdate handler receives positionMs and durationMs", async () => {
 	const stub = new StubAudioElement();
 	const controller = new PlayerController(asHtmlAudioElement(stub));
 	let last: { positionMs: number; durationMs: number | null } | null = null;
 	const off = controller.on("timeupdate", (payload) => {
 		last = payload;
 	});
+	controller.load("https://example.com/current.mp3");
+	await controller.play();
 	stub.currentTime = 12.5;
 	stub.duration = 200;
 	stub.dispatchEvent(new Event("timeupdate"));
@@ -104,25 +117,29 @@ test("timeupdate handler receives positionMs and durationMs", () => {
 	expect(stub.dispatchEvent(new Event("timeupdate")) || true).toBe(true);
 });
 
-test("durationchange delivers null duration when NaN", () => {
+test("durationchange delivers null duration when NaN", async () => {
 	const stub = new StubAudioElement();
 	const controller = new PlayerController(asHtmlAudioElement(stub));
 	let last: { positionMs: number; durationMs: number | null } | null = null;
 	controller.on("durationchange", (payload) => {
 		last = payload;
 	});
+	controller.load("https://example.com/current.mp3");
+	await controller.play();
 	stub.duration = NaN;
 	stub.dispatchEvent(new Event("durationchange"));
 	expect(last!.durationMs).toBeNull();
 });
 
-test("ended fires once and unsubscribe stops it", () => {
+test("ended fires once and unsubscribe stops it", async () => {
 	const stub = new StubAudioElement();
 	const controller = new PlayerController(asHtmlAudioElement(stub));
 	let count = 0;
 	const off = controller.on("ended", () => {
 		count += 1;
 	});
+	controller.load("https://example.com/current.mp3");
+	await controller.play();
 	stub.dispatchEvent(new Event("ended"));
 	stub.dispatchEvent(new Event("ended"));
 	expect(count).toBe(2);
@@ -131,13 +148,15 @@ test("ended fires once and unsubscribe stops it", () => {
 	expect(count).toBe(2);
 });
 
-test("error handler synthesizes code/message from audio.error", () => {
+test("error handler synthesizes code/message from audio.error", async () => {
 	const stub = new StubAudioElement();
 	const controller = new PlayerController(asHtmlAudioElement(stub));
 	let captured: { code: number; message: string } | null = null;
 	controller.on("error", (payload) => {
 		captured = payload;
 	});
+	controller.load("https://example.com/current.mp3");
+	await controller.play();
 	stub.error = new StubMediaError();
 	stub.error.code = 4;
 	stub.error.message = "network";
@@ -145,4 +164,93 @@ test("error handler synthesizes code/message from audio.error", () => {
 	expect(captured).not.toBeNull();
 	expect(captured!.code).toBe(4);
 	expect(captured!.message).toBe("network");
+});
+
+test("native events expose context only when the active source matches its load binding", async () => {
+	const stub = new StubAudioElement();
+	const controller = new PlayerController(asHtmlAudioElement(stub));
+	const oldContext = { load: "old" };
+	const newContext = { load: "new" };
+	const playPayloads: Array<MediaEventPayload | undefined> = [];
+	const errorPayloads: ErrorPayload[] = [];
+	controller.on("play", (payload: MediaEventPayload) => {
+		playPayloads.push(payload);
+	});
+	controller.on("error", (payload) => {
+		errorPayloads.push(payload);
+	});
+
+	controller.load("https://example.com/old.mp3", oldContext);
+	stub.currentSrc = stub.src;
+	const oldSourceUrl = stub.currentSrc;
+	controller.load("https://example.com/new.mp3", newContext);
+	const newSourceUrl = stub.src;
+	await controller.play();
+	playPayloads.length = 0;
+	errorPayloads.length = 0;
+	stub.error = new StubMediaError();
+	stub.error.code = 2;
+	stub.error.message = "late old source event";
+
+	stub.dispatchEvent(new Event("play"));
+	stub.dispatchEvent(new Event("error"));
+	expect(playPayloads[0]?.loadContext).toBeNull();
+	expect(playPayloads[0]?.sourceUrl).toBe(oldSourceUrl);
+	expect(errorPayloads[0]?.loadContext).toBeNull();
+	expect(errorPayloads[0]?.sourceUrl).toBe(oldSourceUrl);
+
+	stub.currentSrc = newSourceUrl;
+	stub.dispatchEvent(new Event("play"));
+	stub.dispatchEvent(new Event("error"));
+	expect(playPayloads[1]?.loadContext).toBe(newContext);
+	expect(playPayloads[1]?.sourceUrl).toBe(newSourceUrl);
+	expect(errorPayloads[1]?.loadContext).toBe(newContext);
+	expect(errorPayloads[1]?.sourceUrl).toBe(newSourceUrl);
+});
+
+test("all native events use normalized audio src when currentSrc is empty", async () => {
+	const stub = new StubAudioElement();
+	const controller = new PlayerController(asHtmlAudioElement(stub));
+	const loadContext = { load: "fallback" };
+	const payloads: MediaEventPayload[] = [];
+	const capture = (payload: MediaEventPayload) => {
+		payloads.push(payload);
+	};
+	controller.on("play", capture);
+	controller.on("pause", capture);
+	controller.on("timeupdate", capture);
+	controller.on("durationchange", capture);
+	controller.on("ended", capture);
+	controller.on("error", capture);
+
+	controller.load("/audio/fallback.mp3", loadContext);
+	await controller.play();
+	payloads.length = 0;
+	stub.currentSrc = "";
+	stub.error = new StubMediaError();
+	stub.dispatchEvent(new Event("play"));
+	stub.dispatchEvent(new Event("pause"));
+	stub.dispatchEvent(new Event("timeupdate"));
+	stub.dispatchEvent(new Event("durationchange"));
+	stub.dispatchEvent(new Event("ended"));
+	stub.dispatchEvent(new Event("error"));
+
+	expect(stub.src).toBe("https://app.example/audio/fallback.mp3");
+	expect(payloads.length).toBe(6);
+	expect(payloads.map((payload) => payload.loadContext)).toEqual([
+		loadContext,
+		loadContext,
+		loadContext,
+		loadContext,
+		loadContext,
+		loadContext,
+	]);
+	expect(payloads.map((payload) => payload.sourceUrl)).toEqual([
+		stub.src,
+		stub.src,
+		stub.src,
+		stub.src,
+		stub.src,
+		stub.src,
+	]);
 });

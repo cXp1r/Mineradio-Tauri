@@ -1,10 +1,10 @@
 [package]
 name = "mineradio-tauri"
-version = "0.1.0"
-description = "MineRadio-Tauri desktop music player"
+version = "1.0.0"
+description = "GPL-3.0-only Rust desktop runtime for MineRadio-Tauri; bundled web assets may carry separate license notices"
 authors = ["MineRadio-Tauri contributors"]
 edition = "2021"
-license = "GPL-3.0"
+license = "GPL-3.0-only"
 
 [lib]
 name = "mineradio_tauri_lib"
@@ -14,20 +14,54 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-tauri = { version = "2", features = [] }
+tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-dialog = "2.7.1"
 tauri-plugin-global-shortcut = "=2.3.2"
 tauri-plugin-single-instance = "=2.4.2"
-tauri-plugin-updater = "=2.10.0"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+getrandom = "0.3.4"
+sha2 = "0.10"
+base64 = "=0.22.1"
+minisign-verify = "=0.2.5"
+reqwest = { version = "=0.13.4", default-features = false, features = ["rustls-no-provider", "stream"] }
+rustls = { version = "=0.23.41", default-features = false, features = ["ring", "std", "tls12"] }
+semver = "=1.0.28"
+url = "=2.5.8"
 dirs = "5"
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 rusqlite = { version = "0.40", features = ["bundled"] }
+tokio = { version = "=1.52.3", features = ["fs", "io-util", "macros", "sync", "time"] }
+tokio-util = { version = "=0.7.18", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+webview2-com = "=0.38.2"
+windows-sys = { version = "0.61", features = [
+  "Wdk_Storage_FileSystem",
+  "Win32_Foundation",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+  "Win32_Graphics_Gdi",
+  "Win32_Graphics_Dwm",
+  "Win32_Security",
+  "Win32_Security_Cryptography",
+  "Win32_Security_WinTrust",
+  "Win32_System_LibraryLoader",
+  "Win32_System_IO",
+  "Win32_System_Registry",
+  "Win32_UI_Input_KeyboardAndMouse",
+  "Win32_UI_Controls",
+  "Win32_UI_HiDpi",
+  "Win32_UI_WindowsAndMessaging",
+] }
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+updater-smoke = []
 
-[dev-dependencies]
-base64 = "=0.22.1"
-minisign-verify = "=0.2.5"
+[[example]]
+name = "updater-smoke"
+path = "examples/updater_smoke.rs"
+required-features = ["updater-smoke"]

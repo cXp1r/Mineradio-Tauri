@@ -12,10 +12,16 @@ const PROVENANCE_FIELDS = [
   "repository",
   "tag",
   "commit_sha",
-  "assets",
+  "platform",
+  "package_type",
+  "install_mode",
+  "installer",
 ];
-const ASSET_FIELDS = ["name", "size", "sha256"];
+const INSTALLER_FIELDS = ["name", "size", "sha256"];
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const PROVENANCE_PLATFORM = "windows-x86_64";
+const PROVENANCE_PACKAGE_TYPE = "nsis";
+const PROVENANCE_INSTALL_MODE = "currentUser";
 
 function normalizePathForComparison(filePath) {
   const normalizedPath = resolve(filePath);
@@ -62,10 +68,6 @@ function hasExactFields(value, expectedFields) {
   );
 }
 
-function compareNames(left, right) {
-  return left < right ? -1 : left > right ? 1 : 0;
-}
-
 function validateProvenanceTopLevel(provenance) {
   if (!isJsonObject(provenance)) {
     throw new Error("来源证明必须是 JSON 对象");
@@ -77,8 +79,8 @@ function validateProvenanceTopLevel(provenance) {
     );
   }
 
-  if (provenance.schema_version !== 1) {
-    throw new Error("来源证明 schema_version 必须为 1");
+  if (provenance.schema_version !== 2) {
+    throw new Error("来源证明 schema_version 必须为 2");
   }
 
   if (
@@ -102,55 +104,188 @@ function validateProvenanceTopLevel(provenance) {
     throw new Error("来源证明 commit_sha 字段格式无效");
   }
 
-  if (!Array.isArray(provenance.assets)) {
-    throw new Error("来源证明 assets 字段必须是数组");
+  if (provenance.platform !== PROVENANCE_PLATFORM) {
+    throw new Error(`来源证明 platform 必须为 ${PROVENANCE_PLATFORM}`);
   }
 
-  provenance.assets.forEach((asset, index) => {
-    if (!isJsonObject(asset)) {
-      throw new Error(`来源证明 assets[${index}] 必须是 JSON 对象`);
-    }
+  if (provenance.package_type !== PROVENANCE_PACKAGE_TYPE) {
+    throw new Error(
+      `来源证明 package_type 必须为 ${PROVENANCE_PACKAGE_TYPE}`,
+    );
+  }
 
-    if (!hasExactFields(asset, ASSET_FIELDS)) {
-      throw new Error(
-        `来源证明 assets[${index}] 字段必须恰好为: ${ASSET_FIELDS.join(", ")}`,
-      );
-    }
+  if (provenance.install_mode !== PROVENANCE_INSTALL_MODE) {
+    throw new Error(
+      `来源证明 install_mode 必须为 ${PROVENANCE_INSTALL_MODE}`,
+    );
+  }
 
-    if (typeof asset.name !== "string" || asset.name.trim().length === 0) {
-      throw new Error(`来源证明 assets[${index}].name 必须是非空字符串`);
-    }
+  if (!isJsonObject(provenance.installer)) {
+    throw new Error("来源证明 installer 必须是 JSON 对象");
+  }
 
-    if (!Number.isSafeInteger(asset.size) || asset.size <= 0) {
-      throw new Error(`来源证明 assets[${index}].size 必须是正整数`);
-    }
+  if (!hasExactFields(provenance.installer, INSTALLER_FIELDS)) {
+    throw new Error(
+      `来源证明 installer 字段必须恰好为: ${INSTALLER_FIELDS.join(", ")}`,
+    );
+  }
 
-    if (
-      typeof asset.sha256 !== "string" ||
-      !SHA256_PATTERN.test(asset.sha256)
-    ) {
-      throw new Error(
-        `来源证明 assets[${index}].sha256 必须是 64 位小写十六进制`,
-      );
-    }
-  });
+  const expectedInstallerName = `MineRadio-Tauri_${provenance.tag.slice(1)}_x64-setup.exe`;
+  if (provenance.installer.name !== expectedInstallerName) {
+    throw new Error(`来源证明 installer.name 必须为 ${expectedInstallerName}`);
+  }
 
-  validateExactAssetNames(
-    provenance.assets.map((asset) => asset.name),
-    provenance.tag.slice(1),
-    {
-      duplicate: "来源证明资产名称重复",
-      missing: "来源证明资产集合缺少",
-      extra: "来源证明资产集合存在额外资产",
+  if (
+    !Number.isSafeInteger(provenance.installer.size) ||
+    provenance.installer.size <= 0
+  ) {
+    throw new Error("来源证明 installer.size 必须是正安全整数");
+  }
+
+  if (
+    typeof provenance.installer.sha256 !== "string" ||
+    !SHA256_PATTERN.test(provenance.installer.sha256)
+  ) {
+    throw new Error("来源证明 installer.sha256 必须是 64 位小写十六进制");
+  }
+}
+
+export function canonicalReleaseProvenanceText(provenance) {
+  validateProvenanceTopLevel(provenance);
+  const canonical = {
+    schema_version: provenance.schema_version,
+    repository: provenance.repository,
+    tag: provenance.tag,
+    commit_sha: provenance.commit_sha,
+    platform: provenance.platform,
+    package_type: provenance.package_type,
+    install_mode: provenance.install_mode,
+    installer: {
+      name: provenance.installer.name,
+      size: provenance.installer.size,
+      sha256: provenance.installer.sha256,
     },
-  );
+  };
+  return `${JSON.stringify(canonical)}\n`;
+}
 
-  const assetNames = provenance.assets.map((asset) => asset.name);
-  const sortedAssetNames = [...assetNames].sort(compareNames);
+export function releaseProvenanceDigest(provenance) {
+  return createHash("sha256")
+    .update(canonicalReleaseProvenanceText(provenance), "utf8")
+    .digest("hex");
+}
 
-  if (assetNames.some((name, index) => name !== sortedAssetNames[index])) {
-    throw new Error("来源证明 assets 必须按 name 升序排列");
+function signatureIdentity(signature, label) {
+  if (typeof signature !== "string" || signature.trim().length === 0) {
+    throw new Error(`${label}必须是非空字符串`);
   }
+  if (signature !== signature.trim()) {
+    throw new Error(`${label}必须是 canonical Tauri base64`);
+  }
+  const decoded = Buffer.from(signature, "base64");
+  if (decoded.toString("base64") !== signature) {
+    throw new Error(`${label}必须是 canonical Tauri base64`);
+  }
+  let signatureText;
+  try {
+    signatureText = new TextDecoder("utf-8", { fatal: true }).decode(decoded);
+  } catch {
+    throw new Error(`${label}Tauri base64 内容不是 UTF-8`);
+  }
+  if (signatureText.includes("\r")) {
+    throw new Error(`${label}签名必须使用 canonical LF 换行`);
+  }
+  const canonicalText = signatureText.endsWith("\n")
+    ? signatureText.slice(0, -1)
+    : signatureText;
+  const lines = canonicalText.split("\n");
+  if (
+    lines.length !== 4 ||
+    !lines[0].startsWith("untrusted comment: ") ||
+    !lines[2].startsWith("trusted comment: ") ||
+    lines.some((line) => line.length === 0)
+  ) {
+    throw new Error(`${label}签名必须是 canonical 四行 Minisign 结构`);
+  }
+  const signaturePayload = Buffer.from(lines[1], "base64");
+  const globalSignature = Buffer.from(lines[3], "base64");
+  if (
+    signaturePayload.toString("base64") !== lines[1] ||
+    signaturePayload.length !== 74 ||
+    signaturePayload[0] !== 0x45 ||
+    signaturePayload[1] !== 0x44 ||
+    globalSignature.toString("base64") !== lines[3] ||
+    globalSignature.length !== 64
+  ) {
+    throw new Error(`${label}签名 payload 不是 canonical 预哈希 Minisign`);
+  }
+  const protectedIdentity = `${lines[1]}\n${lines[2]}\n${lines[3]}\n`;
+  return createHash("sha256")
+    .update(protectedIdentity, "utf8")
+    .digest("hex");
+}
+
+export function canonicalReleaseCandidateIdentityText({
+  provenance,
+  version,
+  installerSignature,
+  provenanceSignature,
+}) {
+  canonicalReleaseProvenanceText(provenance);
+  const expectedVersion = provenance.tag.slice(1);
+  if (version !== expectedVersion) {
+    throw new Error(
+      `候选版本与 provenance tag 不一致: version=${version}, expected=${expectedVersion}`,
+    );
+  }
+
+  const identity = {
+    schema_version: 2,
+    repository: provenance.repository,
+    tag: provenance.tag,
+    version,
+    asset_name: provenance.installer.name,
+    target: "windows-x86_64-nsis",
+    provenance_sha256: releaseProvenanceDigest(provenance),
+    installer_signature_sha256: signatureIdentity(
+      installerSignature,
+      "安装包签名",
+    ),
+    provenance_signature_sha256: signatureIdentity(
+      provenanceSignature,
+      "provenance 签名",
+    ),
+  };
+  return `${JSON.stringify(identity)}\n`;
+}
+
+export function createReleaseCandidateIdentity(input) {
+  return createHash("sha256")
+    .update(canonicalReleaseCandidateIdentityText(input), "utf8")
+    .digest("hex");
+}
+
+export function parseCanonicalReleaseProvenance(rawProvenance) {
+  if (typeof rawProvenance !== "string") {
+    throw new Error("来源证明原始内容必须是 UTF-8 字符串");
+  }
+
+  if (rawProvenance.startsWith("\uFEFF")) {
+    throw new Error("来源证明不是 canonical provenance v2 编码");
+  }
+
+  let provenance;
+  try {
+    provenance = JSON.parse(rawProvenance);
+  } catch {
+    throw new Error("来源证明 JSON 格式无效");
+  }
+
+  const canonical = canonicalReleaseProvenanceText(provenance);
+  if (rawProvenance !== canonical) {
+    throw new Error("来源证明不是 canonical provenance v2 编码");
+  }
+  return provenance;
 }
 
 function parseReleaseTag(tag) {
@@ -251,81 +386,75 @@ export function createReleaseProvenance({
 
   validateAssetPathNames(assetPaths, version);
 
-  const assets = assetPaths
-    .map((assetPath) => {
-      const content = readAssetContent(assetPath);
-
-      return {
-        name: basename(assetPath),
-        size: content.byteLength,
-        sha256: createHash("sha256").update(content).digest("hex"),
-      };
-    })
-    .sort((left, right) => compareNames(left.name, right.name));
+  const assetContents = new Map(
+    assetPaths.map((assetPath) => [basename(assetPath), readAssetContent(assetPath)]),
+  );
+  const installerName = expectedAssetNames(version)[0];
+  const installerContent = assetContents.get(installerName);
 
   return {
-    schema_version: 1,
+    schema_version: 2,
     repository,
     tag,
     commit_sha: commitSha,
-    assets,
+    platform: PROVENANCE_PLATFORM,
+    package_type: PROVENANCE_PACKAGE_TYPE,
+    install_mode: PROVENANCE_INSTALL_MODE,
+    installer: {
+      name: installerName,
+      size: installerContent.byteLength,
+      sha256: createHash("sha256").update(installerContent).digest("hex"),
+    },
   };
 }
 
 export function verifyReleaseProvenance({
-  provenance,
+  rawProvenance,
   repository,
   tag,
   commitSha,
   assetPaths,
 }) {
-  validateProvenanceTopLevel(provenance);
+  const verifiedProvenance = parseCanonicalReleaseProvenance(rawProvenance);
 
-  if (provenance.repository !== repository) {
+  if (verifiedProvenance.repository !== repository) {
     throw new Error(
-      `来源证明仓库不一致: provenance=${provenance.repository}, expected=${repository}`,
+      `来源证明仓库不一致: provenance=${verifiedProvenance.repository}, expected=${repository}`,
     );
   }
 
-  if (provenance.tag !== tag) {
+  if (verifiedProvenance.tag !== tag) {
     throw new Error(
-      `来源证明标签不一致: provenance=${provenance.tag}, expected=${tag}`,
+      `来源证明标签不一致: provenance=${verifiedProvenance.tag}, expected=${tag}`,
     );
   }
 
-  if (provenance.commit_sha !== commitSha) {
+  if (verifiedProvenance.commit_sha !== commitSha) {
     throw new Error(
-      `来源证明提交 SHA 不一致: provenance=${provenance.commit_sha}, expected=${commitSha}`,
+      `来源证明提交 SHA 不一致: provenance=${verifiedProvenance.commit_sha}, expected=${commitSha}`,
     );
   }
 
-  const localAssets = createReleaseProvenance({
+  const localInstaller = createReleaseProvenance({
     repository,
     tag,
     commitSha,
     assetPaths,
-  }).assets;
-  const provenanceAssets = new Map(
-    provenance.assets.map((asset) => [asset.name, asset]),
-  );
+  }).installer;
 
-  for (const localAsset of localAssets) {
-    const provenanceAsset = provenanceAssets.get(localAsset.name);
-
-    if (provenanceAsset.size !== localAsset.size) {
-      throw new Error(
-        `资产 ${localAsset.name} size 不一致: provenance=${provenanceAsset.size}, local=${localAsset.size}`,
-      );
-    }
-
-    if (provenanceAsset.sha256 !== localAsset.sha256) {
-      throw new Error(
-        `资产 ${localAsset.name} sha256 不一致: provenance=${provenanceAsset.sha256}, local=${localAsset.sha256}`,
-      );
-    }
+  if (verifiedProvenance.installer.size !== localInstaller.size) {
+    throw new Error(
+      `安装包 ${localInstaller.name} size 不一致: provenance=${verifiedProvenance.installer.size}, local=${localInstaller.size}`,
+    );
   }
 
-  return provenance;
+  if (verifiedProvenance.installer.sha256 !== localInstaller.sha256) {
+    throw new Error(
+      `安装包 ${localInstaller.name} sha256 不一致: provenance=${verifiedProvenance.installer.sha256}, local=${localInstaller.sha256}`,
+    );
+  }
+
+  return verifiedProvenance;
 }
 
 const CLI_USAGE = [
@@ -369,7 +498,7 @@ function runCli() {
 
     writeFileSync(
       outputPath,
-      `${JSON.stringify(provenance, null, 2)}\n`,
+      canonicalReleaseProvenanceText(provenance),
       "utf8",
     );
     console.log(`发布来源证明已创建: ${outputPath}`);
@@ -393,9 +522,10 @@ function runCli() {
     let rawProvenance;
 
     try {
-      rawProvenance = new TextDecoder("utf-8", { fatal: true }).decode(
-        readFileSync(provenancePath),
-      );
+      rawProvenance = new TextDecoder("utf-8", {
+        fatal: true,
+        ignoreBOM: true,
+      }).decode(readFileSync(provenancePath));
     } catch (error) {
       if (error instanceof TypeError) {
         throw new Error(`来源证明 JSON 不是有效的 UTF-8: ${provenancePath}`);
@@ -404,22 +534,14 @@ function runCli() {
       throw error;
     }
 
-    let provenance;
-
-    try {
-      provenance = JSON.parse(rawProvenance);
-    } catch {
-      throw new Error(`来源证明 JSON 格式无效: ${provenancePath}`);
-    }
-
     verifyReleaseProvenance({
-      provenance,
+      rawProvenance,
       repository,
       tag,
       commitSha,
       assetPaths: [executablePath, signaturePath, manifestPath],
     });
-    console.log(`发布来源证明验证通过: ${provenance.assets.length} 个资产`);
+    console.log("发布来源证明验证通过: provenance v2");
     return;
   }
 

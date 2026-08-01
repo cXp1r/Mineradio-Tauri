@@ -1,21 +1,29 @@
-export type VisualEngineSnapshot = {
-	preset: string;
-	playing: boolean;
-};
+export { createVisualEngine } from "./runtime/visual-engine";
 
-export type VisualEngine = {
-	update(snapshot: VisualEngineSnapshot): void;
-	resize(size: { width: number; height: number }): void;
-	dispose(): void;
-};
-
-export function createVisualEngine(): VisualEngine {
-	return {
-		update() {},
-		resize() {},
-		dispose() {},
-	};
-}
+export type {
+	ForegroundFramePolicy,
+	LyricsVisualSnapshot,
+	PlaybackVisualSnapshot,
+	ShelfVisualSnapshot,
+	VisualBackgroundPolicy,
+	VisualEngineFacade,
+	VisualEngineComposition,
+	VisualEngineCompositionContext,
+	VisualEngineOptions,
+	VisualFrameSnapshot,
+	VisualLyricLine,
+	VisualLyricWord,
+	VisualMediaClock,
+	VisualPerformanceSnapshot,
+	VisualPresetId,
+	VisualResourceBudget,
+	VisualResourcePressure,
+	VisualResourceUsage,
+	VisualRuntimeMode,
+	VisualSettingsSnapshot,
+	VisualShelfItem,
+	VisualVisibilityState,
+} from "./runtime/visual-engine-contract";
 
 export { createSplashEngine } from "./splash/splash-engine";
 export type { SplashEngine, SplashEngineOptions } from "./splash/splash-engine";
@@ -78,7 +86,70 @@ export type {
 	BeatHandler,
 	AudioReactivityOptions,
 	AudioReactivityEngine,
+	SonicSpectrumFrame,
+	SonicBand,
+	SonicBandLevels,
+	SonicAudioSnapshot,
 } from "./audio/audio-snapshot";
+export {
+	SONIC_BAND_HZ,
+	SONIC_SPECTRUM_BIN_COUNT,
+	analyzeSonicBands,
+	analyzeSonicSpectrum,
+	createSonicAudioProfile,
+	createSonicSpectrumFrame,
+} from "./sonic-topography/sonic-audio-profile";
+export type {
+	SonicAudioProfile,
+	SonicAudioProfileInput,
+	SonicSpectrumAnalysis,
+	SonicSpectrumFrameInput,
+} from "./sonic-topography/sonic-audio-profile";
+export {
+	SONIC_TERRAIN_GRID_CAP,
+	SONIC_TOPOGRAPHY_DEFAULTS,
+	mapSonicTerrainAmplitude,
+	normalizeSonicTopographySettings,
+	resolveSonicTerrainGrid,
+} from "./sonic-topography/sonic-settings";
+export type {
+	SonicColorMode,
+	SonicColorSettings,
+	SonicEqSettings,
+	SonicFloatingSettings,
+	SonicPerformanceQuality,
+	SonicTerrainSettings,
+	SonicTopographySettings,
+	SonicTriggerSettings,
+} from "./sonic-topography/sonic-settings";
+export {
+	createSonicTopographyPlugin,
+	SONIC_TOPOGRAPHY_PRESET_ID,
+} from "./sonic-topography/sonic-plugin";
+export type { SonicTopographyPlugin } from "./sonic-topography/sonic-plugin";
+export {
+	createSonicTopographyRuntime,
+	SONIC_TOPOGRAPHY_MAX_INSTANCES,
+	SONIC_TOPOGRAPHY_MESH_COUNT,
+	SONIC_TOPOGRAPHY_ROOT_NAME,
+} from "./sonic-topography/sonic-topography";
+export type {
+	SonicAudioSnapshotSupplier,
+	SonicTopographyDiagnostics,
+	SonicTopographyPluginContext,
+	SonicTopographyRuntime,
+	SonicTopographyRuntimeDependencies,
+} from "./sonic-topography/sonic-topography";
+export {
+	DEFAULT_STAGE_LYRICS_SETTINGS,
+	normalizeStageLyricsSettings,
+} from "./stage-lyrics/model/stage-lyrics-settings";
+export type {
+	StageLyricDisplayMode,
+	StageLyricMotionStyle,
+	StageLyricTranslationMode,
+	StageLyricsSettings,
+} from "./stage-lyrics/model/stage-lyrics-settings";
 export { createPeakFollower } from "./audio/peak-followers";
 export type { PeakFollower, PeakFollowerParams } from "./audio/peak-followers";
 export {
@@ -110,7 +181,13 @@ export type {
 export { attachRendererResizeSync, createRenderer } from "./runtime/renderer-setup";
 export type { RendererHandle, RendererResizeOptions, RendererResizeSyncOptions, RendererSetupOptions, ThreeModule, ThreeFactory } from "./runtime/renderer-setup";
 export { createRenderLoop } from "./runtime/render-loop";
-export type { RenderLoop, RenderLoopOptions } from "./runtime/render-loop";
+export type { RenderLoop, RenderLoopOptions, RenderStepOptions } from "./runtime/render-loop";
+export { createGpuFrameTimer } from "./runtime/gpu-frame-timer";
+export type {
+	GpuFrameTimer,
+	GpuFrameTimerOptions,
+	GpuFrameTimingSnapshot,
+} from "./runtime/gpu-frame-timer";
 export { createCinemaCamera } from "./runtime/cinema-camera";
 export type {
 	CinemaCamera,
@@ -160,18 +237,128 @@ export type {
 	FocusZoneTarget,
 	FocusZoneType,
 } from "./runtime/focus-zone";
+export { resolveVisualCameraPolicy } from "./runtime/visual-camera-policy";
+export type {
+	VisualCameraPolicyInput,
+	VisualCameraPolicyResult,
+	VisualCameraTarget,
+} from "./runtime/visual-camera-policy";
 export { createRuntimeUniforms } from "./runtime/uniforms";
 export type { RuntimeUniforms, UniformValue } from "./runtime/uniforms";
 export { RenderStepSlot, RENDER_STEP_ORDER } from "./runtime/render-step-slot";
 export type { RenderStepSlot as RenderStepSlotName } from "./runtime/render-step-slot";
-export { createPerfState } from "./runtime/perf-state";
+export { createVisualMaintenanceLane } from "./runtime/visual-maintenance-lane";
+export type {
+	VisualMaintenanceLane,
+	VisualMaintenanceLaneOptions,
+} from "./runtime/visual-maintenance-lane";
+export { createVisualSubsystemDiagnosticsRegistry } from "./runtime/subsystem-diagnostics";
+export type {
+	VisualDiagnosticObject,
+	VisualDiagnosticValue,
+	VisualSubsystemDiagnosticsPublisher,
+	VisualSubsystemDiagnosticsRegistry,
+	VisualSubsystemDiagnosticsSnapshot,
+	VisualSubsystemDiagnosticsSupplier,
+} from "./runtime/subsystem-diagnostics";
+export { createPerfState, projectPerfState } from "./runtime/perf-state";
 export type { PerfState, PerfStateSnapshot, RenderPerfMode } from "./runtime/perf-state";
 export type { FrameContext } from "./runtime/frame-context";
+export { createFrameGate } from "./runtime/frame-gate";
+export type { FrameGate, FrameGateDecision, FrameGateRate } from "./runtime/frame-gate";
+export { deriveVisualRuntimeMode } from "./runtime/visual-visibility";
+export { createVisualScheduler } from "./runtime/visual-scheduler";
+export type {
+	VisualScheduler,
+	VisualSchedulerAnimationCallback,
+	VisualSchedulerDriver,
+	VisualSchedulerErrorReporter,
+	VisualSchedulerErrorSource,
+	VisualSchedulerMaintenanceCallback,
+	VisualSchedulerOptions,
+	VisualSchedulerRuntimeCallbacks,
+} from "./runtime/visual-scheduler";
+export {
+	createVisualResourceScope,
+	VisualResourceScopeClosedError,
+} from "./runtime/resource-scope";
+export type {
+	VisualReleasableResourceRetention,
+	VisualResourceDisposalError,
+	VisualResourceDisposalReport,
+	VisualResourceHandle,
+	VisualResourceKind,
+	VisualResourceRegistration,
+	VisualResourceRetention,
+	VisualResourceScope,
+} from "./runtime/resource-scope";
+export { createVisualResourceLedger } from "./runtime/resource-ledger";
+export type {
+	VisualResourceAdmission,
+	VisualResourceAllocation,
+	VisualResourceLedger,
+	VisualResourceLedgerOptions,
+	VisualResourceLedgerSnapshot,
+	VisualResourcePriority,
+} from "./runtime/resource-ledger";
+export {
+	createCancellationScope,
+	CancellationScopeClosedError,
+} from "./runtime/cancellation-scope";
+export type {
+	CancellationScope,
+	CancellationTicket,
+} from "./runtime/cancellation-scope";
+export { createBudgetTaskQueue } from "./runtime/budget-task-queue";
+export type {
+	BudgetTask,
+	BudgetTaskContext,
+	BudgetTaskPriority,
+	BudgetTaskSettlement,
+	BudgetTaskQueue,
+	BudgetTaskQueueOptions,
+	VisualTaskQueueSnapshot,
+} from "./runtime/budget-task-queue";
+export { createPerformanceCollector } from "./runtime/performance-collector";
+export type {
+	PerformanceCollector,
+	PerformanceCollectorOptions,
+	PerformanceFrameSample,
+	PerformanceGateSample,
+	PerformanceRuntimeState,
+} from "./runtime/performance-collector";
+export { scanThreeResourceUsage } from "./runtime/three-resource-scanner";
+export type { ThreeResourceObjectLike } from "./runtime/three-resource-scanner";
 
 export { FX_DEFAULTS, cloneFxState } from "./home-visual/fx-defaults";
-export type { FxState } from "./home-visual/fx-defaults";
-export { applyPreset, clampPreset, PRESET_COUNT, SKULL_PRESET_INDEX } from "./home-visual/preset-state";
+export type { DeepPartial, FxState, FxStatePatch } from "./home-visual/fx-defaults";
+export {
+	applyPreset,
+	clampCurrentPreset,
+	clampPreset,
+	isDedicatedVisualPreset,
+	migrateLegacyPreset,
+	PRESET_COUNT,
+	SKULL_PRESET_INDEX,
+	SONIC_PRESET_INDEX,
+	SONIC_WORKSHOP_PRESET_INDEX,
+} from "./home-visual/preset-state";
 export type { PresetOpts } from "./home-visual/preset-state";
+export {
+	SONIC_WORKSHOP_DEFAULTS,
+	SONIC_WORKSHOP_ACTIVATION_ID,
+	SONIC_WORKSHOP_THEME_COLORS,
+	SONIC_WORKSHOP_THEMES,
+	areSonicWorkshopSettingsEqual,
+	normalizeSonicWorkshopSettings,
+} from "./sonic-workshop/sonic-workshop-settings";
+export type {
+	SonicWorkshopColorMode,
+	SonicWorkshopColors,
+	SonicWorkshopSettings,
+	SonicWorkshopTheme,
+	SonicWorkshopThemeColors,
+} from "./sonic-workshop/sonic-workshop-settings";
 export { syncFxUniforms, lerp } from "./home-visual/sync-uniforms";
 export type { SyncUniformsOpts, UniformContainer, UniformSlot } from "./home-visual/sync-uniforms";
 export {
@@ -180,7 +367,11 @@ export {
 	normalizeCoverResolution,
 } from "./home-visual/home-particle-field";
 export type { HomeParticleField, HomeParticleFieldOptions } from "./home-visual/home-particle-field";
-export { createHomeCoverTextureController } from "./home-visual/cover-texture";
+export {
+	createHomeCoverTextureController,
+	estimateHomeCoverTextureCacheBytes,
+	trimHomeCoverTextureCache,
+} from "./home-visual/cover-texture";
 export type {
 	HomeAiDepthEstimator,
 	HomeAiDepthMerger,
@@ -190,6 +381,7 @@ export type {
 	HomeCoverTextureController,
 	HomeCoverTextureControllerOptions,
 	HomeCoverTextureUniforms,
+	HomeCoverRuntimeOptions,
 } from "./home-visual/cover-texture";
 export {
 	buildEdgeAndDepthCanvas,
@@ -277,6 +469,10 @@ export {
 	makeLyricMask,
 } from "./stage-lyrics/lyric-mask";
 export type { LyricMaskResult, MakeLyricMaskOptions } from "./stage-lyrics/lyric-mask";
+export {
+	customLyricFontFamily,
+	customLyricFontId,
+} from "./stage-lyrics/lyric-text";
 export {
 	getLyricSunBloomTexture,
 	resetLyricSunBloomCache,
@@ -400,6 +596,7 @@ export type {
 export { createShelfManager, createShelfManagerWithThree } from "./shelf/shelf-animate";
 export type {
 	ShelfItem,
+	ShelfDetailPhase,
 	ShelfManagerOptions,
 	ShelfOpenDetailContentPayload,
 	ShelfSnapshot,

@@ -48,14 +48,26 @@ export interface LyricFontConfig {
 	stack: string;
 }
 
+export function customLyricFontId(key: string | undefined): string | null {
+	const match = String(key ?? "").trim().toLowerCase().match(/^custom:([a-z0-9_-]{6,64})$/);
+	return match?.[1] ?? null;
+}
+
+export function customLyricFontFamily(key: string | undefined): string | null {
+	const id = customLyricFontId(key);
+	return id ? `MineRadio Custom ${id}` : null;
+}
+
 export function normalizeFontKey(key: string | undefined): string {
 	const k = String(key ?? "").trim().toLowerCase();
+	if (customLyricFontId(k)) return k;
 	return Object.prototype.hasOwnProperty.call(FONT_STACKS, k) ? k : "sans";
 }
 
 export function resolveFontConfig(opts: LyricTextOptions | undefined): LyricFontConfig {
 	const key = normalizeFontKey(opts?.lyricFont);
 	const rawWeight = Number(opts?.lyricWeight);
+	const customFamily = customLyricFontFamily(key);
 	const weight = key === "stone-song"
 		? 900
 		: Number.isFinite(rawWeight)
@@ -63,7 +75,9 @@ export function resolveFontConfig(opts: LyricTextOptions | undefined): LyricFont
 		: FONT_WEIGHTS[key] ?? DEFAULT_FONT_WEIGHT;
 	return {
 		weight,
-		stack: FONT_STACKS[key] ?? DEFAULT_FONT_STACK,
+		stack: customFamily
+			? `"${customFamily}",${DEFAULT_FONT_STACK}`
+			: FONT_STACKS[key] ?? DEFAULT_FONT_STACK,
 	};
 }
 

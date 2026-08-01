@@ -1,3 +1,10 @@
+import type {
+	WallpaperDialogResult,
+	WallpaperLibrarySnapshot,
+	WallpaperProjectSummary,
+	WallpaperRuntimeState,
+} from "../ports/wallpaper-engine-runtime-port";
+
 export interface RuntimeConfig {
 	sidecarBaseUrl: string;
 	appDataDir: string;
@@ -39,6 +46,94 @@ export interface WindowState {
 	hasDisplayOnLeft: boolean;
 	hasDisplayOnRight: boolean;
 	displayBounds: WindowDisplayBounds | null;
+}
+
+export type CloseBehavior = "exit" | "tray";
+export type LifecyclePhase = "running" | "hiddenToTray" | "exiting" | "cleaned";
+export type TrayRuntimePhase = "unavailable" | "ready" | "failed";
+
+export interface WindowRuntimeState {
+	lifecycle: {
+		closeBehavior: CloseBehavior;
+		phase: LifecyclePhase;
+		cleanupClaimed: boolean;
+	};
+	trayPhase: TrayRuntimePhase;
+	debounceGeneration: number;
+	debounceWorkerRunning: boolean;
+}
+
+export type CacheCategory = "audio" | "images" | "lyrics" | "beatmaps" | "temp";
+
+export interface CacheCategoryUsage {
+	category: CacheCategory;
+	path: string;
+	totalBytes: number;
+	fileCount: number;
+	directoryCount: number;
+	errorCount: number;
+	skippedLinkCount: number;
+	truncated: boolean;
+}
+
+export interface CacheSnapshot {
+	configuredRoot: string;
+	activeRoot: string;
+	fallbackUsed: boolean;
+	fallbackReason: string | null;
+	restartRequired: boolean;
+	categories: CacheCategoryUsage[];
+	totalBytes: number;
+	fileCount: number;
+	directoryCount: number;
+	errorCount: number;
+	skippedLinkCount: number;
+	truncated: boolean;
+}
+
+export interface CacheRootDecision {
+	desiredRoot: string | null;
+	effectiveRoot: string;
+	fallbackUsed: boolean;
+	fallbackReason: string | null;
+	restartRequired: boolean;
+}
+
+export interface CacheClearResult {
+	category: CacheCategory;
+	path: string;
+	removedBytes: number;
+	removedFiles: number;
+	removedDirectories: number;
+	removedLinks: number;
+}
+
+export type DiagnosticHealth = "healthy" | "degraded" | "unavailable";
+export type DiagnosticProbeStatus = "healthy" | "unavailable" | "failed";
+
+export interface DiagnosticProbe {
+	kind: string;
+	status: DiagnosticProbeStatus;
+	capturedAtMs: number;
+	value: JsonValue | null;
+	message: string | null;
+	error: { source: string; code: string; message: string; occurredAtMs: number } | null;
+}
+
+export interface DesktopDiagnosticsSnapshot {
+	schemaVersion: number;
+	capturedAtMs: number;
+	health: DiagnosticHealth;
+	probes: DiagnosticProbe[];
+	recentErrors: Array<{ source: string; code: string; message: string; occurredAtMs: number }>;
+}
+
+export interface ResourceGovernanceSnapshot {
+	minBackgroundDelayMs: number;
+	trimCooldownMs: number;
+	trimInFlight: boolean;
+	lastAttemptMs: number | null;
+	systemPurgePolicy: "disabled" | "unsupported";
 }
 
 export type Unlisten = () => void;
@@ -89,6 +184,29 @@ export interface ProviderLoginWindowResult {
 	stored: boolean;
 	reused: boolean;
 	partial: boolean;
+}
+
+export type FullDesktopMode = "disabled" | "passive" | "interactive";
+
+export type FullDesktopRuntimePhase =
+	| "disabled"
+	| "attaching"
+	| "passive"
+	| "interactive"
+	| "recovering"
+	| "detaching"
+	| "recoveryRequired";
+
+export interface FullDesktopRuntimeState {
+	phase: FullDesktopRuntimePhase;
+	requestedMode: FullDesktopMode;
+	effectiveMode: FullDesktopMode;
+	iconsVisible: boolean;
+	interactionLocked: boolean;
+	recoveryRequired: boolean;
+	autoResumeSuppressed: boolean;
+	explorerGeneration: number;
+	lastError?: string;
 }
 
 interface RawRuntimeConfig {
@@ -262,6 +380,19 @@ function providerLoginPlaceholder(provider: ProviderLoginId): ProviderLoginWindo
 	};
 }
 
+function fullDesktopRuntimePlaceholder(): FullDesktopRuntimeState {
+	return {
+		phase: "disabled",
+		requestedMode: "disabled",
+		effectiveMode: "disabled",
+		iconsVisible: true,
+		interactionLocked: false,
+		recoveryRequired: false,
+		autoResumeSuppressed: false,
+		explorerGeneration: 0,
+	};
+}
+
 export async function getRuntimeConfig(): Promise<RuntimeConfig> {
 	if (!isTauriRuntime()) {
 		return placeholderRuntimeConfig();
@@ -359,6 +490,66 @@ export async function closeWindow(): Promise<void> {
 	await invokeTauriCommand("window_close");
 }
 
+export async function getWindowRuntimeState(): Promise<WindowRuntimeState | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<WindowRuntimeState>("get_window_runtime_state");
+}
+
+export async function setCloseBehavior(behavior: CloseBehavior): Promise<WindowRuntimeState | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<WindowRuntimeState>("set_close_behavior", { behavior });
+}
+
+export async function showWindow(): Promise<void> {
+	if (!isTauriRuntime()) return;
+	await invokeTauriCommand("window_show");
+}
+
+export async function exitApplication(): Promise<void> {
+	if (!isTauriRuntime()) return;
+	await invokeTauriCommand("application_exit");
+}
+
+export async function getCacheSnapshot(): Promise<CacheSnapshot | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<CacheSnapshot>("get_cache_snapshot");
+}
+
+export async function chooseCacheDirectory(): Promise<string | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<string | null>("choose_cache_directory");
+}
+
+export async function setCacheRoot(path: string | null): Promise<CacheRootDecision | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<CacheRootDecision>("set_cache_root", { path });
+}
+
+export async function clearCacheCategory(category: CacheCategory): Promise<CacheClearResult | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<CacheClearResult>("clear_cache_category", { category });
+}
+
+export async function getDesktopDiagnostics(): Promise<DesktopDiagnosticsSnapshot | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<DesktopDiagnosticsSnapshot>("get_desktop_diagnostics");
+}
+
+export async function getResourceGovernance(): Promise<ResourceGovernanceSnapshot | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<ResourceGovernanceSnapshot>("get_resource_governance");
+}
+
+export async function trimApplicationWorkingSet(force = false): Promise<JsonValue | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<JsonValue>("trim_application_working_set", { force });
+}
+
+export async function purgeSystemMemory(): Promise<JsonValue | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<JsonValue>("purge_system_memory");
+}
+
 export async function openExternalUrl(url: string): Promise<boolean> {
 	if (!isTauriRuntime()) return false;
 	try {
@@ -396,6 +587,12 @@ export async function listenGlobalHotkey(handler: (payload: GlobalHotkeyEventPay
 	return listenTauriEvent<GlobalHotkeyEventPayload>("mineradio-global-hotkey", handler);
 }
 
+export async function listenDesktopLyricsLockChanged(handler: (clickThrough: boolean) => void): Promise<Unlisten> {
+	return listenTauriEvent<boolean>("desktop-lyrics-lock-changed", (payload) => {
+		handler(payload === true);
+	});
+}
+
 export async function openProviderLoginWindow(provider: ProviderLoginId): Promise<ProviderLoginWindowResult> {
 	if (!isTauriRuntime()) {
 		return providerLoginPlaceholder(provider);
@@ -403,4 +600,136 @@ export async function openProviderLoginWindow(provider: ProviderLoginId): Promis
 	const command = provider === "qq" ? "login_qq_complete" : "login_netease_complete";
 	const result = await invokeTauriCommand<ProviderLoginWindowResult>(command);
 	return result ?? providerLoginPlaceholder(provider);
+}
+
+export async function getFullDesktopRuntimeState(): Promise<FullDesktopRuntimeState> {
+	if (!isTauriRuntime()) return fullDesktopRuntimePlaceholder();
+	const result = await invokeTauriCommand<FullDesktopRuntimeState>("get_full_desktop_runtime_state");
+	return result ?? fullDesktopRuntimePlaceholder();
+}
+
+export async function setFullDesktopMode(mode: FullDesktopMode): Promise<FullDesktopRuntimeState> {
+	if (!isTauriRuntime()) return fullDesktopRuntimePlaceholder();
+	const result = await invokeTauriCommand<FullDesktopRuntimeState>("set_full_desktop_mode", { mode });
+	return result ?? fullDesktopRuntimePlaceholder();
+}
+
+export async function setDesktopIconsVisible(visible: boolean): Promise<FullDesktopRuntimeState> {
+	if (!isTauriRuntime()) return fullDesktopRuntimePlaceholder();
+	const result = await invokeTauriCommand<FullDesktopRuntimeState>("set_desktop_icons_visible", { visible });
+	return result ?? fullDesktopRuntimePlaceholder();
+}
+
+export async function setFullDesktopInteractionLocked(locked: boolean): Promise<FullDesktopRuntimeState> {
+	if (!isTauriRuntime()) return fullDesktopRuntimePlaceholder();
+	const result = await invokeTauriCommand<FullDesktopRuntimeState>("set_full_desktop_interaction_locked", { locked });
+	return result ?? fullDesktopRuntimePlaceholder();
+}
+
+export async function recoverFullDesktopRuntime(): Promise<FullDesktopRuntimeState> {
+	if (!isTauriRuntime()) return fullDesktopRuntimePlaceholder();
+	const result = await invokeTauriCommand<FullDesktopRuntimeState>("recover_full_desktop_runtime");
+	return result ?? fullDesktopRuntimePlaceholder();
+}
+
+function wallpaperLibraryPlaceholder(): WallpaperLibrarySnapshot {
+	return { projects: [], roots: [], updatedAt: 0 };
+}
+
+function wallpaperRuntimePlaceholder(): WallpaperRuntimeState {
+	return {
+		available: false,
+		phase: "unavailable",
+		pending: false,
+		active: false,
+		projectId: "",
+		sessionId: "",
+		sourceId: "",
+		captureMode: "none",
+		sourceWindowAligned: false,
+		dwmSurfaceReady: false,
+		glassSamplerReady: false,
+		audioMuted: false,
+		cleanupRequired: false,
+		fullDesktopMode: "disabled",
+	};
+}
+
+function wallpaperDialogCancelled(): WallpaperDialogResult {
+	return { ok: true, canceled: true };
+}
+
+export async function listWallpaperEngineProjects(
+	request: { forceRefresh?: boolean } = {},
+): Promise<WallpaperLibrarySnapshot> {
+	if (!isTauriRuntime()) return wallpaperLibraryPlaceholder();
+	return (await invokeTauriCommand<WallpaperLibrarySnapshot>(
+		"list_wallpaper_engine_projects",
+		{ request },
+	)) ?? wallpaperLibraryPlaceholder();
+}
+
+export async function getWallpaperEngineProjectDetails(
+	id: string,
+): Promise<WallpaperProjectSummary | null> {
+	if (!isTauriRuntime()) return null;
+	return invokeTauriCommand<WallpaperProjectSummary | null>("get_wallpaper_engine_project_details", { id });
+}
+
+export async function chooseWallpaperEngineDirectory(): Promise<WallpaperDialogResult> {
+	if (!isTauriRuntime()) return wallpaperDialogCancelled();
+	return (await invokeTauriCommand<WallpaperDialogResult>("choose_wallpaper_engine_directory"))
+		?? wallpaperDialogCancelled();
+}
+
+export async function chooseWallpaperEngineProjectFile(): Promise<WallpaperDialogResult> {
+	if (!isTauriRuntime()) return wallpaperDialogCancelled();
+	return (await invokeTauriCommand<WallpaperDialogResult>("choose_wallpaper_engine_project_file"))
+		?? wallpaperDialogCancelled();
+}
+
+export async function removeWallpaperEngineDirectory(
+	rootId: string,
+): Promise<WallpaperLibrarySnapshot> {
+	if (!isTauriRuntime()) return wallpaperLibraryPlaceholder();
+	return (await invokeTauriCommand<WallpaperLibrarySnapshot>(
+		"remove_wallpaper_engine_directory",
+		{ rootId },
+	)) ?? wallpaperLibraryPlaceholder();
+}
+
+export async function getWallpaperEngineRuntimeStatus(
+	request: { refresh?: boolean } = {},
+): Promise<WallpaperRuntimeState> {
+	if (!isTauriRuntime()) return wallpaperRuntimePlaceholder();
+	return (await invokeTauriCommand<WallpaperRuntimeState>(
+		"get_wallpaper_engine_runtime_status",
+		{ request },
+	)) ?? wallpaperRuntimePlaceholder();
+}
+
+export async function startWallpaperEngineScene(
+	request: { projectId: string; fps?: number },
+): Promise<WallpaperRuntimeState> {
+	if (!isTauriRuntime()) return wallpaperRuntimePlaceholder();
+	return (await invokeTauriCommand<WallpaperRuntimeState>(
+		"start_wallpaper_engine_scene",
+		{ request },
+	)) ?? wallpaperRuntimePlaceholder();
+}
+
+export async function stopWallpaperEngineScene(
+	request: { sessionId?: string } = {},
+): Promise<WallpaperRuntimeState> {
+	if (!isTauriRuntime()) return wallpaperRuntimePlaceholder();
+	return (await invokeTauriCommand<WallpaperRuntimeState>(
+		"stop_wallpaper_engine_scene",
+		{ request },
+	)) ?? wallpaperRuntimePlaceholder();
+}
+
+export async function recoverWallpaperEngineRuntime(): Promise<WallpaperRuntimeState> {
+	if (!isTauriRuntime()) return wallpaperRuntimePlaceholder();
+	return (await invokeTauriCommand<WallpaperRuntimeState>("recover_wallpaper_engine_runtime"))
+		?? wallpaperRuntimePlaceholder();
 }

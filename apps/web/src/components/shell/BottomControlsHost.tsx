@@ -1,8 +1,8 @@
-import { useEffect, useRef, type ReactElement } from "react";
+import { useEffect, useRef, type ReactElement, type ReactNode } from "react";
 import { PlayerConsoleHost } from "../../visual/PlayerConsoleHost";
 import type { PlaybackMode } from "../../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../../stores/shelf-store";
-import type { PlaybackQualityRequest, Track, TrackQualityOption } from "@mineradio/shared";
+import type { PlaybackQualityRequest, ProviderId, Track, TrackQualityOption } from "@mineradio/shared";
 
 export interface BottomControlsHostProps {
 	visible: boolean;
@@ -23,7 +23,11 @@ export interface BottomControlsHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
-	onQualityChange?: (quality: PlaybackQualityRequest) => void;
+	renderVolumePanelExtras?: (active: boolean) => ReactNode;
+	onQualityChange?: (
+		quality: PlaybackQualityRequest,
+	) => Promise<void> | void;
+	onSourceSwitch?: (provider: ProviderId) => void;
 	onShelfModeChange?: (mode: ShelfMode) => void;
 	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
 	onShelfPresenceChange?: (presence: ShelfPresence) => void;
@@ -51,6 +55,9 @@ export interface BottomControlsHostProps {
 	muted?: boolean;
 	playbackQuality?: PlaybackQualityRequest;
 	qualityOptions?: TrackQualityOption[];
+	sourceProviders?: readonly ProviderId[];
+	sourceSwitchBusy?: ProviderId | null;
+	sourceSwitchDisabled?: boolean;
 	shelfMode?: ShelfMode;
 	shelfCameraMode?: ShelfCameraMode;
 	shelfPresence?: ShelfPresence;
@@ -192,7 +199,9 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				onSeek={props.onSeek}
 				onVolumeChange={props.onVolumeChange}
 				onToggleMute={props.onToggleMute}
+				renderVolumePanelExtras={props.renderVolumePanelExtras}
 				onQualityChange={props.onQualityChange}
+				onSourceSwitch={props.onSourceSwitch}
 				onShelfModeChange={props.onShelfModeChange}
 				onShelfCameraModeChange={props.onShelfCameraModeChange}
 				onShelfPresenceChange={props.onShelfPresenceChange}
@@ -220,6 +229,9 @@ export function BottomControlsHost(props: BottomControlsHostProps): ReactElement
 				muted={props.muted}
 				playbackQuality={props.playbackQuality}
 				qualityOptions={props.qualityOptions}
+				sourceProviders={props.sourceProviders}
+				sourceSwitchBusy={props.sourceSwitchBusy}
+				sourceSwitchDisabled={props.sourceSwitchDisabled}
 				shelfMode={props.shelfMode}
 				shelfCameraMode={props.shelfCameraMode}
 				shelfPresence={props.shelfPresence}

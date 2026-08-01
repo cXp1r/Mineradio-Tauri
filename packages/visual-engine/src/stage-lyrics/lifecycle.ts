@@ -3,6 +3,13 @@ import type { ThreeFactory, ThreeModule } from "../runtime/renderer-setup";
 import type { FrameContext } from "../runtime/frame-context";
 import type { AudioSnapshot } from "../audio/audio-snapshot";
 import { RenderStepSlot } from "../runtime/render-step-slot";
+import type { BudgetTaskQueue } from "../runtime/budget-task-queue";
+import type { CancellationScope } from "../runtime/cancellation-scope";
+import type {
+	VisualResourceRetention,
+	VisualResourceScope,
+} from "../runtime/resource-scope";
+import type { VisualSubsystemDiagnosticsPublisher } from "../runtime/subsystem-diagnostics";
 import type {
 	GsapProvider,
 } from "../control/control-console-motion";
@@ -23,6 +30,48 @@ import {
 	type LyricLine,
 } from "./lyric-line-progress";
 import { normalizeFontKey, type LyricTextOptions } from "./lyric-text";
+import {
+	normalizeStageLyricsSettings,
+	type StageLyricsSettings,
+} from "./model/stage-lyrics-settings";
+import { findStageLyricIndexAtTime } from "./transitions/lyric-time-selection";
+import { buildStageLyricLayout } from "./layout/stage-lyric-layout";
+import {
+	createStageLyricRasterPayload,
+	type StageLyricRasterRow,
+} from "./textures/structured-raster";
+import {
+	createStageLyricMotionProfile,
+	type StageLyricMotionProfile,
+} from "./motion/stage-lyric-motion-profile";
+import {
+	createStageBuildCoordinator,
+	type StageBuildCoordinator,
+} from "./scheduler/stage-build-coordinator";
+import {
+	createStageLyricUploadGate,
+	type StageLyricUploadGate,
+} from "./resource-budget/upload-gate";
+import {
+	createStageClarityPool,
+	type StageClarityPool,
+	type StageClarityQuality,
+	type StageClarityTier,
+} from "./resource-budget/clarity-pool";
+import {
+	createStageAtomicTakeover,
+	type StageAtomicTakeover,
+} from "./transitions/atomic-takeover";
+import {
+	estimateStageLyricResourceBundle,
+	registerStageLyricResourceBundle,
+	reserveStageLyricResourceBundle,
+	type StageLyricResourceBundle,
+} from "./resource-budget/lyric-resource-bundle";
+import {
+	createStagePersistentRowCacheKey,
+	planStagePersistentRowWindow,
+} from "./rows/persistent-row-window";
 
 export interface StageLyricsLifecycleOpts {
 	scene?: THREE.Scene | null;
@@ -48,6 +97,17 @@ export interface StageLyricsLifecycleOpts {
 	lyricGlowStrengthSupplier?: () => number;
 	lyricGlowBeatFlagSupplier?: () => boolean;
 	lyricTextOptionsSupplier?: () => LyricTextOptions;
+	stageLyricsSettingsSupplier?: () => Partial<StageLyricsSettings>;
+	/** M3 共享队列；提供后歌词构建会进入 cooperative phase。 */
+	taskQueue?: BudgetTaskQueue;
+	/** 由主 composition 注入，供歌词生命周期随父 scope 一并失效。 */
+	resourceScope?: VisualResourceScope;
+	cancellationScope?: CancellationScope;
+	/** 使用真实 renderer 的纹理预上传入口；每帧至多调用一次。 */
+	textureUploadExecutor?: (texture: THREE.Texture) => void;
+	/** 统一性能快照的只读诊断发布器。 */
+	diagnostics?: VisualSubsystemDiagnosticsPublisher;
+	clarityQualitySupplier?: () => StageClarityQuality;
 	lyricLayoutOptionsSupplier?: () => LyricLayoutOptions;
 	skullMouthTransformSupplier?: () => SkullMouthTransform | null;
 	skullBeatFlashSupplier?: () => number;
@@ -84,6 +144,7 @@ export interface StageLyricsLifecycle {
 	setPalette(palette: Partial<LyricPalette>): void;
 	setShelfVisibility(v: number): void;
 	requestCameraSnap(frames?: number): void;
+	getWorldLookAtTarget(): { x: number; y: number; z: number } | null;
 	getCurrentIdx(): number;
 	getCurrentText(): string;
 	getMotionSnapshot(): StageLyricsMotionSnapshot;
@@ -97,6 +158,18 @@ export interface StageLyricsMotionSnapshot {
 	beatPulse: number;
 	bass: number;
 	palette?: LyricPalette;
+}
+
+interface StageLyricRenderPayload {
+	readonly text: string;
+	readonly settings: Readonly<StageLyricsSettings>;
+	readonly structuredRows?: readonly StageLyricRasterRow[];
+}
+
+interface StageLyricBuildResourcePolicy {
+	readonly owner: string;
+	readonly retention: VisualResourceRetention;
+	readonly isCancelled: () => boolean;
 }
 
 type Vec3Like = { x: number; y: number; z: number };
@@ -199,6 +272,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		outgoing: [] as Array<{
 			lyric: LyricGroup;
 			age: number;
+			replacementKey?: string;
 		}>,
 		currentIdx: -1,
 		currentText: "",
@@ -217,12 +291,18 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		shelfVisibility: 0,
 		lines: [] as LyricLine[],
 		linesSignature: "",
+		trackGeneration: 0,
+		settingsGeneration: 0,
+		prewarmGeneration: 0,
 		buildToken: 0,
 		activeBuilds: 0,
 		textOptionsSignature: "",
+		stageSettingsSignature: "",
+		clarityConfigSignature: "",
 		lockFitScale: 1,
 		snapCameraLockFrames: 0,
 		lastFrame: null as { dt: number; t: number; snapshot: AudioSnapshot } | null,
+		frameId: 0,
 		pendingBuildPromise: null as Promise<void> | null,
 		paletteRuntime: new LyricPaletteRuntime(opts.palette),
 		reduceMotionFlag: false,
@@ -230,6 +310,64 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 	};
 
 	const threeFactory: ThreeFactory = opts.threeFactory ?? DEFAULT_THREE_FACTORY;
+	const pendingTakeovers = new WeakMap<LyricGroup, {
+		readonly previous: LyricGroup | null;
+		readonly redrawOnly: boolean;
+	}>();
+	const lyricResourceBundles = new WeakMap<LyricGroup, StageLyricResourceBundle>();
+	const lyricClarityKeys = new WeakMap<LyricGroup, string>();
+	const lyricByClarityKey = new Map<string, LyricGroup>();
+	const lyricMotionTimeUniform: THREE.IUniform<number> = { value: 0 };
+	const idleWaiters = new Set<() => void>();
+	const stageOwner = "stage-lyrics";
+	const prewarmOwner = `${stageOwner}:prewarm`;
+	const isBuildScopeOpen = () =>
+		!state.disposed
+		&& (opts.resourceScope?.isOpen() ?? true)
+		&& (opts.cancellationScope?.isOpen() ?? true);
+	const cooperative = opts.taskQueue
+		? createStageBuildCoordinator({
+			queue: opts.taskQueue,
+			isScopeOpen: isBuildScopeOpen,
+		})
+		: null;
+	const uploadGate: StageLyricUploadGate<LyricGroup> | null = opts.textureUploadExecutor
+		? createStageLyricUploadGate<LyricGroup>()
+		: null;
+	const takeover: StageAtomicTakeover<LyricGroup> | null = uploadGate
+		? createStageAtomicTakeover<LyricGroup>()
+		: null;
+	const initialClarityConfig = getClarityConfiguration();
+	state.clarityConfigSignature = clarityConfigSignature(initialClarityConfig);
+	const clarityPool: StageClarityPool<LyricGroup> | null = uploadGate
+		? createStageClarityPool<LyricGroup>({
+			quality: initialClarityConfig.quality,
+			tier: initialClarityConfig.tier,
+		})
+		: null;
+	let unregisterDiagnostics: (() => void) | null = null;
+	if (opts.diagnostics) {
+		unregisterDiagnostics = opts.diagnostics.register("stage-lyrics", () => {
+			const build = cooperative?.getDiagnostics();
+			const upload = uploadGate?.getDiagnostics();
+			const clarity = clarityPool?.getDiagnostics();
+			return {
+				// cooperative job 在队列中或正在 await factory 时仍持有生命周期资源，
+				// 诊断必须将其计入 activeBuilds，不能只显示 legacy async 路径。
+				activeBuilds: state.activeBuilds + (build?.activeJobs ?? 0),
+				pendingBuilds: build?.pendingPhases ?? 0,
+				pendingUploads: upload?.pendingTextures ?? 0,
+				uploadsThisFrame: upload?.uploadsThisFrame ?? 0,
+				residentRows: clarity?.entries ?? 0,
+				clarityBytes: clarity?.bytes ?? 0,
+				clarityQuality: clarity?.quality ?? initialClarityConfig.quality,
+				clarityTier: clarity?.tier ?? initialClarityConfig.tier,
+				clarityAdmissionEnabled: clarity?.admissionEnabled ?? false,
+				clarityBudgetBytes: clarity?.budgetBytes ?? 0,
+				clarityResidentLimit: clarity?.residentRows ?? 0,
+			};
+		});
+	}
 	const goLerp = (cur: number, target: number, ease: number) => cur + (target - cur) * ease;
 
 	function getShelfVisibility(): number {
@@ -243,6 +381,24 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 
 	function getShelfHasOpenContent(): boolean {
 		return typeof opts.getShelfHasOpenContent === "function" ? !!opts.getShelfHasOpenContent() : false;
+	}
+
+	function getEffectiveRenderBase(): number {
+		return getShelfHasOpenContent() ? 24 : 38;
+	}
+
+	function applyLyricRowRenderBase(lyric: LyricGroup, renderBase: number): void {
+		(lyric.group as unknown as { renderOrder: number }).renderOrder = renderBase;
+	}
+
+	function syncLyricRowRenderBase(renderBase = getEffectiveRenderBase()): void {
+		const rows = new Set<LyricGroup>();
+		if (state.current) rows.add(state.current);
+		for (const entry of state.outgoing) rows.add(entry.lyric);
+		for (const lyric of lyricByClarityKey.values()) rows.add(lyric);
+		for (const lyric of rows) {
+			applyLyricRowRenderBase(lyric, renderBase);
+		}
 	}
 
 	function getShelfPinnedOpen(): boolean {
@@ -274,6 +430,58 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		};
 	}
 
+	function getStageLyricsSettings(): Readonly<StageLyricsSettings> {
+		return normalizeStageLyricsSettings(opts.stageLyricsSettingsSupplier?.());
+	}
+
+	function getClarityConfiguration(): {
+		readonly quality: StageClarityQuality;
+		readonly tier: StageClarityTier;
+	} {
+		return {
+			quality: opts.clarityQualitySupplier?.() ?? "balanced",
+			tier: getStageLyricsSettings().textureClarity,
+		};
+	}
+
+	function clarityConfigSignature(config: {
+		readonly quality: StageClarityQuality;
+		readonly tier: StageClarityTier;
+	}): string {
+		return `${config.quality}|${config.tier}`;
+	}
+
+	function structuredRasterWidth(settings: Readonly<StageLyricsSettings>): number {
+		const quality = opts.clarityQualitySupplier?.() ?? "balanced";
+		if (settings.textureClarity <= 2) return 1024;
+		if (settings.textureClarity === 3) {
+			return quality === "low" ? 1024 : quality === "high" ? 1408 : 1280;
+		}
+		return quality === "low" ? 1024 : quality === "high" ? 1792 : 1536;
+	}
+
+	function stageSettingsSignature(settings: StageLyricsSettings): string {
+		return [
+			settings.displayMode,
+			settings.customLineCount,
+			settings.translationMode,
+			settings.contextOpacity,
+			settings.contextSpread,
+			settings.translationGap,
+			settings.translationScale,
+			settings.translationOpacity,
+			settings.motionStyle,
+			settings.motionSoftness,
+			settings.glitchCameraBind,
+			settings.glitchIntensity,
+			settings.glitchSlice,
+			settings.glitchChroma,
+			settings.glitchRate,
+			settings.glitchJitter,
+			settings.edgeFade,
+		].join("|");
+	}
+
 	function textOptionsSignature(opts0: LyricTextOptions): string {
 		return `${opts0.lyricFont ?? ""}|${opts0.lyricLetterSpacing ?? ""}|${opts0.lyricLineHeight ?? ""}|${opts0.lyricWeight ?? ""}`;
 	}
@@ -292,7 +500,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 				const words = Array.isArray(line.words)
 					? line.words.map((word) => `${word.t}:${word.d ?? ""}:${word.text}`).join(",")
 					: "";
-				return `${line.t}:${line.duration ?? ""}:${line.charCount ?? ""}:${line.text}:${words}`;
+				return `${line.t}:${line.duration ?? ""}:${line.charCount ?? ""}:${line.text}:${line.translation ?? ""}:${words}`;
 			})
 			.join("\n");
 	}
@@ -334,6 +542,10 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			skullLyricEdgeGuard: !!raw.skullLyricEdgeGuard,
 			skullMouthLyrics: !!raw.skullMouthLyrics,
 		};
+		if (layout.preset === 7 && !layout.lyricCameraLock) {
+			layout.lyricOffsetY = clamp(layout.lyricOffsetY - 0.34, -1.2, 1.35);
+			layout.lyricOffsetZ = clamp(layout.lyricOffsetZ + 0.16, -1.6, 1.6);
+		}
 		const wallpaperLyricLock = layout.preset === 5 && layout.lyricCameraLock;
 		if (wallpaperLyricLock) {
 			const dimForShelf = shouldDimWallpaperForShelf();
@@ -835,7 +1047,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		} | null;
 		if (!river?.material?.uniforms) return;
 		const u = river.material.uniforms;
-		if (skullPreset) {
+		if (skullPreset || !getStageLyricsSettings().backgroundStarRiver) {
 			river.visible = false;
 			if (u.uOpacity) u.uOpacity.value = 0;
 			return;
@@ -892,9 +1104,97 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 
 	function disposeLyricGroupSafe(lyric: LyricGroup): void {
 		try {
-			disposeLyricGroup(lyric);
+			const clarityKey = lyricClarityKeys.get(lyric);
+			if (clarityKey && clarityPool?.delete(clarityKey)) return;
+			lyricClarityKeys.delete(lyric);
+			if (clarityKey) lyricByClarityKey.delete(clarityKey);
+			const bundle = lyricResourceBundles.get(lyric);
+			if (bundle) bundle.release();
+			else disposeLyricGroup(lyric);
 		} catch {
 			void 0;
+		}
+	}
+
+	function registerLyricGroupResources(
+		lyric: LyricGroup,
+		owner = `${stageOwner}:row`,
+		retention: VisualResourceRetention = "persistent",
+	): StageLyricResourceBundle | null {
+		const existing = lyricResourceBundles.get(lyric);
+		if (existing) return existing;
+		if (!opts.resourceScope) return null;
+		const bundle = registerStageLyricResourceBundle({
+			lyric,
+			resourceScope: opts.resourceScope,
+			owner,
+			retention,
+		});
+		lyricResourceBundles.set(lyric, bundle);
+		return bundle;
+	}
+
+	function registerLyricClarityEntry(
+		lyric: LyricGroup,
+		bundle: StageLyricResourceBundle | null,
+		key: string,
+		priority: "essential" | "normal" | "optional" | "background",
+		replacement: boolean,
+	): boolean {
+		if (!clarityPool || !bundle || bundle.released) return false;
+		if (lyricClarityKeys.has(lyric)) return true;
+		const accepted = clarityPool.put({
+			key,
+			value: lyric,
+			bytes: bundle.textureBytes,
+			priority,
+			replacement,
+			release: () => {
+				lyricClarityKeys.delete(lyric);
+				lyricByClarityKey.delete(key);
+				bundle.release();
+			},
+		});
+		if (accepted) {
+			lyricClarityKeys.set(lyric, key);
+			lyricByClarityKey.set(key, lyric);
+			bundle.onRelease?.(() => {
+				if (lyricClarityKeys.get(lyric) === key) clarityPool?.delete(key);
+			});
+		}
+		return accepted;
+	}
+
+	function markClarityTakeover(nextLyric: LyricGroup, previousLyric: LyricGroup | null): void {
+		if (!clarityPool) return;
+		const nextKey = lyricClarityKeys.get(nextLyric);
+		if (nextKey) clarityPool.setPriority(nextKey, "essential");
+		const previousKey = previousLyric ? lyricClarityKeys.get(previousLyric) : undefined;
+		if (previousKey) clarityPool.setPriority(previousKey, "normal");
+	}
+
+	function finalizeClarityReplacement(replacementKey: string | undefined): void {
+		if (replacementKey) clarityPool?.finalizeReplacement(replacementKey);
+	}
+
+	function releaseOutgoingEntry(index: number): void {
+		const entry = state.outgoing[index];
+		if (!entry) return;
+		if (state.group) {
+			try {
+				(state.group as unknown as { remove: (child: unknown) => void }).remove(entry.lyric.group);
+			} catch {
+				void 0;
+			}
+		}
+		disposeLyricGroupSafe(entry.lyric);
+		state.outgoing.splice(index, 1);
+		finalizeClarityReplacement(entry.replacementKey);
+	}
+
+	function settleOutgoingBeforeReplacement(): void {
+		for (let index = state.outgoing.length - 1; index >= 0; index -= 1) {
+			releaseOutgoingEntry(index);
 		}
 	}
 
@@ -924,6 +1224,11 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 	}
 
 	function clearStageLyrics(): void {
+		state.buildToken += 1;
+		cooperative?.cancelOwner(stageOwner);
+		uploadGate?.cancelOwner(stageOwner);
+		invalidatePrewarmRows();
+		takeover?.reset();
 		disposeCurrent();
 		state.currentIdx = -1;
 		state.currentText = "";
@@ -979,12 +1284,413 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		if (u) u.value = value;
 	}
 
-	function showStageLine(text: string, redrawOnly: boolean): void {
+	function renderPayloadForLine(index: number, fallback: string): StageLyricRenderPayload {
+		const settings = getStageLyricsSettings();
+		if (index < 0 || index >= state.lines.length) {
+			return { text: fallback, settings };
+		}
+		const layout = buildStageLyricLayout(state.lines, index, settings, 10);
+		const raster = createStageLyricRasterPayload(layout, settings);
+		const activeText = raster.rows[raster.activeRowIndex]?.text || fallback;
+		return raster.rows.length > 0
+			? { text: activeText, settings, structuredRows: raster.rows }
+			: { text: activeText, settings };
+	}
+
+	function cacheKeyForRow(index: number, token: number): string {
+		if (index < 0 || !state.linesSignature) return `${stageOwner}:ephemeral:${token}`;
+		return createStagePersistentRowCacheKey({
+			trackKey: state.linesSignature,
+			trackGeneration: state.trackGeneration,
+			settingsGeneration: state.settingsGeneration,
+			rowIndex: index,
+		});
+	}
+
+	async function buildLyricForText(
+		renderPayload: StageLyricRenderPayload,
+		textOptions: LyricTextOptions,
+		resourcePolicy: StageLyricBuildResourcePolicy,
+	): Promise<LyricGroup> {
+		const palette = state.paletteRuntime.get();
+		const lyricsHasNativeKaraoke = opts.lyricsHasNativeKaraokeSupplier
+			? !!opts.lyricsHasNativeKaraokeSupplier()
+			: !!opts.lyricsHasNativeKaraoke;
+		const motionProfile = createStageLyricMotionProfile(renderPayload.settings, {
+			lyricsHasNativeKaraoke,
+		});
+		const structuredWidth = renderPayload.structuredRows?.length
+			? structuredRasterWidth(renderPayload.settings)
+			: undefined;
+		return buildLyricGroup(renderPayload.text, palette, {
+			threeFactory,
+			renderBase: getEffectiveRenderBase(),
+			dotTexture: opts.dotTexture,
+			pixelScale: opts.pixelScale,
+			maxAnisotropy: opts.maxAnisotropy,
+			lyricGlowParticles: opts.lyricGlowParticlesSupplier ? opts.lyricGlowParticlesSupplier() : false,
+			lyricsHasNativeKaraoke,
+			motionProfile,
+			motionSeed: (opts.rand ?? Math.random)() * 997,
+			timeUniform: lyricMotionTimeUniform,
+			...(renderPayload.structuredRows?.length
+				? {
+					maskOptions: {
+						structuredRows: renderPayload.structuredRows,
+						structuredWidth,
+					},
+				}
+				: {}),
+			...textOptions,
+			rand: opts.rand,
+			isCancelled: resourcePolicy.isCancelled,
+			...(opts.resourceScope
+				? {
+					reserveResources: () => reserveStageLyricResourceBundle({
+						resourceScope: opts.resourceScope!,
+						owner: resourcePolicy.owner,
+						retention: resourcePolicy.retention,
+						estimate: estimateStageLyricResourceBundle({
+							structuredRows: renderPayload.structuredRows,
+							structuredWidth,
+							ownsDotTexture: !opts.dotTexture,
+						}),
+					}),
+				}
+				: {}),
+		});
+	}
+
+	function takePrewarmedLyric(cacheKey: string): LyricGroup | null {
+		if (!clarityPool?.canAdmit()) return null;
+		const lease = clarityPool?.acquire(cacheKey);
+		if (!lease) return null;
+		const lyric = lease.value;
+		const bundle = lyricResourceBundles.get(lyric);
+		if (
+			!bundle
+			|| bundle.released
+			|| !bundle.setRetention?.("persistent")
+		) {
+			lease.release();
+			clarityPool?.delete(cacheKey);
+			return null;
+		}
+		clarityPool?.setPriority(cacheKey, "essential");
+		lease.release();
+		// 已经挂在场景中的 current 只是上一代可见资源，不是可被再次
+		// take over 的预热候选；否则 redraw 会对同一 Group 做 add/remove，
+		// 导致可见歌词被错误移出场景。
+		if (lyric === state.current || state.outgoing.some((entry) => entry.lyric === lyric)) return null;
+		return lyric;
+	}
+
+	function clearPrewarmedRows(): void {
+		const visible = new Set<LyricGroup>([
+			...(state.current ? [state.current] : []),
+			...state.outgoing.map((entry) => entry.lyric),
+		]);
+		for (const [key, lyric] of [...lyricByClarityKey]) {
+			if (!visible.has(lyric)) clarityPool?.delete(key);
+		}
+	}
+
+	function clearPrewarmedRowsExcept(preserveCacheKey?: string): void {
+		const visible = new Set<LyricGroup>([
+			...(state.current ? [state.current] : []),
+			...state.outgoing.map((entry) => entry.lyric),
+		]);
+		for (const [key, lyric] of [...lyricByClarityKey]) {
+			if (key !== preserveCacheKey && !visible.has(lyric)) clarityPool?.delete(key);
+		}
+	}
+
+	function notifyLifecycleProgress(): void {
+		for (const resolve of idleWaiters) resolve();
+		idleWaiters.clear();
+	}
+
+	function invalidatePrewarmRows(preserveCacheKey?: string): void {
+		state.prewarmGeneration += 1;
+		cooperative?.cancelOwner(prewarmOwner);
+		clearPrewarmedRowsExcept(preserveCacheKey);
+		notifyLifecycleProgress();
+	}
+
+	function visibleClarityKeys(): string[] {
+		return [
+			...(state.current ? [state.current] : []),
+			...state.outgoing.map((entry) => entry.lyric),
+		]
+			.map((lyric) => lyricClarityKeys.get(lyric))
+			.filter((key): key is string => !!key);
+	}
+
+	function syncClarityConfiguration(): void {
+		const config = getClarityConfiguration();
+		const signature = clarityConfigSignature(config);
+		if (signature === state.clarityConfigSignature) return;
+		const rebuildCurrent = !!state.group && !!state.currentText && state.currentIdx >= -2;
+		state.clarityConfigSignature = signature;
+		state.settingsGeneration += 1;
+		cooperative?.cancelOwner(stageOwner);
+		uploadGate?.cancelOwner(stageOwner);
+		invalidatePrewarmRows();
+		clarityPool?.reconfigure({
+			quality: config.quality,
+			tier: config.tier,
+			protectedKeys: visibleClarityKeys(),
+		});
+		const clarityAdmissionEnabled = clarityPool?.canAdmit() ?? false;
+		if (rebuildCurrent) {
+			showStageLine(
+				state.currentText,
+				true,
+				renderPayloadForLine(state.currentIdx, state.currentText),
+			);
+			return;
+		}
+		if (!clarityAdmissionEnabled) return;
+		scheduleResidentRowPrewarm(state.currentIdx);
+	}
+
+	function scheduleResidentRowPrewarm(currentIndex: number): void {
+		const residentPool = clarityPool;
+		if (!cooperative || !residentPool?.canAdmit() || currentIndex < 0 || state.lines.length < 2) return;
+		const clarityConfig = getClarityConfiguration();
+		const plan = planStagePersistentRowWindow({
+			trackKey: state.linesSignature,
+			trackGeneration: state.trackGeneration,
+			settingsGeneration: state.settingsGeneration,
+			currentIndex,
+			rowCount: state.lines.length,
+			quality: clarityConfig.quality,
+		});
+		const generation = state.prewarmGeneration;
+		for (let planIndex = 0; planIndex < plan.rows.length; planIndex += 1) {
+			const row = plan.rows[planIndex];
+			if (!row.resident || row.rowIndex === currentIndex || lyricByClarityKey.has(row.cacheKey)) continue;
+			const trackGeneration = state.trackGeneration;
+			const settingsGeneration = state.settingsGeneration;
+			const text = state.lines[row.rowIndex]?.text || "";
+			const renderPayload = renderPayloadForLine(row.rowIndex, text);
+			const textOptions = getLyricTextOptions();
+			const retention: VisualResourceRetention = row.priority === "background"
+				? "ephemeral"
+				: "rebuildable";
+			let built: LyricGroup | null = null;
+			cooperative.submit({
+				owner: prewarmOwner,
+				key: row.cacheKey,
+				generation,
+				priority: row.priority === "background" ? "background" : "normal",
+				cost: 1,
+				isCurrent: () =>
+					!state.disposed
+					&& generation === state.prewarmGeneration
+					&& trackGeneration === state.trackGeneration
+					&& settingsGeneration === state.settingsGeneration
+					&& !lyricByClarityKey.has(row.cacheKey),
+				async step(signal, continuation) {
+					if (signal.aborted) throw new Error("Stage lyric prewarm cancelled.");
+					if (continuation.phase === 0) {
+						return { status: "continue" as const, continuation: { phase: 1, label: "prewarm-rasterize" } };
+					}
+					const isCancelled = () =>
+						signal.aborted
+						|| !isBuildScopeOpen()
+						|| generation !== state.prewarmGeneration
+						|| trackGeneration !== state.trackGeneration
+						|| settingsGeneration !== state.settingsGeneration
+						|| lyricByClarityKey.has(row.cacheKey);
+					const lyric = await buildLyricForText(renderPayload, textOptions, {
+						owner: `${prewarmOwner}:row`,
+						retention,
+						isCancelled,
+					});
+					if (
+						isCancelled()
+					) {
+						disposeLyricGroupSafe(lyric);
+						throw new Error("Stage lyric prewarm cancelled.");
+					}
+					built = lyric;
+					return { status: "complete" as const, result: built };
+				},
+				cancel() {
+					if (built) disposeLyricGroupSafe(built);
+					built = null;
+				},
+			}, (lyric) => {
+				built = null;
+				if (
+					state.disposed
+					|| generation !== state.prewarmGeneration
+					|| trackGeneration !== state.trackGeneration
+					|| settingsGeneration !== state.settingsGeneration
+				) {
+					disposeLyricGroupSafe(lyric);
+					return;
+				}
+				const bundle = registerLyricGroupResources(lyric, `${prewarmOwner}:row`, retention);
+				// replacement 尚占临时槽时，较远预热行不能反向驱逐已经就绪的更近邻接行。
+				const protectedKeys = new Set([
+					...visibleClarityKeys(),
+					...plan.rows
+						.slice(0, planIndex)
+						.filter((candidate) => candidate.resident)
+						.map((candidate) => candidate.cacheKey),
+				]);
+				const protectedLeases = [...protectedKeys]
+					.flatMap((key) => {
+						const lease = residentPool.acquire(key);
+						return lease ? [lease] : [];
+					});
+				let registered = false;
+				try {
+					registered = registerLyricClarityEntry(lyric, bundle, row.cacheKey, row.priority, false);
+				} finally {
+					for (const lease of protectedLeases) lease.release();
+				}
+				if (!registered) {
+					disposeLyricGroupSafe(lyric);
+				}
+			});
+		}
+	}
+
+	function completeTakeover(
+		lyric: LyricGroup,
+		previousLyric: LyricGroup | null,
+		redrawOnly: boolean,
+		token: number,
+	): void {
+		if (state.disposed || token !== state.buildToken || !state.group) {
+			disposeLyricGroupSafe(lyric);
+			return;
+		}
+		// 在任何 scene attach 之前重读当前层级，避免异步构建跨过 detail 边沿后闪现旧 base。
+		applyLyricRowRenderBase(lyric, getEffectiveRenderBase());
+		if (!takeover) {
+			if (previousLyric && state.current === previousLyric) {
+				if (redrawOnly) {
+					try { (state.group as unknown as { remove: (child: unknown) => void }).remove(previousLyric.group); } catch { void 0; }
+					disposeLyricGroupSafe(previousLyric);
+				} else {
+					(previousLyric.group as unknown as { userData: Record<string, unknown> }).userData.state = "out";
+					(previousLyric.group as unknown as { userData: Record<string, unknown> }).userData.age = 0;
+					state.outgoing.push({ lyric: previousLyric, age: 0 });
+				}
+			}
+			(state.group as unknown as { add: (child: unknown) => void }).add(lyric.group);
+			state.current = lyric;
+			if (state.lastFrame) updateStageLyrics3D(state.lastFrame.dt, state.lastFrame.t, state.lastFrame.snapshot);
+			return;
+		}
+		const candidate = {
+			owner: stageOwner,
+			generation: token,
+			value: lyric,
+			isCurrent: () => !state.disposed && token === state.buildToken && !!state.group,
+			release: () => disposeLyricGroupSafe(lyric),
+		};
+		if (!takeover.getCurrent()) {
+			if (!takeover.adoptInitial(candidate)) return;
+			(state.group as unknown as { add: (child: unknown) => void }).add(lyric.group);
+			state.current = lyric;
+			markClarityTakeover(lyric, null);
+			return;
+		}
+		if (!takeover.offer(candidate)) return;
+		try {
+			const commit = takeover.commitReady((next, previous, transaction) => {
+				const group = state.group as unknown as { add: (child: unknown) => void; remove: (child: unknown) => void };
+				group.add(next.value.group);
+				transaction.deferRollback(() => group.remove(next.value.group));
+				if (!previous || state.current !== previous.value) return;
+				if (redrawOnly) {
+					group.remove(previous.value.group);
+					transaction.deferRollback(() => group.add(previous.value.group));
+				} else {
+					(previous.value.group as unknown as { userData: Record<string, unknown> }).userData.state = "out";
+					(previous.value.group as unknown as { userData: Record<string, unknown> }).userData.age = 0;
+					state.outgoing.push({
+						lyric: previous.value,
+						age: 0,
+						replacementKey: lyricClarityKeys.get(next.value),
+					});
+					transaction.deferRollback(() => {
+						const index = state.outgoing.findIndex((entry) => entry.lyric === previous.value);
+						if (index >= 0) state.outgoing.splice(index, 1);
+					});
+				}
+			});
+			if (!commit) return;
+			markClarityTakeover(lyric, commit.outgoing?.value ?? null);
+			if (redrawOnly && commit.outgoing) commit.outgoing.release();
+			state.current = lyric;
+			if (redrawOnly) finalizeClarityReplacement(lyricClarityKeys.get(lyric));
+			if (state.lastFrame) updateStageLyrics3D(state.lastFrame.dt, state.lastFrame.t, state.lastFrame.snapshot);
+		} catch {
+			// atomic-takeover 已回滚场景 mutation 并释放新候选；旧 current 保持可见。
+		}
+	}
+
+	function queueOrCommitLyric(
+		lyric: LyricGroup,
+		previousLyric: LyricGroup | null,
+		redrawOnly: boolean,
+		token: number,
+	): void {
+		if (!uploadGate) {
+			completeTakeover(lyric, previousLyric, redrawOnly, token);
+			return;
+		}
+		uploadGate.enqueue({
+			owner: stageOwner,
+			key: "current",
+			generation: token,
+			leases: lyric.textureLeases,
+			candidate: lyric,
+			isCurrent: () => !state.disposed && token === state.buildToken && !!state.group,
+			release: () => disposeLyricGroupSafe(lyric),
+		});
+		pendingTakeovers.set(lyric, { previous: previousLyric, redrawOnly });
+	}
+
+	function flushTextureUpload(frameId: number): void {
+		if (!uploadGate) return;
+		uploadGate.beginFrame(frameId);
+		try {
+			uploadGate.uploadOne((lease) => opts.textureUploadExecutor?.(lease.texture));
+		} catch {
+			// gate 会释放失败批次，当前 lyric 仍是已经提交的旧候选。
+		}
+		const ready = uploadGate.takeReady();
+		if (!ready) return;
+		const pending = pendingTakeovers.get(ready.candidate);
+		pendingTakeovers.delete(ready.candidate);
+		completeTakeover(
+			ready.candidate,
+			pending?.previous ?? state.current,
+			pending?.redrawOnly ?? false,
+			ready.generation,
+		);
+		notifyLifecycleProgress();
+	}
+
+	function showStageLine(
+		text: string,
+		redrawOnly: boolean,
+		renderPayload: StageLyricRenderPayload = { text, settings: getStageLyricsSettings() },
+	): void {
 		if (!state.group) return;
 		if (!text) {
 			clearStageLyrics();
 			return;
 		}
+		// 正常切行只允许一个 outgoing；同一行 redraw 保留仍可见的旧过渡，直到其自身完成。
+		if (!redrawOnly) settleOutgoingBeforeReplacement();
 		// Baseline `buildLyricMesh` is synchronous, so the old mesh is swapped
 		// to outgoing and the new mesh is attached in the same frame. The
 		// current renderer uses an async three factory, so we keep the previous lyric
@@ -995,62 +1701,98 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		state.currentText = text;
 		const textOptions = getLyricTextOptions();
 		state.textOptionsSignature = textOptionsSignature(textOptions);
+		state.stageSettingsSignature = stageSettingsSignature(getStageLyricsSettings());
 		state.buildToken += 1;
 		const token = state.buildToken;
-		state.activeBuilds += 1;
+		const cacheKey = cacheKeyForRow(state.currentIdx, token);
+		// 普通换行（包括 seek）属于新的 resident-window。保留即将激活的
+		// 已完成行，但取消旧窗口的在途预热，禁止其在新窗口之后迟到提交。
+		if (!redrawOnly) invalidatePrewarmRows(cacheKey);
+		const prewarmed = takePrewarmedLyric(cacheKey);
+		if (prewarmed) {
+			queueOrCommitLyric(prewarmed, previousLyric, redrawOnly, token);
+			scheduleResidentRowPrewarm(state.currentIdx);
+			return;
+		}
+		if (!cooperative) state.activeBuilds += 1;
+		const build = async (isCancelled: () => boolean): Promise<LyricGroup> => await buildLyricForText(
+			renderPayload,
+			textOptions,
+			{
+				owner: `${stageOwner}:row`,
+				retention: "persistent",
+				isCancelled,
+			},
+		);
+		const commit = (lyric: LyricGroup) => queueOrCommitLyric(lyric, previousLyric, redrawOnly, token);
+		if (cooperative) {
+			let built: LyricGroup | null = null;
+			const accepted = cooperative.submit({
+				owner: stageOwner,
+				key: "current",
+				generation: token,
+				priority: "critical",
+				cost: 1,
+				isCurrent: () => !state.disposed && token === state.buildToken,
+				async step(signal, continuation) {
+					if (signal.aborted) throw new Error("Stage lyric build cancelled.");
+					if (continuation.phase === 0) return { status: "continue" as const, continuation: { phase: 1, label: "rasterize" } };
+					const isCancelled = () => signal.aborted || !isBuildScopeOpen() || token !== state.buildToken;
+					const lyric = await build(isCancelled);
+					if (isCancelled()) {
+						disposeLyricGroupSafe(lyric);
+						throw new Error("Stage lyric build cancelled.");
+					}
+					built = lyric;
+					return { status: "complete" as const, result: built };
+				},
+				cancel() {
+					if (built) disposeLyricGroupSafe(built);
+					built = null;
+				},
+			}, (lyric) => {
+				// 成功移交给 upload gate 后，coordinator 的取消器不再拥有该 lyric。
+				built = null;
+				const bundle = registerLyricGroupResources(lyric);
+				if (clarityPool?.canAdmit() && !registerLyricClarityEntry(
+					lyric,
+					bundle,
+					cacheKey,
+					"essential",
+					!!previousLyric && lyricClarityKeys.has(previousLyric),
+				)) {
+					disposeLyricGroupSafe(lyric);
+					return;
+				}
+				commit(lyric);
+			});
+			if (!accepted) return;
+			scheduleResidentRowPrewarm(state.currentIdx);
+			state.pendingBuildPromise = cooperative.whenIdle();
+			return;
+		}
 		const promise = (async () => {
 			try {
-				const palette = state.paletteRuntime.get();
-				const lyricsHasNativeKaraoke = opts.lyricsHasNativeKaraokeSupplier
-					? !!opts.lyricsHasNativeKaraokeSupplier()
-					: !!opts.lyricsHasNativeKaraoke;
-				const lyric = await buildLyricGroup(text, palette, {
-					threeFactory,
-					dotTexture: opts.dotTexture,
-					pixelScale: opts.pixelScale,
-					maxAnisotropy: opts.maxAnisotropy,
-					lyricGlowParticles: opts.lyricGlowParticlesSupplier ? opts.lyricGlowParticlesSupplier() : false,
-					lyricsHasNativeKaraoke,
-					...textOptions,
-					rand: opts.rand,
-				});
+				const lyric = await build(() => !isBuildScopeOpen() || token !== state.buildToken);
 				if (state.disposed || token !== state.buildToken) {
 					disposeLyricGroupSafe(lyric);
 					return;
 				}
-				if (!state.group) {
+				const bundle = registerLyricGroupResources(lyric);
+				if (clarityPool?.canAdmit() && !registerLyricClarityEntry(
+					lyric,
+					bundle,
+					cacheKey,
+					"essential",
+					!!previousLyric && lyricClarityKeys.has(previousLyric),
+				)) {
 					disposeLyricGroupSafe(lyric);
 					return;
 				}
-				// Swap the previous lyric out only now that the new group is
-				// ready. If this build was superseded (token mismatch), the
-				// previous lyric stays as `state.current` and a later build
-				// will perform the swap.
-				if (previousLyric && state.current === previousLyric) {
-					if (redrawOnly) {
-						try {
-							(state.group as unknown as { remove: (c: unknown) => void }).remove(previousLyric.group);
-						} catch {
-							void 0;
-						}
-						disposeLyricGroupSafe(previousLyric);
-					} else {
-						(previousLyric.group as unknown as { userData: Record<string, unknown> }).userData.state = "out";
-						(previousLyric.group as unknown as { userData: Record<string, unknown> }).userData.age = 0;
-						state.outgoing.push({ lyric: previousLyric, age: 0 });
-					}
-				}
-				(state.group as unknown as { add: (c: unknown) => void }).add(lyric.group);
-				state.current = lyric;
-				if (state.lastFrame) {
-					updateStageLyrics3D(state.lastFrame.dt, state.lastFrame.t, state.lastFrame.snapshot);
-				}
-				if (state.disposed || token !== state.buildToken || state.current !== lyric) {
-					disposeLyricGroupSafe(lyric);
-					return;
-				}
+				commit(lyric);
 			} finally {
 				state.activeBuilds = Math.max(0, state.activeBuilds - 1);
+				notifyLifecycleProgress();
 			}
 		})();
 		state.pendingBuildPromise = promise.then(
@@ -1060,6 +1802,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 	}
 
 	function tickLyricsParticles(nowSeconds: number): void {
+		syncClarityConfiguration();
 		const particleLyricsFlag = opts.particleLyricsFlagSupplier ? opts.particleLyricsFlagSupplier() : true;
 		if (!particleLyricsFlag) {
 			if (state.current || state.currentText || state.outgoing.length) clearStageLyrics();
@@ -1067,11 +1810,13 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		}
 		const playing = opts.isPlayingSupplier ? opts.isPlayingSupplier() : true;
 		const lines = state.lines;
-		if (!playing || lines.length === 0) {
+		if (lines.length === 0) {
 			if (state.current) {
 				const outgoingLyric = state.current;
 				(outgoingLyric.group as unknown as { userData: Record<string, unknown> }).userData.state = "out";
 				(outgoingLyric.group as unknown as { userData: Record<string, unknown> }).userData.age = 0;
+				const outgoingKey = lyricClarityKeys.get(outgoingLyric);
+				if (outgoingKey) clarityPool?.setPriority(outgoingKey, "normal");
 				state.outgoing.push({ lyric: outgoingLyric, age: 0 });
 				state.current = null;
 				state.currentIdx = -1;
@@ -1079,11 +1824,22 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			}
 			return;
 		}
-		let newIdx = -1;
-		for (let i = 0; i < lines.length; i++) {
-			if (lines[i].t <= nowSeconds + 0.05) newIdx = i;
-			else break;
+		if (!playing) {
+			if (getStageLyricsSettings().pauseHold) return;
+			if (state.current) {
+				const outgoingLyric = state.current;
+				(outgoingLyric.group as unknown as { userData: Record<string, unknown> }).userData.state = "out";
+				(outgoingLyric.group as unknown as { userData: Record<string, unknown> }).userData.age = 0;
+				const outgoingKey = lyricClarityKeys.get(outgoingLyric);
+				if (outgoingKey) clarityPool?.setPriority(outgoingKey, "normal");
+				state.outgoing.push({ lyric: outgoingLyric, age: 0 });
+				state.current = null;
+				state.currentIdx = -1;
+				state.currentText = "";
+			}
+			return;
 		}
+		const newIdx = findStageLyricIndexAtTime(lines, nowSeconds + 0.05);
 		if (newIdx < 0) {
 			const introText = (opts.fallbackTextSupplier ? opts.fallbackTextSupplier() : "") || "";
 			if (!introText) {
@@ -1117,14 +1873,30 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			return;
 		}
 		if (newIdx !== state.currentIdx) {
+			const previousIndex = state.currentIdx;
+			if (previousIndex >= 0 && (newIdx < previousIndex || newIdx > previousIndex + 1)) {
+				invalidatePrewarmRows();
+			}
 			state.currentIdx = newIdx;
-			showStageLine(lines[newIdx].text || "", false);
+			const text = lines[newIdx].text || "";
+			showStageLine(text, false, renderPayloadForLine(newIdx, text));
 		}
 		if (state.current) {
 			const signature = textOptionsSignature(getLyricTextOptions());
-			if (state.currentText && signature !== state.textOptionsSignature) {
+			const settings = getStageLyricsSettings();
+			const nextStageSettingsSignature = stageSettingsSignature(settings);
+			if (state.currentText && (
+				signature !== state.textOptionsSignature
+				|| nextStageSettingsSignature !== state.stageSettingsSignature
+			)) {
+				state.settingsGeneration += 1;
+				invalidatePrewarmRows();
 				const progress = (state.current.group as unknown as { userData: { lastLyricProgress?: number } }).userData.lastLyricProgress ?? 0;
-				showStageLine(state.currentText, true);
+				showStageLine(
+					state.currentText,
+					true,
+					renderPayloadForLine(newIdx, state.currentText),
+				);
 				if (state.current) {
 					updateLyricGroupProgress(
 						{ group: state.current.group, textMat: state.current.textMat },
@@ -1149,13 +1921,105 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		}
 	}
 
+	function resolveLyricMotionProfile(
+		userData: Record<string, unknown>,
+		settings: Readonly<StageLyricsSettings>,
+	): Readonly<StageLyricMotionProfile> {
+		const stored = userData.motionProfile as Readonly<StageLyricMotionProfile> | undefined;
+		return stored ?? createStageLyricMotionProfile(settings, {
+			lyricsHasNativeKaraoke: opts.lyricsHasNativeKaraokeSupplier
+				? !!opts.lyricsHasNativeKaraokeSupplier()
+				: !!opts.lyricsHasNativeKaraoke,
+		});
+	}
+
+	function updateLyricGlitchRuntime(
+		mesh: LyricGroup,
+		userData: Record<string, unknown>,
+		motion: Readonly<StageLyricMotionProfile>,
+		dt: number,
+		t: number,
+		snapshot: AudioSnapshot,
+	): number {
+		const random = opts.rand ?? Math.random;
+		if (motion.glitch <= 0) {
+			setUniformValue(mesh.textMat, "uGlitchBurst", 0);
+			return 0;
+		}
+		const kicks = opts.getBeatCamKick?.();
+		const beatShake = clamp(
+			Math.abs(kicks?.rollKick ?? 0) * 1.5
+			+ Math.abs(kicks?.thetaKick ?? 0) * 0.8
+			+ Math.abs(kicks?.radiusKick ?? 0) * 1.25
+			+ (kicks?.punch ?? 0) * 1.05,
+			0,
+			1.35,
+		);
+		const rawBeatDrive = clamp(
+			Math.max(fallbackNumber(snapshot.beatPulse, 0) * 1.12, state.beatGlow * 0.86, beatShake),
+			0,
+			1.55,
+		);
+		const beatFollowDrive = motion.glitchCameraBind ? rawBeatDrive : 0;
+		const rhythmGate = motion.glitchCameraBind
+			? clamp((beatFollowDrive - 0.14) / 0.58, 0, 1)
+			: 1;
+		let nextAt = finiteOr(Number(userData.glitchNextAt), 0);
+		let burst = Math.max(0, finiteOr(Number(userData.glitchBurst), 0));
+		let hold = Math.max(0, finiteOr(Number(userData.glitchHold), 0));
+		let lastBeatAt = finiteOr(Number(userData.glitchLastBeatAt), -10);
+		let seed = finiteOr(Number(userData.glitchSeed), finiteOr(Number(userData.floatSeed), 0));
+
+		if (nextAt <= 0) {
+			nextAt = t + (0.09 + random() * 0.34) / (0.62 + motion.glitchRate * 0.42);
+		}
+		if (motion.glitchCameraBind && beatFollowDrive > 0.22 && t - lastBeatAt > 0.055) {
+			burst = Math.max(
+				burst,
+				beatFollowDrive * rhythmGate * (0.52 + motion.glitchJitter * 0.18 + random() * 0.58),
+			);
+			hold = Math.max(hold, (0.014 + random() * 0.06) * (0.75 + motion.glitchJitter * 0.2));
+			seed = random() * 997;
+			lastBeatAt = t;
+			nextAt = Math.min(nextAt, t + 0.055 + random() * 0.16);
+		}
+		if (t >= nextAt) {
+			if (!motion.glitchCameraBind || beatFollowDrive > 0.3) {
+				let randomBurst = 0.12 + Math.pow(random(), 0.52) * (motion.glitchCameraBind ? 0.48 : 0.66);
+				randomBurst *= motion.glitchCameraBind ? rhythmGate : 1;
+				burst = Math.max(burst, randomBurst);
+				hold = Math.max(hold, (0.01 + random() * 0.076) * (0.8 + motion.glitchJitter * 0.18));
+				seed = random() * 997;
+			}
+			nextAt = t + (motion.glitchCameraBind ? 0.14 + random() * 0.55 : 0.075 + random() * 0.52)
+				/ (0.58 + motion.glitchRate * 0.46);
+		}
+		hold = Math.max(0, hold - dt);
+		burst = Math.max(0, burst * Math.pow(hold > 0 ? 0.22 : 0.018, dt));
+		const pulse = clamp(
+			(burst * rhythmGate + beatFollowDrive * (0.16 + motion.glitchJitter * 0.045)) * motion.glitch,
+			0,
+			1.95,
+		);
+		userData.glitchNextAt = nextAt;
+		userData.glitchBurst = burst;
+		userData.glitchHold = hold;
+		userData.glitchLastBeatAt = lastBeatAt;
+		userData.glitchSeed = seed;
+		setUniformValue(mesh.textMat, "uGlitchBurst", pulse);
+		setUniformValue(mesh.textMat, "uGlitchSeed", seed);
+		return pulse;
+	}
+
 	function tickCurrentMesh(dt: number, shelf: ReturnType<typeof getShelfProfile>, snapshot: AudioSnapshot, t: number): void {
 		const mesh = state.current;
 		if (!mesh) return;
 		const userData = (mesh.group as unknown as { userData: Record<string, unknown> }).userData;
+		const stageSettings = getStageLyricsSettings();
+		const motion = resolveLyricMotionProfile(userData, stageSettings);
 		userData.age = finiteOr((userData.age as number) ?? 0, 0) + dt;
 		const a = (() => {
-			const raw = Math.min(1, Number(userData.age || 0) / 0.52);
+			const raw = Math.min(1, Number(userData.age || 0) / Math.max(0.08, motion.enter));
 			return raw * raw * (3 - 2 * raw);
 		})();
 		const uOpacity = uniforms(mesh, "uOpacity");
@@ -1212,7 +2076,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		}
 		if (glowMat) {
 			const solar = state.highBloom * shelf.profile.bloom;
-			const glowTarget = lyricGlowStrength > 0 ? Math.min(shelf.profile.glowCap, (0.075 + solar * 0.34 + state.beatGlow * 0.16 * shelf.profile.bloom) * Math.min(3.0, glowDrive)) : 0;
+			const glowTarget = lyricGlowStrength > 0 ? Math.min(shelf.profile.glowCap, (0.075 + solar * 0.34 + state.beatGlow * 0.16 * shelf.profile.bloom) * Math.min(3.0, glowDrive) * motion.glowLift) : 0;
 			const currentGlowOpacity = getMaterialOpacity(glowMat, 0);
 			setMaterialOpacity(glowMat, currentGlowOpacity + (glowTarget - currentGlowOpacity) * (glowTarget > currentGlowOpacity ? 0.095 : (shelf.shelfDetailOpen ? 0.20 : 0.055)));
 			if (state.three) {
@@ -1258,7 +2122,22 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		const beatPulse = fallbackNumber(snapshot.beatPulse, 0);
 		const bass = fallbackNumber(snapshot.bass, 0);
 		const mid = fallbackNumber(snapshot.mid, 0);
-		const breathe = Math.sin(t * 0.92 + seed) * 0.050 + Math.sin(t * 0.41 + seed * 0.7) * 0.028;
+		const motionRate = motion.style === "quick"
+			? 1.42
+			: motion.style === "smooth"
+				? 0.56
+				: motion.style === "glitch"
+					? 1.18
+					: 1;
+		const floatEnabled = stageSettings.verticalFloat && motion.style !== "glass";
+		const glitchPulse = updateLyricGlitchRuntime(mesh, userData, motion, dt, t, snapshot);
+		const glitchSeed = finiteOr(Number(userData.glitchSeed), seed);
+		const glitchJitter = motion.style === "glitch"
+			? Math.sin(t * motion.glitchRate * 18 + glitchSeed) * glitchPulse * (0.006 + motion.glitchJitter * 0.002)
+			: 0;
+		const breathe = (floatEnabled
+			? (Math.sin(t * 0.92 * motionRate + seed) * 0.050 + Math.sin(t * 0.41 * motionRate + seed * 0.7) * 0.028) * motion.floatAmp
+			: 0) + glitchJitter;
 		const group = mesh.group as unknown as { position: Vec3Like; scale: unknown; rotation?: { z: number } };
 		if (skullMouthLyrics) {
 			const mouthMeshY = -0.070 + Math.sin(t * 0.50 + seed) * 0.018 + Math.sin(t * 1.12 + seed) * 0.006;
@@ -1277,7 +2156,10 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		} else {
 			userData.skullMouthMeshLocked = false;
 			setScalar(group.scale, 0.96 + a * 0.055 + breathe + bass * 0.038 + beatPulse * 0.014);
-			group.position.y += ((0.18 + Math.sin(t * 0.55 + seed) * 0.055 + Math.sin(t * 1.35 + seed) * 0.014) - group.position.y) * 0.075;
+			const floatY = floatEnabled
+				? (Math.sin(t * 0.55 * motionRate + seed) * 0.055 + Math.sin(t * 1.35 * motionRate + seed) * 0.014) * motion.floatAmp
+				: 0;
+			group.position.y += ((0.18 + floatY) - group.position.y) * (0.075 + stageSettings.motionSoftness * 0.025);
 			group.position.z += ((1.48 + Math.cos(t * 0.48 + seed) * 0.080) - group.position.z) * 0.080;
 			if (group.rotation) group.rotation.z = Math.sin(t * 0.34 + seed) * 0.018;
 		}
@@ -1308,11 +2190,13 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		for (let i = state.outgoing.length - 1; i >= 0; i--) {
 			const entry = state.outgoing[i];
 			entry.age += dt;
-			const a = Math.min(1, entry.age / 0.38);
-			const aSmooth = a * a * (3 - 2 * a);
 			const lyric = entry.lyric;
 			const userData = (lyric.group as unknown as { userData: Record<string, unknown> }).userData;
+			const motion = resolveLyricMotionProfile(userData, getStageLyricsSettings());
+			const a = Math.min(1, entry.age / Math.max(0.08, motion.exit));
+			const aSmooth = a * a * (3 - 2 * a);
 			userData.age = finiteOr((userData.age as number) ?? 0, 0);
+			setUniformValue(lyric.textMat, "uGlitchBurst", getUniformValue(lyric.textMat, "uGlitchBurst", 0) * 0.72);
 			const uOpacity = uniforms(lyric, "uOpacity");
 			const readabilityMat = lyric.readabilityMat as { opacity: number };
 			const glowMat = lyric.glowMat as { opacity: number };
@@ -1361,17 +2245,7 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			sc.x = scalar;
 			sc.y = scalar;
 			sc.z = scalar;
-			if (aSmooth >= 1) {
-				if (state.group) {
-					try {
-						(state.group as unknown as { remove: (c: unknown) => void }).remove(lyric.group);
-					} catch {
-						void 0;
-					}
-				}
-				disposeLyricGroupSafe(lyric);
-				state.outgoing.splice(i, 1);
-			}
+			if (aSmooth >= 1) releaseOutgoingEntry(i);
 		}
 	}
 
@@ -1402,7 +2276,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		state.beatGlow = finiteOr(state.beatGlow, 0);
 		const layout = getLyricLayoutOptions();
 		const shelf = getShelfProfile(layout.preset);
-		(state.group as unknown as { renderOrder: number }).renderOrder = shelf.shelfDetailOpen ? 24 : 38;
+		const renderBase = shelf.shelfDetailOpen ? 24 : 38;
+		(state.group as unknown as { renderOrder: number }).renderOrder = renderBase;
+		syncLyricRowRenderBase(renderBase);
 		const skullLyricPreset = layout.preset === 6;
 		let solarBloom = lyricGlowStrength > 0
 			? (0.18 + glowBreath * 0.16 + musicBloom * 0.90 + state.beatGlow * 1.18 + Math.sin(t * 0.37 + 1.2) * 0.035) * glowDrive
@@ -1443,6 +2319,9 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		},
 		async mount(parent?: THREE.Scene): Promise<THREE.Group> {
 			const THREE = await threeFactory();
+			if (state.disposed) {
+				throw new Error("Stage lyrics lifecycle was disposed before mount completed.");
+			}
 			state.three = THREE;
 			const scene = parent ?? opts.scene ?? null;
 			if (state.group) {
@@ -1479,8 +2358,13 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			const normalized = normalizeLyricLines(lines);
 			const signature = lyricLinesSignature(normalized);
 			if (signature === state.linesSignature) return;
+			state.trackGeneration += 1;
+			invalidatePrewarmRows();
 			state.lines = normalized;
 			state.linesSignature = signature;
+			state.buildToken += 1;
+			cooperative?.cancelOwner(stageOwner);
+			uploadGate?.cancelOwner(stageOwner);
 			state.currentIdx = -1;
 		},
 		update(ctx: FrameContext) {
@@ -1489,13 +2373,18 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			const dt = ctx.dt;
 			const uniformTime = Number(ctx.uniforms.uTime.value);
 			const t = Number.isFinite(uniformTime) ? uniformTime : ctx.now / 1000;
+			lyricMotionTimeUniform.value = t;
 			state.lastFrame = { dt, t, snapshot: ctx.snapshot };
 			const nowSeconds = opts.currentTimeSupplier ? opts.currentTimeSupplier() : 0;
 			tickLyricsParticles(nowSeconds);
+			state.frameId += 1;
+			flushTextureUpload(state.frameId);
 			updateStageLyrics3D(dt, t, ctx.snapshot);
 		},
 		setPalette(palette: Partial<LyricPalette>) {
 			state.paletteRuntime.set(palette);
+			state.settingsGeneration += 1;
+			invalidatePrewarmRows();
 			applyPaletteToLyric(state.current);
 			for (const entry of state.outgoing) applyPaletteToLyric(entry.lyric);
 		},
@@ -1504,6 +2393,25 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 		},
 		requestCameraSnap(frames = 10) {
 			state.snapCameraLockFrames = Math.max(0, Math.floor(Number(frames) || 0));
+		},
+		getWorldLookAtTarget() {
+			if (state.disposed || !state.group) return null;
+			if (opts.particleLyricsFlagSupplier?.() === false) return null;
+			if (!state.current && state.outgoing.length === 0) return null;
+			const group = state.group as unknown as StageLyricsWorldTransform;
+			group.updateMatrixWorld?.(true);
+			const target: Vec3Like = state.three
+				? new state.three.Vector3()
+				: { x: 0, y: 0, z: 0 };
+			if (group.getWorldPosition) group.getWorldPosition(target);
+			else if (group.position) {
+				target.x = group.position.x;
+				target.y = group.position.y;
+				target.z = group.position.z;
+			} else return null;
+			return Number.isFinite(target.x) && Number.isFinite(target.y) && Number.isFinite(target.z)
+				? { x: target.x, y: target.y, z: target.z }
+				: null;
 		},
 		getCurrentIdx() {
 			return state.currentIdx;
@@ -1522,19 +2430,30 @@ export function createStageLyricsLifecycle(opts: StageLyricsLifecycleOpts): Stag
 			};
 		},
 		async whenIdle() {
-			while (state.activeBuilds > 0) {
-				const p = state.pendingBuildPromise;
-				if (p) {
-					await p;
-				} else {
-					await Promise.resolve();
+			for (;;) {
+				while (state.activeBuilds > 0) {
+					const p = state.pendingBuildPromise;
+					if (p) await p;
+					else await Promise.resolve();
 				}
+				await cooperative?.whenIdle();
+				const upload = uploadGate?.getDiagnostics();
+				const pendingUpload = (upload?.pendingReplacementCount ?? 0) > 0
+					|| (upload?.pendingTextures ?? 0) > 0;
+				if (!pendingUpload && !takeover?.getPending()) return;
+				await new Promise<void>((resolve) => idleWaiters.add(resolve));
 			}
 		},
 		dispose() {
 			if (state.disposed) return;
 			state.disposed = true;
 			clearStageLyrics();
+			cooperative?.dispose();
+			uploadGate?.dispose();
+			takeover?.dispose();
+			clarityPool?.dispose();
+			unregisterDiagnostics?.();
+			unregisterDiagnostics = null;
 			disposeStarRiver();
 			if (state.group) {
 				const g = state.group;

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement } from "react";
+import { useCallback, useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type ReactElement, type ReactNode } from "react";
 import {
 	attachControlGlassNode,
 	createControlConsoleMotion,
@@ -7,9 +7,10 @@ import {
 } from "@mineradio/visual-engine";
 import type { PlaybackMode } from "../stores/playback-store";
 import type { ShelfCameraMode, ShelfMode, ShelfPresence } from "../stores/shelf-store";
-import type { PlaybackQualityRequest, Track, TrackQualityOption } from "@mineradio/shared";
+import type { PlaybackQualityRequest, ProviderId, Track, TrackQualityOption } from "@mineradio/shared";
 import { createProgressDragParticleEmitter, type ProgressDragParticleEmitter } from "./progress-drag-particles";
 import { resolveVirtualListWindow } from "../components/shell/virtual-list";
+import { SourceSwitcher } from "../features/playback/SourceSwitcher";
 
 const PLAYBACK_QUALITY_OPTIONS: Array<{
 	value: PlaybackQualityRequest;
@@ -77,7 +78,11 @@ export interface PlayerConsoleHostProps {
 	onSeek?: (positionMs: number) => void;
 	onVolumeChange?: (volume: number) => void;
 	onToggleMute?: () => void;
-	onQualityChange?: (quality: PlaybackQualityRequest) => void;
+	renderVolumePanelExtras?: (active: boolean) => ReactNode;
+	onQualityChange?: (
+		quality: PlaybackQualityRequest,
+	) => Promise<void> | void;
+	onSourceSwitch?: (provider: ProviderId) => void;
 	onShelfModeChange?: (mode: ShelfMode) => void;
 	onShelfCameraModeChange?: (mode: ShelfCameraMode) => void;
 	onShelfPresenceChange?: (presence: ShelfPresence) => void;
@@ -106,6 +111,9 @@ export interface PlayerConsoleHostProps {
 	muted?: boolean;
 	playbackQuality?: PlaybackQualityRequest;
 	qualityOptions?: TrackQualityOption[];
+	sourceProviders?: readonly ProviderId[];
+	sourceSwitchBusy?: ProviderId | null;
+	sourceSwitchDisabled?: boolean;
 	shelfMode?: ShelfMode;
 	shelfCameraMode?: ShelfCameraMode;
 	shelfPresence?: ShelfPresence;
@@ -349,7 +357,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	}, []);
 	const lyricSourceMode = props.lyricSourceMode === "custom" ? "custom" : "original";
 	const shelfMode = props.shelfMode ?? "side";
-	const shelfCameraMode = props.shelfCameraMode ?? "static";
+	const shelfCameraMode = props.shelfCameraMode ?? "dynamic";
 	const shelfPresence = props.shelfPresence ?? "always";
 	const shelfShowPodcasts = props.shelfShowPodcasts !== false;
 	const shelfMergeCollections = props.shelfMergeCollections === true;
@@ -392,6 +400,7 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 	const volume = Math.max(0, Math.min(1, props.volume ?? 0.84));
 	const muted = !!props.muted;
 	const volumePct = Math.round((muted ? 0 : volume) * 100);
+	const volumePanelExtras = props.renderVolumePanelExtras?.(volumeOpen);
 	const qualityOptions = qualityViewOptions(props.qualityOptions);
 	const quality = playbackQualityOption(props.playbackQuality, qualityOptions);
 	const currentLiked = props.currentLiked === true;
@@ -448,10 +457,26 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 									data-quality={option.value}
 									data-svip={option.svip ? "1" : undefined}
 									title={option.label}
-									onClick={() => {
-										setQualityOpen(false);
-										onQualityChangeRef.current?.(option.value);
-									}}
+								onClick={() => {
+									setQualityOpen(false);
+									try {
+										const pending = onQualityChangeRef.current?.(option.value);
+										if (!pending) return;
+										void Promise.resolve(pending).catch((error) => {
+											props.onNotice?.(
+												error instanceof Error
+													? error.message
+													: "音质偏好保存失败",
+											);
+										});
+									} catch (error) {
+										props.onNotice?.(
+											error instanceof Error
+												? error.message
+												: "音质偏好保存失败",
+										);
+									}
+								}}
 								>
 									<span>{option.label}</span>
 									<small>{option.detail}</small>
@@ -459,6 +484,15 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 							))}
 						</div>
 					</div>
+					{props.currentTrack && props.sourceProviders?.length && props.onSourceSwitch ? (
+						<SourceSwitcher
+							currentProvider={props.currentTrack.provider}
+							availableProviders={props.sourceProviders}
+							busyProvider={props.sourceSwitchBusy ?? null}
+							disabled={props.sourceSwitchDisabled}
+							onSwitch={props.onSourceSwitch}
+						/>
+					) : null}
 					<button
 						id="heart-btn"
 						ref={registerNormal("heart-btn")}
@@ -533,9 +567,12 @@ export function PlayerConsoleHost(props: PlayerConsoleHostProps): ReactElement {
 						<button id="volume-btn" className={volumeOpen ? "ctrl-btn active" : "ctrl-btn"} ref={registerNormal("volume-btn")} type="button" title="音量" aria-label="音量" onClick={() => setVolumeOpen((open) => !open)} onDoubleClick={() => onToggleMuteRef.current?.()}>
 							<svg viewBox="0 0 24 24" aria-hidden="true" width="18" height="18" fill="none" stroke="currentColor" strokeWidth={2}><path d="M11 5 6 9H3v6h3l5 4V5Z" />{volumePct > 0 ? <path d="M15.5 8.5a5 5 0 0 1 0 7" /> : <path d="M16 9l5 5M21 9l-5 5" />}</svg>
 						</button>
-						<div className={volumeOpen ? "volume-popover show" : "volume-popover"}>
+						<div className={`${volumeOpen ? "volume-popover show" : "volume-popover"}${volumePanelExtras ? " has-extras" : ""}`}>
 							<input id="volume-slider" type="range" min="0" max="100" value={volumePct} onChange={(event) => onVolumeChangeRef.current?.(Number(event.currentTarget.value) / 100)} aria-label="音量" />
 							<div id="volume-value">{volumePct}%</div>
+							{volumePanelExtras ? (
+								<div className="volume-panel-extras">{volumePanelExtras}</div>
+							) : null}
 						</div>
 					</div>
 					<button className="ctrl-btn lyrics-toggle-btn" ref={registerNormal("lyrics-toggle-btn")} type="button" title="歌词" aria-label="歌词" onClick={lyricsStub}>

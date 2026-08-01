@@ -318,7 +318,7 @@ test("handleShelfDetailRowAction routes Netease like action through provider mut
 		row,
 		index: 0,
 		action: "like",
-		client: {
+		likes: {
 			async likeSong(provider, id, liked) {
 				calls.push({ provider, id, liked });
 				return { provider, id, liked, code: 200 };
@@ -346,7 +346,7 @@ test("handleShelfDetailRowAction routes Soda like action through provider mutati
 		row,
 		index: 0,
 		action: "like",
-		client: {
+		likes: {
 			async likeSong(provider, id, liked) {
 				calls.push({ provider, id, liked });
 				return { provider, id, liked, code: 200 };
@@ -377,7 +377,7 @@ test("handleShelfDetailRowAction blocks import-only like actions before provider
 		row,
 		index: 0,
 		action: "like",
-		client: {
+		likes: {
 			async likeSong(provider, id, liked) {
 				calls.push({ provider, id, liked });
 				return { provider, id, liked, code: 200 };
@@ -402,7 +402,7 @@ test("handleShelfDetailRowAction allows baseline like action on hard non-playabl
 		row,
 		index: 1,
 		action: "like",
-		client: {
+		likes: {
 			async likeSong(provider, id, liked) {
 				calls.push({ provider, id, liked });
 				return { provider, id, liked, code: 200 };
@@ -426,11 +426,6 @@ test("handleShelfDetailRowAction opens the baseline collect picker without direc
 		index: 0,
 		action: "collect",
 		onOpenCollect: (track) => opened.push(track),
-		client: {
-			async addSongToPlaylist() {
-				throw new Error("collect should wait for a playlist choice");
-			},
-		},
 	})).toBe(true);
 	expect(opened).toEqual([mapShelfDetailRowToTrack(row)]);
 	expect(usePlaybackStore.getState().queue).toEqual([]);
@@ -456,11 +451,6 @@ test("handleShelfDetailRowAction blocks import-only collect actions before openi
 		action: "collect",
 		onOpenCollect: (track) => opened.push(track),
 		onResult: (message) => messages.push(message),
-		client: {
-			async addSongToPlaylist() {
-				throw new Error("collect should wait for a playlist choice");
-			},
-		},
 	})).toBe(false);
 	expect(opened).toEqual([]);
 	expect(messages).toEqual(["导入曲目暂不支持收藏到歌单"]);
@@ -508,12 +498,14 @@ test("createShelfDetailContentLoader fetches playlist detail and writes rows thr
 	const calls: Array<{ provider: ProviderId; id: string }> = [];
 	const writes: unknown[] = [];
 	const loader = createShelfDetailContentLoader({
-		client: {
+		library: {
 			async playlistDetail(provider: ProviderId, id: string) {
 				calls.push({ provider, id });
 				return makeDetail();
 			},
 		},
+		discover: null,
+		search: null,
 		getContentList: () => ({
 			setRowsForToken(token: number, rows: unknown[], kind?: string) {
 				writes.push({ token, rows, kind });
@@ -573,15 +565,14 @@ test("createShelfDetailContentLoader fetches podcast collection detail through p
 		}],
 	};
 	const loader = createShelfDetailContentLoader({
-		client: {
-			async playlistDetail() {
-				throw new Error("playlistDetail should not be used for podcast collections");
-			},
+		library: null,
+		discover: {
 			async podcastMyItems(key, limit, offset) {
 				calls.push({ key, limit, offset });
 				return result;
 			},
 		},
+		search: null,
 		getContentList: () => ({
 			setRowsForToken(token: number, rows: unknown[], kind?: string) {
 				writes.push({ token, rows, kind });
@@ -632,10 +623,9 @@ test("createShelfDetailContentLoader fetches podcast radio programs through podc
 		total: 1,
 	};
 	const loader = createShelfDetailContentLoader({
-		client: {
-			async playlistDetail() {
-				throw new Error("playlistDetail should not be used for podcast radio");
-			},
+		library: null,
+		discover: null,
+		search: {
 			async podcastPrograms(id, limit, offset) {
 				calls.push({ id, limit, offset });
 				return result;
@@ -701,11 +691,13 @@ test("createPodcastRadioDetailOpener reopens the active detail list and loads wi
 test("createShelfDetailContentLoader writes deterministic token-guarded errors when metadata is missing", async () => {
 	const errors: unknown[] = [];
 	const loader = createShelfDetailContentLoader({
-		client: {
+		library: {
 			async playlistDetail() {
 				throw new Error("should not fetch without provider and playlist id");
 			},
 		},
+		discover: null,
+		search: null,
 		getContentList: () => ({
 			setRowsForToken() {
 				throw new Error("should not set rows without metadata");
@@ -730,11 +722,13 @@ test("createShelfDetailContentLoader writes deterministic token-guarded errors w
 test("createShelfDetailContentLoader rejects unknown provider ids before sidecar fetch", async () => {
 	const errors: unknown[] = [];
 	const loader = createShelfDetailContentLoader({
-		client: {
+		library: {
 			async playlistDetail() {
 				throw new Error("should not fetch invalid provider ids");
 			},
 		},
+		discover: null,
+		search: null,
 		getContentList: () => ({
 			setRowsForToken() {
 				throw new Error("should not set rows without a valid provider");
@@ -760,11 +754,13 @@ test("createShelfDetailContentLoader rejects unknown provider ids before sidecar
 test("createShelfDetailContentLoader writes a safe token-guarded error label on fetch failure", async () => {
 	const errors: unknown[] = [];
 	const loader = createShelfDetailContentLoader({
-		client: {
+		library: {
 			async playlistDetail() {
 				throw new Error("cookie=secret failed");
 			},
 		},
+		discover: null,
+		search: null,
 		getContentList: () => ({
 			setRowsForToken() {
 				throw new Error("should not set rows on failure");

@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import {
 	applyStonePrintTexture,
+	customLyricFontFamily,
 	lyricFontCss,
 	normalizeFontKey,
 	resolveFontConfig,
@@ -14,6 +15,12 @@ test("stone-song uses baseline forced 900 weight regardless of supplied lyricWei
 
 test("unknown lyric font key falls back to baseline sans key", () => {
 	expect(normalizeFontKey("not-a-font")).toBe("sans");
+});
+
+test("custom lyric font keys resolve to a stable registered family", () => {
+	expect(normalizeFontKey("custom:abc1234")).toBe("custom:abc1234");
+	expect(customLyricFontFamily("custom:abc1234")).toBe("MineRadio Custom abc1234");
+	expect(resolveFontConfig({ lyricFont: "custom:abc1234" }).stack).toContain("MineRadio Custom abc1234");
 });
 
 test("applyStonePrintTexture includes baseline chips scratches and ellipse erosion", () => {

@@ -1,6 +1,10 @@
 import { expect, test } from "bun:test";
 import "../runtime/happy-dom-preload";
 import type { FrameContext } from "../runtime/frame-context";
+import {
+	__inspectVisualResourceScopeForTests,
+	createVisualResourceScope,
+} from "../runtime/resource-scope";
 import type { RuntimeUniforms } from "../runtime/uniforms";
 import { createRuntimeUniforms } from "../runtime/uniforms";
 import { SHELF_MAX_RENDER } from "./card-position";
@@ -445,8 +449,90 @@ test("ShelfManager.openDetail + closeDetail mutate openCardIdx", () => {
 	m.openDetail(1);
 	expect(m.getState().openCardIdx).toBe(1);
 	expect(m.getSnapshot().openCardIdx).toBe(1);
-	m.closeDetail();
+	m.closeDetail({ immediate: true });
 	expect(m.getState().openCardIdx).toBe(-1);
+});
+
+test("ShelfManager normal detail close keeps content alive but non-interactive for 180ms", () => {
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 1;
+	const phases: string[] = [];
+	const m = createShelfManager({ onDetailPhaseChange: (phase) => phases.push(phase) });
+	m.openDetail(0, { playlistId: "p1", title: "Detail" });
+	m.update(makeCtx(uniforms, 16, 1 / 60));
+	m.closeDetail();
+
+	expect(m.getDetailPhase()).toBe("closing");
+	expect(m.hasOpenContent()).toBe(true);
+	expect(m.getSnapshot().openCardIdx).toBe(0);
+
+	uniforms.uTime.value = 1.179;
+	m.update(makeCtx(uniforms, 32, 1 / 60));
+	expect(m.getDetailPhase()).toBe("closing");
+
+	uniforms.uTime.value = 1.18;
+	m.update(makeCtx(uniforms, 48, 1 / 60));
+	expect(m.getDetailPhase()).toBe("closed");
+	expect(m.hasOpenContent()).toBe(false);
+	expect(m.getSnapshot().openCardIdx).toBe(-1);
+	expect(phases).toEqual(["open", "closing", "closed"]);
+});
+
+test("ShelfManager normal detail close animates scale and position before disposal", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 2;
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData([{ type: "playlist", title: "Detail", playlistId: "p1" }]);
+	m.openDetail(0, { playlistId: "p1", title: "Detail" });
+	m.update({
+		...makeCtx(uniforms, 16),
+		camera: camera as unknown as FrameContext["camera"],
+		viewport: { width: 800, height: 600 },
+	} as FrameContext & { viewport: { width: number; height: number } });
+	const detailGroup = findDetailGroup(group)!;
+	const openScale = detailGroup.scale.x;
+	const openX = detailGroup.position.x;
+	const openY = detailGroup.position.y;
+
+	m.closeDetail();
+	uniforms.uTime.value = 2.09;
+	m.update({
+		...makeCtx(uniforms, 32),
+		camera: camera as unknown as FrameContext["camera"],
+		viewport: { width: 800, height: 600 },
+	} as FrameContext & { viewport: { width: number; height: number } });
+
+	expect(detailGroup.scale.x).toBeLessThan(openScale);
+	expect(Math.abs(detailGroup.position.x - openX)).toBeGreaterThan(1e-6);
+	expect(Math.abs(detailGroup.position.y - openY)).toBeGreaterThan(1e-6);
+});
+
+test("ShelfManager ignores an obsolete close generation after detail reopens", () => {
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 2;
+	const m = createShelfManager({});
+	m.openDetail(0, { playlistId: "p1", title: "First" });
+	m.update(makeCtx(uniforms, 16, 1 / 60));
+	m.closeDetail();
+	m.openDetail(1, { playlistId: "p2", title: "Second" });
+
+	uniforms.uTime.value = 2.5;
+	m.update(makeCtx(uniforms, 32, 1 / 60));
+
+	expect(m.getDetailPhase()).toBe("open");
+	expect(m.hasOpenContent()).toBe(true);
+	expect(m.getSnapshot().openCardIdx).toBe(1);
+	expect(m.getContentList()?.getSnapshot().playlistId).toBe("p2");
 });
 
 test("ShelfManager.openDetail does not restart existing shelf card reveal timing", () => {
@@ -470,7 +556,7 @@ test("ShelfManager.openDetail pins side shelf for baseline detail lifecycle with
 	expect(m.getSnapshot().pinnedOpen).toBe(true);
 	expect(m.getState().shelfOpenAnimAt).toBe(12.5);
 	expect(m.hasOpenContent()).toBe(true);
-	m.closeDetail();
+	m.closeDetail({ immediate: true });
 	expect(m.hasOpenContent()).toBe(false);
 	expect(m.getShelfPinnedOpen()).toBe(true);
 });
@@ -543,7 +629,7 @@ test("ShelfManager dims first-level cards to baseline detail-open opacity multip
 		{ type: "playlist", title: "A", playlistId: "a" },
 		{ type: "playlist", title: "B", playlistId: "b" },
 		{ type: "playlist", title: "C", playlistId: "c" },
-	]);
+	], { asyncBuild: false });
 	m.getState().centerTarget = 1;
 	m.getState().centerSmooth = 1;
 	m.openDetail(1, { playlistId: "b", title: "B" });
@@ -572,7 +658,7 @@ test("ShelfManager exposes a content-list skeleton for open detail state", () =>
 	expect(list?.getSnapshot().playlistTitle).toBe("Playlist 1");
 	expect(list?.getSnapshot().openAnimAt).toBe(0);
 
-	m.closeDetail();
+	m.closeDetail({ immediate: true });
 	expect(m.hasOpenContent()).toBe(false);
 	expect(m.getContentList()).toBeNull();
 });
@@ -793,9 +879,36 @@ test("ShelfManager builds only SHELF_MAX_RENDER card meshes around center for lo
 	m.setShelfVisibility(1);
 	m.getState().centerTarget = 12;
 	m.getState().centerSmooth = 12;
-	m.setData(Array.from({ length: 25 }, (_, i) => ({ type: "playlist", title: `P${i}`, playlistId: `${i}` })));
+	m.setData(Array.from({ length: 25 }, (_, i) => ({ type: "playlist", title: `P${i}`, playlistId: `${i}` })), { asyncBuild: false });
 	m.update(makeCtx(createRuntimeUniforms(), 16));
 	expect(children.length).toBe(SHELF_MAX_RENDER);
+});
+
+test("ShelfManager reuses at most SHELF_MAX_RENDER cards while traversing 600 items", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const uniforms = createRuntimeUniforms();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData(Array.from({ length: 600 }, (_, index) => ({
+		type: "playlist",
+		title: `Playlist ${index}`,
+		playlistId: String(index),
+	})));
+
+	for (let index = 0; index < 600; index += 1) {
+		m.getState().centerTarget = index;
+		m.getState().centerSmooth = index;
+		uniforms.uTime.value = index / 60;
+		m.update(makeCtx(uniforms, index * 16, 1 / 60));
+	}
+
+	const diagnostics = m.getResourceDiagnostics();
+	expect(diagnostics.cards.created).toBeLessThanOrEqual(SHELF_MAX_RENDER);
+	expect(diagnostics.cards.active).toBeLessThanOrEqual(SHELF_MAX_RENDER);
+	expect(diagnostics.cards.active + diagnostics.cards.idle).toBeLessThanOrEqual(SHELF_MAX_RENDER);
 });
 
 test("ShelfManager redraws existing card sprites when selected state changes inside the same render window", () => {
@@ -1498,7 +1611,7 @@ test("ShelfManager closeDetail disposes detail meshes and clears content-list sc
 		material.map?.addEventListener("dispose", () => disposeEvents++);
 	}
 
-	m.closeDetail();
+	m.closeDetail({ immediate: true });
 
 	expect(findDetailMeshes(group).length).toBe(0);
 	expect(list?.hasScreenTargetAt({ x: 400, y: 300 })).toBe(false);
@@ -1603,7 +1716,130 @@ test("ShelfManager rebuilds detail row meshes when content render window changes
 	expect(m.getContentList()?.pickRowAtScreen({ x: 400, y: 300 })?.row.id).toBe("song-12");
 });
 
-test("ShelfManager honors asyncBuild by staging card construction across frames", async () => {
+test("ShelfManager fully rebinds a same-index card when only its provider action identity changes", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const uniforms = createRuntimeUniforms();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.setData([{ type: "playlist", title: "Same", playlistId: "p1", provider: "netease" }]);
+	m.update(makeCtx(uniforms, 16));
+	expect(renderedShelfCard(group, 0)?.userData.action).toEqual({
+		kind: "loadPlaylist",
+		playlistId: "p1",
+		title: "Same",
+		provider: "netease",
+	});
+
+	m.setData([{ type: "playlist", title: "Same", playlistId: "p1", provider: "qq" }]);
+	m.update(makeCtx(uniforms, 32));
+
+	expect(renderedShelfCard(group, 0)?.userData.action).toEqual({
+		kind: "loadPlaylist",
+		playlistId: "p1",
+		title: "Same",
+		provider: "qq",
+	});
+});
+
+test("ShelfManager reuses at most CONTENT_MAX_RENDER detail rows while traversing 600 rows", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const uniforms = createRuntimeUniforms();
+	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	m.setShelfVisibility(1);
+	m.openDetail(0, { playlistId: "p1", title: "Detail" });
+	m.getContentList()?.setRows(Array.from({ length: 600 }, (_, index) => ({
+		id: `song-${index}`,
+		name: `Song ${index}`,
+		artist: `Artist ${index}`,
+	})));
+
+	for (let index = 0; index < 600; index += 1) {
+		m.getContentList()?.scrollBy(index - (m.getContentList()?.getSnapshot().centerTarget ?? 0));
+		uniforms.uTime.value = index / 60;
+		m.update({
+			...makeCtx(uniforms, index * 16, 1 / 60),
+			camera: camera as unknown as FrameContext["camera"],
+			viewport: { width: 800, height: 600 },
+		} as FrameContext & { viewport: { width: number; height: number } });
+	}
+
+	const diagnostics = m.getResourceDiagnostics();
+	expect(diagnostics.detailRows.created).toBe(CONTENT_MAX_RENDER);
+	expect(diagnostics.detailRows.active).toBeLessThanOrEqual(CONTENT_MAX_RENDER);
+	expect(diagnostics.detailRows.active + diagnostics.detailRows.idle).toBeLessThanOrEqual(CONTENT_MAX_RENDER);
+	expect(diagnostics.detailPanels).toBe(1);
+});
+
+test("ShelfManager registers card row and panel resources in a rebuildable child scope", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const rootScope = createVisualResourceScope("root");
+	const shelfScope = rootScope.createChild("shelf");
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 2;
+	const m = createShelfManager({
+		scene,
+		group,
+		three,
+		document: makeCanvasDocument(),
+		resourceScope: shelfScope,
+	});
+	m.setShelfVisibility(1);
+	m.setData([{ type: "playlist", title: "Detail", playlistId: "p1" }]);
+	m.openDetail(0, { playlistId: "p1", title: "Detail" });
+	m.getContentList()?.setRows([{ id: "song-1", name: "Song 1" }]);
+	const update = (now: number) => m.update({
+		...makeCtx(uniforms, now),
+		camera: camera as unknown as FrameContext["camera"],
+		viewport: { width: 800, height: 600 },
+	} as FrameContext & { viewport: { width: number; height: number } });
+	update(16);
+
+	expect(__inspectVisualResourceScopeForTests(shelfScope).activeResourceEntryCount).toBe(12);
+	let diagnostics = m.getResourceDiagnostics();
+	expect(diagnostics.cards.active).toBe(1);
+	expect(diagnostics.detailRows.active).toBe(1);
+	expect(diagnostics.detailPanels).toBe(1);
+
+	expect(rootScope.releaseRetention("rebuildable").disposed).toBe(12);
+	diagnostics = m.getResourceDiagnostics();
+	expect(diagnostics.cards.active).toBe(0);
+	expect(diagnostics.cards.idle).toBe(0);
+	expect(diagnostics.detailRows.active).toBe(0);
+	expect(diagnostics.detailRows.idle).toBe(0);
+	expect(diagnostics.detailPanels).toBe(0);
+	update(32);
+	expect(__inspectVisualResourceScopeForTests(shelfScope).activeResourceEntryCount).toBe(12);
+
+	m.dispose();
+	expect(shelfScope.closed).toBe(true);
+	diagnostics = m.getResourceDiagnostics();
+	expect(diagnostics.cards.active).toBe(0);
+	expect(diagnostics.cards.idle).toBe(0);
+	expect(diagnostics.detailRows.active).toBe(0);
+	expect(diagnostics.detailRows.idle).toBe(0);
+	expect(diagnostics.detailPanels).toBe(0);
+});
+
+test("ShelfManager stages cold card construction across frames by default", async () => {
 	const three = await import("three");
 	const scene = new three.Scene();
 	const group = new three.Group();
@@ -1613,7 +1849,7 @@ test("ShelfManager honors asyncBuild by staging card construction across frames"
 	const m = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
 	const items = Array.from({ length: 30 }, (_, index) => ({ title: `Card ${index}` }));
 
-	m.setData(items, { asyncBuild: true });
+	m.setData(items);
 	m.update(makeCtx(uniforms, 16));
 
 	expect(m.getRenderedCardCount()).toBeGreaterThan(0);
@@ -1624,6 +1860,30 @@ test("ShelfManager honors asyncBuild by staging card construction across frames"
 		m.update(makeCtx(uniforms, 32 + frame * 16));
 	}
 	expect(m.getRenderedCardCount()).toBe(SHELF_MAX_RENDER);
+});
+
+test("ShelfManager async card build stops after the 7ms target even below the two-card cap", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const uniforms = createRuntimeUniforms();
+	let buildClock = 0;
+	const m = createShelfManager({
+		scene,
+		group,
+		three,
+		document: makeCanvasDocument(),
+		buildNow: () => {
+			const value = buildClock;
+			buildClock += 8;
+			return value;
+		},
+	});
+	m.setData(Array.from({ length: 30 }, (_, index) => ({ title: `Card ${index}` })), { asyncBuild: true });
+	m.update(makeCtx(uniforms, 16));
+
+	expect(m.getRenderedCardCount()).toBe(1);
 });
 
 test("ShelfManager applies baseline pointer rotation.x and render order in side mode", async () => {
@@ -1649,6 +1909,145 @@ test("ShelfManager applies baseline pointer rotation.x and render order in side 
 	expect(center?.rotation.x).toBeCloseTo(-0.012, 3);
 	expect(above?.rotation.x).toBeGreaterThan(0.02);
 	expect(center?.renderOrder ?? 0).toBeGreaterThan(above?.renderOrder ?? 0);
+});
+
+test("passive Shelf retracts the selected card and foreground group when pointer eligibility ends", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const uniforms = createRuntimeUniforms();
+	uniforms.uTime.value = 2;
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "A" }, { title: "B" }, { title: "C" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPresence("always");
+	manager.getState().centerTarget = 1;
+	manager.getState().centerSmooth = 1;
+	manager.setSelectedIdx(1);
+	manager.update(makeCtx(uniforms, 16));
+
+	const selected = renderedShelfCard(group, 1);
+	const eligibleY = selected?.position.y ?? 0;
+	expect(group.renderOrder).toBe(50);
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 32));
+
+	expect(manager.getSelectedIdx()).toBe(1);
+	expect(selected?.position.y ?? 0).toBeLessThan(eligibleY);
+	expect(group.renderOrder).toBe(30);
+
+	manager.setPointerForegroundEligible(true);
+	manager.update(makeCtx(uniforms, 48));
+	expect(manager.getSelectedIdx()).toBe(1);
+	expect(selected?.position.y).toBeCloseTo(eligibleY, 8);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("restoring pointer eligibility does not foreground a stale Shelf selection", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Only card" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPresence("always");
+	manager.setSelectedIdx(9);
+	manager.setPointerForegroundEligible(false);
+	manager.setPointerForegroundEligible(true);
+	manager.update(makeCtx(createRuntimeUniforms(), 16));
+
+	expect(manager.getSelectedIdx()).toBe(9);
+	expect(group.renderOrder).toBe(30);
+});
+
+test("cursor eligibility never changes stage Shelf selection posture or group layer", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "A" }, { title: "B" }, { title: "C" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("stage");
+	manager.getState().centerTarget = 1;
+	manager.getState().centerSmooth = 1;
+	manager.setSelectedIdx(1);
+	const uniforms = createRuntimeUniforms();
+	manager.update(makeCtx(uniforms, 16));
+	manager.update(makeCtx(uniforms, 32));
+	const selected = renderedShelfCard(group, 1);
+	const visiblePose = selected?.position.clone();
+	const visibleRenderOrder = selected?.renderOrder;
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 48));
+
+	expect(selected?.position.toArray()).toEqual(visiblePose?.toArray());
+	expect(selected?.renderOrder).toBe(visibleRenderOrder);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("cursor eligibility retracts pinned side card lift without lowering its group", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Pinned" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setShelfPinnedOpen(true);
+	manager.setSelectedIdx(0);
+	const uniforms = createRuntimeUniforms();
+	manager.update(makeCtx(uniforms, 16));
+	const selected = renderedShelfCard(group, 0);
+	const visibleY = selected?.position.y ?? 0;
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(makeCtx(uniforms, 32));
+
+	expect(selected?.position.y ?? 0).toBeLessThan(visibleY);
+	expect(group.renderOrder).toBe(50);
+});
+
+test("side detail suppresses pointer lift and keeps its group layer across cursor edges", async () => {
+	const three = await import("three");
+	const scene = new three.Scene();
+	const group = new three.Group();
+	scene.add(group);
+	const camera = new three.OrthographicCamera(-4, 4, 3, -3, 0.1, 100);
+	camera.position.set(0, 0, 10);
+	camera.lookAt(0, 0, 0);
+	camera.updateMatrixWorld(true);
+	camera.updateProjectionMatrix();
+	const manager = createShelfManager({ scene, group, three, document: makeCanvasDocument() });
+	manager.setData([{ title: "Detail", playlistId: "detail" }], { asyncBuild: false });
+	manager.setShelfVisibility(1);
+	manager.setMode("side");
+	manager.setSelectedIdx(0);
+	manager.openDetail(0);
+	const uniforms = createRuntimeUniforms();
+	const frame = (now: number) => ({
+		...makeCtx(uniforms, now),
+		camera: camera as unknown as FrameContext["camera"],
+		viewport: { width: 800, height: 600 },
+	}) as FrameContext & { viewport: { width: number; height: number } };
+	manager.update(frame(16));
+	const selected = renderedShelfCard(group, 0);
+	const visiblePose = selected?.position.clone();
+
+	manager.setPointerForegroundEligible(false);
+	manager.update(frame(32));
+
+	expect(selected?.position.toArray()).toEqual(visiblePose?.toArray());
+	expect(group.renderOrder).toBe(50);
+	expect(findDetailGroup(group)?.renderOrder ?? 0).toBeGreaterThan(group.renderOrder);
+	expect(findDetailMeshes(group).every((mesh) => mesh.renderOrder > group.renderOrder)).toBe(true);
 });
 
 test("ShelfManager applies baseline stage pointer posture and group drift", async () => {

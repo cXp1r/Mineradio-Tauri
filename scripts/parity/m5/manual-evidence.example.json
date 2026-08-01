@@ -1,0 +1,28 @@
+{
+  "operator": "",
+  "capturedAt": "",
+  "monitors": [
+    {
+      "deviceName": "主屏",
+      "primary": true,
+      "bounds": { "x": 0, "y": 0, "width": 1920, "height": 1080 },
+      "scale": 1
+    },
+    {
+      "deviceName": "左侧副屏",
+      "primary": false,
+      "bounds": { "x": -2560, "y": 0, "width": 2560, "height": 1440 },
+      "scale": 1.5
+    }
+  ],
+  "checks": {
+    "closeExitNoOrphans": false,
+    "trayHideKeepsRuntimeAlive": false,
+    "trayAndSecondInstanceReactivate": false,
+    "desktopLyricsCrossMonitorDpi": false,
+    "customFontLifecycle": false,
+    "cacheAndResourceGovernance": false,
+    "runtimeConsoleClean": false
+	},
+	"notes": []
+}

@@ -19,6 +19,7 @@ export interface ShelfState {
 	appRevealed: boolean;
 	lastSig: string;
 	selectedIdx: number;
+	pointerForegroundEligible: boolean;
 	shelfPane: ShelfPane;
 	collectionReveal: number;
 	lastUpdate: number;
@@ -64,6 +65,7 @@ export function createShelfState(): ShelfState {
 		appRevealed: true,
 		lastSig: "",
 		selectedIdx: -1,
+		pointerForegroundEligible: true,
 		shelfPane: "mine",
 		collectionReveal: 0,
 		lastUpdate: 0,

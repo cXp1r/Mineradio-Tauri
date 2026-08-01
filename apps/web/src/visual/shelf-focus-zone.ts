@@ -2,9 +2,11 @@ import type {
 	CinemaCamera,
 	FocusZoneType,
 	SetFocusZoneOptions,
+	ShelfDetailPhase,
 	ShelfManager,
 	ShelfMode,
 } from "@mineradio/visual-engine";
+import type { ShelfTrackChangeGuard } from "./shelf-track-change-guard";
 
 export type ShelfFocusCameraMode = "static" | "dynamic";
 
@@ -12,7 +14,9 @@ export interface ShelfFocusZoneInput {
 	pointerY: number;
 	viewportHeight: number;
 	queueFocusActive: boolean;
+	trackGuardActive?: boolean;
 	shelfHasOpenContent: boolean;
+	shelfDetailPhase?: ShelfDetailPhase;
 	shelfCanFocus: boolean;
 	sideShelfFocusHit: boolean;
 	shelfMode: ShelfMode;
@@ -71,7 +75,8 @@ export interface QueueFocusOptions {
 export interface ShelfFocusPointerWiringOptions {
 	target: ShelfFocusPointerTarget;
 	cinema: Pick<CinemaCamera, "setFocusZone">;
-	shelfManager: Pick<ShelfManager, "getSnapshot" | "getData" | "getMode">;
+	shelfManager: Pick<ShelfManager, "getSnapshot" | "getData" | "getMode"> &
+		Partial<Pick<ShelfManager, "getDetailPhase">>;
 	getSplashActive: () => boolean;
 	getShelfCameraMode: () => string | null | undefined;
 	getPortrait: () => boolean;
@@ -80,6 +85,7 @@ export interface ShelfFocusPointerWiringOptions {
 	getViewportHeight: () => number;
 	getQueueFocusActive?: (pointer: ShelfFocusPointerInfo) => boolean;
 	getSideShelfFocusHit?: (pointer: ShelfFocusPointerInfo) => boolean;
+	trackChangeGuard?: Pick<ShelfTrackChangeGuard, "sync">;
 	onFocusZoneChange?: (result: ResolvedShelfFocusZone) => void;
 }
 
@@ -99,7 +105,13 @@ export function resolveShelfFocusZone(input: ShelfFocusZoneInput): ResolvedShelf
 	if (input.queueFocusActive) {
 		return { type: "queue", immediate: true, ...base };
 	}
+	if (input.trackGuardActive) {
+		return { type: null, immediate: false, ...base };
+	}
 	if (input.shelfCameraMode === "static") {
+		return { type: null, immediate: false, ...base };
+	}
+	if (input.shelfDetailPhase === "closing") {
 		return { type: null, immediate: false, ...base };
 	}
 	if (input.shelfHasOpenContent) {
@@ -122,6 +134,13 @@ export function resolveShelfFocusZone(input: ShelfFocusZoneInput): ResolvedShelf
 
 export function isWallpaperSafeShelfPreset(preset: unknown): boolean {
 	return Number(preset) === 5;
+}
+
+export function shouldClearShelfFocusOnCameraModeChange(
+	previous: ShelfFocusCameraMode,
+	next: ShelfFocusCameraMode,
+): boolean {
+	return previous === "dynamic" && next === "static";
 }
 
 export function createSecondaryPlaylistEdgeGuard(options: SecondaryPlaylistEdgeGuardOptions = {}): SecondaryPlaylistEdgeGuard {
@@ -202,11 +221,14 @@ export function attachShelfFocusZonePointerWiring(opts: ShelfFocusPointerWiringO
 	const resolveFromPointer = (pointer: ShelfFocusPointerInfo): ResolvedShelfFocusZone => {
 		const mode = opts.shelfManager.getMode();
 		const shelfCanFocus = opts.shelfManager.getData().length > 0 && mode !== "off";
+		const trackGuardActive = opts.trackChangeGuard?.sync().blocking ?? false;
 		return resolveShelfFocusZone({
 			pointerY: pointer.clientY,
 			viewportHeight: pointer.viewportHeight,
 			queueFocusActive: opts.getQueueFocusActive?.(pointer) ?? false,
+			trackGuardActive,
 			shelfHasOpenContent: opts.shelfManager.getSnapshot().openCardIdx >= 0,
+			shelfDetailPhase: opts.shelfManager.getDetailPhase?.() ?? "open",
 			shelfCanFocus,
 			sideShelfFocusHit: opts.getSideShelfFocusHit?.(pointer) ?? false,
 			shelfMode: mode,

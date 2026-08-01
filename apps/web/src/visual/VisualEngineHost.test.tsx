@@ -1,10 +1,12 @@
 import { expect, test } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
 import React from "react";
+import { SONIC_WORKSHOP_DEFAULTS } from "@mineradio/visual-engine";
 import {
 	normalizeVisualCoverUrl,
 	resolveVisualCoverUrl,
-	resolveVisualCoverUrlForSidecar,
+	resolveVisualImageSource,
+	resolveVisualTrackKey,
 	resolveRuntimeShelfMode,
 	resolveVisualShelfSettings,
 	resolveVisualWallpaperSafe,
@@ -12,18 +14,38 @@ import {
 	syncDesktopLyricsMotionRef,
 	createStageLyricsHostSuppliers,
 	mapLyricPayload,
-	mapShelfItemCoversForSidecar,
+	mapShelfItemCoverSources,
 	countShelfPanePlaylists,
 	coverUrlToCssBackgroundImage,
 	VisualEngineHost,
 	type DesktopLyricsMotionSnapshot,
 } from "./VisualEngineHost";
 
+test("VisualEngineHost builds immutable runtime snapshots behind a read-only audio frame interface", async () => {
+	const source = await fetch(new URL("./VisualEngineHost.tsx", import.meta.url)).then((response) => response.text());
+	expect(source).toContain("audioFrameSource: AudioFrameSource");
+	expect(source).not.toContain("PlayerController");
+	expect(source).not.toContain("HTMLAudioElement");
+	expect(source).toContain("buildPlaybackVisualSnapshot");
+	expect(source).toContain("buildLyricsVisualSnapshot");
+	expect(source).toContain("buildShelfVisualSnapshot");
+	expect(source).toContain("buildVisualSettingsSnapshot");
+	expect(source).toContain("useMemo");
+	expect(source).toContain("playbackSnapshot");
+	expect(source).toContain("lyricsSnapshot");
+	expect(source).toContain("shelfSnapshot");
+	expect(source).toContain("settingsSnapshot");
+	expect(source).toContain("mediaUrl?: Pick<MediaUrlPort, \"imageSource\">");
+	expect(source).not.toContain("sidecarBaseUrl");
+	expect(source).not.toContain("/image-proxy");
+	expect(source).not.toContain("URLSearchParams");
+});
+
 test("VisualEngineHost server-renders a visual-host placeholder div without invoking WebGL/AudioContext", () => {
 	const html = renderToStaticMarkup(
 		React.createElement(VisualEngineHost, {
-			audioElementRef: { current: null },
-			controllerRef: { current: null },
+			playbackVolume: 1,
+			audioFrameSource: () => null,
 			lyricsPayload: null,
 			positionMs: 0,
 			isPlaying: false,
@@ -39,22 +61,55 @@ test("VisualEngineHost server-renders a visual-host placeholder div without invo
 test("VisualEngineHost restores baseline album background layer from the direct cover URL", () => {
 	const html = renderToStaticMarkup(
 		React.createElement(VisualEngineHost, {
-			audioElementRef: { current: null },
-			controllerRef: { current: null },
+			playbackVolume: 1,
+			audioFrameSource: () => null,
 			lyricsPayload: null,
 			positionMs: 0,
 			isPlaying: false,
 			currentCoverUrl: "https://img.example/a.jpg",
-			sidecarBaseUrl: "http://127.0.0.1:4111",
+			mediaUrl: {
+				imageSource: (url: string) => ({
+					uri: "mineradio-image://cover/session-token/track-42",
+					fallbackUri: url,
+				}),
+			},
 		}),
 	);
 	expect(html).toContain('id="album-bg"');
 	expect(html).toContain('class="visible"');
-	// Baseline `loadCoverFromUrl` sets `#album-bg.style.backgroundImage = "url(" + directUrl + ")"`
-	// using the direct cover URL (CSS images do not need CORS). The WebGL cover
-	// texture separately goes through the sidecar image proxy for crossOrigin.
+	// CSS 背景保持直链，WebGL 的 opaque URI 不应泄漏到服务端渲染标记。
 	expect(html).toContain("https://img.example/a.jpg");
-	expect(html).not.toContain("image-proxy");
+	expect(html).not.toContain("mineradio-image://");
+});
+
+test("Workshop replaces the album glow with an opaque visual host without intercepting UI", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(VisualEngineHost, {
+			playbackVolume: 1,
+			audioFrameSource: () => null,
+			lyricsPayload: null,
+			positionMs: 0,
+			isPlaying: false,
+			currentCoverUrl: "https://img.example/a.jpg",
+			currentTrack: {
+				provider: "netease",
+				id: "track-42",
+				title: "音域回响",
+				artists: ["CmzYa"],
+				coverUrl: "https://img.example/a.jpg",
+			} as never,
+			fxState: {
+				preset: 8,
+				workshop: { ...SONIC_WORKSHOP_DEFAULTS, active: true },
+			},
+		}),
+	);
+	expect(html).toContain('id="album-bg"');
+	expect(html).not.toContain('id="album-bg" class="visible"');
+	expect(html).toContain('class="visual-host sonic-workshop-active"');
+	expect(html).toContain('class="sonic-workshop-media-copy"');
+	expect(html).toContain("音域回响");
+	expect(html).toContain("CmzYa");
 });
 
 test("visual host keeps the WebGL canvas hit-testable for baseline stage drag and wheel controls", async () => {
@@ -69,6 +124,7 @@ test("album background CSS matches the Electron baseline cover glow layer", asyn
 	expect(/#visual-host\s*\{[\s\S]*z-index:\s*1;[\s\S]*background:\s*transparent;/.test(css)).toBe(true);
 	expect(/#album-bg\s*\{[\s\S]*position:\s*fixed;[\s\S]*z-index:\s*0;[\s\S]*filter:\s*blur\(120px\) brightness\(0\.18\) saturate\(1\.5\);[\s\S]*transform:\s*scale\(1\.4\);[\s\S]*transition:\s*background-image 1\.5s ease, opacity 1\.5s ease;/.test(css)).toBe(true);
 	expect(/#visual-host canvas\s*\{[\s\S]*z-index:\s*1;/.test(css)).toBe(true);
+	expect(/#visual-host\.sonic-workshop-active\s*\{[\s\S]*background:\s*#000;/.test(css)).toBe(true);
 });
 
 test("resolveRuntimeShelfMode keeps runtime side promotion across default off rerenders", () => {
@@ -100,7 +156,7 @@ test("resolveVisualShelfSettings prefers explicit shelf store settings over fx d
 	});
 	expect(resolveVisualShelfSettings({ shelf: "off" }, null)).toEqual({
 		mode: "off",
-		cameraMode: "static",
+		cameraMode: "dynamic",
 		presence: "always",
 		showPodcasts: true,
 		mergeCollections: false,
@@ -126,18 +182,34 @@ test("resolveVisualCoverUrl prefers explicit currentCoverUrl and falls back to c
 	expect(resolveVisualCoverUrl(null, null)).toBe("");
 });
 
+test("resolveVisualTrackKey uses the frozen provider and id identity", () => {
+	expect(resolveVisualTrackKey({ provider: "netease", id: "42" } as never)).toBe("netease:42");
+	expect(resolveVisualTrackKey(null)).toBe("");
+});
+
 test("coverUrlToCssBackgroundImage preserves quoted baseline url syntax safely", () => {
 	expect(coverUrlToCssBackgroundImage("https://img.example/a.jpg")).toBe('url("https://img.example/a.jpg")');
 	expect(coverUrlToCssBackgroundImage('https://img.example/a"b.jpg')).toBe('url("https://img.example/a\\"b.jpg")');
 	expect(coverUrlToCssBackgroundImage("")).toBe(undefined);
 });
 
-test("resolveVisualCoverUrlForSidecar proxies remote covers through sidecar and preserves inline sources", () => {
-	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg");
-	expect(resolveVisualCoverUrlForSidecar("//p3.music.126.net/cover.jpg", "http://127.0.0.1:4111")).toBe("http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fp3.music.126.net%2Fcover.jpg");
-	expect(resolveVisualCoverUrlForSidecar("data:image/png;base64,abc", "http://127.0.0.1:4111")).toBe("data:image/png;base64,abc");
-	expect(resolveVisualCoverUrlForSidecar("file:///tmp/a.jpg", "http://127.0.0.1:4111")).toBe("");
-	expect(resolveVisualCoverUrlForSidecar("https://img.example/a.jpg", "")).toBe("https://img.example/a.jpg");
+test("resolveVisualImageSource delegates normalized covers to the media URL port without inspecting the URI", () => {
+	const calls: string[] = [];
+	const mediaUrl = {
+		imageSource(url: string) {
+			calls.push(url);
+			return {
+				uri: "mineradio-image://cover/session-token/track-42",
+				fallbackUri: url,
+			};
+		},
+	};
+
+	expect(resolveVisualImageSource("//p3.music.126.net/cover.jpg", mediaUrl)).toEqual({
+		uri: "mineradio-image://cover/session-token/track-42",
+		fallbackUri: "https://p3.music.126.net/cover.jpg",
+	});
+	expect(calls).toEqual(["https://p3.music.126.net/cover.jpg"]);
 });
 
 test("normalizeVisualCoverUrl keeps baseline protocol-relative provider covers usable for WebGL", () => {
@@ -180,6 +252,25 @@ test("mapLyricPayload preserves native karaoke timing for stage lyrics", () => {
 	]);
 });
 
+test("mapLyricPayload preserves translation for the visual-engine contract", () => {
+	const lines = mapLyricPayload({
+		provider: "netease",
+		trackId: "42",
+		hasTranslation: true,
+		isWordByWord: false,
+		lines: [
+			{
+				timeMs: 1000,
+				text: "你好",
+				translation: "Hello",
+			},
+		],
+	});
+
+	expect(lines.length).toBe(1);
+	expect(lines[0]?.translation).toBe("Hello");
+});
+
 test("mapLyricPayload sorts stage lyrics and native words like the Electron baseline parser", () => {
 	const lines = mapLyricPayload({
 		provider: "netease",
@@ -208,13 +299,16 @@ test("mapLyricPayload sorts stage lyrics and native words like the Electron base
 	expect(lines[0].words?.map((word) => word.text)).toEqual(["first", "second"]);
 });
 
-test("mapShelfItemCoversForSidecar proxies playlist covers for canvas shelf textures", () => {
-	expect(mapShelfItemCoversForSidecar([
+test("mapShelfItemCoverSources resolves shelf textures through the media URL port", () => {
+	const mediaUrl = {
+		imageSource: (url: string) => ({ uri: url.startsWith("data:") ? url : `mineradio-image://cover/${encodeURIComponent(url)}` }),
+	};
+	expect(mapShelfItemCoverSources([
 		{ type: "playlist", title: "A", cover: "https://img.example/a.jpg" },
 		{ type: "queue", title: "B", cover: "data:image/png;base64,abc" },
 		{ type: "queue", title: "C" },
-	], "http://127.0.0.1:4111")).toEqual([
-		{ type: "playlist", title: "A", cover: "http://127.0.0.1:4111/image-proxy?url=https%3A%2F%2Fimg.example%2Fa.jpg" },
+	], mediaUrl)).toEqual([
+		{ type: "playlist", title: "A", cover: "mineradio-image://cover/https%3A%2F%2Fimg.example%2Fa.jpg" },
 		{ type: "queue", title: "B", cover: "data:image/png;base64,abc" },
 		{ type: "queue", title: "C" },
 	]);

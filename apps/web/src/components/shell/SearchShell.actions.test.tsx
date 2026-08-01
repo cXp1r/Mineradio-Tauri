@@ -6,6 +6,7 @@ import type { PodcastProgram, Track } from "@mineradio/shared";
 import { usePlaybackStore } from "../../stores/playback-store";
 import { useSearchStore } from "../../stores/search-store";
 import { SearchShell } from "./SearchShell";
+import { searchSessionController } from "../../features/search/search-session-runtime";
 
 let originalUseSyncExternalStore: typeof React.useSyncExternalStore;
 let domRoot: HTMLElement | null = null;
@@ -68,10 +69,17 @@ function makePodcastProgram(id: string, radioId = "radio-big"): PodcastProgram {
 }
 
 function resetStores(): void {
+	searchSessionController.clear();
 	useSearchStore.setState({
 		results: [],
+		podcasts: [],
+		programs: [],
+		selectedPodcast: null,
 		loading: false,
+		loadingNext: false,
 		error: null,
+		exhausted: true,
+		visibleCount: 0,
 		provider: "netease",
 		keyword: "Song",
 		mode: "song",
@@ -233,6 +241,33 @@ test("SearchShell follows baseline peek class from its host state", async () => 
 	second.root.unmount();
 });
 
+test("SearchShell renders real history and clears it through the session controller", async () => {
+	useSearchStore.setState({
+		keyword: "",
+		results: [],
+		recentQueries: [
+			{ keyword: "真实历史", mode: "song" },
+			{ keyword: "另一个", mode: "qq" },
+		],
+	});
+
+	const { root, container } = await renderSearchShell(
+		<SearchShell client={null} peek />,
+	);
+	expect(container.querySelector(".search-history")?.textContent).toContain("真实历史");
+	(container.querySelector(".search-history-clear") as HTMLButtonElement).click();
+	for (
+		let tick = 0;
+		tick < 12 && useSearchStore.getState().recentQueries.length > 0;
+		tick += 1
+	) {
+		await new Promise((resolve) => setTimeout(resolve, 0));
+	}
+
+	expect(useSearchStore.getState().recentQueries).toEqual([]);
+	root.unmount();
+});
+
 test("SearchShell clears stale results after clearing input so host peek can hide", async () => {
 	useSearchStore.setState({
 		results: [makeTrack("100")],
@@ -275,7 +310,7 @@ test("SearchShell opens full-screen search detail when Enter commits the compact
 	expect(state.detailOpen).toBe(true);
 	expect(state.keyword).toBe("晴天");
 	expect(state.mode).toBe("song");
-	expect(state.recentQueries[0]).toEqual({ keyword: "晴天", mode: "song" });
+	expect(state.recentQueries).toEqual([]);
 	root.unmount();
 });
 
@@ -374,7 +409,7 @@ test("SearchShell podcast mode drills into programs with back next and play acti
 	root.unmount();
 });
 
-test("SearchShell virtualizes long podcast program lists", async () => {
+test("SearchShell bounds long podcast program lists behind progressive loading", async () => {
 	useSearchStore.setState({
 		results: [],
 		loading: false,
@@ -426,8 +461,9 @@ test("SearchShell virtualizes long podcast program lists", async () => {
 	}
 
 	const list = container.querySelector(".search-shell-podcast-program-list");
-	expect(list?.getAttribute("data-virtualized")).toBe("true");
-	expect(container.querySelectorAll(".search-shell-row").length).toBeLessThan(60);
+	expect(list?.getAttribute("data-virtualized")).toBeNull();
+	expect(container.querySelectorAll(".search-shell-row").length).toBe(18);
+	expect(container.querySelector("[data-search-load-more]")).not.toBeNull();
 	expect(list?.textContent).toContain("第 0 期");
 	(container.querySelector(".search-shell-next") as HTMLButtonElement).click();
 	expect(nextCalls).toEqual(["program-song-0"]);

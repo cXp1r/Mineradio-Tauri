@@ -1,0 +1,303 @@
+export type PlaybackPhase =
+	| "idle"
+	| "resolving"
+	| "loading"
+	| "playing"
+	| "paused"
+	| "ended"
+	| "recovering"
+	| "failed";
+
+export interface PlaybackMachineState {
+	phase: PlaybackPhase;
+	playbackSessionId: number;
+	loadRequestId: number;
+	trackKey: string;
+	recoveryAttempts: number;
+	failureReason: string | null;
+}
+
+export type PlaybackReloadReason =
+	| "media-error"
+	| "long-pause"
+	| "url-age"
+	| "quality";
+
+export type PlaybackMachineEvent =
+	| {
+			type: "PLAY_TRACK";
+			playbackSessionId: number;
+			loadRequestId: number;
+			trackKey: string;
+	  }
+	| {
+			type: "SWITCH_TRACK";
+			playbackSessionId: number;
+			loadRequestId: number;
+			trackKey: string;
+	  }
+	| {
+			type: "BEGIN_RELOAD";
+			playbackSessionId: number;
+			loadRequestId: number;
+			reason: PlaybackReloadReason;
+	  }
+	| {
+			type: "SOURCE_READY";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "SOURCE_READY_PAUSED";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "MEDIA_PLAYING";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "PAUSE";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "RESUME";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "MEDIA_ENDED";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| {
+			type: "MEDIA_FAILED";
+			playbackSessionId: number;
+			loadRequestId: number;
+			recoverable: boolean;
+			reason: string;
+	  }
+	| {
+			type: "RESOLVE_FAILED";
+			playbackSessionId: number;
+			loadRequestId: number;
+			reason: string;
+	  }
+	| {
+			type: "RECOVERY_EXHAUSTED";
+			playbackSessionId: number;
+			loadRequestId: number;
+			reason: string;
+	  }
+	| {
+			type: "RESET_RECOVERY_BUDGET";
+			playbackSessionId: number;
+			loadRequestId: number;
+	  }
+	| { type: "STOP"; playbackSessionId: number };
+
+export function createPlaybackState(): PlaybackMachineState {
+	return {
+		phase: "idle",
+		playbackSessionId: 0,
+		loadRequestId: 0,
+		trackKey: "",
+		recoveryAttempts: 0,
+		failureReason: null,
+	};
+}
+
+function isCurrentSession(
+	state: PlaybackMachineState,
+	playbackSessionId: number,
+): boolean {
+	return state.playbackSessionId === playbackSessionId;
+}
+
+function isCurrentLoad(
+	state: PlaybackMachineState,
+	playbackSessionId: number,
+	loadRequestId: number,
+): boolean {
+	return (
+		isCurrentSession(state, playbackSessionId) &&
+		state.loadRequestId === loadRequestId
+	);
+}
+
+export function reducePlaybackState(
+	state: PlaybackMachineState,
+	event: PlaybackMachineEvent,
+): PlaybackMachineState {
+	switch (event.type) {
+		case "PLAY_TRACK":
+		case "SWITCH_TRACK":
+			if (event.playbackSessionId <= state.playbackSessionId) return state;
+			return {
+				phase: "resolving",
+				playbackSessionId: event.playbackSessionId,
+				loadRequestId: event.loadRequestId,
+				trackKey: event.trackKey,
+				recoveryAttempts: 0,
+				failureReason: null,
+			};
+
+		case "BEGIN_RELOAD":
+			if (
+				!isCurrentSession(state, event.playbackSessionId) ||
+				event.loadRequestId <= state.loadRequestId ||
+				state.phase === "idle" ||
+				state.phase === "ended"
+			) {
+				return state;
+			}
+			return {
+				...state,
+				phase: event.reason === "media-error" ? "recovering" : "resolving",
+				loadRequestId: event.loadRequestId,
+				failureReason: null,
+			};
+
+		case "SOURCE_READY":
+		case "SOURCE_READY_PAUSED":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "resolving" && state.phase !== "recovering")
+			) {
+				return state;
+			}
+			return {
+				...state,
+				phase: event.type === "SOURCE_READY_PAUSED" ? "paused" : "loading",
+			};
+
+		case "MEDIA_PLAYING":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				state.phase !== "loading"
+			) {
+				return state;
+			}
+			return { ...state, phase: "playing" };
+
+		case "PAUSE":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				state.phase !== "playing"
+			) {
+				return state;
+			}
+			return { ...state, phase: "paused" };
+
+		case "RESUME":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				state.phase !== "paused"
+			) {
+				return state;
+			}
+			return { ...state, phase: "playing" };
+
+		case "MEDIA_ENDED":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "playing" && state.phase !== "paused")
+			) {
+				return state;
+			}
+			return { ...state, phase: "ended" };
+
+		case "MEDIA_FAILED":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "loading" &&
+					state.phase !== "playing" &&
+					state.phase !== "paused")
+			) {
+				return state;
+			}
+			if (event.recoverable && state.recoveryAttempts < 1) {
+				return {
+					...state,
+					phase: "recovering",
+					recoveryAttempts: state.recoveryAttempts + 1,
+					failureReason: null,
+				};
+			}
+			return { ...state, phase: "failed", failureReason: event.reason };
+
+		case "RESOLVE_FAILED":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "resolving" && state.phase !== "recovering")
+			) {
+				return state;
+			}
+			return { ...state, phase: "failed", failureReason: event.reason };
+
+		case "RECOVERY_EXHAUSTED":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				state.phase !== "recovering"
+			) {
+				return state;
+			}
+			return { ...state, phase: "failed", failureReason: event.reason };
+
+		case "RESET_RECOVERY_BUDGET":
+			if (
+				!isCurrentLoad(
+					state,
+					event.playbackSessionId,
+					event.loadRequestId,
+				) ||
+				(state.phase !== "loading" && state.phase !== "recovering")
+			) {
+				return state;
+			}
+			return state.recoveryAttempts === 0
+				? state
+				: { ...state, recoveryAttempts: 0 };
+
+		case "STOP":
+			if (event.playbackSessionId <= state.playbackSessionId) return state;
+			return {
+				...createPlaybackState(),
+				playbackSessionId: event.playbackSessionId,
+			};
+	}
+}

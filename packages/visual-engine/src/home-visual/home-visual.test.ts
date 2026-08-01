@@ -8,6 +8,17 @@ import { cloneFxState } from "./fx-defaults";
 import { SKULL_PRESET_INDEX } from "./preset-state";
 import { skullBreathOffset } from "./skull-particles";
 import { resetHomeCoverTextureCacheForTests } from "./cover-texture";
+import { createCancellationScope } from "../runtime/cancellation-scope";
+import { createBudgetTaskQueue } from "../runtime/budget-task-queue";
+import { createVisualResourceLedger } from "../runtime/resource-ledger";
+import { createVisualResourceScope } from "../runtime/resource-scope";
+
+const rejectionProcess = (globalThis as unknown as {
+	process: {
+		on(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+		off(event: "unhandledRejection", listener: (reason: unknown) => void): void;
+	};
+}).process;
 
 beforeEach(() => {
 	resetHomeCoverTextureCacheForTests();
@@ -131,14 +142,14 @@ test("createHomeVisual returns the lifecycle API {update, dispose, getPreset, se
 	expect(hv.getPreset()).toBe(0);
 });
 
-test("HomeVisual.setPreset clamps p to [0,6] and mutates fx.preset; field sees fx.preset through applyFxState", async () => {
+test("HomeVisual.setPreset clamps current presets to [0,8] and mutates fx.preset", async () => {
 	const scene = makeFakeScene();
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
 	hv.setPreset(99);
-	expect(hv.getPreset()).toBe(6);
-	expect(hv.getFx().preset).toBe(6);
+	expect(hv.getPreset()).toBe(8);
+	expect(hv.getFx().preset).toBe(8);
 	const uniforms = hv.getField().materialUniforms;
-	expect(uniforms.uPreset.value).toBe(6);
+	expect(uniforms.uPreset.value).toBe(8);
 	hv.setPreset(2);
 	expect(uniforms.uPreset.value).toBe(2);
 });
@@ -377,6 +388,27 @@ test("HomeVisual.update drives baseline ripple texture from bass rising edges", 
 	expect(data[3]).toBeGreaterThan(1);
 });
 
+test("HomeVisual keeps update backward compatible while allowing core and ripples to advance independently", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
+	const independent = hv as typeof hv & {
+		updateCore(ctx: FrameContext): void;
+		updateRipples(dtSeconds: number): void;
+	};
+	independent.getRipples().trigger(0.2, -0.3, 1);
+	independent.updateCore({ ...makeFrameCtx(), dt: 0.25 } as unknown as FrameContext);
+	expect(independent.getRipples().getData()[3]).toBe(0);
+	independent.updateRipples(0.25);
+	expect(independent.getRipples().getData()[2]).toBeCloseTo(0.25, 6);
+	expect(independent.getRipples().getData()[3]).toBe(1);
+
+	const legacy = await createHomeVisual({ scene: makeFakeScene() as never, threeFactory: makeFakeThree() });
+	legacy.getRipples().trigger(0.2, -0.3, 1);
+	legacy.update({ ...makeFrameCtx(), dt: 0.25 } as unknown as FrameContext);
+	expect(legacy.getRipples().getData()[2]).toBeCloseTo(0.25, 6);
+	expect(legacy.getRipples().getData()[3]).toBe(1);
+});
+
 test("preset 6 (skull) suppresses points visibility; non-skull leaves points visible", async () => {
 	const scene = makeFakeScene();
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
@@ -385,6 +417,33 @@ test("preset 6 (skull) suppresses points visibility; non-skull leaves points vis
 	expect((hv.getField().points as { visible: boolean }).visible).toBe(true);
 	hv.setPreset(SKULL_PRESET_INDEX);
 	hv.update(makeFrameCtx() as unknown as FrameContext);
+	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
+});
+
+test("initial preset 7 suppresses Home particles before the first update", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		fx: { ...cloneFxState(), preset: 7 },
+	});
+
+	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
+	expect((hv.getField().bloomPoints as { visible: boolean }).visible).toBe(false);
+});
+
+test("Workshop preset 8 suppresses legacy Home particles on mount and after switching", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		fx: { ...cloneFxState(), preset: 8 },
+	});
+	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
+	hv.setPreset(5);
+	hv.update(makeFrameCtx() as unknown as FrameContext);
+	expect((hv.getField().points as { visible: boolean }).visible).toBe(true);
+	hv.setPreset(8);
 	expect((hv.getField().points as { visible: boolean }).visible).toBe(false);
 });
 
@@ -541,4 +600,242 @@ test("HomeVisual.dispose disposes the underlying particle field (Points removed)
 	const hv = await createHomeVisual({ scene: scene as never, threeFactory: makeFakeThree() });
 	hv.dispose();
 	expect((scene.removed as unknown[]).length).toBe(2);
+});
+
+test("HomeVisual suspend retains cover uniforms, releases back-cover, and wake rebuilds lazily once", async () => {
+	const scene = makeFakeScene();
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		loadCoverImage: async () => ({ width: 16, height: 16 }),
+		buildCoverEdgeDepth: () => ({ width: 16, height: 16 }),
+	});
+	hv.setCoverUrl("https://img.example/cover.jpg");
+	await hv.getCoverController().whenIdle();
+	const coverImage = (hv.getField().materialUniforms.uCoverTex.value as { image: unknown }).image;
+	const edgeImage = (hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	const mountedCount = scene.added.length;
+	const backCover = scene.added.at(-1);
+
+	hv.setRuntimeActive(false);
+
+	expect(scene.removed).toContain(backCover);
+	expect((hv.getField().materialUniforms.uCoverTex.value as { image: unknown }).image).toBe(coverImage);
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(edgeImage);
+	hv.setRuntimeActive(true);
+	expect(scene.added.length).toBe(mountedCount);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	expect(scene.added.length).toBe(mountedCount + 1);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	expect(scene.added.length).toBe(mountedCount + 1);
+});
+
+test("HomeVisual wake detaches stale back-cover work and whenIdle observes only the current generation", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let creatingBackCover = false;
+	let backCoverCalls = 0;
+	const pendingFactories: Array<{
+		resolve(module: Awaited<ReturnType<ThreeFactory>>): void;
+		reject(error: Error): void;
+	}> = [];
+	const factory = (async () => {
+		if (!creatingBackCover) return await baseFactory();
+		backCoverCalls += 1;
+		return await new Promise<Awaited<ReturnType<ThreeFactory>>>((resolve, reject) => {
+			pendingFactories.push({ resolve, reject });
+		});
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	creatingBackCover = true;
+	hv.getFx().backCover = true;
+
+	// A 保持悬而未决；挂起后唤醒必须允许当前 generation 的 B 启动。
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(1);
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(2);
+
+	let currentIdleSettled = false;
+	const currentIdle = hv.whenIdle().then(() => { currentIdleSettled = true; });
+	await Promise.resolve();
+	expect(currentIdleSettled).toBe(false);
+	const module = await baseFactory();
+	pendingFactories[1]?.resolve(module);
+	await currentIdle;
+	expect(currentIdleSettled).toBe(true);
+	expect(scene.added.length).toBe(3);
+
+	// 陈旧 A 晚到时只释放自己，不能替换已经挂载的 B。
+	pendingFactories[0]?.resolve(module);
+	await new Promise<void>((resolve) => setTimeout(resolve, 0));
+	const lateBackCover = scene.added.at(-1);
+	expect(scene.added.length).toBe(4);
+	expect(scene.removed).toContain(lateBackCover);
+
+	// 另一个已分离的旧任务晚到 reject 时也必须已有 catch，不能产生未处理拒绝。
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(3);
+	hv.setRuntimeActive(false);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(backCoverCalls).toBe(4);
+	pendingFactories[3]?.resolve(module);
+	await hv.whenIdle();
+
+	const unhandled: unknown[] = [];
+	const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+	rejectionProcess.on("unhandledRejection", onUnhandled);
+	try {
+		pendingFactories[2]?.reject(new Error("stale back-cover failure"));
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		expect(unhandled).toEqual([]);
+	} finally {
+		rejectionProcess.off("unhandledRejection", onUnhandled);
+	}
+});
+
+test("HomeVisual wake requeues a cancelled current-cover AI enhancement exactly once", async () => {
+	const scene = makeFakeScene();
+	const cancellationScope = createCancellationScope("home-visual");
+	const resourceScope = createVisualResourceScope("home-visual-resources");
+	const ledger = createVisualResourceLedger({
+		budget: { textureBytes: 1_000_000, geometryBytes: 1_000_000, meshCount: 100, queuedTaskCost: 10, cacheBytes: 10_000_000 },
+	});
+	const taskQueue = createBudgetTaskQueue({ ledger, resourceScope, cancellationScope });
+	const heuristic = { width: 16, height: 16, label: "heuristic" };
+	const enhanced = { width: 16, height: 16, label: "enhanced" };
+	let firstResolve: ((image: typeof enhanced) => void) | undefined;
+	let firstSignal: AbortSignal | undefined;
+	let loads = 0;
+	let aiRuns = 0;
+	let merges = 0;
+	const hv = await createHomeVisual({
+		scene: scene as never,
+		threeFactory: makeFakeThree(),
+		fx: { ...cloneFxState(), aiDepth: true },
+		loadCoverImage: async () => { loads += 1; return { width: 16, height: 16 }; },
+		buildCoverEdgeDepth: () => heuristic,
+		estimateAiDepth: async (_image, signal) => {
+			aiRuns += 1;
+			if (aiRuns === 1) {
+				firstSignal = signal;
+				return await new Promise((done) => { firstResolve = done; });
+			}
+			return enhanced;
+		},
+		mergeAiDepth: (_heuristic, ai) => { merges += 1; return ai; },
+		runtime: { cancellationScope, taskQueue, resourceScope },
+	});
+	hv.setCoverUrl("https://img.example/resume-ai.jpg");
+	taskQueue.runSlice(1);
+	for (let index = 0; index < 10 && taskQueue.getSnapshot().queued === 0; index += 1) await Promise.resolve();
+	taskQueue.runSlice(1);
+	expect(aiRuns).toBe(1);
+	const coverTexture = hv.getField().materialUniforms.uCoverTex.value;
+	const coverImage = (coverTexture as { image: unknown }).image;
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(heuristic);
+
+	hv.setRuntimeActive(false);
+	expect(firstSignal?.aborted).toBe(true);
+	hv.setRuntimeActive(true);
+	expect(taskQueue.getSnapshot().queued).toBe(0);
+	expect(loads).toBe(1);
+	expect(hv.getField().materialUniforms.uCoverTex.value).toBe(coverTexture);
+	expect((coverTexture as { image: unknown }).image).toBe(coverImage);
+
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(taskQueue.getSnapshot().queued).toBe(1);
+	expect(aiRuns).toBe(1);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	expect(taskQueue.getSnapshot().queued).toBe(1);
+	taskQueue.runSlice(1);
+	await hv.getCoverController().whenIdle();
+
+	expect(aiRuns).toBe(2);
+	expect(merges).toBe(1);
+	expect(loads).toBe(1);
+	expect((hv.getField().materialUniforms.uEdgeTex.value as { image: unknown }).image).toBe(enhanced);
+	firstResolve?.(enhanced);
+	await Promise.resolve();
+	await Promise.resolve();
+});
+
+test("HomeVisual wake preserves the explicit fallback for a source selected while suspended", async () => {
+	const loaded: Array<{ url: string; fallbackUrl: string | undefined }> = [];
+	const hv = await createHomeVisual({
+		scene: makeFakeScene() as never,
+		threeFactory: makeFakeThree(),
+		loadCoverImage: async (url, _signal, fallbackUrl) => {
+			loaded.push({ url, fallbackUrl });
+			return { width: 16, height: 16, src: url };
+		},
+	});
+	const source = "mineradio-image://cover/session-token/track-42";
+	const fallbackUrl = "https://img.example/track-42.jpg";
+
+	hv.setRuntimeActive(false);
+	hv.setCoverUrl(source, fallbackUrl);
+	hv.setRuntimeActive(true);
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.getCoverController().whenIdle();
+
+	expect(loaded).toEqual([{ url: source, fallbackUrl }]);
+	hv.dispose();
+});
+
+test("HomeVisual dispose makes a late back-cover resolve release itself instead of reviving", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let delayBackCover = false;
+	let resolveFactory: ((module: Awaited<ReturnType<ThreeFactory>>) => void) | undefined;
+	const factory = (async () => {
+		const module = await baseFactory();
+		if (!delayBackCover) return module;
+		return await new Promise<Awaited<ReturnType<ThreeFactory>>>((done) => { resolveFactory = done; });
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	delayBackCover = true;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	hv.dispose();
+	const module = await baseFactory();
+	resolveFactory?.(module);
+	await hv.whenIdle();
+	const lateBackCover = scene.added.at(-1);
+
+	expect(scene.removed).toContain(lateBackCover);
+});
+
+test("HomeVisual clears rejected back-cover pending state so a later update can retry", async () => {
+	const scene = makeFakeScene();
+	const baseFactory = makeFakeThree();
+	let backCoverCalls = 0;
+	let creatingBackCover = false;
+	const factory = (async () => {
+		if (creatingBackCover) {
+			backCoverCalls += 1;
+			if (backCoverCalls === 1) throw new Error("transient back-cover failure");
+		}
+		return await baseFactory();
+	}) as ThreeFactory;
+	const hv = await createHomeVisual({ scene: scene as never, threeFactory: factory });
+	creatingBackCover = true;
+	hv.getFx().backCover = true;
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+	hv.updateCore(makeFrameCtx() as unknown as FrameContext);
+	await hv.whenIdle();
+
+	expect(backCoverCalls).toBe(2);
+	expect(scene.added.length).toBe(3);
 });

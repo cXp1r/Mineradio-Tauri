@@ -15,7 +15,6 @@ type VisualAudioDebuggerInput = {
 	frameSource: DebugFrameSource;
 	audioEngine: AudioReactivityEngine;
 	homeVisual: HomeVisual;
-	getAudioElement: () => HTMLAudioElement | null;
 	getHomeActive: () => boolean;
 	getPlaybackActive: () => boolean;
 	getCoverUrl: () => string;
@@ -270,7 +269,7 @@ export function createVisualAudioDebugger(input: VisualAudioDebuggerInput): Visu
 
 	const collect = (ctx: FrameContext | null): VisualAudioDebugSample | null => {
 		if (!ctx) return null;
-		const audioEl = input.getAudioElement();
+		const frameSource = input.frameSource.getDebugState?.() ?? null;
 		const fx = input.homeVisual.getFx();
 		const field = input.homeVisual.getField();
 		const materialUniforms = readNumberUniforms(field.materialUniforms as unknown as UniformContainerLike);
@@ -290,12 +289,12 @@ export function createVisualAudioDebugger(input: VisualAudioDebuggerInput): Visu
 		const sampleWithoutHints = {
 			atMs: ctx.now,
 			audioElement: {
-				ready: !!audioEl,
-				paused: audioEl ? audioEl.paused : true,
-				ended: audioEl ? audioEl.ended : false,
-				currentTime: audioEl ? finiteNumber(audioEl.currentTime) : 0,
+				ready: frameSource?.sourceElementReady ?? false,
+				paused: !(frameSource?.playing ?? false),
+				ended: false,
+				currentTime: frameSource?.currentTimeSeconds ?? 0,
 			},
-			frameSource: input.frameSource.getDebugState?.() ?? null,
+			frameSource,
 			snapshot: input.audioEngine.getSnapshot(),
 			runtimeUniforms,
 			materialUniforms,

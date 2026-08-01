@@ -1,5 +1,10 @@
 import { create } from "zustand";
-import type { ProviderId, Track } from "@mineradio/shared";
+import type {
+	PodcastProgram,
+	PodcastRadio,
+	ProviderId,
+	Track,
+} from "@mineradio/shared";
 
 export type SearchMode = "song" | "netease" | "qq" | "podcast";
 
@@ -10,10 +15,18 @@ export interface SearchRecentQuery {
 
 export interface SearchState {
 	results: Track[];
+	podcasts: PodcastRadio[];
+	programs: PodcastProgram[];
+	selectedPodcast: PodcastRadio | null;
 	loading: boolean;
+	loadingNext: boolean;
 	error: string | null;
+	exhausted: boolean;
+	visibleCount: number;
+	generation: number;
 	provider: ProviderId;
 	keyword: string;
+	committedKeyword: string;
 	mode: SearchMode;
 	detailOpen: boolean;
 	recentQueries: SearchRecentQuery[];
@@ -23,37 +36,25 @@ export interface SearchState {
 	setLoading: (loading: boolean) => void;
 	setError: (error: string | null) => void;
 	setResults: (results: Track[]) => void;
-	addRecentQuery: (keyword: string, mode: SearchMode) => void;
 	openDetail: (keyword: string, mode: SearchMode) => void;
 	closeDetail: () => void;
 	reset: () => void;
 }
 
-function normalizeRecentKeyword(keyword: string): string {
-	return keyword.trim();
-}
-
-function nextRecentQueries(
-	previous: SearchRecentQuery[],
-	keyword: string,
-	mode: SearchMode,
-): SearchRecentQuery[] {
-	const trimmed = normalizeRecentKeyword(keyword);
-	if (!trimmed && mode !== "podcast") return previous;
-	const query = { keyword: trimmed, mode };
-	const key = `${mode}:${trimmed}`;
-	return [
-		query,
-		...previous.filter((item) => `${item.mode}:${item.keyword}` !== key),
-	].slice(0, 8);
-}
-
 export const useSearchStore = create<SearchState>()((set) => ({
 	results: [],
+	podcasts: [],
+	programs: [],
+	selectedPodcast: null,
 	loading: false,
+	loadingNext: false,
 	error: null,
+	exhausted: true,
+	visibleCount: 0,
+	generation: 0,
 	provider: "netease",
 	keyword: "",
+	committedKeyword: "",
 	mode: "song",
 	detailOpen: false,
 	recentQueries: [],
@@ -62,18 +63,35 @@ export const useSearchStore = create<SearchState>()((set) => ({
 	setMode: (mode) => set({ mode }),
 	setLoading: (loading) => set({ loading }),
 	setError: (error) => set({ error, loading: false }),
-	setResults: (results) => set({ results, error: null, loading: false }),
-	addRecentQuery: (keyword, mode) =>
-		set((state) => ({
-			recentQueries: nextRecentQueries(state.recentQueries, keyword, mode),
-		})),
+	setResults: (results) => set({
+		results,
+		podcasts: [],
+		programs: [],
+		selectedPodcast: null,
+		visibleCount: results.length,
+		error: null,
+		loading: false,
+	}),
 	openDetail: (keyword, mode) =>
-		set((state) => ({
+		set(() => ({
 			keyword,
 			mode,
 			detailOpen: true,
-			recentQueries: nextRecentQueries(state.recentQueries, keyword, mode),
 		})),
 	closeDetail: () => set({ detailOpen: false }),
-	reset: () => set({ results: [], loading: false, error: null, keyword: "", detailOpen: false }),
+	reset: () => set((state) => ({
+		results: [],
+		podcasts: [],
+		programs: [],
+		selectedPodcast: null,
+		loading: false,
+		loadingNext: false,
+		error: null,
+		exhausted: true,
+		visibleCount: 0,
+		keyword: "",
+		committedKeyword: "",
+		detailOpen: false,
+		generation: state.generation + 1,
+	})),
 }));

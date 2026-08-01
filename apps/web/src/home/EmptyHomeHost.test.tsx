@@ -5,17 +5,22 @@ import { createRoot } from "react-dom/client";
 import { flushSync } from "react-dom";
 import { EmptyHomeHost, buildHomeWaveFrame } from "./EmptyHomeHost";
 
-test("EmptyHomeHost renders the baseline empty-home music landing structure", () => {
+test("EmptyHomeHost renders the Home 2.0 dashboard structure", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost));
 	expect(html).toContain('id="empty-home"');
-	expect(html).toContain('class="home-hero-inner home-construction-inner"');
-	expect(html).toContain("🚧此处施工，敬请期待🚧");
+	expect(html).toContain('class="home-hero-inner daily-review-card"');
+	expect(html).toContain("换一条");
+	expect(html).toContain("选择 MP4");
 	expect(html).toContain("展开播放器控制台");
 	expect(html).toContain('class="home-right-pane"');
+	expect(html).toContain('class="home-insight-dock"');
 	expect(html).toContain('class="home-grid"');
-	expect(html).toContain("我的歌单");
+	expect(html).toContain("本地音乐");
 	expect(html).toContain("每日推荐");
-	expect(html).toContain("推荐歌曲");
+	expect(html).toContain("Recent");
+	expect(html).toContain("Continue");
+	expect(html).toContain("Next Up");
+	expect(html).toContain("For You");
 	expect(html).toContain('class="home-rail-sections"');
 	expect(html).not.toContain('id="home-weather-kicker"');
 	expect(html).not.toContain("Mineradio · Your Library");
@@ -25,7 +30,7 @@ test("EmptyHomeHost renders the baseline empty-home music landing structure", ()
 	expect(html).not.toContain('class="home-tile-action"');
 });
 
-test("EmptyHomeHost keeps the baseline construction hero even after logged-in Home data arrives", () => {
+test("EmptyHomeHost keeps the Home 2.0 review and MP4 hero after logged-in data arrives", () => {
 	const html = renderToStaticMarkup(React.createElement(EmptyHomeHost, {
 		discover: {
 			loggedIn: true,
@@ -38,8 +43,9 @@ test("EmptyHomeHost keeps the baseline construction hero even after logged-in Ho
 		},
 	}));
 
-	expect(html).toContain("🚧此处施工，敬请期待🚧");
-	expect(html).not.toContain("从你的歌单、最近播放和常听歌手开始，天气电台放在需要氛围的时候再开。");
+	expect(html).toContain("换一条");
+	expect(html).toContain("选择 MP4");
+	expect(html).not.toContain("🚧此处施工，敬请期待🚧");
 });
 
 test("EmptyHomeHost marks baseline Home loading placeholders with skeleton shimmer", () => {
@@ -500,4 +506,67 @@ test("EmptyHomeHost renders a full-screen playlist detail page and routes detail
 	expect(calls).toEqual(["back", "play:0", "play:1", "artist:Alice"]);
 	root.unmount();
 	host.remove();
+});
+
+test("EmptyHomeHost keeps discover and weather failures local and routes independent retries", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const calls: string[] = [];
+	const host = document.createElement("div");
+	document.body.appendChild(host);
+	const root = createRoot(host);
+
+	flushSync(() => root.render(
+		<EmptyHomeHost
+			discoverError="推荐服务离线"
+			weatherRadioError="天气服务离线"
+			onRetryDiscover={() => calls.push("discover")}
+			onRetryWeatherRadio={() => calls.push("weather")}
+		/>,
+	));
+
+	expect(host.querySelector('[data-home-error="discover"]')?.textContent).toContain("推荐服务离线");
+	expect(host.querySelector('[data-home-error="weather"]')?.textContent).toContain("天气服务离线");
+	(host.querySelector('[data-home-error="discover"] button') as HTMLButtonElement).click();
+	(host.querySelector('[data-home-error="weather"] button') as HTMLButtonElement).click();
+	expect(calls).toEqual(["discover", "weather"]);
+
+	root.unmount();
+	host.remove();
+});
+
+test("Home playlist detail keeps a 600-track surface within the virtual DOM budget", () => {
+	const tracks = Array.from({ length: 600 }, (_, index) => ({
+		provider: "netease" as const,
+		id: `large-${index}`,
+		sourceId: `large-${index}`,
+		title: `曲目 ${index}`,
+		artists: ["歌手"],
+		album: "专辑",
+		coverUrl: "",
+		durationMs: 180_000,
+		qualityHints: [],
+		playableState: "playable" as const,
+	}));
+	const html = renderToStaticMarkup(
+		<EmptyHomeHost
+			playlistDetail={{
+				key: "netease:large",
+				playlist: {
+					provider: "netease",
+					id: "large",
+					name: "大型歌单",
+					coverUrl: "",
+					trackCount: tracks.length,
+					trackIds: tracks.map((track) => track.id),
+					subscribed: false,
+				},
+				tracks,
+				loading: false,
+			}}
+		/>,
+	);
+
+	expect(html).toContain('data-virtualized="true"');
+	expect((html.match(/class="home-detail-track"/g) ?? []).length).toBeLessThan(30);
+	expect(html).not.toContain("曲目 599");
 });

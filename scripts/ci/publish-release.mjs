@@ -13,7 +13,11 @@ import {
   describeLocalAssets,
   verifyReleaseAssets,
 } from "./verify-release-assets.mjs";
-import { verifyReleaseProvenance } from "./release-provenance.mjs";
+import {
+  createReleaseCandidateIdentity,
+  parseCanonicalReleaseProvenance,
+  verifyReleaseProvenance,
+} from "./release-provenance.mjs";
 
 const API_ROOT = "https://api.github.com";
 const API_ACCEPT = "application/vnd.github+json";
@@ -24,6 +28,7 @@ const REPOSITORY_PATTERN =
 const RELEASE_TAG_PATTERN =
   /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const COMMIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
+const CANDIDATE_ID_PATTERN = /^[0-9a-f]{64}$/;
 const EXPECTED_PLATFORM_NAMES = [
   "windows-x86_64",
   "windows-x86_64-nsis",
@@ -170,7 +175,6 @@ function validateInput(input, environment) {
   if (typeof token !== "string" || token.trim().length === 0) {
     throw new Error("环境变量 GITHUB_TOKEN 不能为空");
   }
-
   const version = input.tag.slice(1);
   const expectedExeName = `MineRadio-Tauri_${version}_x64-setup.exe`;
   const expectedNames = new Map([
@@ -360,7 +364,8 @@ async function verifyReleaseSource(client, input) {
 function withoutGitHubTokens(environment) {
   return Object.fromEntries(
     Object.entries(environment ?? {}).filter(
-      ([name]) => !new Set(["GITHUB_TOKEN", "GH_TOKEN"]).has(name.toUpperCase()),
+      ([name]) =>
+        !new Set(["GITHUB_TOKEN", "GH_TOKEN"]).has(name.toUpperCase()),
     ),
   );
 }
@@ -397,7 +402,7 @@ export async function defaultVerifySignature({
 
 function readUtf8File(filePath, label) {
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(
       readFileSync(filePath),
     );
   } catch (error) {
@@ -536,13 +541,19 @@ async function verifyRemoteRelease({
     });
 
     const provenancePath = downloadedPaths.get("release-provenance.json");
+    const rawProvenance = readUtf8File(
+      provenancePath,
+      "release-provenance.json",
+    );
+    const canonicalProvenance =
+      parseCanonicalReleaseProvenance(rawProvenance);
     const manifestPath = downloadedPaths.get("latest.json");
     const executablePath = downloadedPaths.get(validation.expectedExeName);
     const executableSignaturePath = downloadedPaths.get(
       `${validation.expectedExeName}.sig`,
     );
     await provenanceVerifier({
-      provenance: parseJsonFile(provenancePath, "release-provenance.json"),
+      rawProvenance,
       repository: input.repository,
       tag: input.tag,
       commitSha: input.commitSha,
@@ -558,7 +569,20 @@ async function verifyRemoteRelease({
       executableName: validation.expectedExeName,
     });
 
-    return verifiedAssets;
+    const candidateId = createReleaseCandidateIdentity({
+      provenance: canonicalProvenance,
+      version: validation.version,
+      installerSignature: readUtf8File(
+        executableSignaturePath,
+        "安装包签名",
+      ),
+      provenanceSignature: readUtf8File(
+        downloadedPaths.get("release-provenance.json.sig"),
+        "provenance 签名",
+      ),
+    });
+
+    return { assets: verifiedAssets, candidateId };
   } finally {
     rmSync(temporaryDirectory, { recursive: true, force: true });
   }
@@ -588,7 +612,7 @@ function compareReleaseVersions(left, right) {
   return 0;
 }
 
-function assertCurrentReleaseCanBeLatest(releases, candidate) {
+function inspectStableReleaseOrder(releases, candidate) {
   const candidateVersion = parseStrictReleaseVersion(candidate.tag_name);
   if (!candidateVersion) {
     throw new Error(`当前 Release tag 不是严格版本: ${candidate.tag_name}`);
@@ -617,6 +641,16 @@ function assertCurrentReleaseCanBeLatest(releases, candidate) {
       );
     }
   }
+
+  return foundCandidate;
+}
+
+function assertNoHigherStableRelease(releases, candidate) {
+  inspectStableReleaseOrder(releases, candidate);
+}
+
+function assertCurrentReleaseCanBeLatest(releases, candidate) {
+  const foundCandidate = inspectStableReleaseOrder(releases, candidate);
 
   if (!foundCandidate) {
     throw new Error(`当前 Release 未出现在公开列表: ${candidate.tag_name}`);
@@ -829,7 +863,7 @@ async function publishDraftWithRecovery(client, input, release) {
   return published;
 }
 
-export async function publishRelease(input, dependencies = {}) {
+function createReleaseContext(input, dependencies) {
   const environment = dependencies.env ?? process.env;
   const validation = validateInput(input, environment);
   const fetchImplementation = dependencies.fetch ?? globalThis.fetch;
@@ -859,6 +893,28 @@ export async function publishRelease(input, dependencies = {}) {
     dependencies.sleep ??
     ((milliseconds) =>
       new Promise((resolvePromise) => setTimeout(resolvePromise, milliseconds)));
+
+  return {
+    client,
+    environment,
+    input,
+    maximumLatestAttempts,
+    provenanceVerifier,
+    signatureVerifier,
+    sleep,
+    validation,
+  };
+}
+
+async function prepareDraftWithContext(context, requireDraft) {
+  const {
+    client,
+    environment,
+    input,
+    provenanceVerifier,
+    signatureVerifier,
+    validation,
+  } = context;
 
   await verifyReleaseSource(client, input);
 
@@ -911,7 +967,7 @@ export async function publishRelease(input, dependencies = {}) {
     }
   }
 
-  const verifiedRemoteAssets = await verifyRemoteRelease({
+  const verifiedRemoteRelease = await verifyRemoteRelease({
     client,
     release,
     input,
@@ -921,20 +977,100 @@ export async function publishRelease(input, dependencies = {}) {
     provenanceVerifier,
   });
 
-  if (release.draft) {
-    await verifyReleaseSource(client, input);
-    release = assertReleaseMetadata(
-      await readRelease(client, input.repository, release.id),
-      input,
-    );
-    verifyReleaseAssets({
-      remoteAssets: release.assets,
-      localAssets: verifiedRemoteAssets,
-    });
+  await verifyReleaseSource(client, input);
+  release = assertReleaseMetadata(
+    await readRelease(client, input.repository, release.id),
+    input,
+  );
+  verifyReleaseAssets({
+    remoteAssets: release.assets,
+    localAssets: verifiedRemoteRelease.assets,
+  });
+  if (requireDraft && release.draft !== true) {
+    throw new Error(`Release ${input.tag} 在 Draft smoke 前已被公开`);
+  }
 
-    if (release.draft) {
-      release = await publishDraftWithRecovery(client, input, release);
-    }
+  return { created, release, verifiedRemoteRelease };
+}
+
+async function finalizeDraftWithContext(
+  context,
+  expectedReleaseId,
+  options = {},
+) {
+  const {
+    client,
+    environment,
+    input,
+    maximumLatestAttempts,
+    provenanceVerifier,
+    signatureVerifier,
+    sleep,
+    validation,
+  } = context;
+  const {
+    expectedCandidateId,
+    preverifiedRemoteRelease,
+    requireDraftAtEntry = false,
+  } = options;
+  if (!CANDIDATE_ID_PATTERN.test(expectedCandidateId ?? "")) {
+    throw new Error("expectedCandidateId 必须是 64 位小写十六进制");
+  }
+  if (!Number.isSafeInteger(expectedReleaseId) || expectedReleaseId <= 0) {
+    throw new Error("expectedReleaseId 必须是正安全整数");
+  }
+
+  if (!preverifiedRemoteRelease) {
+    await verifyReleaseSource(client, input);
+  }
+  const listedRelease = await findReleaseByExactTag(
+    client,
+    input.repository,
+    input.tag,
+  );
+  if (!listedRelease || listedRelease.id !== expectedReleaseId) {
+    throw new Error("Draft release id 与受保护 smoke 输入不一致");
+  }
+
+  let release = assertReleaseMetadata(
+    await readRelease(client, input.repository, expectedReleaseId),
+    input,
+  );
+  if (requireDraftAtEntry && release.draft !== true) {
+    throw new Error(`Release ${input.tag} 在受保护公开步骤前已被公开`);
+  }
+  let verifiedRemoteRelease = preverifiedRemoteRelease;
+  if (!verifiedRemoteRelease) {
+    verifiedRemoteRelease = await verifyRemoteRelease({
+      client,
+      release,
+      input,
+      validation,
+      environment,
+      verifySignature: signatureVerifier,
+      provenanceVerifier,
+    });
+  }
+  if (verifiedRemoteRelease.candidateId !== expectedCandidateId) {
+    throw new Error("Release candidate identity 与 smoke evidence 不一致");
+  }
+  release = assertReleaseMetadata(
+    await readRelease(client, input.repository, expectedReleaseId),
+    input,
+  );
+  verifyReleaseAssets({
+    remoteAssets: release.assets,
+    localAssets: verifiedRemoteRelease.assets,
+  });
+  if (requireDraftAtEntry && release.draft !== true) {
+    throw new Error(`Release ${input.tag} 在受保护公开 PATCH 前已被公开`);
+  }
+  if (release.draft === true) {
+    assertNoHigherStableRelease(
+      await listAllReleases(client, input.repository),
+      release,
+    );
+    release = await publishDraftWithRecovery(client, input, release);
   }
 
   await verifyReleaseSource(client, input);
@@ -944,7 +1080,7 @@ export async function publishRelease(input, dependencies = {}) {
   );
   verifyReleaseAssets({
     remoteAssets: release.assets,
-    localAssets: verifiedRemoteAssets,
+    localAssets: verifiedRemoteRelease.assets,
   });
   if (release.draft !== false) {
     throw new Error(`Release ${input.tag} 在 Latest 收敛前仍是草稿`);
@@ -964,11 +1100,51 @@ export async function publishRelease(input, dependencies = {}) {
   return {
     releaseId: release.id,
     tag: release.tag_name,
-    created,
     published: release.draft === false,
     latestReleaseId: latest.id,
     latestTag: latest.tag_name,
   };
+}
+
+export async function prepareDraftRelease(input, dependencies = {}) {
+  const context = createReleaseContext(input, dependencies);
+  const prepared = await prepareDraftWithContext(context, true);
+  return {
+    releaseId: prepared.release.id,
+    tag: prepared.release.tag_name,
+    created: prepared.created,
+    draft: prepared.release.draft,
+  };
+}
+
+export async function finalizeDraftRelease(
+  input,
+  expectedReleaseId,
+  expectedCandidateId,
+  dependencies = {},
+) {
+  if (!CANDIDATE_ID_PATTERN.test(expectedCandidateId ?? "")) {
+    throw new Error("expectedCandidateId 必须是 64 位小写十六进制");
+  }
+  const context = createReleaseContext(input, dependencies);
+  return finalizeDraftWithContext(context, expectedReleaseId, {
+    expectedCandidateId,
+    requireDraftAtEntry: true,
+  });
+}
+
+export async function publishRelease(input, dependencies = {}) {
+  const context = createReleaseContext(input, dependencies);
+  const prepared = await prepareDraftWithContext(context, false);
+  const published = await finalizeDraftWithContext(
+    context,
+    prepared.release.id,
+    {
+      expectedCandidateId: prepared.verifiedRemoteRelease.candidateId,
+      preverifiedRemoteRelease: prepared.verifiedRemoteRelease,
+    },
+  );
+  return { ...published, created: prepared.created };
 }
 
 const CLI_FIELDS = new Map([
@@ -1032,14 +1208,8 @@ const invokedUrl = process.argv[1]
   : undefined;
 
 if (invokedUrl === import.meta.url) {
-  try {
-    const result = await publishRelease(parseCliArguments(process.argv.slice(2)));
-    console.log(
-      `Release 发布完成: ${result.tag}；Latest=${result.latestTag}；release_id=${result.releaseId}`,
-    );
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.error(`Release 发布失败: ${message}`);
-    process.exitCode = 1;
-  }
+  console.error(
+    "单体 publish CLI 已禁用；必须先调用 stage-release-draft.mjs，通过 N−1→N smoke 后再调用 publish-release-draft.mjs。",
+  );
+  process.exitCode = 1;
 }

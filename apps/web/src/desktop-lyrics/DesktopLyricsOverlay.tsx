@@ -1,11 +1,30 @@
 import type { CSSProperties, PointerEvent } from "react";
-import React, { useLayoutEffect, useRef } from "react";
+import React, {
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   DesktopLyricsHotBoundsSchema,
   DesktopLyricsPayloadSchema,
   type DesktopLyricsHotBounds,
   type DesktopLyricsPayload,
 } from "@mineradio/shared";
+import {
+  computeDesktopLyricsCinemaMotion,
+  createDesktopLyricsFrameGate,
+  normalizeDesktopLyricsBeatMap,
+  projectDesktopLyricsPlayback,
+  shouldAdvanceDesktopLyricsFrame,
+  type DesktopLyricsCinemaMotion,
+} from "./desktop-lyrics-clock";
+import {
+  CUSTOM_LYRIC_FONT_STORE_KEY,
+  pruneCustomLyricFontRegistrations,
+  registerCustomLyricFontForFamily,
+} from "./custom-lyric-font";
 
 export type DesktopLyricsInput = Partial<DesktopLyricsPayload>;
 
@@ -68,6 +87,10 @@ export function shouldRenderDesktopLyrics(
 export function computeDesktopLyricsStyle(
   payload: DesktopLyricsPayload,
   layout = computeDesktopLyricsLayout(payload),
+  cinemaMotion: DesktopLyricsCinemaMotion = computeDesktopLyricsCinemaMotion(
+    payload,
+    payload.playback.time,
+  ),
 ): DesktopLyricsStyle {
   return {
     left: `${payload.position.x}px`,
@@ -95,10 +118,19 @@ export function computeDesktopLyricsStyle(
     "--desktop-lyrics-vertical-feather": `${layout.verticalFeather}px`,
     "--desktop-lyrics-viewport-width": `${layout.viewportWidth}px`,
     "--desktop-lyrics-glow-strength": String(payload.motion.lyricGlowStrength),
-    "--desktop-lyrics-high-bloom": String(payload.motion.highBloom),
-    "--desktop-lyrics-beat-glow": String(payload.motion.beatGlow),
-    "--desktop-lyrics-beat-pulse": String(payload.motion.beatPulse),
-    "--desktop-lyrics-bass": String(payload.motion.bass),
+    "--desktop-lyrics-high-bloom": String(cinemaMotion.highBloom),
+    "--desktop-lyrics-beat-glow": String(cinemaMotion.beatGlow),
+    "--desktop-lyrics-beat-pulse": String(cinemaMotion.beatPulse),
+    "--desktop-lyrics-bass": String(cinemaMotion.bass),
+    "--desktop-lyrics-float-x": `${cinemaMotion.floatX.toFixed(2)}px`,
+    "--desktop-lyrics-float-y": `${cinemaMotion.floatY.toFixed(2)}px`,
+    "--desktop-lyrics-float-rotate": `${cinemaMotion.floatRotate.toFixed(3)}deg`,
+    "--desktop-lyrics-cinema-x": `${cinemaMotion.cameraX.toFixed(2)}px`,
+    "--desktop-lyrics-cinema-y": `${cinemaMotion.cameraY.toFixed(2)}px`,
+    "--desktop-lyrics-cinema-rotate": `${cinemaMotion.cameraRotate.toFixed(3)}deg`,
+    "--desktop-lyrics-cinema-scale": cinemaMotion.cinemaScale.toFixed(4),
+    "--desktop-lyrics-camera-energy": cinemaMotion.cameraEnergy.toFixed(4),
+    "--desktop-lyrics-pulse-energy": cinemaMotion.pulseEnergy.toFixed(4),
   };
 }
 
@@ -256,14 +288,100 @@ function clamp(value: number, min: number, max: number): number {
 const useIsomorphicLayoutEffect =
   typeof window === "undefined" ? React.useEffect : useLayoutEffect;
 
+function desktopLyricsMonotonicNow(): number {
+  return typeof performance !== "undefined" && typeof performance.now === "function"
+    ? performance.now()
+    : 0;
+}
+
+function useDesktopLyricsAutonomousPayload(
+  input: DesktopLyricsInput | null | undefined,
+): {
+  payload: DesktopLyricsPayload;
+  cinemaMotion: DesktopLyricsCinemaMotion;
+} {
+  const normalized = useMemo(() => normalizeDesktopLyricsPayload(input), [input]);
+  const anchor = useMemo(
+    () => ({ payload: normalized, receivedAtMs: desktopLyricsMonotonicNow() }),
+    [normalized],
+  );
+  const [frameNowMs, setFrameNowMs] = useState(anchor.receivedAtMs);
+  const visible = shouldRenderDesktopLyrics(anchor.payload);
+
+  useEffect(() => {
+    setFrameNowMs(anchor.receivedAtMs);
+  }, [anchor.receivedAtMs]);
+
+  useEffect(() => {
+    if (
+      !visible ||
+      !anchor.payload.playing ||
+      typeof window === "undefined" ||
+      typeof window.requestAnimationFrame !== "function"
+    ) {
+      return;
+    }
+    const gate = createDesktopLyricsFrameGate();
+    let requestId = 0;
+    const tick = (nowMs: number) => {
+      if (
+        shouldAdvanceDesktopLyricsFrame(
+          gate,
+          nowMs,
+          anchor.payload.frameRate,
+        )
+      ) {
+        setFrameNowMs(nowMs);
+      }
+      requestId = window.requestAnimationFrame(tick);
+    };
+    requestId = window.requestAnimationFrame(tick);
+    return () => window.cancelAnimationFrame(requestId);
+  }, [anchor.payload.frameRate, anchor.payload.playing, visible]);
+
+  const projection = projectDesktopLyricsPlayback(
+    anchor.payload,
+    anchor.receivedAtMs,
+    Math.max(frameNowMs, anchor.receivedAtMs),
+  );
+  const livePayload = useMemo(
+    () => ({
+      ...anchor.payload,
+      progress: projection.progress,
+      playback: {
+        ...anchor.payload.playback,
+        time: projection.playbackTime,
+      },
+    }),
+    [anchor.payload, projection.playbackTime, projection.progress],
+  );
+  const beatMap = useMemo(
+    () => normalizeDesktopLyricsBeatMap(livePayload.beatMap),
+    [livePayload.beatMap, livePayload.beatMapKey],
+  );
+
+  return {
+    payload: livePayload,
+    cinemaMotion: computeDesktopLyricsCinemaMotion(
+      livePayload,
+      projection.playbackTime,
+      beatMap,
+    ),
+  };
+}
+
 export function computeDesktopLyricsHotBounds(
   rect: Pick<DOMRect, "left" | "top" | "right" | "bottom">,
 ): DesktopLyricsHotBounds {
+  const width = Math.max(1, rect.right - rect.left);
+  const height = Math.max(1, rect.bottom - rect.top);
+  const padX = clamp(width * 0.08, 26, 72);
+  const padY = clamp(height * 0.35, 24, 56);
   return DesktopLyricsHotBoundsSchema.parse({
-    left: rect.left,
-    top: rect.top,
-    right: rect.right,
-    bottom: rect.bottom,
+    left: rect.left - padX,
+    top: rect.top - padY,
+    right: rect.right + padX,
+    bottom: rect.bottom + padY,
   });
 }
 
@@ -351,33 +469,89 @@ export function DesktopLyricsOverlay({
   onMoveBy,
   onHotBoundsChange,
 }: DesktopLyricsOverlayProps) {
-  const normalized = normalizeDesktopLyricsPayload(payload);
+  const autonomous = useDesktopLyricsAutonomousPayload(payload);
+  const normalized = autonomous.payload;
   const drag = useRef<{ x: number; y: number } | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const lastHotBoundsRef = useRef<DesktopLyricsHotBounds | null>(null);
+  const [fontRevision, setFontRevision] = useState(0);
 
   const shouldRender = shouldRenderDesktopLyrics(normalized);
 
+  useEffect(() => {
+    let disposed = false;
+    const syncFont = () => {
+      pruneCustomLyricFontRegistrations();
+      void registerCustomLyricFontForFamily(normalized.fontFamily).then((loaded) => {
+        if (!disposed && loaded) setFontRevision((value) => value + 1);
+      });
+    };
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === CUSTOM_LYRIC_FONT_STORE_KEY) syncFont();
+    };
+    syncFont();
+    window.addEventListener("storage", handleStorage);
+    return () => {
+      disposed = true;
+      window.removeEventListener("storage", handleStorage);
+    };
+  }, [normalized.fontFamily]);
+
   useIsomorphicLayoutEffect(() => {
-    if (!shouldRender) return;
+    if (!shouldRender) {
+      lastHotBoundsRef.current = null;
+      return;
+    }
     const node = overlayRef.current;
     if (!node) return;
-    const rect = node.getBoundingClientRect();
-    if (rect.right <= rect.left || rect.bottom <= rect.top) return;
-    const bounds = computeDesktopLyricsHotBounds(rect);
-    if (!shouldReportDesktopLyricsHotBounds(lastHotBoundsRef.current, bounds))
-      return;
-    lastHotBoundsRef.current = bounds;
-    onHotBoundsChange?.(bounds);
+    const reportBounds = (force = false) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.right <= rect.left || rect.bottom <= rect.top) return;
+      const bounds = computeDesktopLyricsHotBounds(rect);
+      if (
+        !force &&
+        !shouldReportDesktopLyricsHotBounds(lastHotBoundsRef.current, bounds)
+      ) {
+        return;
+      }
+      lastHotBoundsRef.current = bounds;
+      onHotBoundsChange?.(bounds);
+    };
+    reportBounds();
+
+    const handleViewportChange = () => reportBounds(true);
+    const resizeObserver = typeof ResizeObserver === "function"
+      ? new ResizeObserver(handleViewportChange)
+      : null;
+    resizeObserver?.observe(node);
+    if (typeof window !== "undefined") {
+      window.addEventListener("resize", handleViewportChange);
+      window.visualViewport?.addEventListener("resize", handleViewportChange);
+    }
+    return () => {
+      resizeObserver?.disconnect();
+      if (typeof window !== "undefined") {
+        window.removeEventListener("resize", handleViewportChange);
+        window.visualViewport?.removeEventListener("resize", handleViewportChange);
+      }
+    };
   }, [
     shouldRender,
     onHotBoundsChange,
     normalized.text,
     normalized.position.x,
     normalized.position.y,
+    normalized.size,
+    normalized.y,
+    normalized.fontFamily,
+    normalized.fontWeight,
+    normalized.letterSpacing,
+    normalized.lineHeight,
+    normalized.lyricScale,
     normalized.font.fit.minPx,
     normalized.font.fit.maxPx,
     normalized.font.fit.maxLines,
+    fontRevision,
   ]);
 
   if (!shouldRender) {
@@ -401,7 +575,11 @@ export function DesktopLyricsOverlay({
           : "desktop-lyrics-unlocked",
       ].join(" ")}
       data-click-through={normalized.clickThrough ? "true" : "false"}
-      style={computeDesktopLyricsStyle(normalized, layout)}
+      style={computeDesktopLyricsStyle(
+        normalized,
+        layout,
+        autonomous.cinemaMotion,
+      )}
       onPointerDown={handlers.onPointerDown}
       onPointerMove={handlers.onPointerMove}
       onPointerUp={handlers.onPointerUp}

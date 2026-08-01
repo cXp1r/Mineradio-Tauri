@@ -14,6 +14,7 @@ import { RIPPLE_MAX } from "./ripples";
 export interface HomeParticleFieldOptions {
 	threeFactory?: ThreeFactory;
 	coverResolution?: number;
+	random?: () => number;
 }
 
 export interface HomeParticleField {
@@ -58,7 +59,7 @@ function normalizeHexColor(value: unknown, fallback: string): string {
 
 type ThreeModule = typeof import("three");
 
-function buildGeometry(THREE: ThreeModule, grid: number): THREE.BufferGeometry {
+function buildGeometry(THREE: ThreeModule, grid: number, random: () => number): THREE.BufferGeometry {
 	const count = grid * grid;
 	const positions = new Float32Array(count * 3);
 	const uvs = new Float32Array(count * 2);
@@ -76,7 +77,7 @@ function buildGeometry(THREE: ThreeModule, grid: number): THREE.BufferGeometry {
 		positions[i * 3 + 2] = 0;
 		uvs[i * 2] = u;
 		uvs[i * 2 + 1] = vv;
-		rand[i] = Math.random();
+		rand[i] = random();
 	}
 	const geo = new THREE.BufferGeometry();
 	geo.setAttribute("position", new THREE.BufferAttribute(positions, 3));
@@ -238,7 +239,7 @@ export async function createHomeParticleField(
 	const THREE = await factory();
 	const coverRes = opts.coverResolution ?? 1.55;
 	const grid = coverParticleGridForResolution(coverRes);
-	const geo = buildGeometry(THREE, grid);
+	const geo = buildGeometry(THREE, grid, opts.random ?? Math.random);
 	const uniforms = makeUniformsRecord(THREE, coverRes);
 
 	const material = new THREE.ShaderMaterial({

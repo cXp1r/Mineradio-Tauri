@@ -137,3 +137,10 @@ test("读取仓库的四个版本来源", () => {
     rmSync(repositoryRoot, { recursive: true, force: true });
   }
 });
+
+test("替代发布的四个产品版本源固定为 1.0.0", () => {
+  expect(validateReleaseVersions("v1.0.0", readRepositoryVersions())).toEqual({
+    tag: "v1.0.0",
+    version: "1.0.0",
+  });
+});

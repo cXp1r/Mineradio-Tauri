@@ -17,7 +17,7 @@ MineRadio-Tauri 是一款 Windows 桌面沉浸式音乐播放器，结合天气�
 - 3D 歌单架：面向歌单浏览、选择和播放队列的空间化交互。
 - 桌面能力：窗口控制、桌面歌词、系统集成和 Windows 体验。
 - 本地服务：通过 sidecar 处理 provider、音乐 API、天气、音频代理、缓存和诊断。
-- 应用更新：使用 Tauri updater 作为桌面更新机制。
+- 应用更新：固定 GitHub Releases，由签名校验的 Rust Update Runtime 负责检查、下载与安装。
 
 ## 技术栈
 
@@ -27,7 +27,7 @@ MineRadio-Tauri 是一款 Windows 桌面沉浸式音乐播放器，结合天气�
 - Bun sidecar runtime
 - shared types、zod
 - Canvas / WebGL / GSAP visual engine
-- Tauri updater
+- Rust Update Runtime + GitHub Releases + Minisign
 
 ## 本地开发
 
@@ -68,6 +68,10 @@ cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml --locked
 ```
 
 不同 workspace 或 package 可能有更具体的脚本，请以当前模块声明的脚本为准。
+
+## 安装正式版
+
+正式安装包只从本仓库的 [GitHub Releases](https://github.com/zzstar101/Mineradio-Tauri/releases) 获取。Windows 可能显示 SmartScreen 提示；请先确认下载页面和安装包来源确实是上述官方仓库，再按系统提示手动确认运行。不要为安装本应用关闭 Defender 或 SmartScreen。
 
 ## 项目结构
 
@@ -126,6 +130,6 @@ MineRadio-Tauri 由 XxHuberrr 主要设计与打造。感谢早期体验、测�
 
 Copyright (C) 2026 XxHuberrr.
 
-本项目采用 GPL-3.0 授权。详见 [LICENSE](./LICENSE)。
+本项目原创核心代码采用 GPL-3.0-only 授权。Sonic Topography 视觉层基于已记录的来源链、维护者审阅的公开合作证据与项目决策进行迁移，并保留其单独的 `Non-Commercial Learning License` 与个人非商业限制；该证据不等于额外书面授权、再许可或许可放宽。完整来源链、适用范围和许可正文见 [THIRD_PARTY_NOTICES.md](./THIRD_PARTY_NOTICES.md)。
 
 MineRadio-Tauri 名称、界面视觉设计与原创视觉表达归作者所有；第三方依赖和第三方服务分别遵循其各自授权与服务条款。

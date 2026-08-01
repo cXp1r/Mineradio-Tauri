@@ -2,6 +2,10 @@ import type * as THREE from "three";
 import type { AudioSnapshot } from "../audio/audio-snapshot";
 import type { FrameContext } from "./frame-context";
 import {
+	resolveVisualCameraPolicy,
+	type VisualCameraPolicyInput,
+} from "./visual-camera-policy";
+import {
 	FOCUS_ZONE_ACTIVATE_DELAY_MS,
 	FOCUS_ZONE_EXIT_DELAY_MS,
 	FOCUS_ZONE_QUEUE_EXIT_DELAY_MS,
@@ -22,6 +26,7 @@ export interface CinemaCameraOptions {
 	getCurrentTime?: () => number;
 	defaultProfile?: CinemaProfile;
 	focusTimers?: FocusTimers;
+	cameraPolicyInputSupplier?: () => Omit<VisualCameraPolicyInput, "shelfFocusTarget"> | null;
 }
 
 export interface CinemaState {
@@ -398,6 +403,18 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 		}
 		let focusEase = fa ? 0.16 : 0.10;
 		let radiusEase = fa ? 0.12 : 0.07;
+		const policyInput = opts.cameraPolicyInputSupplier?.() ?? null;
+		if (policyInput) {
+			const policy = resolveVisualCameraPolicy({
+				...policyInput,
+				shelfFocusTarget: fa ? orbit.focus.lookAt : null,
+			});
+			tLookAt = policy.lookAt;
+			if (policy.source === "stage") {
+				focusEase = Math.max(focusEase, 0.115);
+				radiusEase = Math.max(radiusEase, 0.082);
+			}
+		}
 		if (beatCam.punch > 0.01) {
 			focusEase = Math.max(focusEase, 0.12 + beatCam.punch * 0.12);
 			radiusEase = Math.max(radiusEase, 0.09 + beatCam.punch * 0.12);
@@ -595,7 +612,7 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 
 	function setPresetCameraBaseline(preset: number): void {
 		if (disposed) return;
-		const p = Math.max(0, Math.min(6, Number(preset) || 0));
+		const p = Math.max(0, Math.min(7, Math.round(Number(preset) || 0)));
 		if (p === 1) {
 			orbit.userRadius = 6.2;
 			orbit.userPhi = 0.03;
@@ -638,6 +655,13 @@ export function createCinemaCamera(opts: CinemaCameraOptions): CinemaCamera {
 			orbit.baselineRadius = 7.4;
 			orbit.baselinePhi = 0.10;
 			orbit.baselineTheta = 0.18;
+		} else if (p === 7) {
+			orbit.userRadius = 8.4;
+			orbit.userPhi = 0.18;
+			orbit.userTheta = 0.0;
+			orbit.baselineRadius = 8.4;
+			orbit.baselinePhi = 0.18;
+			orbit.baselineTheta = 0.0;
 		} else {
 			orbit.userRadius = 6.6;
 			orbit.userPhi = 0.08;

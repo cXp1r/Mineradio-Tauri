@@ -106,6 +106,37 @@ test("computeDesktopLyricsStyle exposes baseline top-level typography and motion
   expect(style["--desktop-lyrics-beat-glow"]).toBe("0.8");
 });
 
+test("computeDesktopLyricsStyle exposes autonomous cinema vars and disables beat motion with cinema off", () => {
+  const style = computeDesktopLyricsStyle(
+    normalizeDesktopLyricsPayload({
+      enabled: true,
+      text: "cinema off",
+      cinema: false,
+      playback: { time: 12, duration: 120, rate: 1 },
+      motion: {
+        fps: 60,
+        reduceMotion: false,
+        smoothingMs: 120,
+        lyricGlow: true,
+        lyricGlowBeat: true,
+        lyricGlowStrength: 0.5,
+        highBloom: 1.2,
+        beatGlow: 1.3,
+        beatPulse: 1.1,
+        bass: 0.9,
+      },
+    }),
+  );
+
+  expect(style["--desktop-lyrics-beat-glow"]).toBe("0");
+  expect(style["--desktop-lyrics-beat-pulse"]).toBe("0");
+  expect(style["--desktop-lyrics-cinema-x"]).toBe("0.00px");
+  expect(style["--desktop-lyrics-cinema-y"]).toBe("0.00px");
+  expect(style["--desktop-lyrics-cinema-rotate"]).toBe("0.000deg");
+  expect(style["--desktop-lyrics-cinema-scale"]).toBe("1.0000");
+  expect(style["--desktop-lyrics-float-x"]).toContain("px");
+});
+
 test("computeDesktopLyricsLayout mirrors baseline 24-pass fit and scroll mask constants", () => {
   const payload = normalizeDesktopLyricsPayload({
     enabled: true,
@@ -280,10 +311,10 @@ test("computeDesktopLyricsHotBounds normalizes DOMRect geometry for native polli
   });
 
   expect(bounds).toEqual({
-    left: 10,
-    top: 21,
-    right: 210,
-    bottom: 81,
+    left: -16,
+    top: -3,
+    right: 236,
+    bottom: 105,
   });
 });
 
@@ -308,7 +339,7 @@ test("reportDesktopLyricsHotBounds skips hidden nodes and sends visible bounds",
   await reportDesktopLyricsHotBounds(hidden as HTMLElement, bridge);
   await reportDesktopLyricsHotBounds(visible as HTMLElement, bridge);
 
-  expect(sent).toEqual([{ left: 4, top: 6, right: 180, bottom: 45 }]);
+  expect(sent).toEqual([{ left: -22, top: -18, right: 206, bottom: 69 }]);
 });
 
 test("areDesktopLyricsHotBoundsEqual compares measured geometry", () => {

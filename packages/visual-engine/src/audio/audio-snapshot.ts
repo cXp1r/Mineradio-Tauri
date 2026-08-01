@@ -1,5 +1,61 @@
 export const AUDIO_SPECTRUM_BAND_COUNT = 32;
 
+export interface SonicSpectrumFrame {
+	readonly sampleRate: number;
+	readonly fftSize: number;
+	readonly binCount: 512;
+	readonly currentTimeSeconds: number;
+	readonly playing: boolean;
+	bin(index: number): number;
+	mean(startInclusive: number, endExclusive: number): number;
+}
+
+export type SonicBand =
+	| "subBass"
+	| "bass"
+	| "lowMid"
+	| "mid"
+	| "highMid"
+	| "presence"
+	| "brilliance"
+	| "air";
+
+export type SonicBandLevels = Readonly<Record<SonicBand, number>>;
+
+export interface SonicAudioSnapshot {
+	readonly spectrum: SonicSpectrumFrame | null;
+	readonly bands: SonicBandLevels;
+	readonly kickSub: number;
+	readonly kickCore: number;
+	readonly kickPunch: number;
+	readonly body: number;
+	readonly vocal: number;
+	readonly snap: number;
+	readonly lowDrive: number;
+	readonly dominance: number;
+	readonly energy: number;
+	readonly warmth: number;
+	readonly brightness: number;
+	readonly sharpness: number;
+	readonly smoothness: number;
+	readonly density: number;
+	readonly onset: number;
+	readonly flux: number;
+	readonly confidence: number;
+	readonly triggerPulse: number;
+	readonly kickEnvelope: number;
+}
+
+export interface SonicTriggerMonitorSettings {
+	readonly monitorEnabled: boolean;
+	readonly autoTrack: boolean;
+	readonly sensitivity: number;
+	readonly bandStart: number;
+	readonly bandEnd: number;
+	readonly threshold: number;
+	readonly pulseStrength: number;
+}
+
 export interface AudioSnapshot {
 	bass: number;
 	mid: number;
@@ -14,6 +70,7 @@ export interface AudioSnapshot {
 	scheduledBeatPulse: number;
 	beatOnsetFlag: boolean;
 	frequencyBands?: Float32Array;
+	sonic?: SonicAudioSnapshot;
 }
 
 export interface AudioFrameBytes {
@@ -27,6 +84,7 @@ export interface AudioFrameBytes {
 	beatFftSize: number;
 	playing: boolean;
 	currentTimeSeconds: number;
+	trackKey?: string | null;
 }
 
 export type AudioFrameSource = () => AudioFrameBytes | null;
@@ -44,6 +102,8 @@ export interface AudioReactivityOptions {
 		smoothingTimeConstant: number;
 	};
 	prefersReducedMotion?: () => boolean;
+	sonicMonitorEnabled?: boolean;
+	sonicTriggerSettings?: SonicTriggerMonitorSettings;
 }
 
 export interface AudioReactivityEngine {
@@ -62,6 +122,8 @@ export interface AudioReactivityEngine {
 	setPrefersReducedMotion(reduced: boolean): void;
 	setWaitingForBeatMap(waiting: boolean): void;
 	setBeatMapReady(ready: boolean): void;
+	setSonicMonitorEnabled(enabled: boolean): void;
+	setSonicTriggerSettings(settings: SonicTriggerMonitorSettings): void;
 	dispose(): void;
 	readonly smoothingTimeConstant: { main: number; beat: number };
 	readonly binRanges: { kickEnd: number; vocalEnd: number; midEnd: number };

@@ -350,17 +350,6 @@ pub fn allocate_port() -> u16 {
     port
 }
 
-pub fn build_sidecar_command_with_resource_dir(
-    port: u16,
-    app_data_dir: &Path,
-    log_dir: &Path,
-    app_version: &str,
-    resource_dir: Option<&Path>,
-) -> std::process::Command {
-    let plan = resolve_sidecar_launch_plan_with_resource_dir(resource_dir);
-    build_sidecar_command_from_plan(&plan, port, app_data_dir, log_dir, app_version)
-}
-
 pub fn build_sidecar_command_from_plan(
     plan: &SidecarLaunchPlan,
     port: u16,

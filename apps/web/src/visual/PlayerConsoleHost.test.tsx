@@ -29,6 +29,36 @@ test("PlayerConsoleHost server-renders the bottom-bar markup", () => {
 	expect(html).toContain('id="time-display"');
 	expect(html.indexOf('id="quality-control"')).toBeLessThan(html.indexOf('id="heart-btn"'));
 	expect(html).toContain('<path d="M12 5v14"></path><path d="M5 12h14"></path>');
+	expect(html).not.toContain("volume-panel-extras");
+});
+
+test("PlayerConsoleHost passes the real volume popover state to optional extras", async () => {
+	await import("../../../../packages/visual-engine/src/runtime/happy-dom-preload");
+	const states: boolean[] = [];
+	const container = document.createElement("div");
+	document.body.appendChild(container);
+	const root = createRoot(container);
+	root.render(
+		React.createElement(PlayerConsoleHost, {
+			renderVolumePanelExtras: (active: boolean) => {
+				states.push(active);
+				return React.createElement("div", {
+					className: "audio-settings-fixture",
+					"data-active": active ? "1" : "0",
+				});
+			},
+		}),
+	);
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(container.querySelector(".audio-settings-fixture")?.getAttribute("data-active")).toBe("0");
+
+	(container.querySelector("#volume-btn") as HTMLButtonElement).click();
+	await new Promise((resolve) => setTimeout(resolve, 0));
+	expect(container.querySelector(".audio-settings-fixture")?.getAttribute("data-active")).toBe("1");
+	expect(states.at(-1)).toBe(true);
+
+	root.unmount();
+	container.remove();
 });
 
 test("PlayerConsoleHost renders window chrome stub buttons that accept callbacks without throwing", () => {
@@ -113,6 +143,24 @@ test("PlayerConsoleHost keeps generic quality controls when provider options are
 	expect(html).not.toContain('id="quality-btn" class="ctrl-btn quality-pill" disabled=""');
 	expect(html).toContain('data-quality="lossless"');
 	expect(html).toContain('data-quality="standard"');
+});
+
+test("PlayerConsoleHost renders capability-driven source switching beside quality", () => {
+	const html = renderToStaticMarkup(
+		React.createElement(PlayerConsoleHost, {
+			currentTrack: makeTrack("source"),
+			sourceProviders: ["netease", "qq", "soda"],
+			sourceSwitchBusy: null,
+			onSourceSwitch: () => {},
+		}),
+	);
+
+	expect(html).toContain('data-source-provider="qq"');
+	expect(html).toContain('data-source-provider="soda"');
+	expect(html).not.toContain('data-source-provider="netease"');
+	expect(html.indexOf('id="quality-control"')).toBeLessThan(
+		html.indexOf('class="source-switcher"'),
+	);
 });
 
 test("PlayerConsoleHost shows the selected quality when it is not in provider options", () => {
